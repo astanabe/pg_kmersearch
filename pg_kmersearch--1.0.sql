@@ -104,48 +104,45 @@ CREATE OPERATOR =% (
     FUNCTION = kmersearch_dna4_match
 );
 
--- Note: GIN operator classes commented out for initial testing
--- Will be added back after basic functionality is confirmed
--- 
 -- GIN operator class support functions
--- CREATE FUNCTION kmersearch_extract_value(dna2, internal)
---     RETURNS internal
---     AS 'MODULE_PATHNAME', 'kmersearch_extract_value'
---     LANGUAGE C IMMUTABLE STRICT;
--- 
--- CREATE FUNCTION kmersearch_extract_value_dna4(dna4, internal)
---     RETURNS internal
---     AS 'MODULE_PATHNAME', 'kmersearch_extract_value_dna4'
---     LANGUAGE C IMMUTABLE STRICT;
--- 
--- CREATE FUNCTION kmersearch_extract_query(text, internal, int2, internal, internal)
---     RETURNS internal
---     AS 'MODULE_PATHNAME', 'kmersearch_extract_query'
---     LANGUAGE C IMMUTABLE STRICT;
--- 
--- CREATE FUNCTION kmersearch_consistent(internal, int2, text, int4, internal, internal)
---     RETURNS boolean
---     AS 'MODULE_PATHNAME', 'kmersearch_consistent'
---     LANGUAGE C IMMUTABLE STRICT;
--- 
--- -- GIN operator classes for DNA2 and DNA4
--- CREATE OPERATOR CLASS kmersearch_dna2_gin_ops
---     DEFAULT FOR TYPE dna2 USING gin AS
---         OPERATOR 1 LIKE,
---         FUNCTION 1 varbit_cmp(varbit, varbit),
---         FUNCTION 2 kmersearch_extract_value(dna2, internal),
---         FUNCTION 3 kmersearch_extract_query(text, internal, int2, internal, internal),
---         FUNCTION 4 kmersearch_consistent(internal, int2, text, int4, internal, internal),
---         STORAGE varbit;
--- 
--- CREATE OPERATOR CLASS kmersearch_dna4_gin_ops
---     DEFAULT FOR TYPE dna4 USING gin AS
---         OPERATOR 1 LIKE,
---         FUNCTION 1 varbit_cmp(varbit, varbit),
---         FUNCTION 2 kmersearch_extract_value_dna4(dna4, internal),
---         FUNCTION 3 kmersearch_extract_query(text, internal, int2, internal, internal),
---         FUNCTION 4 kmersearch_consistent(internal, int2, text, int4, internal, internal),
---         STORAGE varbit;
+CREATE FUNCTION kmersearch_extract_value(dna2, internal)
+    RETURNS internal
+    AS 'MODULE_PATHNAME', 'kmersearch_extract_value'
+    LANGUAGE C IMMUTABLE STRICT;
+
+CREATE FUNCTION kmersearch_extract_value_dna4(dna4, internal)
+    RETURNS internal
+    AS 'MODULE_PATHNAME', 'kmersearch_extract_value_dna4'
+    LANGUAGE C IMMUTABLE STRICT;
+
+CREATE FUNCTION kmersearch_extract_query(text, internal, int2, internal, internal)
+    RETURNS internal
+    AS 'MODULE_PATHNAME', 'kmersearch_extract_query'
+    LANGUAGE C IMMUTABLE STRICT;
+
+CREATE FUNCTION kmersearch_consistent(internal, int2, text, int4, internal, internal)
+    RETURNS boolean
+    AS 'MODULE_PATHNAME', 'kmersearch_consistent'
+    LANGUAGE C IMMUTABLE STRICT;
+
+-- GIN operator classes for DNA2 and DNA4
+CREATE OPERATOR CLASS kmersearch_dna2_gin_ops
+    DEFAULT FOR TYPE dna2 USING gin AS
+        OPERATOR 1 =%,
+        FUNCTION 1 varbit_cmp(varbit, varbit),
+        FUNCTION 2 kmersearch_extract_value(dna2, internal),
+        FUNCTION 3 kmersearch_extract_query(text, internal, int2, internal, internal),
+        FUNCTION 4 kmersearch_consistent(internal, int2, text, int4, internal, internal),
+        STORAGE varbit;
+
+CREATE OPERATOR CLASS kmersearch_dna4_gin_ops
+    DEFAULT FOR TYPE dna4 USING gin AS
+        OPERATOR 1 =%,
+        FUNCTION 1 varbit_cmp(varbit, varbit),
+        FUNCTION 2 kmersearch_extract_value_dna4(dna4, internal),
+        FUNCTION 3 kmersearch_extract_query(text, internal, int2, internal, internal),
+        FUNCTION 4 kmersearch_consistent(internal, int2, text, int4, internal, internal),
+        STORAGE varbit;
 
 -- Configuration function
 CREATE FUNCTION set_kmersearch_occur_bitlen(integer) RETURNS integer

@@ -61,6 +61,9 @@ static int kmersearch_calculate_raw_score(VarBit *seq1, VarBit *seq2, text *quer
 static int kmersearch_count_mutual_excluded_kmers(VarBit *seq1, VarBit *seq2, text *query_text, Oid index_oid);
 static VarBit **kmersearch_extract_kmers_from_varbit(VarBit *seq, int k, int *nkeys);
 static VarBit **kmersearch_extract_kmers_from_query(const char *query, int k, int *nkeys);
+static Datum *kmersearch_extract_kmers_with_degenerate(const char *sequence, int seq_len, int k, int *nkeys);
+static int kmersearch_count_degenerate_combinations(const char *kmer, int k);
+static VarBit *kmersearch_create_ngram_key_with_occurrence(const char *kmer, int k, int occurrence);
 
 /* Custom GUC variables */
 void _PG_init(void);
@@ -151,6 +154,7 @@ PG_FUNCTION_INFO_V1(kmersearch_dna4_send);
 
 /* K-mer and GIN index functions */
 PG_FUNCTION_INFO_V1(kmersearch_extract_value);
+PG_FUNCTION_INFO_V1(kmersearch_extract_value_dna4);
 PG_FUNCTION_INFO_V1(kmersearch_extract_query);
 PG_FUNCTION_INFO_V1(kmersearch_consistent);
 PG_FUNCTION_INFO_V1(kmersearch_compare_partial);
@@ -809,40 +813,26 @@ kmersearch_extract_kmers(const char *sequence, int seq_len, int k, int *nkeys)
 }
 
 /*
- * GIN extract_value function
+ * GIN extract_value function for DNA2
  */
 Datum
 kmersearch_extract_value(PG_FUNCTION_ARGS)
 {
-    Datum value = PG_GETARG_DATUM(0);
+    kmersearch_dna2 *dna = (kmersearch_dna2 *) PG_DETOAST_DATUM(PG_GETARG_DATUM(0));
     int32 *nkeys = (int32 *) PG_GETARG_POINTER(1);
-    bool **nullFlags = (bool **) PG_GETARG_POINTER(2);
-    Oid typid = PG_GETARG_OID(3);
-    int k = PG_GETARG_INT32(4);  /* k-mer length from index definition */
     
     Datum *keys;
     char *sequence;
     int seq_len;
+    int k = 8;  /* Default k-mer length - will be retrieved from index metadata */
     
     if (k < 4 || k > 64)
         ereport(ERROR, (errmsg("k-mer length must be between 4 and 64")));
     
-    if (typid == get_fn_expr_argtype(fcinfo->flinfo, 0))  /* DNA2 type */
-    {
-        kmersearch_dna2 *dna = (kmersearch_dna2 *) PG_DETOAST_DATUM(value);
-        sequence = kmersearch_dna2_to_string(dna);
-        seq_len = strlen(sequence);
-    }
-    else  /* DNA4 type */
-    {
-        kmersearch_dna4 *dna = (kmersearch_dna4 *) PG_DETOAST_DATUM(value);
-        sequence = kmersearch_dna4_to_string(dna);
-        seq_len = strlen(sequence);
-    }
+    sequence = kmersearch_dna2_to_string(dna);
+    seq_len = strlen(sequence);
     
     keys = kmersearch_extract_kmers(sequence, seq_len, k, nkeys);
-    
-    *nullFlags = NULL;  /* No null keys */
     
     pfree(sequence);
     
@@ -850,6 +840,163 @@ kmersearch_extract_value(PG_FUNCTION_ARGS)
         PG_RETURN_POINTER(NULL);
     
     PG_RETURN_POINTER(keys);
+}
+
+/*
+ * GIN extract_value function for DNA4
+ */
+Datum
+kmersearch_extract_value_dna4(PG_FUNCTION_ARGS)
+{
+    kmersearch_dna4 *dna = (kmersearch_dna4 *) PG_DETOAST_DATUM(PG_GETARG_DATUM(0));
+    int32 *nkeys = (int32 *) PG_GETARG_POINTER(1);
+    
+    Datum *keys;
+    char *sequence;
+    int seq_len;
+    int k = 8;  /* Default k-mer length - will be retrieved from index metadata */
+    
+    if (k < 4 || k > 64)
+        ereport(ERROR, (errmsg("k-mer length must be between 4 and 64")));
+    
+    sequence = kmersearch_dna4_to_string(dna);
+    seq_len = strlen(sequence);
+    
+    keys = kmersearch_extract_kmers_with_degenerate(sequence, seq_len, k, nkeys);
+    
+    pfree(sequence);
+    
+    if (*nkeys == 0)
+        PG_RETURN_POINTER(NULL);
+    
+    PG_RETURN_POINTER(keys);
+}
+
+
+/*
+ * Create n-gram key with occurrence count
+ */
+static VarBit *
+kmersearch_create_ngram_key_with_occurrence(const char *kmer, int k, int occurrence)
+{
+    int kmer_bits = k * 2;
+    int occur_bits = kmersearch_occur_bitlen;
+    int total_bits = kmer_bits + occur_bits;
+    int total_bytes = (total_bits + 7) / 8;
+    VarBit *result;
+    bits8 *data_ptr;
+    int i, bit_pos = 0;
+    
+    /* Adjust occurrence to 0-based (1-256 becomes 0-255) */
+    int adjusted_occurrence = occurrence - 1;
+    if (adjusted_occurrence < 0)
+        adjusted_occurrence = 0;
+    if (adjusted_occurrence >= (1 << occur_bits))
+        adjusted_occurrence = (1 << occur_bits) - 1;
+    
+    result = (VarBit *) palloc0(VARBITHDRSZ + total_bytes);
+    SET_VARSIZE(result, VARBITHDRSZ + total_bytes);
+    VARBITLEN(result) = total_bits;
+    data_ptr = VARBITS(result);
+    
+    /* Encode k-mer bits (2 bits per base) */
+    for (i = 0; i < k; i++)
+    {
+        uint8 base_code = 0;
+        char base = toupper(kmer[i]);
+        
+        switch (base)
+        {
+            case 'A': base_code = 0; break;  /* 00 */
+            case 'C': base_code = 1; break;  /* 01 */
+            case 'G': base_code = 2; break;  /* 10 */
+            case 'T': case 'U': base_code = 3; break;  /* 11 */
+            default: base_code = 0; break;   /* Default to A for invalid chars */
+        }
+        
+        /* Set 2 bits for this base */
+        kmersearch_set_bit_at(data_ptr, bit_pos++, (base_code >> 1) & 1);
+        kmersearch_set_bit_at(data_ptr, bit_pos++, base_code & 1);
+    }
+    
+    /* Encode occurrence count */
+    for (i = occur_bits - 1; i >= 0; i--)
+    {
+        kmersearch_set_bit_at(data_ptr, bit_pos++, (adjusted_occurrence >> i) & 1);
+    }
+    
+    return result;
+}
+
+/*
+ * Extract k-mers with degenerate code expansion
+ */
+static Datum *
+kmersearch_extract_kmers_with_degenerate(const char *sequence, int seq_len, int k, int *nkeys)
+{
+    Datum *keys;
+    int max_keys = (seq_len >= k) ? (seq_len - k + 1) * 10 : 0;  /* Estimate max with expansions */
+    int key_count = 0;
+    int i;
+    HTAB *occurrence_hash;
+    HASHCTL hash_ctl;
+    
+    *nkeys = 0;
+    if (max_keys <= 0)
+        return NULL;
+    
+    keys = (Datum *) palloc(max_keys * sizeof(Datum));
+    
+    /* Create hash table for tracking k-mer occurrences */
+    memset(&hash_ctl, 0, sizeof(hash_ctl));
+    hash_ctl.keysize = k + 1;  /* k characters + null terminator */
+    hash_ctl.entrysize = sizeof(int);
+    occurrence_hash = hash_create("KmerOccurrenceHash", 1000, &hash_ctl,
+                                  HASH_ELEM | HASH_BLOBS);
+    
+    /* Extract k-mers */
+    for (i = 0; i <= seq_len - k; i++)
+    {
+        char kmer[65];  /* Max k=64 + null terminator */
+        bool found;
+        int *occurrence_ptr;
+        int combinations;
+        
+        /* Extract k-mer */
+        strncpy(kmer, sequence + i, k);
+        kmer[k] = '\0';
+        
+        /* Check if degenerate expansion exceeds limit */
+        combinations = kmersearch_count_degenerate_combinations(kmer, k);
+        if (combinations > 10)
+            continue;  /* Skip this k-mer */
+        
+        /* Get or create occurrence count */
+        occurrence_ptr = (int *) hash_search(occurrence_hash, kmer, HASH_ENTER, &found);
+        if (!found)
+            *occurrence_ptr = 0;
+        
+        (*occurrence_ptr)++;
+        
+        /* Skip if occurrence exceeds bit limit */
+        if (*occurrence_ptr > (1 << kmersearch_occur_bitlen))
+            continue;
+        
+        /* For now, create simple k-mer without full degenerate expansion */
+        /* TODO: Implement full degenerate expansion */
+        {
+            VarBit *ngram_key = kmersearch_create_ngram_key_with_occurrence(kmer, k, *occurrence_ptr);
+            keys[key_count++] = PointerGetDatum(ngram_key);
+        }
+        
+        if (key_count >= max_keys)
+            break;
+    }
+    
+    hash_destroy(occurrence_hash);
+    
+    *nkeys = key_count;
+    return keys;
 }
 
 /*

@@ -93,6 +93,9 @@ SELECT name, dna_seq FROM degenerate_sequences;
 ### K-mer Search Usage Examples
 
 ```sql
+-- Create GIN index with k=8 (using 8-mers)
+CREATE INDEX sequences_kmer_idx ON sequences USING gin (dna_seq) WITH (k = 8);
+
 -- K-mer search using =% operator
 SELECT id, name, dna_seq,
        kmersearch_rawscore(dna_seq, 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA') AS rawscore,
@@ -109,6 +112,9 @@ FROM degenerate_sequences
 WHERE dna_seq =% 'ATCGATCGNNATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCG'
 ORDER BY rawscore DESC 
 LIMIT 5;
+
+-- Configure occurrence bit length (default 8-bit)
+SELECT set_kmersearch_occur_bitlen(12); -- Change to 12-bit (max 4095 occurrences)
 ```
 
 ### High-Frequency K-mer Exclusion

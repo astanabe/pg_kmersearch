@@ -1,0 +1,84 @@
+-- pg_kmersearch extension SQL definitions - minimal version for testing
+
+-- Create shell types first
+CREATE TYPE dna2;
+CREATE TYPE dna4;
+
+-- DNA2 input/output functions
+CREATE FUNCTION kmersearch_dna2_in(cstring) RETURNS dna2
+    AS 'MODULE_PATHNAME', 'kmersearch_dna2_in'
+    LANGUAGE C IMMUTABLE STRICT;
+
+CREATE FUNCTION kmersearch_dna2_out(dna2) RETURNS cstring
+    AS 'MODULE_PATHNAME', 'kmersearch_dna2_out'
+    LANGUAGE C IMMUTABLE STRICT;
+
+CREATE FUNCTION kmersearch_dna2_recv(internal) RETURNS dna2
+    AS 'MODULE_PATHNAME', 'kmersearch_dna2_recv'
+    LANGUAGE C IMMUTABLE STRICT;
+
+CREATE FUNCTION kmersearch_dna2_send(dna2) RETURNS bytea
+    AS 'MODULE_PATHNAME', 'kmersearch_dna2_send'
+    LANGUAGE C IMMUTABLE STRICT;
+
+-- DNA4 input/output functions
+CREATE FUNCTION kmersearch_dna4_in(cstring) RETURNS dna4
+    AS 'MODULE_PATHNAME', 'kmersearch_dna4_in'
+    LANGUAGE C IMMUTABLE STRICT;
+
+CREATE FUNCTION kmersearch_dna4_out(dna4) RETURNS cstring
+    AS 'MODULE_PATHNAME', 'kmersearch_dna4_out'
+    LANGUAGE C IMMUTABLE STRICT;
+
+CREATE FUNCTION kmersearch_dna4_recv(internal) RETURNS dna4
+    AS 'MODULE_PATHNAME', 'kmersearch_dna4_recv'
+    LANGUAGE C IMMUTABLE STRICT;
+
+CREATE FUNCTION kmersearch_dna4_send(dna4) RETURNS bytea
+    AS 'MODULE_PATHNAME', 'kmersearch_dna4_send'
+    LANGUAGE C IMMUTABLE STRICT;
+
+-- Complete DNA2 type definition
+CREATE TYPE dna2 (
+    INPUT = kmersearch_dna2_in,
+    OUTPUT = kmersearch_dna2_out,
+    RECEIVE = kmersearch_dna2_recv,
+    SEND = kmersearch_dna2_send,
+    STORAGE = extended,
+    ALIGNMENT = int4
+);
+
+-- Complete DNA4 type definition
+CREATE TYPE dna4 (
+    INPUT = kmersearch_dna4_in,
+    OUTPUT = kmersearch_dna4_out,
+    RECEIVE = kmersearch_dna4_recv,
+    SEND = kmersearch_dna4_send,
+    STORAGE = extended,
+    ALIGNMENT = int4
+);
+
+-- Equality operators
+CREATE FUNCTION kmersearch_dna2_eq(dna2, dna2) RETURNS boolean
+    AS 'MODULE_PATHNAME', 'kmersearch_dna2_eq'
+    LANGUAGE C IMMUTABLE STRICT;
+
+CREATE OPERATOR = (
+    LEFTARG = dna2,
+    RIGHTARG = dna2,
+    FUNCTION = kmersearch_dna2_eq,
+    COMMUTATOR = =,
+    HASHES
+);
+
+CREATE FUNCTION kmersearch_dna4_eq(dna4, dna4) RETURNS boolean
+    AS 'MODULE_PATHNAME', 'kmersearch_dna4_eq'
+    LANGUAGE C IMMUTABLE STRICT;
+
+CREATE OPERATOR = (
+    LEFTARG = dna4,
+    RIGHTARG = dna4,
+    FUNCTION = kmersearch_dna4_eq,
+    COMMUTATOR = =,
+    HASHES
+);

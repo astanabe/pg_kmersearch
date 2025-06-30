@@ -93,6 +93,9 @@ SELECT name, dna_seq FROM degenerate_sequences;
 ### k-mer検索機能の使用例
 
 ```sql
+-- k=8でGINインデックスを作成（8-merを使用）
+CREATE INDEX sequences_kmer_idx ON sequences USING gin (dna_seq) WITH (k = 8);
+
 -- k-mer検索（=%演算子を使用）
 SELECT id, name, dna_seq,
        kmersearch_rawscore(dna_seq, 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA') AS rawscore,
@@ -109,6 +112,9 @@ FROM degenerate_sequences
 WHERE dna_seq =% 'ATCGATCGNNATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCG'
 ORDER BY rawscore DESC 
 LIMIT 5;
+
+-- 出現回数ビット長の設定（デフォルト8ビット）
+SELECT set_kmersearch_occur_bitlen(12); -- 12ビットに変更（最大4095回の出現をカウント）
 ```
 
 ### 高頻出k-mer除外機能
