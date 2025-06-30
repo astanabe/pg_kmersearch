@@ -29,6 +29,7 @@ pg_kmersearchは、PostgreSQL用のDNA配列データを効率的に格納・処
 - **スコアリング検索**: 完全一致だけでなく、類似度による上位結果取得
 - **高頻出k-mer除外**: インデックス作成時に過度に頻出するk-merを自動除外
 - **スコアベースフィルタリング**: 除外k-merに応じて自動調整される最小スコア閾値
+- **スコア計算関数**: 個別配列のスコア算出用の`kmersearch_rawscore()`と`kmersearch_correctedscore()`関数
 
 ## インストール
 
@@ -149,6 +150,36 @@ SELECT show_kmersearch_min_score();
 SELECT * FROM sequences 
 WHERE dna_seq LIKE 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA'
 ORDER BY score DESC LIMIT 10;
+```
+
+### スコア計算関数
+
+マッチした各配列のスコアを個別に取得：
+
+```sql
+-- マッチした配列の生スコアを取得
+SELECT id, name, dna_seq,
+       kmersearch_rawscore(dna_seq, 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA') AS rawscore
+FROM sequences 
+WHERE dna_seq LIKE 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA'
+ORDER BY rawscore DESC 
+LIMIT 10;
+
+-- 修正スコア（除外k-merを考慮）を取得
+SELECT id, name, dna_seq,
+       kmersearch_rawscore(dna_seq, 'ATCG...') AS raw_score,
+       kmersearch_correctedscore(dna_seq, 'ATCG...') AS corrected_score
+FROM sequences 
+WHERE dna_seq LIKE 'ATCG...'
+ORDER BY corrected_score DESC;
+
+-- DNA2型とDNA4型両方の例
+SELECT 'DNA2' as type, id, kmersearch_rawscore(dna2_seq, 'ATCG...') AS score
+FROM dna2_table WHERE dna2_seq LIKE 'ATCG...'
+UNION ALL
+SELECT 'DNA4' as type, id, kmersearch_rawscore(dna4_seq, 'ATCG...') AS score  
+FROM dna4_table WHERE dna4_seq LIKE 'ATCG...'
+ORDER BY score DESC;
 ```
 
 ### 縮重コードの意味

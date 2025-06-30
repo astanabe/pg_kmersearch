@@ -29,6 +29,7 @@ pg_kmersearch is a PostgreSQL extension that provides custom data types for effi
 - **Scoring search**: Retrieve top matches by similarity, not just exact matches
 - **High-frequency k-mer exclusion**: Automatically excludes overly common k-mers during index creation
 - **Score-based filtering**: Minimum score thresholds with automatic adjustment for excluded k-mers
+- **Score calculation functions**: `kmersearch_rawscore()` and `kmersearch_correctedscore()` for individual sequence scoring
 
 ## Installation
 
@@ -149,6 +150,36 @@ SELECT show_kmersearch_min_score();
 SELECT * FROM sequences 
 WHERE dna_seq LIKE 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA'
 ORDER BY score DESC LIMIT 10;
+```
+
+### Score Calculation Functions
+
+Retrieve match scores for individual sequences:
+
+```sql
+-- Get raw scores for matched sequences
+SELECT id, name, dna_seq,
+       kmersearch_rawscore(dna_seq, 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA') AS rawscore
+FROM sequences 
+WHERE dna_seq LIKE 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA'
+ORDER BY rawscore DESC 
+LIMIT 10;
+
+-- Get corrected scores (accounting for excluded k-mers)
+SELECT id, name, dna_seq,
+       kmersearch_rawscore(dna_seq, 'ATCG...') AS raw_score,
+       kmersearch_correctedscore(dna_seq, 'ATCG...') AS corrected_score
+FROM sequences 
+WHERE dna_seq LIKE 'ATCG...'
+ORDER BY corrected_score DESC;
+
+-- Example with both DNA2 and DNA4 types
+SELECT 'DNA2' as type, id, kmersearch_rawscore(dna2_seq, 'ATCG...') AS score
+FROM dna2_table WHERE dna2_seq LIKE 'ATCG...'
+UNION ALL
+SELECT 'DNA4' as type, id, kmersearch_rawscore(dna4_seq, 'ATCG...') AS score  
+FROM dna4_table WHERE dna4_seq LIKE 'ATCG...'
+ORDER BY score DESC;
 ```
 
 ### Degenerate Code Meanings

@@ -152,3 +152,24 @@ CREATE FUNCTION show_kmersearch_min_score()
     RETURNS integer
     AS 'MODULE_PATHNAME', 'show_kmersearch_min_score'
     LANGUAGE C STABLE;
+
+-- Score calculation functions
+CREATE FUNCTION kmersearch_rawscore(dna2, text) 
+    RETURNS integer
+    AS 'MODULE_PATHNAME', 'kmersearch_rawscore'
+    LANGUAGE C IMMUTABLE STRICT;
+
+CREATE FUNCTION kmersearch_rawscore(dna4, text) 
+    RETURNS integer
+    AS 'MODULE_PATHNAME', 'kmersearch_rawscore'
+    LANGUAGE C IMMUTABLE STRICT;
+
+CREATE FUNCTION kmersearch_correctedscore(dna2, text) 
+    RETURNS integer
+    AS 'MODULE_PATHNAME', 'kmersearch_correctedscore'
+    LANGUAGE C IMMUTABLE STRICT;
+
+CREATE FUNCTION kmersearch_correctedscore(dna4, text) 
+    RETURNS integer
+    AS 'MODULE_PATHNAME', 'kmersearch_correctedscore'
+    LANGUAGE C IMMUTABLE STRICT;

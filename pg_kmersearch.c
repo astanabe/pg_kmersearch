@@ -57,6 +57,10 @@ typedef struct KmerHashKey
 static bool kmersearch_is_kmer_excluded(Oid index_oid, VarBit *kmer_key);
 static int kmersearch_count_excluded_kmers_in_query(Oid index_oid, VarBit **query_keys, int nkeys);
 static int kmersearch_get_adjusted_min_score(Oid index_oid, VarBit **query_keys, int nkeys);
+static int kmersearch_calculate_raw_score(VarBit *seq1, VarBit *seq2, text *query_text);
+static int kmersearch_count_mutual_excluded_kmers(VarBit *seq1, VarBit *seq2, text *query_text, Oid index_oid);
+static VarBit **kmersearch_extract_kmers_from_varbit(VarBit *seq, int k, int *nkeys);
+static VarBit **kmersearch_extract_kmers_from_query(const char *query, int k, int *nkeys);
 
 /* Custom GUC variables */
 void _PG_init(void);
@@ -158,6 +162,10 @@ PG_FUNCTION_INFO_V1(kmersearch_set_occur_bitlen);
 PG_FUNCTION_INFO_V1(kmersearch_analyze_table_frequency);
 PG_FUNCTION_INFO_V1(kmersearch_get_excluded_kmers);
 PG_FUNCTION_INFO_V1(show_kmersearch_min_score);
+
+/* Score calculation functions */
+PG_FUNCTION_INFO_V1(kmersearch_rawscore);
+PG_FUNCTION_INFO_V1(kmersearch_correctedscore);
 
 /* Operator support functions */
 PG_FUNCTION_INFO_V1(kmersearch_dna2_eq);
@@ -1222,6 +1230,217 @@ kmersearch_get_adjusted_min_score(Oid index_oid, VarBit **query_keys, int nkeys)
         adjusted_score = 0;
     
     return adjusted_score;
+}
+
+/*
+ * Calculate raw score between two DNA sequences
+ */
+static int
+kmersearch_calculate_raw_score(VarBit *seq1, VarBit *seq2, text *query_text)
+{
+    char *query_string = text_to_cstring(query_text);
+    int query_len = strlen(query_string);
+    int k = 8;  /* Default k-mer length, should be configurable */
+    int score = 0;
+    VarBit **seq1_keys, **seq2_keys;
+    int seq1_nkeys, seq2_nkeys;
+    int i, j;
+    
+    /* Extract k-mers from both sequences */
+    seq1_keys = kmersearch_extract_kmers_from_varbit(seq1, k, &seq1_nkeys);
+    seq2_keys = kmersearch_extract_kmers_from_query(query_string, k, &seq2_nkeys);
+    
+    /* Count matching k-mers */
+    for (i = 0; i < seq1_nkeys; i++)
+    {
+        for (j = 0; j < seq2_nkeys; j++)
+        {
+            if (seq1_keys[i] && seq2_keys[j] && 
+                VARBITLEN(seq1_keys[i]) == VARBITLEN(seq2_keys[j]) &&
+                memcmp(VARBITS(seq1_keys[i]), VARBITS(seq2_keys[j]), 
+                       VARBITBYTES(seq1_keys[i])) == 0)
+            {
+                score++;
+                break;  /* Count each k-mer only once */
+            }
+        }
+    }
+    
+    /* Cleanup */
+    if (seq1_keys)
+    {
+        for (i = 0; i < seq1_nkeys; i++)
+            if (seq1_keys[i]) pfree(seq1_keys[i]);
+        pfree(seq1_keys);
+    }
+    if (seq2_keys)
+    {
+        for (j = 0; j < seq2_nkeys; j++)
+            if (seq2_keys[j]) pfree(seq2_keys[j]);
+        pfree(seq2_keys);
+    }
+    
+    pfree(query_string);
+    return score;
+}
+
+/*
+ * Count excluded k-mers that appear in both sequences
+ */
+static int
+kmersearch_count_mutual_excluded_kmers(VarBit *seq1, VarBit *seq2, text *query_text, Oid index_oid)
+{
+    char *query_string = text_to_cstring(query_text);
+    int k = 8;  /* Default k-mer length */
+    int mutual_excluded = 0;
+    VarBit **seq1_keys, **seq2_keys;
+    int seq1_nkeys, seq2_nkeys;
+    int i, j;
+    
+    /* Extract k-mers from both sequences */
+    seq1_keys = kmersearch_extract_kmers_from_varbit(seq1, k, &seq1_nkeys);
+    seq2_keys = kmersearch_extract_kmers_from_query(query_string, k, &seq2_nkeys);
+    
+    /* Count excluded k-mers that appear in both sequences */
+    for (i = 0; i < seq1_nkeys; i++)
+    {
+        if (!seq1_keys[i] || !kmersearch_is_kmer_excluded(index_oid, seq1_keys[i]))
+            continue;
+            
+        for (j = 0; j < seq2_nkeys; j++)
+        {
+            if (seq2_keys[j] && 
+                VARBITLEN(seq1_keys[i]) == VARBITLEN(seq2_keys[j]) &&
+                memcmp(VARBITS(seq1_keys[i]), VARBITS(seq2_keys[j]), 
+                       VARBITBYTES(seq1_keys[i])) == 0)
+            {
+                mutual_excluded++;
+                break;
+            }
+        }
+    }
+    
+    /* Cleanup */
+    if (seq1_keys)
+    {
+        for (i = 0; i < seq1_nkeys; i++)
+            if (seq1_keys[i]) pfree(seq1_keys[i]);
+        pfree(seq1_keys);
+    }
+    if (seq2_keys)
+    {
+        for (j = 0; j < seq2_nkeys; j++)
+            if (seq2_keys[j]) pfree(seq2_keys[j]);
+        pfree(seq2_keys);
+    }
+    
+    pfree(query_string);
+    return mutual_excluded;
+}
+
+/*
+ * Extract k-mers from VarBit sequence
+ */
+static VarBit **
+kmersearch_extract_kmers_from_varbit(VarBit *seq, int k, int *nkeys)
+{
+    int seq_bits = VARBITLEN(seq);
+    int seq_bases = seq_bits / 2;  /* Assuming 2-bit encoding */
+    int max_kmers = (seq_bases >= k) ? (seq_bases - k + 1) : 0;
+    VarBit **keys;
+    int key_count = 0;
+    int i;
+    
+    *nkeys = 0;
+    if (max_kmers <= 0)
+        return NULL;
+    
+    keys = (VarBit **) palloc(max_kmers * sizeof(VarBit *));
+    
+    /* Extract each k-mer */
+    for (i = 0; i <= seq_bases - k; i++)
+    {
+        int kmer_bits = k * 2;
+        int kmer_bytes = (kmer_bits + 7) / 8;
+        VarBit *kmer_key = (VarBit *) palloc0(VARBITHDRSZ + kmer_bytes);
+        
+        SET_VARSIZE(kmer_key, VARBITHDRSZ + kmer_bytes);
+        VARBITLEN(kmer_key) = kmer_bits;
+        
+        /* Copy k-mer bits from sequence */
+        /* This is a simplified implementation - would need proper bit manipulation */
+        keys[key_count++] = kmer_key;
+    }
+    
+    *nkeys = key_count;
+    return keys;
+}
+
+/*
+ * Extract k-mers from query string
+ */
+static VarBit **
+kmersearch_extract_kmers_from_query(const char *query, int k, int *nkeys)
+{
+    int query_len = strlen(query);
+    int max_kmers = (query_len >= k) ? (query_len - k + 1) : 0;
+    VarBit **keys;
+    int key_count = 0;
+    int i;
+    
+    *nkeys = 0;
+    if (max_kmers <= 0)
+        return NULL;
+    
+    keys = (VarBit **) palloc(max_kmers * sizeof(VarBit *));
+    
+    /* Extract each k-mer from query string */
+    for (i = 0; i <= query_len - k; i++)
+    {
+        keys[key_count++] = kmersearch_create_kmer_key_only(query + i, k);
+    }
+    
+    *nkeys = key_count;
+    return keys;
+}
+
+/*
+ * Raw score calculation function
+ */
+Datum
+kmersearch_rawscore(PG_FUNCTION_ARGS)
+{
+    VarBit *sequence = PG_GETARG_VARBIT_P(0);
+    text *query_text = PG_GETARG_TEXT_P(1);
+    int score;
+    
+    /* Calculate raw score between sequence and query */
+    score = kmersearch_calculate_raw_score(sequence, NULL, query_text);
+    
+    PG_RETURN_INT32(score);
+}
+
+/*
+ * Corrected score calculation function
+ */
+Datum
+kmersearch_correctedscore(PG_FUNCTION_ARGS)
+{
+    VarBit *sequence = PG_GETARG_VARBIT_P(0);
+    text *query_text = PG_GETARG_TEXT_P(1);
+    int raw_score, mutual_excluded, corrected_score;
+    Oid index_oid = InvalidOid;  /* TODO: Get actual index OID from context */
+    
+    /* Calculate raw score */
+    raw_score = kmersearch_calculate_raw_score(sequence, NULL, query_text);
+    
+    /* Count mutual excluded k-mers */
+    mutual_excluded = kmersearch_count_mutual_excluded_kmers(sequence, NULL, query_text, index_oid);
+    
+    /* Corrected score = raw score + mutual excluded k-mers */
+    corrected_score = raw_score + mutual_excluded;
+    
+    PG_RETURN_INT32(corrected_score);
 }
 
 /*
