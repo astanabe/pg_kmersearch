@@ -1,0 +1,117 @@
+CREATE EXTENSION pg_kmersearch;
+-- Test GUC configuration variables
+-- This test covers all configuration parameters
+-- Show default values
+SHOW kmersearch.kmer_size;
+ kmersearch.kmer_size 
+----------------------
+ 8
+(1 row)
+
+SHOW kmersearch.occur_bitlen;
+ kmersearch.occur_bitlen 
+-------------------------
+ 8
+(1 row)
+
+SHOW kmersearch.max_appearance_rate;
+ kmersearch.max_appearance_rate 
+--------------------------------
+ 0.05
+(1 row)
+
+SHOW kmersearch.max_appearance_nrow;
+ kmersearch.max_appearance_nrow 
+--------------------------------
+ 0
+(1 row)
+
+SHOW kmersearch.min_score;
+ kmersearch.min_score 
+----------------------
+ 1
+(1 row)
+
+-- Test setting valid values
+SET kmersearch.kmer_size = 12;
+SHOW kmersearch.kmer_size;
+ kmersearch.kmer_size 
+----------------------
+ 12
+(1 row)
+
+SET kmersearch.occur_bitlen = 10;
+SHOW kmersearch.occur_bitlen;
+ kmersearch.occur_bitlen 
+-------------------------
+ 10
+(1 row)
+
+SET kmersearch.max_appearance_rate = 0.1;
+SHOW kmersearch.max_appearance_rate;
+ kmersearch.max_appearance_rate 
+--------------------------------
+ 0.1
+(1 row)
+
+SET kmersearch.max_appearance_nrow = 1000;
+SHOW kmersearch.max_appearance_nrow;
+ kmersearch.max_appearance_nrow 
+--------------------------------
+ 1000
+(1 row)
+
+SET kmersearch.min_score = 5;
+SHOW kmersearch.min_score;
+ kmersearch.min_score 
+----------------------
+ 5
+(1 row)
+
+-- Test boundary values
+SET kmersearch.kmer_size = 4;  -- minimum
+SHOW kmersearch.kmer_size;
+ kmersearch.kmer_size 
+----------------------
+ 4
+(1 row)
+
+SET kmersearch.kmer_size = 64; -- maximum
+SHOW kmersearch.kmer_size;
+ kmersearch.kmer_size 
+----------------------
+ 64
+(1 row)
+
+SET kmersearch.occur_bitlen = 0;  -- minimum
+SHOW kmersearch.occur_bitlen;
+ kmersearch.occur_bitlen 
+-------------------------
+ 0
+(1 row)
+
+SET kmersearch.occur_bitlen = 16; -- maximum
+SHOW kmersearch.occur_bitlen;
+ kmersearch.occur_bitlen 
+-------------------------
+ 16
+(1 row)
+
+-- Test invalid values (should error)
+\set ON_ERROR_STOP off
+SET kmersearch.kmer_size = 3;   -- below minimum
+ERROR:  3 is outside the valid range for parameter "kmersearch.kmer_size" (4 .. 64)
+SET kmersearch.kmer_size = 65;  -- above maximum
+ERROR:  65 is outside the valid range for parameter "kmersearch.kmer_size" (4 .. 64)
+SET kmersearch.occur_bitlen = 17; -- above maximum
+ERROR:  17 is outside the valid range for parameter "kmersearch.occur_bitlen" (0 .. 16)
+SET kmersearch.max_appearance_rate = 1.1; -- above maximum
+ERROR:  1.1 is outside the valid range for parameter "kmersearch.max_appearance_rate" (0 .. 1)
+\set ON_ERROR_STOP on
+-- Reset to defaults for other tests
+SET kmersearch.kmer_size = 8;
+SET kmersearch.occur_bitlen = 8;
+SET kmersearch.max_appearance_rate = 0.05;
+SET kmersearch.max_appearance_nrow = 0;
+SET kmersearch.min_score = 1;
+DROP EXTENSION pg_kmersearch CASCADE;

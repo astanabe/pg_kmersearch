@@ -1,0 +1,69 @@
+CREATE EXTENSION pg_kmersearch;
+-- Test basic DNA2 and DNA4 type functionality
+-- This test covers input/output, basic operations
+-- Test DNA2 type
+SELECT 'ATCG'::dna2 AS dna2_simple;
+ dna2_simple 
+-------------
+ ATCG
+(1 row)
+
+SELECT 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA'::dna2 AS dna2_long;
+                           dna2_long                           
+---------------------------------------------------------------
+ ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA
+(1 row)
+
+-- Test DNA4 type with degenerate codes
+SELECT 'ATCGMRWSYKN'::dna4 AS dna4_with_degenerate;
+ dna4_with_degenerate 
+----------------------
+ ATCGMRWSYKN
+(1 row)
+
+SELECT 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA'::dna4 AS dna4_long;
+                           dna4_long                           
+---------------------------------------------------------------
+ ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA
+(1 row)
+
+-- Test invalid characters (should error)
+\set ON_ERROR_STOP off
+SELECT 'ATCGX'::dna2;
+ERROR:  invalid character 'X' for DNA2 type
+LINE 1: SELECT 'ATCGX'::dna2;
+               ^
+HINT:  DNA2 type accepts only A, C, G, T, U characters
+SELECT 'ATCGZ'::dna4;
+ERROR:  invalid character 'Z' for DNA4 type
+LINE 1: SELECT 'ATCGZ'::dna4;
+               ^
+HINT:  DNA4 type accepts A,C,G,T,U,M,R,W,S,Y,K,V,H,D,B,N characters
+\set ON_ERROR_STOP on
+-- Test case insensitivity
+SELECT 'atcg'::dna2 AS dna2_lowercase;
+ dna2_lowercase 
+----------------
+ ATCG
+(1 row)
+
+SELECT 'atcgmrwsykn'::dna4 AS dna4_lowercase;
+ dna4_lowercase 
+----------------
+ ATCGMRWSYKN
+(1 row)
+
+-- Test with U (treated as T)
+SELECT 'AUCG'::dna2 AS dna2_with_u;
+ dna2_with_u 
+-------------
+ ATCG
+(1 row)
+
+SELECT 'AUCG'::dna4 AS dna4_with_u;
+ dna4_with_u 
+-------------
+ ATCG
+(1 row)
+
+DROP EXTENSION pg_kmersearch CASCADE;
