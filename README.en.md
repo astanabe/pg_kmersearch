@@ -93,20 +93,21 @@ SELECT name, dna_seq FROM degenerate_sequences;
 ### K-mer Search Usage Examples
 
 ```sql
--- Create GIN index with k=8 (using 8-mers)
-CREATE INDEX sequences_kmer_idx ON sequences USING gin (dna_seq) WITH (k = 8);
-
--- K-mer search (minimum 64 bases required for query)
-SELECT * FROM sequences 
-WHERE dna_seq LIKE 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA' 
+-- K-mer search using =% operator
+SELECT id, name, dna_seq,
+       kmersearch_rawscore(dna_seq, 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA') AS rawscore,
+       kmersearch_correctedscore(dna_seq, 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA') AS correctedscore
+FROM sequences 
+WHERE dna_seq =% 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA'
+ORDER BY kmersearch_rawscore(dna_seq, 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA') DESC 
 LIMIT 10;
 
--- Configure occurrence bit length (default 8-bit)
-SELECT set_kmersearch_occur_bitlen(12); -- Change to 12-bit (max 4095 occurrences)
-
 -- Search with degenerate codes in query
-SELECT * FROM degenerate_sequences 
-WHERE dna_seq LIKE 'ATCGATCGNNATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCG' 
+SELECT id, name, dna_seq,
+       kmersearch_rawscore(dna_seq, 'ATCGATCGNNATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCG') AS rawscore
+FROM degenerate_sequences 
+WHERE dna_seq =% 'ATCGATCGNNATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCG'
+ORDER BY rawscore DESC 
 LIMIT 5;
 ```
 
@@ -147,9 +148,11 @@ SELECT show_kmersearch_min_score();
 -- Search with automatic score adjustment
 -- If query contains 3 excluded k-mers and min_score=50, 
 -- actual threshold becomes 47 for that query
-SELECT * FROM sequences 
-WHERE dna_seq LIKE 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA'
-ORDER BY score DESC LIMIT 10;
+SELECT id, name, dna_seq,
+       kmersearch_rawscore(dna_seq, 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA') AS rawscore
+FROM sequences 
+WHERE dna_seq =% 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA'
+ORDER BY rawscore DESC LIMIT 10;
 ```
 
 ### Score Calculation Functions
@@ -161,24 +164,24 @@ Retrieve match scores for individual sequences:
 SELECT id, name, dna_seq,
        kmersearch_rawscore(dna_seq, 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA') AS rawscore
 FROM sequences 
-WHERE dna_seq LIKE 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA'
+WHERE dna_seq =% 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA'
 ORDER BY rawscore DESC 
 LIMIT 10;
 
 -- Get corrected scores (accounting for excluded k-mers)
 SELECT id, name, dna_seq,
-       kmersearch_rawscore(dna_seq, 'ATCG...') AS raw_score,
-       kmersearch_correctedscore(dna_seq, 'ATCG...') AS corrected_score
+       kmersearch_rawscore(dna_seq, 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA') AS raw_score,
+       kmersearch_correctedscore(dna_seq, 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA') AS corrected_score
 FROM sequences 
-WHERE dna_seq LIKE 'ATCG...'
+WHERE dna_seq =% 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA'
 ORDER BY corrected_score DESC;
 
 -- Example with both DNA2 and DNA4 types
-SELECT 'DNA2' as type, id, kmersearch_rawscore(dna2_seq, 'ATCG...') AS score
-FROM dna2_table WHERE dna2_seq LIKE 'ATCG...'
+SELECT 'DNA2' as type, id, kmersearch_rawscore(dna2_seq, 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA') AS score
+FROM dna2_table WHERE dna2_seq =% 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA'
 UNION ALL
-SELECT 'DNA4' as type, id, kmersearch_rawscore(dna4_seq, 'ATCG...') AS score  
-FROM dna4_table WHERE dna4_seq LIKE 'ATCG...'
+SELECT 'DNA4' as type, id, kmersearch_rawscore(dna4_seq, 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA') AS score  
+FROM dna4_table WHERE dna4_seq =% 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA'
 ORDER BY score DESC;
 ```
 

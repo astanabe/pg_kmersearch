@@ -154,8 +154,8 @@ PG_FUNCTION_INFO_V1(kmersearch_extract_value);
 PG_FUNCTION_INFO_V1(kmersearch_extract_query);
 PG_FUNCTION_INFO_V1(kmersearch_consistent);
 PG_FUNCTION_INFO_V1(kmersearch_compare_partial);
-PG_FUNCTION_INFO_V1(kmersearch_dna2_like);
-PG_FUNCTION_INFO_V1(kmersearch_dna4_like);
+PG_FUNCTION_INFO_V1(kmersearch_dna2_match);
+PG_FUNCTION_INFO_V1(kmersearch_dna4_match);
 PG_FUNCTION_INFO_V1(kmersearch_set_occur_bitlen);
 
 /* K-mer frequency analysis functions */
@@ -965,10 +965,10 @@ kmersearch_compare_partial(PG_FUNCTION_ARGS)
 }
 
 /*
- * DNA2 LIKE operator
+ * DNA2 =% operator for k-mer search
  */
 Datum
-kmersearch_dna2_like(PG_FUNCTION_ARGS)
+kmersearch_dna2_match(PG_FUNCTION_ARGS)
 {
     kmersearch_dna2 *dna = (kmersearch_dna2 *) PG_GETARG_POINTER(0);
     text *pattern = PG_GETARG_TEXT_P(1);
@@ -976,7 +976,7 @@ kmersearch_dna2_like(PG_FUNCTION_ARGS)
     char *dna_string = kmersearch_dna2_to_string(dna);
     char *pattern_string = text_to_cstring(pattern);
     
-    /* Simple pattern matching - in reality this would use the GIN index */
+    /* Simple pattern matching - in reality this would use k-mer similarity scoring */
     bool result = (strstr(dna_string, pattern_string) != NULL);
     
     pfree(dna_string);
@@ -986,10 +986,10 @@ kmersearch_dna2_like(PG_FUNCTION_ARGS)
 }
 
 /*
- * DNA4 LIKE operator
+ * DNA4 =% operator for k-mer search
  */
 Datum
-kmersearch_dna4_like(PG_FUNCTION_ARGS)
+kmersearch_dna4_match(PG_FUNCTION_ARGS)
 {
     kmersearch_dna4 *dna = (kmersearch_dna4 *) PG_GETARG_POINTER(0);
     text *pattern = PG_GETARG_TEXT_P(1);
@@ -997,7 +997,7 @@ kmersearch_dna4_like(PG_FUNCTION_ARGS)
     char *dna_string = kmersearch_dna4_to_string(dna);
     char *pattern_string = text_to_cstring(pattern);
     
-    /* Simple pattern matching - in reality this would use the GIN index */
+    /* Simple pattern matching - in reality this would use k-mer similarity scoring */
     bool result = (strstr(dna_string, pattern_string) != NULL);
     
     pfree(dna_string);

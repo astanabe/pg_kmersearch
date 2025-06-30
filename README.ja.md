@@ -93,20 +93,21 @@ SELECT name, dna_seq FROM degenerate_sequences;
 ### k-mer検索機能の使用例
 
 ```sql
--- k=8でGINインデックスを作成（8-merを使用）
-CREATE INDEX sequences_kmer_idx ON sequences USING gin (dna_seq) WITH (k = 8);
-
--- k-mer検索（最小64塩基のクエリが必要）
-SELECT * FROM sequences 
-WHERE dna_seq LIKE 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA' 
+-- k-mer検索（=%演算子を使用）
+SELECT id, name, dna_seq,
+       kmersearch_rawscore(dna_seq, 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA') AS rawscore,
+       kmersearch_correctedscore(dna_seq, 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA') AS correctedscore
+FROM sequences 
+WHERE dna_seq =% 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA'
+ORDER BY kmersearch_rawscore(dna_seq, 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA') DESC 
 LIMIT 10;
 
--- 出現回数ビット長の設定（デフォルト8ビット）
-SELECT set_kmersearch_occur_bitlen(12); -- 12ビットに変更（最大4095回の出現をカウント）
-
 -- 縮重コードを含むクエリでの検索
-SELECT * FROM degenerate_sequences 
-WHERE dna_seq LIKE 'ATCGATCGNNATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCG' 
+SELECT id, name, dna_seq,
+       kmersearch_rawscore(dna_seq, 'ATCGATCGNNATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCG') AS rawscore
+FROM degenerate_sequences 
+WHERE dna_seq =% 'ATCGATCGNNATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCG'
+ORDER BY rawscore DESC 
 LIMIT 5;
 ```
 
@@ -147,9 +148,11 @@ SELECT show_kmersearch_min_score();
 -- 自動スコア調整による検索
 -- クエリに除外k-merが3個含まれ、min_score=50の場合、
 -- そのクエリでは実際の閾値は47に調整される
-SELECT * FROM sequences 
-WHERE dna_seq LIKE 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA'
-ORDER BY score DESC LIMIT 10;
+SELECT id, name, dna_seq,
+       kmersearch_rawscore(dna_seq, 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA') AS rawscore
+FROM sequences 
+WHERE dna_seq =% 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA'
+ORDER BY rawscore DESC LIMIT 10;
 ```
 
 ### スコア計算関数
@@ -161,24 +164,24 @@ ORDER BY score DESC LIMIT 10;
 SELECT id, name, dna_seq,
        kmersearch_rawscore(dna_seq, 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA') AS rawscore
 FROM sequences 
-WHERE dna_seq LIKE 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA'
+WHERE dna_seq =% 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA'
 ORDER BY rawscore DESC 
 LIMIT 10;
 
 -- 修正スコア（除外k-merを考慮）を取得
 SELECT id, name, dna_seq,
-       kmersearch_rawscore(dna_seq, 'ATCG...') AS raw_score,
-       kmersearch_correctedscore(dna_seq, 'ATCG...') AS corrected_score
+       kmersearch_rawscore(dna_seq, 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA') AS raw_score,
+       kmersearch_correctedscore(dna_seq, 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA') AS corrected_score
 FROM sequences 
-WHERE dna_seq LIKE 'ATCG...'
+WHERE dna_seq =% 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA'
 ORDER BY corrected_score DESC;
 
 -- DNA2型とDNA4型両方の例
-SELECT 'DNA2' as type, id, kmersearch_rawscore(dna2_seq, 'ATCG...') AS score
-FROM dna2_table WHERE dna2_seq LIKE 'ATCG...'
+SELECT 'DNA2' as type, id, kmersearch_rawscore(dna2_seq, 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA') AS score
+FROM dna2_table WHERE dna2_seq =% 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA'
 UNION ALL
-SELECT 'DNA4' as type, id, kmersearch_rawscore(dna4_seq, 'ATCG...') AS score  
-FROM dna4_table WHERE dna4_seq LIKE 'ATCG...'
+SELECT 'DNA4' as type, id, kmersearch_rawscore(dna4_seq, 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA') AS score  
+FROM dna4_table WHERE dna4_seq =% 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA'
 ORDER BY score DESC;
 ```
 
