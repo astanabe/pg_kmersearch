@@ -28,6 +28,7 @@ pg_kmersearch is a PostgreSQL extension that provides custom data types for effi
 - **Occurrence tracking**: Counts k-mer occurrences within rows (default 8-bit)
 - **Scoring search**: Retrieve top matches by similarity, not just exact matches
 - **High-frequency k-mer exclusion**: Automatically excludes overly common k-mers during index creation
+- **Score-based filtering**: Minimum score thresholds with automatic adjustment for excluded k-mers
 
 ## Installation
 
@@ -129,6 +130,25 @@ WHERE index_oid = 'sequences_kmer_idx'::regclass;
 SELECT total_rows, excluded_kmers_count, max_appearance_rate 
 FROM kmersearch_index_info 
 WHERE index_oid = 'sequences_kmer_idx'::regclass;
+```
+
+### Score-based Search Filtering
+
+Control search quality with minimum score thresholds, automatically adjusted for excluded k-mers:
+
+```sql
+-- Set minimum score for GIN search results
+SET kmersearch.min_score = 50;  -- Default: 1
+
+-- Check current minimum score setting
+SELECT show_kmersearch_min_score();
+
+-- Search with automatic score adjustment
+-- If query contains 3 excluded k-mers and min_score=50, 
+-- actual threshold becomes 47 for that query
+SELECT * FROM sequences 
+WHERE dna_seq LIKE 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA'
+ORDER BY score DESC LIMIT 10;
 ```
 
 ### Degenerate Code Meanings

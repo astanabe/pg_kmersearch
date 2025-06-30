@@ -146,3 +146,9 @@ CREATE FUNCTION kmersearch_get_excluded_kmers(index_oid oid)
     RETURNS varbit[]
     AS 'MODULE_PATHNAME', 'kmersearch_get_excluded_kmers'
     LANGUAGE C STABLE STRICT;
+
+-- Show minimum score function
+CREATE FUNCTION show_kmersearch_min_score() 
+    RETURNS integer
+    AS 'MODULE_PATHNAME', 'show_kmersearch_min_score'
+    LANGUAGE C STABLE;

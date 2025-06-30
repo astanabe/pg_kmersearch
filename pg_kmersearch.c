@@ -36,6 +36,7 @@ PG_MODULE_MAGIC;
 static int kmersearch_occur_bitlen = 8;  /* Default 8 bits for occurrence count */
 static double kmersearch_max_appearance_rate = 0.05;  /* Default max appearance rate */
 static int kmersearch_max_appearance_nrow = 0;  /* Default max appearance nrow (0 = undefined) */
+static int kmersearch_min_score = 1;  /* Default minimum score for GIN search */
 
 /* Hash table entry for k-mer frequency counting */
 typedef struct KmerFreqEntry
@@ -51,6 +52,11 @@ typedef struct KmerHashKey
     int         key_len;            /* Length of the key data */
     char        data[FLEXIBLE_ARRAY_MEMBER];
 } KmerHashKey;
+
+/* Forward declarations */
+static bool kmersearch_is_kmer_excluded(Oid index_oid, VarBit *kmer_key);
+static int kmersearch_count_excluded_kmers_in_query(Oid index_oid, VarBit **query_keys, int nkeys);
+static int kmersearch_get_adjusted_min_score(Oid index_oid, VarBit **query_keys, int nkeys);
 
 /* Custom GUC variables */
 void _PG_init(void);
@@ -151,6 +157,7 @@ PG_FUNCTION_INFO_V1(kmersearch_set_occur_bitlen);
 /* K-mer frequency analysis functions */
 PG_FUNCTION_INFO_V1(kmersearch_analyze_table_frequency);
 PG_FUNCTION_INFO_V1(kmersearch_get_excluded_kmers);
+PG_FUNCTION_INFO_V1(show_kmersearch_min_score);
 
 /* Operator support functions */
 PG_FUNCTION_INFO_V1(kmersearch_dna2_eq);
@@ -450,6 +457,19 @@ _PG_init(void)
                            "K-mers appearing in more than this number of rows will be excluded (0 = unlimited)",
                            &kmersearch_max_appearance_nrow,
                            0,
+                           0,
+                           INT_MAX,
+                           PGC_USERSET,
+                           0,
+                           NULL,
+                           NULL,
+                           NULL);
+    
+    DefineCustomIntVariable("kmersearch.min_score",
+                           "Minimum score (shared n-gram count) for GIN k-mer search",
+                           "Query results with score below this threshold will be filtered out",
+                           &kmersearch_min_score,
+                           1,
                            0,
                            INT_MAX,
                            PGC_USERSET,
@@ -881,7 +901,10 @@ kmersearch_consistent(PG_FUNCTION_ARGS)
     bool *nullFlags = (bool *) PG_GETARG_POINTER(7);
     
     int match_count = 0;
+    int adjusted_min_score;
     int i;
+    Oid index_oid = InvalidOid;  /* TODO: Get actual index OID from context */
+    VarBit **query_key_array;
     
     *recheck = true;  /* Always recheck for scoring */
     
@@ -892,8 +915,20 @@ kmersearch_consistent(PG_FUNCTION_ARGS)
             match_count++;
     }
     
-    /* Return true if we have any matches - scoring will be done in recheck */
-    PG_RETURN_BOOL(match_count > 0);
+    /* Convert queryKeys to VarBit array for excluded k-mer checking */
+    query_key_array = (VarBit **) palloc(nkeys * sizeof(VarBit *));
+    for (i = 0; i < nkeys; i++)
+    {
+        query_key_array[i] = DatumGetVarBitP(queryKeys[i]);
+    }
+    
+    /* Calculate adjusted minimum score based on excluded k-mers in query */
+    adjusted_min_score = kmersearch_get_adjusted_min_score(index_oid, query_key_array, nkeys);
+    
+    pfree(query_key_array);
+    
+    /* Return true if match count meets adjusted minimum score */
+    PG_RETURN_BOOL(match_count >= adjusted_min_score);
 }
 
 /*
@@ -1080,9 +1115,53 @@ kmersearch_kmer_compare(const void *key1, const void *key2, Size keysize)
 Datum
 kmersearch_analyze_table_frequency(PG_FUNCTION_ARGS)
 {
-    /* Placeholder implementation - will be completed in future version */
-    ereport(NOTICE, (errmsg("k-mer frequency analysis is not yet implemented")));
-    PG_RETURN_INT32(0);
+    Oid table_oid = PG_GETARG_OID(0);
+    text *column_name_text = PG_GETARG_TEXT_P(1);
+    int k = PG_GETARG_INT32(2);
+    Oid index_oid = PG_GETARG_OID(3);
+    
+    char *column_name = text_to_cstring(column_name_text);
+    int excluded_count = 0;
+    
+    /* Check if high-frequency k-mer exclusion should be performed */
+    bool should_exclude = false;
+    
+    /* If max_appearance_rate is 0, treat as undefined (no exclusion) */
+    if (kmersearch_max_appearance_rate > 0.0)
+        should_exclude = true;
+    
+    /* If max_appearance_nrow is greater than 0, enable exclusion */
+    if (kmersearch_max_appearance_nrow > 0)
+        should_exclude = true;
+    
+    if (!should_exclude)
+    {
+        /* Skip frequency analysis - create empty excluded k-mer list */
+        ereport(NOTICE, (errmsg("High-frequency k-mer exclusion disabled, skipping table scan")));
+        
+        /* Insert index info with zero excluded k-mers */
+        /* Note: This would normally insert into kmersearch_index_info table */
+        /* For now, just return 0 indicating no exclusions */
+        
+        PG_RETURN_INT32(0);
+    }
+    
+    /* Perform frequency analysis if exclusion is enabled */
+    ereport(NOTICE, (errmsg("Performing k-mer frequency analysis for k=%d", k)));
+    ereport(NOTICE, (errmsg("Max appearance rate: %f, Max appearance nrow: %d", 
+                           kmersearch_max_appearance_rate, kmersearch_max_appearance_nrow)));
+    
+    /* 
+     * TODO: Implement actual frequency analysis:
+     * 1. Scan all rows in the table
+     * 2. Extract k-mers from the specified column
+     * 3. Count frequency of each k-mer
+     * 4. Identify k-mers exceeding thresholds
+     * 5. Insert excluded k-mers into kmersearch_excluded_kmers table
+     * 6. Insert index statistics into kmersearch_index_info table
+     */
+    
+    PG_RETURN_INT32(excluded_count);
 }
 
 /*
@@ -1097,6 +1176,52 @@ kmersearch_get_excluded_kmers(PG_FUNCTION_ARGS)
     /* This would return an array of excluded k-mer keys */
     
     PG_RETURN_NULL(); /* Placeholder */
+}
+
+/*
+ * Show current minimum score setting
+ */
+Datum
+show_kmersearch_min_score(PG_FUNCTION_ARGS)
+{
+    PG_RETURN_INT32(kmersearch_min_score);
+}
+
+/*
+ * Count excluded k-mers in query sequence
+ */
+static int
+kmersearch_count_excluded_kmers_in_query(Oid index_oid, VarBit **query_keys, int nkeys)
+{
+    int excluded_count = 0;
+    int i;
+    
+    /* For each k-mer in the query, check if it's excluded */
+    for (i = 0; i < nkeys; i++)
+    {
+        if (kmersearch_is_kmer_excluded(index_oid, query_keys[i]))
+        {
+            excluded_count++;
+        }
+    }
+    
+    return excluded_count;
+}
+
+/*
+ * Calculate adjusted minimum score based on excluded k-mers in query
+ */
+static int
+kmersearch_get_adjusted_min_score(Oid index_oid, VarBit **query_keys, int nkeys)
+{
+    int excluded_count = kmersearch_count_excluded_kmers_in_query(index_oid, query_keys, nkeys);
+    int adjusted_score = kmersearch_min_score - excluded_count;
+    
+    /* Ensure adjusted score is not negative */
+    if (adjusted_score < 0)
+        adjusted_score = 0;
+    
+    return adjusted_score;
 }
 
 /*

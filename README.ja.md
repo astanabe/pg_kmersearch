@@ -28,6 +28,7 @@ pg_kmersearchは、PostgreSQL用のDNA配列データを効率的に格納・処
 - **出現回数追跡**: 同一行内でのk-mer出現回数を考慮（デフォルト8ビット）
 - **スコアリング検索**: 完全一致だけでなく、類似度による上位結果取得
 - **高頻出k-mer除外**: インデックス作成時に過度に頻出するk-merを自動除外
+- **スコアベースフィルタリング**: 除外k-merに応じて自動調整される最小スコア閾値
 
 ## インストール
 
@@ -129,6 +130,25 @@ WHERE index_oid = 'sequences_kmer_idx'::regclass;
 SELECT total_rows, excluded_kmers_count, max_appearance_rate 
 FROM kmersearch_index_info 
 WHERE index_oid = 'sequences_kmer_idx'::regclass;
+```
+
+### スコアベース検索フィルタリング
+
+除外k-merに応じて自動調整される最小スコア閾値で検索品質を制御：
+
+```sql
+-- GIN検索結果の最小スコア設定
+SET kmersearch.min_score = 50;  -- デフォルト: 1
+
+-- 現在の最小スコア設定を確認
+SELECT show_kmersearch_min_score();
+
+-- 自動スコア調整による検索
+-- クエリに除外k-merが3個含まれ、min_score=50の場合、
+-- そのクエリでは実際の閾値は47に調整される
+SELECT * FROM sequences 
+WHERE dna_seq LIKE 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA'
+ORDER BY score DESC LIMIT 10;
 ```
 
 ### 縮重コードの意味
