@@ -34,6 +34,7 @@ PG_MODULE_MAGIC;
 
 /* Global variables for k-mer search configuration */
 static int kmersearch_occur_bitlen = 8;  /* Default 8 bits for occurrence count */
+static int kmersearch_kmer_size = 8;  /* Default k-mer size */
 static double kmersearch_max_appearance_rate = 0.05;  /* Default max appearance rate */
 static int kmersearch_max_appearance_nrow = 0;  /* Default max appearance nrow (0 = undefined) */
 static int kmersearch_min_score = 1;  /* Default minimum score for GIN search */
@@ -160,12 +161,10 @@ PG_FUNCTION_INFO_V1(kmersearch_consistent);
 PG_FUNCTION_INFO_V1(kmersearch_compare_partial);
 PG_FUNCTION_INFO_V1(kmersearch_dna2_match);
 PG_FUNCTION_INFO_V1(kmersearch_dna4_match);
-PG_FUNCTION_INFO_V1(kmersearch_set_occur_bitlen);
 
 /* K-mer frequency analysis functions */
 PG_FUNCTION_INFO_V1(kmersearch_analyze_table_frequency);
 PG_FUNCTION_INFO_V1(kmersearch_get_excluded_kmers);
-PG_FUNCTION_INFO_V1(show_kmersearch_min_score);
 
 /* Score calculation functions */
 PG_FUNCTION_INFO_V1(kmersearch_rawscore);
@@ -198,7 +197,7 @@ kmersearch_dna2_in(PG_FUNCTION_ARGS)
     int input_len = strlen(input_string);
     int bit_len = input_len * 2;  /* 2 bits per character */
     int byte_len = (bit_len + 7) / 8;  /* Round up to bytes */
-    kmersearch_dna2 *result;
+    VarBit *result;
     bits8 *data_ptr;
     int i;
     
@@ -215,14 +214,12 @@ kmersearch_dna2_in(PG_FUNCTION_ARGS)
     }
     
     /* Allocate result */
-    result = (kmersearch_dna2 *) palloc0(VARHDRSZ + sizeof(int32) + byte_len);
+    result = (VarBit *) palloc0(VARHDRSZ + sizeof(int32) + byte_len);
     SET_VARSIZE(result, VARHDRSZ + sizeof(int32) + byte_len);
-    
-    /* Set bit length */
-    *((int32 *) result->data) = bit_len;
+    VARBITLEN(result) = bit_len;
     
     /* Encode sequence */
-    data_ptr = result->data + sizeof(int32);
+    data_ptr = VARBITS(result);
     for (i = 0; i < input_len; i++)
     {
         uint8 encoded = kmersearch_dna2_encode_table[(unsigned char)input_string[i]];
@@ -233,7 +230,7 @@ kmersearch_dna2_in(PG_FUNCTION_ARGS)
         data_ptr[byte_pos] |= (encoded << (6 - bit_offset));
     }
     
-    PG_RETURN_POINTER(result);
+    PG_RETURN_VARBIT_P(result);
 }
 
 /*
@@ -242,12 +239,21 @@ kmersearch_dna2_in(PG_FUNCTION_ARGS)
 Datum
 kmersearch_dna2_out(PG_FUNCTION_ARGS)
 {
-    kmersearch_dna2 *dna = (kmersearch_dna2 *) PG_GETARG_POINTER(0);
-    int32 bit_len = *((int32 *) dna->data);
+    VarBit *dna = PG_GETARG_VARBIT_P(0);
+    int32 bit_len = VARBITLEN(dna);
     int char_len = bit_len / 2;
     char *result;
-    bits8 *data_ptr = dna->data + sizeof(int32);
+    bits8 *data_ptr = VARBITS(dna);
     int i;
+    
+    if (dna == NULL)
+        ereport(ERROR, (errmsg("input DNA sequence is NULL")));
+    
+    if (bit_len < 0)
+        ereport(ERROR, (errmsg("invalid bit length: %d", bit_len)));
+    
+    if (bit_len % 2 != 0)
+        ereport(ERROR, (errmsg("bit length must be even for DNA2")));
     
     result = (char *) palloc(char_len + 1);
     
@@ -271,20 +277,20 @@ Datum
 kmersearch_dna2_recv(PG_FUNCTION_ARGS)
 {
     StringInfo buf = (StringInfo) PG_GETARG_POINTER(0);
-    kmersearch_dna2 *result;
+    VarBit *result;
     int32 bit_len;
     int byte_len;
     
     bit_len = pq_getmsgint(buf, sizeof(int32));
     byte_len = (bit_len + 7) / 8;
     
-    result = (kmersearch_dna2 *) palloc(VARHDRSZ + sizeof(int32) + byte_len);
+    result = (VarBit *) palloc(VARHDRSZ + sizeof(int32) + byte_len);
     SET_VARSIZE(result, VARHDRSZ + sizeof(int32) + byte_len);
+    VARBITLEN(result) = bit_len;
     
-    *((int32 *) result->data) = bit_len;
-    pq_copymsgbytes(buf, (char *) (result->data + sizeof(int32)), byte_len);
+    pq_copymsgbytes(buf, (char *) VARBITS(result), byte_len);
     
-    PG_RETURN_POINTER(result);
+    PG_RETURN_VARBIT_P(result);
 }
 
 /*
@@ -293,14 +299,14 @@ kmersearch_dna2_recv(PG_FUNCTION_ARGS)
 Datum
 kmersearch_dna2_send(PG_FUNCTION_ARGS)
 {
-    kmersearch_dna2 *dna = (kmersearch_dna2 *) PG_GETARG_POINTER(0);
+    VarBit *dna = PG_GETARG_VARBIT_P(0);
     StringInfoData buf;
-    int32 bit_len = *((int32 *) dna->data);
+    int32 bit_len = VARBITLEN(dna);
     int byte_len = (bit_len + 7) / 8;
     
     pq_begintypsend(&buf);
     pq_sendint32(&buf, bit_len);
-    pq_sendbytes(&buf, (char *) (dna->data + sizeof(int32)), byte_len);
+    pq_sendbytes(&buf, (char *) VARBITS(dna), byte_len);
     
     PG_RETURN_BYTEA_P(pq_endtypsend(&buf));
 }
@@ -315,7 +321,7 @@ kmersearch_dna4_in(PG_FUNCTION_ARGS)
     int input_len = strlen(input_string);
     int bit_len = input_len * 4;  /* 4 bits per character */
     int byte_len = (bit_len + 7) / 8;  /* Round up to bytes */
-    kmersearch_dna4 *result;
+    VarBit *result;
     bits8 *data_ptr;
     int i;
     
@@ -332,14 +338,12 @@ kmersearch_dna4_in(PG_FUNCTION_ARGS)
     }
     
     /* Allocate result */
-    result = (kmersearch_dna4 *) palloc0(VARHDRSZ + sizeof(int32) + byte_len);
+    result = (VarBit *) palloc0(VARHDRSZ + sizeof(int32) + byte_len);
     SET_VARSIZE(result, VARHDRSZ + sizeof(int32) + byte_len);
-    
-    /* Set bit length */
-    *((int32 *) result->data) = bit_len;
+    VARBITLEN(result) = bit_len;
     
     /* Encode sequence */
-    data_ptr = result->data + sizeof(int32);
+    data_ptr = VARBITS(result);
     for (i = 0; i < input_len; i++)
     {
         uint8 encoded = kmersearch_dna4_encode_table[(unsigned char)input_string[i]];
@@ -359,7 +363,7 @@ kmersearch_dna4_in(PG_FUNCTION_ARGS)
         }
     }
     
-    PG_RETURN_POINTER(result);
+    PG_RETURN_VARBIT_P(result);
 }
 
 /*
@@ -368,12 +372,21 @@ kmersearch_dna4_in(PG_FUNCTION_ARGS)
 Datum
 kmersearch_dna4_out(PG_FUNCTION_ARGS)
 {
-    kmersearch_dna4 *dna = (kmersearch_dna4 *) PG_GETARG_POINTER(0);
-    int32 bit_len = *((int32 *) dna->data);
+    VarBit *dna = PG_GETARG_VARBIT_P(0);
+    int32 bit_len = VARBITLEN(dna);
     int char_len = bit_len / 4;
     char *result;
-    bits8 *data_ptr = dna->data + sizeof(int32);
+    bits8 *data_ptr = VARBITS(dna);
     int i;
+    
+    if (dna == NULL)
+        ereport(ERROR, (errmsg("input DNA sequence is NULL")));
+    
+    if (bit_len < 0)
+        ereport(ERROR, (errmsg("invalid bit length: %d", bit_len)));
+    
+    if (bit_len % 4 != 0)
+        ereport(ERROR, (errmsg("bit length must be multiple of 4 for DNA4")));
     
     result = (char *) palloc(char_len + 1);
     
@@ -410,20 +423,20 @@ Datum
 kmersearch_dna4_recv(PG_FUNCTION_ARGS)
 {
     StringInfo buf = (StringInfo) PG_GETARG_POINTER(0);
-    kmersearch_dna4 *result;
+    VarBit *result;
     int32 bit_len;
     int byte_len;
     
     bit_len = pq_getmsgint(buf, sizeof(int32));
     byte_len = (bit_len + 7) / 8;
     
-    result = (kmersearch_dna4 *) palloc(VARHDRSZ + sizeof(int32) + byte_len);
+    result = (VarBit *) palloc(VARHDRSZ + sizeof(int32) + byte_len);
     SET_VARSIZE(result, VARHDRSZ + sizeof(int32) + byte_len);
+    VARBITLEN(result) = bit_len;
     
-    *((int32 *) result->data) = bit_len;
-    pq_copymsgbytes(buf, (char *) (result->data + sizeof(int32)), byte_len);
+    pq_copymsgbytes(buf, (char *) VARBITS(result), byte_len);
     
-    PG_RETURN_POINTER(result);
+    PG_RETURN_VARBIT_P(result);
 }
 
 /*
@@ -432,14 +445,14 @@ kmersearch_dna4_recv(PG_FUNCTION_ARGS)
 Datum
 kmersearch_dna4_send(PG_FUNCTION_ARGS)
 {
-    kmersearch_dna4 *dna = (kmersearch_dna4 *) PG_GETARG_POINTER(0);
+    VarBit *dna = PG_GETARG_VARBIT_P(0);
     StringInfoData buf;
-    int32 bit_len = *((int32 *) dna->data);
+    int32 bit_len = VARBITLEN(dna);
     int byte_len = (bit_len + 7) / 8;
     
     pq_begintypsend(&buf);
     pq_sendint32(&buf, bit_len);
-    pq_sendbytes(&buf, (char *) (dna->data + sizeof(int32)), byte_len);
+    pq_sendbytes(&buf, (char *) VARBITS(dna), byte_len);
     
     PG_RETURN_BYTEA_P(pq_endtypsend(&buf));
 }
@@ -489,6 +502,32 @@ _PG_init(void)
                            NULL,
                            NULL,
                            NULL);
+    
+    DefineCustomIntVariable("kmersearch.occur_bitlen",
+                           "Number of bits used for occurrence count in k-mer index",
+                           "Controls the maximum occurrence count that can be stored (0-16 bits)",
+                           &kmersearch_occur_bitlen,
+                           8,
+                           0,
+                           16,
+                           PGC_USERSET,
+                           0,
+                           NULL,
+                           NULL,
+                           NULL);
+    
+    DefineCustomIntVariable("kmersearch.kmer_size",
+                           "K-mer size used for index creation and search",
+                           "Length of k-mer sequences for similarity matching (4-64)",
+                           &kmersearch_kmer_size,
+                           8,
+                           4,
+                           64,
+                           PGC_USERSET,
+                           0,
+                           NULL,
+                           NULL,
+                           NULL);
 }
 
 /*
@@ -520,12 +559,12 @@ kmersearch_set_bit_at(bits8 *data, int bit_pos, uint8 value)
  * Convert DNA2 sequence to string
  */
 static char *
-kmersearch_dna2_to_string(kmersearch_dna2 *dna)
+kmersearch_dna2_to_string(VarBit *dna)
 {
-    int32 bit_len = *((int32 *) dna->data);
+    int32 bit_len = VARBITLEN(dna);
     int char_len = bit_len / 2;
     char *result;
-    bits8 *data_ptr = dna->data + sizeof(int32);
+    bits8 *data_ptr = VARBITS(dna);
     int i;
     
     result = (char *) palloc(char_len + 1);
@@ -547,12 +586,12 @@ kmersearch_dna2_to_string(kmersearch_dna2 *dna)
  * Convert DNA4 sequence to string
  */
 static char *
-kmersearch_dna4_to_string(kmersearch_dna4 *dna)
+kmersearch_dna4_to_string(VarBit *dna)
 {
-    int32 bit_len = *((int32 *) dna->data);
+    int32 bit_len = VARBITLEN(dna);
     int char_len = bit_len / 4;
     char *result;
-    bits8 *data_ptr = dna->data + sizeof(int32);
+    bits8 *data_ptr = VARBITS(dna);
     int i;
     
     result = (char *) palloc(char_len + 1);
@@ -824,12 +863,12 @@ kmersearch_extract_value(PG_FUNCTION_ARGS)
     Datum *keys;
     char *sequence;
     int seq_len;
-    int k = 8;  /* Default k-mer length - will be retrieved from index metadata */
+    int k = kmersearch_kmer_size;  /* k-mer length from GUC variable */
     
     if (k < 4 || k > 64)
         ereport(ERROR, (errmsg("k-mer length must be between 4 and 64")));
     
-    sequence = kmersearch_dna2_to_string(dna);
+    sequence = kmersearch_dna2_to_string((VarBit *)dna);
     seq_len = strlen(sequence);
     
     keys = kmersearch_extract_kmers(sequence, seq_len, k, nkeys);
@@ -854,12 +893,12 @@ kmersearch_extract_value_dna4(PG_FUNCTION_ARGS)
     Datum *keys;
     char *sequence;
     int seq_len;
-    int k = 8;  /* Default k-mer length - will be retrieved from index metadata */
+    int k = kmersearch_kmer_size;  /* k-mer length from GUC variable */
     
     if (k < 4 || k > 64)
         ereport(ERROR, (errmsg("k-mer length must be between 4 and 64")));
     
-    sequence = kmersearch_dna4_to_string(dna);
+    sequence = kmersearch_dna4_to_string((VarBit *)dna);
     seq_len = strlen(sequence);
     
     keys = kmersearch_extract_kmers_with_degenerate(sequence, seq_len, k, nkeys);
@@ -1012,15 +1051,15 @@ kmersearch_extract_query(PG_FUNCTION_ARGS)
     Pointer **extra_data = (Pointer **) PG_GETARG_POINTER(4);
     bool **nullFlags = (bool **) PG_GETARG_POINTER(5);
     int32 *searchMode = (int32 *) PG_GETARG_POINTER(6);
-    int k = PG_GETARG_INT32(7);  /* k-mer length from index definition */
+    int k = kmersearch_kmer_size;  /* k-mer length from GUC variable */
     
     text *query_text = DatumGetTextP(query);
     char *query_string = text_to_cstring(query_text);
     int query_len = strlen(query_string);
     Datum *keys;
     
-    if (query_len < 64)
-        ereport(ERROR, (errmsg("Query sequence must be at least 64 bases long")));
+    if (query_len < 8)
+        ereport(ERROR, (errmsg("Query sequence must be at least 8 bases long")));
     
     if (k < 4 || k > 64)
         ereport(ERROR, (errmsg("k-mer length must be between 4 and 64")));
@@ -1117,7 +1156,7 @@ kmersearch_compare_partial(PG_FUNCTION_ARGS)
 Datum
 kmersearch_dna2_match(PG_FUNCTION_ARGS)
 {
-    kmersearch_dna2 *dna = (kmersearch_dna2 *) PG_GETARG_POINTER(0);
+    VarBit *dna = PG_GETARG_VARBIT_P(0);
     text *pattern = PG_GETARG_TEXT_P(1);
     
     char *dna_string = kmersearch_dna2_to_string(dna);
@@ -1138,7 +1177,7 @@ kmersearch_dna2_match(PG_FUNCTION_ARGS)
 Datum
 kmersearch_dna4_match(PG_FUNCTION_ARGS)
 {
-    kmersearch_dna4 *dna = (kmersearch_dna4 *) PG_GETARG_POINTER(0);
+    VarBit *dna = PG_GETARG_VARBIT_P(0);
     text *pattern = PG_GETARG_TEXT_P(1);
     
     char *dna_string = kmersearch_dna4_to_string(dna);
@@ -1153,21 +1192,6 @@ kmersearch_dna4_match(PG_FUNCTION_ARGS)
     PG_RETURN_BOOL(result);
 }
 
-/*
- * Set occurrence bit length
- */
-Datum
-kmersearch_set_occur_bitlen(PG_FUNCTION_ARGS)
-{
-    int32 bitlen = PG_GETARG_INT32(0);
-    
-    if (bitlen < 0 || bitlen > 16)
-        ereport(ERROR, (errmsg("occurrence bit length must be between 0 and 16")));
-    
-    kmersearch_occur_bitlen = bitlen;
-    
-    PG_RETURN_INT32(bitlen);
-}
 
 /*
  * DNA2 equality operator
@@ -1219,8 +1243,8 @@ kmersearch_create_kmer_key_only(const char *kmer, int k)
     bits8 *data_ptr;
     int i;
     
-    result = (VarBit *) palloc0(VARBITHDRSZ + total_bytes);
-    SET_VARSIZE(result, VARBITHDRSZ + total_bytes);
+    result = (VarBit *) palloc0(VARHDRSZ + sizeof(int32) + total_bytes);
+    SET_VARSIZE(result, VARHDRSZ + sizeof(int32) + total_bytes);
     VARBITLEN(result) = kmer_bits;
     
     data_ptr = VARBITS(result);
@@ -1333,14 +1357,6 @@ kmersearch_get_excluded_kmers(PG_FUNCTION_ARGS)
     PG_RETURN_NULL(); /* Placeholder */
 }
 
-/*
- * Show current minimum score setting
- */
-Datum
-show_kmersearch_min_score(PG_FUNCTION_ARGS)
-{
-    PG_RETURN_INT32(kmersearch_min_score);
-}
 
 /*
  * Count excluded k-mers in query sequence
@@ -1387,7 +1403,7 @@ kmersearch_calculate_raw_score(VarBit *seq1, VarBit *seq2, text *query_text)
 {
     char *query_string = text_to_cstring(query_text);
     int query_len = strlen(query_string);
-    int k = 8;  /* Default k-mer length, should be configurable */
+    int k = kmersearch_kmer_size;  /* k-mer length from GUC variable */
     int score = 0;
     VarBit **seq1_keys, **seq2_keys;
     int seq1_nkeys, seq2_nkeys;
@@ -1438,7 +1454,7 @@ static int
 kmersearch_count_mutual_excluded_kmers(VarBit *seq1, VarBit *seq2, text *query_text, Oid index_oid)
 {
     char *query_string = text_to_cstring(query_text);
-    int k = 8;  /* Default k-mer length */
+    int k = kmersearch_kmer_size;  /* k-mer length from GUC variable */
     int mutual_excluded = 0;
     VarBit **seq1_keys, **seq2_keys;
     int seq1_nkeys, seq2_nkeys;
@@ -1496,7 +1512,8 @@ kmersearch_extract_kmers_from_varbit(VarBit *seq, int k, int *nkeys)
     int max_kmers = (seq_bases >= k) ? (seq_bases - k + 1) : 0;
     VarBit **keys;
     int key_count = 0;
-    int i;
+    int i, j;
+    bits8 *seq_data = VARBITS(seq);
     
     *nkeys = 0;
     if (max_kmers <= 0)
@@ -1509,13 +1526,30 @@ kmersearch_extract_kmers_from_varbit(VarBit *seq, int k, int *nkeys)
     {
         int kmer_bits = k * 2;
         int kmer_bytes = (kmer_bits + 7) / 8;
-        VarBit *kmer_key = (VarBit *) palloc0(VARBITHDRSZ + kmer_bytes);
+        VarBit *kmer_key = (VarBit *) palloc0(VARHDRSZ + sizeof(int32) + kmer_bytes);
+        bits8 *kmer_data;
         
-        SET_VARSIZE(kmer_key, VARBITHDRSZ + kmer_bytes);
+        SET_VARSIZE(kmer_key, VARHDRSZ + sizeof(int32) + kmer_bytes);
         VARBITLEN(kmer_key) = kmer_bits;
+        kmer_data = VARBITS(kmer_key);
         
         /* Copy k-mer bits from sequence */
-        /* This is a simplified implementation - would need proper bit manipulation */
+        for (j = 0; j < k; j++)
+        {
+            int src_bit_pos = (i + j) * 2;
+            int dst_bit_pos = j * 2;
+            int src_byte_pos = src_bit_pos / 8;
+            int src_bit_offset = src_bit_pos % 8;
+            int dst_byte_pos = dst_bit_pos / 8;
+            int dst_bit_offset = dst_bit_pos % 8;
+            
+            /* Extract 2 bits from source */
+            uint8 base_bits = (seq_data[src_byte_pos] >> (6 - src_bit_offset)) & 0x3;
+            
+            /* Store 2 bits in destination */
+            kmer_data[dst_byte_pos] |= (base_bits << (6 - dst_bit_offset));
+        }
+        
         keys[key_count++] = kmer_key;
     }
     

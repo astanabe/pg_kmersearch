@@ -128,8 +128,8 @@ CREATE FUNCTION kmersearch_consistent(internal, int2, text, int4, internal, inte
 -- GIN operator classes for DNA2 and DNA4
 CREATE OPERATOR CLASS kmersearch_dna2_gin_ops
     DEFAULT FOR TYPE dna2 USING gin AS
-        OPERATOR 1 =%,
-        FUNCTION 1 varbit_cmp(varbit, varbit),
+        OPERATOR 1 =% (dna2, text),
+        FUNCTION 1 varbitcmp(varbit, varbit),
         FUNCTION 2 kmersearch_extract_value(dna2, internal),
         FUNCTION 3 kmersearch_extract_query(text, internal, int2, internal, internal),
         FUNCTION 4 kmersearch_consistent(internal, int2, text, int4, internal, internal),
@@ -137,17 +137,13 @@ CREATE OPERATOR CLASS kmersearch_dna2_gin_ops
 
 CREATE OPERATOR CLASS kmersearch_dna4_gin_ops
     DEFAULT FOR TYPE dna4 USING gin AS
-        OPERATOR 1 =%,
-        FUNCTION 1 varbit_cmp(varbit, varbit),
+        OPERATOR 1 =% (dna4, text),
+        FUNCTION 1 varbitcmp(varbit, varbit),
         FUNCTION 2 kmersearch_extract_value_dna4(dna4, internal),
         FUNCTION 3 kmersearch_extract_query(text, internal, int2, internal, internal),
         FUNCTION 4 kmersearch_consistent(internal, int2, text, int4, internal, internal),
         STORAGE varbit;
 
--- Configuration function
-CREATE FUNCTION set_kmersearch_occur_bitlen(integer) RETURNS integer
-    AS 'MODULE_PATHNAME', 'kmersearch_set_occur_bitlen'
-    LANGUAGE C IMMUTABLE STRICT;
 
 -- System table for storing excluded k-mers
 CREATE TABLE kmersearch_excluded_kmers (
@@ -183,11 +179,6 @@ CREATE FUNCTION kmersearch_get_excluded_kmers(index_oid oid)
     AS 'MODULE_PATHNAME', 'kmersearch_get_excluded_kmers'
     LANGUAGE C STABLE STRICT;
 
--- Show minimum score function
-CREATE FUNCTION show_kmersearch_min_score() 
-    RETURNS integer
-    AS 'MODULE_PATHNAME', 'show_kmersearch_min_score'
-    LANGUAGE C STABLE;
 
 -- Score calculation functions
 CREATE FUNCTION kmersearch_rawscore(dna2, text) 

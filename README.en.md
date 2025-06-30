@@ -93,8 +93,11 @@ SELECT name, dna_seq FROM degenerate_sequences;
 ### K-mer Search Usage Examples
 
 ```sql
--- Create GIN index with k=8 (using 8-mers)
-CREATE INDEX sequences_kmer_idx ON sequences USING gin (dna_seq) WITH (k = 8);
+-- Configure k-mer size (default 8-mer)
+SET kmersearch.kmer_size = 8;
+
+-- Create GIN index (uses current kmersearch.kmer_size setting)
+CREATE INDEX sequences_kmer_idx ON sequences USING gin (dna_seq);
 
 -- K-mer search using =% operator
 SELECT id, name, dna_seq,
@@ -114,8 +117,24 @@ ORDER BY rawscore DESC
 LIMIT 5;
 
 -- Configure occurrence bit length (default 8-bit)
-SELECT set_kmersearch_occur_bitlen(12); -- Change to 12-bit (max 4095 occurrences)
+SET kmersearch.occur_bitlen = 12; -- Change to 12-bit (max 4095 occurrences)
+
+-- Check current configuration
+SHOW kmersearch.kmer_size;
+SHOW kmersearch.occur_bitlen;
 ```
+
+### Configuration Variables
+
+pg_kmersearch provides several configuration variables that can be set using PostgreSQL's `SET` command:
+
+| Variable | Default | Range | Description |
+|----------|---------|-------|-------------|
+| `kmersearch.kmer_size` | 8 | 4-64 | K-mer length for index creation and search |
+| `kmersearch.occur_bitlen` | 8 | 0-16 | Bits for occurrence count storage |
+| `kmersearch.max_appearance_rate` | 0.05 | 0.0-1.0 | Maximum k-mer appearance rate for indexing |
+| `kmersearch.max_appearance_nrow` | 0 | 0-∞ | Maximum rows containing k-mer (0=unlimited) |
+| `kmersearch.min_score` | 1 | 0-∞ | Minimum similarity score for search results |
 
 ### High-Frequency K-mer Exclusion
 
@@ -127,7 +146,7 @@ SET kmersearch.max_appearance_rate = 0.05;  -- Default: 5% max appearance rate
 SET kmersearch.max_appearance_nrow = 1000;  -- Default: 0 (disabled)
 
 -- Create index with frequency analysis
-CREATE INDEX sequences_kmer_idx ON sequences USING gin (dna_seq) WITH (k = 8);
+CREATE INDEX sequences_kmer_idx ON sequences USING gin (dna_seq);
 
 -- View excluded k-mers for an index
 SELECT kmer_key, frequency_count, exclusion_reason 
@@ -149,7 +168,7 @@ Control search quality with minimum score thresholds, automatically adjusted for
 SET kmersearch.min_score = 50;  -- Default: 1
 
 -- Check current minimum score setting
-SELECT show_kmersearch_min_score();
+SHOW kmersearch.min_score;
 
 -- Search with automatic score adjustment
 -- If query contains 3 excluded k-mers and min_score=50, 
@@ -239,7 +258,7 @@ ORDER BY score DESC;
 
 ## Limitations
 
-- Query sequences must be at least 64 bases long
+- Query sequences must be at least 8 bases long
 - Degenerate code expansion limited to 10 combinations (skipped if exceeded)
 - Occurrence counts capped at maximum value for configured bit length
 - Case-insensitive input, uppercase output

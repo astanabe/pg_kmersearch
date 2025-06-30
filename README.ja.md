@@ -93,8 +93,11 @@ SELECT name, dna_seq FROM degenerate_sequences;
 ### k-mer検索機能の使用例
 
 ```sql
--- k=8でGINインデックスを作成（8-merを使用）
-CREATE INDEX sequences_kmer_idx ON sequences USING gin (dna_seq) WITH (k = 8);
+-- k-merサイズを設定（デフォルト8-mer）
+SET kmersearch.kmer_size = 8;
+
+-- GINインデックスを作成（現在のkmersearch.kmer_size設定を使用）
+CREATE INDEX sequences_kmer_idx ON sequences USING gin (dna_seq);
 
 -- k-mer検索（=%演算子を使用）
 SELECT id, name, dna_seq,
@@ -114,8 +117,24 @@ ORDER BY rawscore DESC
 LIMIT 5;
 
 -- 出現回数ビット長の設定（デフォルト8ビット）
-SELECT set_kmersearch_occur_bitlen(12); -- 12ビットに変更（最大4095回の出現をカウント）
+SET kmersearch.occur_bitlen = 12; -- 12ビットに変更（最大4095回の出現をカウント）
+
+-- 現在の設定を確認
+SHOW kmersearch.kmer_size;
+SHOW kmersearch.occur_bitlen;
 ```
+
+### 設定変数
+
+pg_kmersearchは、PostgreSQLの`SET`コマンドで設定可能な複数の設定変数を提供します：
+
+| 変数名 | デフォルト値 | 範囲 | 説明 |
+|--------|-------------|------|------|
+| `kmersearch.kmer_size` | 8 | 4-64 | インデックス作成と検索のk-mer長 |
+| `kmersearch.occur_bitlen` | 8 | 0-16 | 出現回数格納のビット数 |
+| `kmersearch.max_appearance_rate` | 0.05 | 0.0-1.0 | インデックス化するk-merの最大出現率 |
+| `kmersearch.max_appearance_nrow` | 0 | 0-∞ | k-merが含まれる最大行数（0=無制限） |
+| `kmersearch.min_score` | 1 | 0-∞ | 検索結果の最小類似度スコア |
 
 ### 高頻出k-mer除外機能
 
@@ -127,7 +146,7 @@ SET kmersearch.max_appearance_rate = 0.05;  -- デフォルト: 5%の最大出�
 SET kmersearch.max_appearance_nrow = 1000;  -- デフォルト: 0（無効）
 
 -- 頻度解析付きインデックス作成
-CREATE INDEX sequences_kmer_idx ON sequences USING gin (dna_seq) WITH (k = 8);
+CREATE INDEX sequences_kmer_idx ON sequences USING gin (dna_seq);
 
 -- インデックスの除外k-mer確認
 SELECT kmer_key, frequency_count, exclusion_reason 
@@ -149,7 +168,7 @@ WHERE index_oid = 'sequences_kmer_idx'::regclass;
 SET kmersearch.min_score = 50;  -- デフォルト: 1
 
 -- 現在の最小スコア設定を確認
-SELECT show_kmersearch_min_score();
+SHOW kmersearch.min_score;
 
 -- 自動スコア調整による検索
 -- クエリに除外k-merが3個含まれ、min_score=50の場合、
@@ -239,7 +258,7 @@ ORDER BY score DESC;
 
 ## 制限事項
 
-- クエリ配列は最小64塩基が必要
+- クエリ配列は最小8塩基が必要
 - 縮重コード展開は10組み合わせまで（超過時はスキップ）
 - 出現回数は設定可能ビット長の最大値でキャップ
 - 大文字小文字は区別されず、出力時は大文字で統一
