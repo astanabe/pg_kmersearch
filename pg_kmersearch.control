@@ -1,0 +1,6 @@
+# pg_kmersearch extension control file
+comment = 'DNA sequence types with k-mer search capabilities'
+default_version = '1.0'
+module_pathname = '$libdir/pg_kmersearch'
+relocatable = true
+requires = ''
