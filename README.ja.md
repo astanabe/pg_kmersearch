@@ -27,6 +27,7 @@ pg_kmersearchは、PostgreSQL用のDNA配列データを効率的に格納・処
 - **縮重コード対応**: DNA4型でのMRWSYKVHDBN展開
 - **出現回数追跡**: 同一行内でのk-mer出現回数を考慮（デフォルト8ビット）
 - **スコアリング検索**: 完全一致だけでなく、類似度による上位結果取得
+- **高頻出k-mer除外**: インデックス作成時に過度に頻出するk-merを自動除外
 
 ## インストール
 
@@ -107,6 +108,29 @@ WHERE dna_seq LIKE 'ATCGATCGNNATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGAT
 LIMIT 5;
 ```
 
+### 高頻出k-mer除外機能
+
+インデックスのパフォーマンス向上のため、高頻出k-merの自動除外機能を搭載：
+
+```sql
+-- 除外パラメータの設定（インデックス作成前）
+SET kmersearch.max_appearance_rate = 0.05;  -- デフォルト: 5%の最大出現率
+SET kmersearch.max_appearance_nrow = 1000;  -- デフォルト: 0（無効）
+
+-- 頻度解析付きインデックス作成
+CREATE INDEX sequences_kmer_idx ON sequences USING gin (dna_seq) WITH (k = 8);
+
+-- インデックスの除外k-mer確認
+SELECT kmer_key, frequency_count, exclusion_reason 
+FROM kmersearch_excluded_kmers 
+WHERE index_oid = 'sequences_kmer_idx'::regclass;
+
+-- インデックス統計情報
+SELECT total_rows, excluded_kmers_count, max_appearance_rate 
+FROM kmersearch_index_info 
+WHERE index_oid = 'sequences_kmer_idx'::regclass;
+```
+
 ### 縮重コードの意味
 
 | コード | 意味 | ビット表現 |
@@ -141,13 +165,17 @@ LIMIT 5;
 - **n-gramキー**: k-mer（2k bit）+ 出現回数（8-16 bit）
 - **縮重コード展開**: 最大10組み合わせまで自動展開
 - **並列インデックス作成**: max_parallel_maintenance_workersに対応
+- **高頻出除外**: インデックス作成前の全テーブルスキャン
+- **システムテーブル**: 除外k-merとインデックス統計のメタデータ格納
 - バイナリ入出力サポート
 
 ### k-mer検索の仕組み
-1. **k-mer抽出**: 指定されたk長でスライディングウィンドウ
-2. **n-gramキー生成**: k-mer + 出現回数をバイナリエンコード
-3. **縮重コード処理**: MRWSYKVHDBN を標準塩基に展開
-4. **スコアリング**: 共有n-gramキー数による類似度計算
+1. **頻度解析**: 高頻出k-mer特定のための全テーブルスキャン
+2. **k-mer抽出**: 指定されたk長でスライディングウィンドウ
+3. **高頻出フィルタリング**: 出現閾値を超えるk-merの除外
+4. **n-gramキー生成**: k-mer + 出現回数をバイナリエンコード
+5. **縮重コード処理**: MRWSYKVHDBN を標準塩基に展開
+6. **スコアリング**: 共有n-gramキー数による類似度計算
 
 ## 制限事項
 
@@ -155,6 +183,8 @@ LIMIT 5;
 - 縮重コード展開は10組み合わせまで（超過時はスキップ）
 - 出現回数は設定可能ビット長の最大値でキャップ
 - 大文字小文字は区別されず、出力時は大文字で統一
+- 高頻出k-mer除外にはインデックス作成時の全テーブルスキャンが必要
+- GINのk-merインデックスが存在するテーブルはINSERT/UPDATE/DELETE操作が制限される
 
 ## ライセンス
 

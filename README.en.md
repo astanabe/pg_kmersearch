@@ -27,6 +27,7 @@ pg_kmersearch is a PostgreSQL extension that provides custom data types for effi
 - **Degenerate code support**: MRWSYKVHDBN expansion for DNA4 type
 - **Occurrence tracking**: Counts k-mer occurrences within rows (default 8-bit)
 - **Scoring search**: Retrieve top matches by similarity, not just exact matches
+- **High-frequency k-mer exclusion**: Automatically excludes overly common k-mers during index creation
 
 ## Installation
 
@@ -107,6 +108,29 @@ WHERE dna_seq LIKE 'ATCGATCGNNATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGAT
 LIMIT 5;
 ```
 
+### High-Frequency K-mer Exclusion
+
+The extension includes automatic exclusion of high-frequency k-mers to improve index performance:
+
+```sql
+-- Configure exclusion parameters (before index creation)
+SET kmersearch.max_appearance_rate = 0.05;  -- Default: 5% max appearance rate
+SET kmersearch.max_appearance_nrow = 1000;  -- Default: 0 (disabled)
+
+-- Create index with frequency analysis
+CREATE INDEX sequences_kmer_idx ON sequences USING gin (dna_seq) WITH (k = 8);
+
+-- View excluded k-mers for an index
+SELECT kmer_key, frequency_count, exclusion_reason 
+FROM kmersearch_excluded_kmers 
+WHERE index_oid = 'sequences_kmer_idx'::regclass;
+
+-- View index statistics
+SELECT total_rows, excluded_kmers_count, max_appearance_rate 
+FROM kmersearch_index_info 
+WHERE index_oid = 'sequences_kmer_idx'::regclass;
+```
+
 ### Degenerate Code Meanings
 
 | Code | Meaning | Bit Representation |
@@ -141,13 +165,17 @@ LIMIT 5;
 - **N-gram keys**: k-mer (2k bits) + occurrence count (8-16 bits)
 - **Degenerate expansion**: Automatic expansion up to 10 combinations
 - **Parallel index creation**: Supports max_parallel_maintenance_workers
+- **High-frequency exclusion**: Full table scan before index creation
+- **System tables**: Metadata storage for excluded k-mers and index statistics
 - Binary input/output support
 
 ### K-mer Search Mechanism
-1. **K-mer extraction**: Sliding window with specified k-length
-2. **N-gram key generation**: Binary encoding of k-mer + occurrence count
-3. **Degenerate processing**: Expansion of MRWSYKVHDBN to standard bases
-4. **Scoring**: Similarity calculation based on shared n-gram key count
+1. **Frequency analysis**: Full table scan to identify high-frequency k-mers
+2. **K-mer extraction**: Sliding window with specified k-length
+3. **High-frequency filtering**: Exclude k-mers exceeding appearance thresholds
+4. **N-gram key generation**: Binary encoding of k-mer + occurrence count
+5. **Degenerate processing**: Expansion of MRWSYKVHDBN to standard bases
+6. **Scoring**: Similarity calculation based on shared n-gram key count
 
 ## Limitations
 
@@ -155,6 +183,8 @@ LIMIT 5;
 - Degenerate code expansion limited to 10 combinations (skipped if exceeded)
 - Occurrence counts capped at maximum value for configured bit length
 - Case-insensitive input, uppercase output
+- High-frequency k-mer exclusion requires full table scan during index creation
+- Tables with GIN k-mer indexes have restricted INSERT/UPDATE/DELETE operations
 
 ## License
 

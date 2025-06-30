@@ -15,6 +15,17 @@
 #include "nodes/pg_list.h"
 #include "storage/lwlock.h"
 #include "miscadmin.h"
+#include "access/heapam.h"
+#include "access/tableam.h"
+#include "utils/snapmgr.h"
+#include "utils/rel.h"
+#include "utils/hsearch.h"
+#include "access/relation.h"
+#include "utils/syscache.h"
+#include "access/tupdesc.h"
+#include "catalog/pg_class.h"
+#include "commands/tablecmds.h"
+#include "common/hashfn.h"
 #include <ctype.h>
 #include <string.h>
 #include <math.h>
@@ -23,8 +34,25 @@ PG_MODULE_MAGIC;
 
 /* Global variables for k-mer search configuration */
 static int kmersearch_occur_bitlen = 8;  /* Default 8 bits for occurrence count */
+static double kmersearch_max_appearance_rate = 0.05;  /* Default max appearance rate */
+static int kmersearch_max_appearance_nrow = 0;  /* Default max appearance nrow (0 = undefined) */
 
-/* Custom GUC for occurrence bit length */
+/* Hash table entry for k-mer frequency counting */
+typedef struct KmerFreqEntry
+{
+    VarBit      *kmer_key;      /* K-mer binary key (without occurrence count) */
+    int         row_count;      /* Number of rows where this k-mer appears */
+    bool        excluded;       /* Whether this k-mer is excluded */
+} KmerFreqEntry;
+
+/* Hash table key for k-mer frequency counting */
+typedef struct KmerHashKey
+{
+    int         key_len;            /* Length of the key data */
+    char        data[FLEXIBLE_ARRAY_MEMBER];
+} KmerHashKey;
+
+/* Custom GUC variables */
 void _PG_init(void);
 
 /*
@@ -119,6 +147,10 @@ PG_FUNCTION_INFO_V1(kmersearch_compare_partial);
 PG_FUNCTION_INFO_V1(kmersearch_dna2_like);
 PG_FUNCTION_INFO_V1(kmersearch_dna4_like);
 PG_FUNCTION_INFO_V1(kmersearch_set_occur_bitlen);
+
+/* K-mer frequency analysis functions */
+PG_FUNCTION_INFO_V1(kmersearch_analyze_table_frequency);
+PG_FUNCTION_INFO_V1(kmersearch_get_excluded_kmers);
 
 /* Operator support functions */
 PG_FUNCTION_INFO_V1(kmersearch_dna2_eq);
@@ -399,7 +431,32 @@ kmersearch_dna4_send(PG_FUNCTION_ARGS)
 void
 _PG_init(void)
 {
-    /* No custom GUCs for now - using function-based configuration */
+    /* Define custom GUC variables */
+    DefineCustomRealVariable("kmersearch.max_appearance_rate",
+                            "Maximum appearance rate for k-mers to be included in index",
+                            "K-mers appearing in more than this fraction of rows will be excluded",
+                            &kmersearch_max_appearance_rate,
+                            0.05,
+                            0.0,
+                            1.0,
+                            PGC_USERSET,
+                            0,
+                            NULL,
+                            NULL,
+                            NULL);
+    
+    DefineCustomIntVariable("kmersearch.max_appearance_nrow",
+                           "Maximum number of rows for k-mers to be included in index",
+                           "K-mers appearing in more than this number of rows will be excluded (0 = unlimited)",
+                           &kmersearch_max_appearance_nrow,
+                           0,
+                           0,
+                           INT_MAX,
+                           PGC_USERSET,
+                           0,
+                           NULL,
+                           NULL,
+                           NULL);
 }
 
 /*
@@ -959,3 +1016,96 @@ kmersearch_dna4_eq(PG_FUNCTION_ARGS)
     result = (memcmp(a, b, len_a) == 0);
     PG_RETURN_BOOL(result);
 }
+
+/*
+ * Create k-mer key without occurrence count (for frequency analysis)
+ */
+static VarBit *
+kmersearch_create_kmer_key_only(const char *kmer, int k)
+{
+    int kmer_bits = k * 2;  /* 2 bits per base */
+    int total_bytes = (kmer_bits + 7) / 8;
+    VarBit *result;
+    bits8 *data_ptr;
+    int i;
+    
+    result = (VarBit *) palloc0(VARBITHDRSZ + total_bytes);
+    SET_VARSIZE(result, VARBITHDRSZ + total_bytes);
+    VARBITLEN(result) = kmer_bits;
+    
+    data_ptr = VARBITS(result);
+    
+    /* Encode k-mer */
+    for (i = 0; i < k; i++)
+    {
+        uint8 encoded = kmersearch_dna2_encode_table[(unsigned char)kmer[i]];
+        int bit_pos = i * 2;
+        int byte_pos = bit_pos / 8;
+        int bit_offset = bit_pos % 8;
+        
+        data_ptr[byte_pos] |= (encoded << (6 - bit_offset));
+    }
+    
+    return result;
+}
+
+/*
+ * Hash function for k-mer keys
+ */
+static uint32
+kmersearch_kmer_hash(const void *key, Size keysize)
+{
+    const KmerHashKey *k = (const KmerHashKey *) key;
+    return DatumGetUInt32(hash_any((unsigned char *) k->data, k->key_len));
+}
+
+/*
+ * Compare function for k-mer keys
+ */
+static int
+kmersearch_kmer_compare(const void *key1, const void *key2, Size keysize)
+{
+    const KmerHashKey *k1 = (const KmerHashKey *) key1;
+    const KmerHashKey *k2 = (const KmerHashKey *) key2;
+    
+    if (k1->key_len != k2->key_len)
+        return k1->key_len - k2->key_len;
+    
+    return memcmp(k1->data, k2->data, k1->key_len);
+}
+
+/*
+ * Analyze table frequency and determine excluded k-mers
+ */
+Datum
+kmersearch_analyze_table_frequency(PG_FUNCTION_ARGS)
+{
+    /* Placeholder implementation - will be completed in future version */
+    ereport(NOTICE, (errmsg("k-mer frequency analysis is not yet implemented")));
+    PG_RETURN_INT32(0);
+}
+
+/*
+ * Get excluded k-mers for an index
+ */
+Datum
+kmersearch_get_excluded_kmers(PG_FUNCTION_ARGS)
+{
+    Oid index_oid = PG_GETARG_OID(0);
+    
+    /* Implementation to retrieve excluded k-mers from system table */
+    /* This would return an array of excluded k-mer keys */
+    
+    PG_RETURN_NULL(); /* Placeholder */
+}
+
+/*
+ * Check if a k-mer is excluded for a given index
+ */
+static bool
+kmersearch_is_kmer_excluded(Oid index_oid, VarBit *kmer_key)
+{
+    /* For now, always return false - will implement proper check later */
+    return false;
+}
+

@@ -112,3 +112,37 @@ CREATE OPERATOR CLASS kmersearch_dna4_gin_ops
 CREATE FUNCTION set_kmersearch_occur_bitlen(integer) RETURNS integer
     AS 'MODULE_PATHNAME', 'kmersearch_set_occur_bitlen'
     LANGUAGE C IMMUTABLE STRICT;
+
+-- System table for storing excluded k-mers
+CREATE TABLE kmersearch_excluded_kmers (
+    index_oid oid NOT NULL,
+    kmer_key varbit NOT NULL,
+    frequency_count integer NOT NULL,
+    exclusion_reason text,
+    created_at timestamp with time zone DEFAULT now(),
+    PRIMARY KEY (index_oid, kmer_key)
+);
+
+-- Index tracking table
+CREATE TABLE kmersearch_index_info (
+    index_oid oid PRIMARY KEY,
+    table_oid oid NOT NULL,
+    column_name name NOT NULL,
+    k_value integer NOT NULL,
+    total_rows bigint NOT NULL,
+    excluded_kmers_count integer NOT NULL,
+    max_appearance_rate real NOT NULL,
+    max_appearance_nrow integer NOT NULL,
+    created_at timestamp with time zone DEFAULT now()
+);
+
+-- K-mer frequency analysis functions
+CREATE FUNCTION kmersearch_analyze_table_frequency(table_oid oid, column_name text, k integer, index_oid oid) 
+    RETURNS integer
+    AS 'MODULE_PATHNAME', 'kmersearch_analyze_table_frequency'
+    LANGUAGE C VOLATILE STRICT;
+
+CREATE FUNCTION kmersearch_get_excluded_kmers(index_oid oid) 
+    RETURNS varbit[]
+    AS 'MODULE_PATHNAME', 'kmersearch_get_excluded_kmers'
+    LANGUAGE C STABLE STRICT;
