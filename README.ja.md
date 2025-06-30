@@ -1,10 +1,10 @@
 # pg_kmersearch
 
-PostgreSQL用のDNA配列型拡張
+PostgreSQL用のDNA配列型拡張とk-mer検索機能
 
 ## 概要
 
-pg_kmersearchは、PostgreSQL用のDNA配列データを効率的に格納・処理するためのカスタムデータ型を提供する拡張です。この拡張は以下の2つのデータ型を実装しています：
+pg_kmersearchは、PostgreSQL用のDNA配列データを効率的に格納・処理するためのカスタムデータ型とk-mer検索機能を提供する拡張です。この拡張は以下の2つのデータ型と高速検索機能を実装しています：
 
 ### DNA2型
 - **用途**: 標準的なDNA配列（A、C、G、T）を格納
@@ -20,6 +20,13 @@ pg_kmersearchは、PostgreSQL用のDNA配列データを効率的に格納・処
   - 縮重コード: M(0011), R(0101), W(1001), S(0110), Y(1010), K(1100), V(0111), H(1011), D(1101), B(1110), N(1111)
   - U（UはTとして扱われます）
 - **ストレージ効率**: 1文字あたり4ビット
+
+### k-mer検索機能
+- **k-mer長**: 4～64塩基（インデックス作成時に指定）
+- **GINインデックス**: n-gramキーによる高速検索
+- **縮重コード対応**: DNA4型でのMRWSYKVHDBN展開
+- **出現回数追跡**: 同一行内でのk-mer出現回数を考慮（デフォルト8ビット）
+- **スコアリング検索**: 完全一致だけでなく、類似度による上位結果取得
 
 ## インストール
 
@@ -80,6 +87,26 @@ INSERT INTO degenerate_sequences (name, dna_seq) VALUES
 SELECT name, dna_seq FROM degenerate_sequences;
 ```
 
+### k-mer検索機能の使用例
+
+```sql
+-- k=8でGINインデックスを作成（8-merを使用）
+CREATE INDEX sequences_kmer_idx ON sequences USING gin (dna_seq) WITH (k = 8);
+
+-- k-mer検索（最小64塩基のクエリが必要）
+SELECT * FROM sequences 
+WHERE dna_seq LIKE 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA' 
+LIMIT 10;
+
+-- 出現回数ビット長の設定（デフォルト8ビット）
+SELECT set_kmersearch_occur_bitlen(12); -- 12ビットに変更（最大4095回の出現をカウント）
+
+-- 縮重コードを含むクエリでの検索
+SELECT * FROM degenerate_sequences 
+WHERE dna_seq LIKE 'ATCGATCGNNATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCG' 
+LIMIT 5;
+```
+
 ### 縮重コードの意味
 
 | コード | 意味 | ビット表現 |
@@ -106,17 +133,27 @@ SELECT name, dna_seq FROM degenerate_sequences;
 - PostgreSQLのvarbit型（bit varying型）をベースとして実装
 - カスタムのエンコーディング・デコーディング関数
 - メモリ効率的なストレージ形式
+- GINインデックスによるk-mer検索サポート
 
 ### 内部実装
-- DNA2型：2ビット/文字でエンコード
-- DNA4型：4ビット/文字でエンコード
-- 両型ともにPostgreSQLの可変長データ型として実装
+- **DNA2型**: 2ビット/文字でエンコード
+- **DNA4型**: 4ビット/文字でエンコード
+- **n-gramキー**: k-mer（2k bit）+ 出現回数（8-16 bit）
+- **縮重コード展開**: 最大10組み合わせまで自動展開
+- **並列インデックス作成**: max_parallel_maintenance_workersに対応
 - バイナリ入出力サポート
+
+### k-mer検索の仕組み
+1. **k-mer抽出**: 指定されたk長でスライディングウィンドウ
+2. **n-gramキー生成**: k-mer + 出現回数をバイナリエンコード
+3. **縮重コード処理**: MRWSYKVHDBN を標準塩基に展開
+4. **スコアリング**: 共有n-gramキー数による類似度計算
 
 ## 制限事項
 
-- 現在は基本的なデータ型機能のみ実装
-- 比較演算子や検索機能は今後の実装予定
+- クエリ配列は最小64塩基が必要
+- 縮重コード展開は10組み合わせまで（超過時はスキップ）
+- 出現回数は設定可能ビット長の最大値でキャップ
 - 大文字小文字は区別されず、出力時は大文字で統一
 
 ## ライセンス

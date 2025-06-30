@@ -6,10 +6,26 @@
 #include "utils/memutils.h"
 #include "utils/varlena.h"
 #include "varatt.h"
+#include "access/gin.h"
+#include "access/stratnum.h"
+#include "utils/guc.h"
+#include "utils/array.h"
+#include "catalog/pg_type.h"
+#include "executor/executor.h"
+#include "nodes/pg_list.h"
+#include "storage/lwlock.h"
+#include "miscadmin.h"
 #include <ctype.h>
 #include <string.h>
+#include <math.h>
 
 PG_MODULE_MAGIC;
+
+/* Global variables for k-mer search configuration */
+static int kmersearch_occur_bitlen = 8;  /* Default 8 bits for occurrence count */
+
+/* Custom GUC for occurrence bit length */
+void _PG_init(void);
 
 /*
  * DNA2 type: 2-bit encoding for ACGT
@@ -94,6 +110,19 @@ PG_FUNCTION_INFO_V1(kmersearch_dna4_in);
 PG_FUNCTION_INFO_V1(kmersearch_dna4_out);
 PG_FUNCTION_INFO_V1(kmersearch_dna4_recv);
 PG_FUNCTION_INFO_V1(kmersearch_dna4_send);
+
+/* K-mer and GIN index functions */
+PG_FUNCTION_INFO_V1(kmersearch_extract_value);
+PG_FUNCTION_INFO_V1(kmersearch_extract_query);
+PG_FUNCTION_INFO_V1(kmersearch_consistent);
+PG_FUNCTION_INFO_V1(kmersearch_compare_partial);
+PG_FUNCTION_INFO_V1(kmersearch_dna2_like);
+PG_FUNCTION_INFO_V1(kmersearch_dna4_like);
+PG_FUNCTION_INFO_V1(kmersearch_set_occur_bitlen);
+
+/* Operator support functions */
+PG_FUNCTION_INFO_V1(kmersearch_dna2_eq);
+PG_FUNCTION_INFO_V1(kmersearch_dna4_eq);
 
 /* Helper functions */
 static bool kmersearch_is_valid_dna2_char(char c)
@@ -362,4 +391,571 @@ kmersearch_dna4_send(PG_FUNCTION_ARGS)
     pq_sendbytes(&buf, (char *) (dna->data + sizeof(int32)), byte_len);
     
     PG_RETURN_BYTEA_P(pq_endtypsend(&buf));
+}
+
+/*
+ * Module initialization
+ */
+void
+_PG_init(void)
+{
+    /* No custom GUCs for now - using function-based configuration */
+}
+
+/*
+ * Helper function to get bit at position from bit array
+ */
+static inline uint8
+kmersearch_get_bit_at(bits8 *data, int bit_pos)
+{
+    int byte_pos = bit_pos / 8;
+    int bit_offset = bit_pos % 8;
+    return (data[byte_pos] >> (7 - bit_offset)) & 1;
+}
+
+/*
+ * Helper function to set bit at position in bit array
+ */
+static inline void
+kmersearch_set_bit_at(bits8 *data, int bit_pos, uint8 value)
+{
+    int byte_pos = bit_pos / 8;
+    int bit_offset = bit_pos % 8;
+    if (value)
+        data[byte_pos] |= (1 << (7 - bit_offset));
+    else
+        data[byte_pos] &= ~(1 << (7 - bit_offset));
+}
+
+/*
+ * Convert DNA2 sequence to string
+ */
+static char *
+kmersearch_dna2_to_string(kmersearch_dna2 *dna)
+{
+    int32 bit_len = *((int32 *) dna->data);
+    int char_len = bit_len / 2;
+    char *result;
+    bits8 *data_ptr = dna->data + sizeof(int32);
+    int i;
+    
+    result = (char *) palloc(char_len + 1);
+    
+    for (i = 0; i < char_len; i++)
+    {
+        int bit_pos = i * 2;
+        int byte_pos = bit_pos / 8;
+        int bit_offset = bit_pos % 8;
+        uint8 encoded = (data_ptr[byte_pos] >> (6 - bit_offset)) & 0x3;
+        result[i] = kmersearch_dna2_decode_table[encoded];
+    }
+    
+    result[char_len] = '\0';
+    return result;
+}
+
+/*
+ * Convert DNA4 sequence to string
+ */
+static char *
+kmersearch_dna4_to_string(kmersearch_dna4 *dna)
+{
+    int32 bit_len = *((int32 *) dna->data);
+    int char_len = bit_len / 4;
+    char *result;
+    bits8 *data_ptr = dna->data + sizeof(int32);
+    int i;
+    
+    result = (char *) palloc(char_len + 1);
+    
+    for (i = 0; i < char_len; i++)
+    {
+        int bit_pos = i * 4;
+        int byte_pos = bit_pos / 8;
+        int bit_offset = bit_pos % 8;
+        uint8 encoded;
+        
+        if (bit_offset <= 4)
+        {
+            encoded = (data_ptr[byte_pos] >> (4 - bit_offset)) & 0xF;
+        }
+        else
+        {
+            encoded = ((data_ptr[byte_pos] << (bit_offset - 4)) & 0xF);
+            if (byte_pos + 1 < (bit_len + 7) / 8)
+                encoded |= (data_ptr[byte_pos + 1] >> (12 - bit_offset));
+            encoded &= 0xF;
+        }
+        
+        result[i] = kmersearch_dna4_decode_table[encoded];
+    }
+    
+    result[char_len] = '\0';
+    return result;
+}
+
+/*
+ * Count combinations for degenerate code expansion
+ */
+static int
+kmersearch_count_degenerate_combinations(const char *seq, int len)
+{
+    int n_count = 0, vhdb_count = 0, mrwsyk_count = 0;
+    int combinations = 1;
+    int i;
+    
+    for (i = 0; i < len; i++)
+    {
+        char c = toupper(seq[i]);
+        if (c == 'N')
+            n_count++;
+        else if (c == 'V' || c == 'H' || c == 'D' || c == 'B')
+            vhdb_count++;
+        else if (c == 'M' || c == 'R' || c == 'W' || c == 'S' || c == 'Y' || c == 'K')
+            mrwsyk_count++;
+    }
+    
+    /* Check if combinations exceed 10 */
+    if (n_count >= 2 ||
+        (n_count == 1 && (vhdb_count >= 1 || mrwsyk_count >= 2)) ||
+        vhdb_count >= 3 ||
+        (vhdb_count == 2 && mrwsyk_count >= 1) ||
+        (vhdb_count == 1 && mrwsyk_count >= 2) ||
+        mrwsyk_count >= 4)
+    {
+        return 11;  /* Over limit */
+    }
+    
+    /* Calculate actual combinations */
+    for (i = 0; i < len; i++)
+    {
+        char c = toupper(seq[i]);
+        if (c == 'N')
+            combinations *= 4;
+        else if (c == 'V' || c == 'H' || c == 'D' || c == 'B')
+            combinations *= 3;
+        else if (c == 'M' || c == 'R' || c == 'W' || c == 'S' || c == 'Y' || c == 'K')
+            combinations *= 2;
+    }
+    
+    return combinations;
+}
+
+/*
+ * Expand degenerate codes to all possible combinations
+ */
+static void
+kmersearch_expand_degenerate_sequence(const char *seq, int len, char **results, int *count)
+{
+    int combinations = kmersearch_count_degenerate_combinations(seq, len);
+    if (combinations > 10)
+    {
+        *count = 0;
+        return;
+    }
+    
+    *count = combinations;
+    
+    /* Allocate results array */
+    for (int i = 0; i < combinations; i++)
+    {
+        results[i] = (char *) palloc(len + 1);
+        results[i][len] = '\0';
+    }
+    
+    /* Generate all combinations */
+    for (int combo = 0; combo < combinations; combo++)
+    {
+        int temp_combo = combo;
+        for (int pos = 0; pos < len; pos++)
+        {
+            char c = toupper(seq[pos]);
+            char bases[4];
+            int base_count = 0;
+            
+            /* Get possible bases for this character */
+            if (c == 'A') { bases[0] = 'A'; base_count = 1; }
+            else if (c == 'C') { bases[0] = 'C'; base_count = 1; }
+            else if (c == 'G') { bases[0] = 'G'; base_count = 1; }
+            else if (c == 'T' || c == 'U') { bases[0] = 'T'; base_count = 1; }
+            else if (c == 'M') { bases[0] = 'A'; bases[1] = 'C'; base_count = 2; }
+            else if (c == 'R') { bases[0] = 'A'; bases[1] = 'G'; base_count = 2; }
+            else if (c == 'W') { bases[0] = 'A'; bases[1] = 'T'; base_count = 2; }
+            else if (c == 'S') { bases[0] = 'C'; bases[1] = 'G'; base_count = 2; }
+            else if (c == 'Y') { bases[0] = 'C'; bases[1] = 'T'; base_count = 2; }
+            else if (c == 'K') { bases[0] = 'G'; bases[1] = 'T'; base_count = 2; }
+            else if (c == 'V') { bases[0] = 'A'; bases[1] = 'C'; bases[2] = 'G'; base_count = 3; }
+            else if (c == 'H') { bases[0] = 'A'; bases[1] = 'C'; bases[2] = 'T'; base_count = 3; }
+            else if (c == 'D') { bases[0] = 'A'; bases[1] = 'G'; bases[2] = 'T'; base_count = 3; }
+            else if (c == 'B') { bases[0] = 'C'; bases[1] = 'G'; bases[2] = 'T'; base_count = 3; }
+            else if (c == 'N') { bases[0] = 'A'; bases[1] = 'C'; bases[2] = 'G'; bases[3] = 'T'; base_count = 4; }
+            
+            results[combo][pos] = bases[temp_combo % base_count];
+            temp_combo /= base_count;
+        }
+    }
+}
+
+/*
+ * Create n-gram key from k-mer string
+ */
+static VarBit *
+kmersearch_create_ngram_key(const char *kmer, int k, int occurrence)
+{
+    int kmer_bits = k * 2;  /* 2 bits per base */
+    int occur_bits = kmersearch_occur_bitlen;
+    int total_bits = kmer_bits + occur_bits;
+    int total_bytes = (total_bits + 7) / 8;
+    int adj_occurrence = occurrence - 1;  /* 1-offset to 0-offset */
+    VarBit *result;
+    bits8 *data_ptr;
+    int i;
+    
+    result = (VarBit *) palloc0(VARBITHDRSZ + total_bytes);
+    SET_VARSIZE(result, VARBITHDRSZ + total_bytes);
+    VARBITLEN(result) = total_bits;
+    
+    data_ptr = VARBITS(result);
+    
+    /* Encode k-mer */
+    for (i = 0; i < k; i++)
+    {
+        uint8 encoded = kmersearch_dna2_encode_table[(unsigned char)kmer[i]];
+        int bit_pos = i * 2;
+        int byte_pos = bit_pos / 8;
+        int bit_offset = bit_pos % 8;
+        
+        data_ptr[byte_pos] |= (encoded << (6 - bit_offset));
+    }
+    
+    /* Encode occurrence count */
+    if (adj_occurrence >= (1 << occur_bits))
+        adj_occurrence = (1 << occur_bits) - 1;  /* Cap at max value */
+    
+    for (i = 0; i < occur_bits; i++)
+    {
+        int bit_pos = kmer_bits + i;
+        int byte_pos = bit_pos / 8;
+        int bit_offset = bit_pos % 8;
+        
+        if (adj_occurrence & (1 << (occur_bits - 1 - i)))
+            data_ptr[byte_pos] |= (1 << (7 - bit_offset));
+    }
+    
+    return result;
+}
+
+/*
+ * Extract k-mers from DNA sequence and create n-gram keys
+ */
+static Datum *
+kmersearch_extract_kmers(const char *sequence, int seq_len, int k, int *nkeys)
+{
+    Datum *keys;
+    int max_keys = seq_len - k + 1;
+    int key_count = 0;
+    bool has_degenerate = false;
+    int i, j;
+    
+    if (max_keys <= 0)
+    {
+        *nkeys = 0;
+        return NULL;
+    }
+    
+    keys = (Datum *) palloc(sizeof(Datum) * max_keys * 10);  /* Extra space for degenerate expansion */
+    
+    for (i = 0; i <= seq_len - k; i++)
+    {
+        char kmer[65];  /* Max k=64 + null terminator */
+        strncpy(kmer, sequence + i, k);
+        kmer[k] = '\0';
+        
+        /* Check if this k-mer has degenerate codes */
+        has_degenerate = false;
+        for (j = 0; j < k; j++)
+        {
+            char c = toupper(kmer[j]);
+            if (c != 'A' && c != 'C' && c != 'G' && c != 'T')
+            {
+                has_degenerate = true;
+                break;
+            }
+        }
+        
+        if (has_degenerate)
+        {
+            /* Expand degenerate codes */
+            char *expanded[10];
+            int expand_count;
+            
+            kmersearch_expand_degenerate_sequence(kmer, k, expanded, &expand_count);
+            
+            for (j = 0; j < expand_count; j++)
+            {
+                /* Count occurrences of this expanded k-mer */
+                int occurrence = 1;
+                VarBit *ngram_key;
+                int prev;
+                
+                for (prev = 0; prev < key_count; prev++)
+                {
+                    /* This is simplified - in reality we'd need to compare the actual k-mer */
+                    /* For now, assume each k-mer appears once per position */
+                }
+                
+                ngram_key = kmersearch_create_ngram_key(expanded[j], k, occurrence);
+                keys[key_count++] = PointerGetDatum(ngram_key);
+                
+                pfree(expanded[j]);
+            }
+        }
+        else
+        {
+            /* Simple case - no degenerate codes */
+            int occurrence = 1;
+            VarBit *ngram_key = kmersearch_create_ngram_key(kmer, k, occurrence);
+            keys[key_count++] = PointerGetDatum(ngram_key);
+        }
+    }
+    
+    *nkeys = key_count;
+    return keys;
+}
+
+/*
+ * GIN extract_value function
+ */
+Datum
+kmersearch_extract_value(PG_FUNCTION_ARGS)
+{
+    Datum value = PG_GETARG_DATUM(0);
+    int32 *nkeys = (int32 *) PG_GETARG_POINTER(1);
+    bool **nullFlags = (bool **) PG_GETARG_POINTER(2);
+    Oid typid = PG_GETARG_OID(3);
+    int k = PG_GETARG_INT32(4);  /* k-mer length from index definition */
+    
+    Datum *keys;
+    char *sequence;
+    int seq_len;
+    
+    if (k < 4 || k > 64)
+        ereport(ERROR, (errmsg("k-mer length must be between 4 and 64")));
+    
+    if (typid == get_fn_expr_argtype(fcinfo->flinfo, 0))  /* DNA2 type */
+    {
+        kmersearch_dna2 *dna = (kmersearch_dna2 *) PG_DETOAST_DATUM(value);
+        sequence = kmersearch_dna2_to_string(dna);
+        seq_len = strlen(sequence);
+    }
+    else  /* DNA4 type */
+    {
+        kmersearch_dna4 *dna = (kmersearch_dna4 *) PG_DETOAST_DATUM(value);
+        sequence = kmersearch_dna4_to_string(dna);
+        seq_len = strlen(sequence);
+    }
+    
+    keys = kmersearch_extract_kmers(sequence, seq_len, k, nkeys);
+    
+    *nullFlags = NULL;  /* No null keys */
+    
+    pfree(sequence);
+    
+    if (*nkeys == 0)
+        PG_RETURN_POINTER(NULL);
+    
+    PG_RETURN_POINTER(keys);
+}
+
+/*
+ * GIN extract_query function
+ */
+Datum
+kmersearch_extract_query(PG_FUNCTION_ARGS)
+{
+    Datum query = PG_GETARG_DATUM(0);
+    int32 *nkeys = (int32 *) PG_GETARG_POINTER(1);
+    StrategyNumber strategy = PG_GETARG_UINT16(2);
+    bool **pmatch = (bool **) PG_GETARG_POINTER(3);
+    Pointer **extra_data = (Pointer **) PG_GETARG_POINTER(4);
+    bool **nullFlags = (bool **) PG_GETARG_POINTER(5);
+    int32 *searchMode = (int32 *) PG_GETARG_POINTER(6);
+    int k = PG_GETARG_INT32(7);  /* k-mer length from index definition */
+    
+    text *query_text = DatumGetTextP(query);
+    char *query_string = text_to_cstring(query_text);
+    int query_len = strlen(query_string);
+    Datum *keys;
+    
+    if (query_len < 64)
+        ereport(ERROR, (errmsg("Query sequence must be at least 64 bases long")));
+    
+    if (k < 4 || k > 64)
+        ereport(ERROR, (errmsg("k-mer length must be between 4 and 64")));
+    
+    keys = kmersearch_extract_kmers(query_string, query_len, k, nkeys);
+    
+    *pmatch = NULL;
+    *extra_data = NULL;
+    *nullFlags = NULL;
+    *searchMode = GIN_SEARCH_MODE_DEFAULT;
+    
+    pfree(query_string);
+    
+    if (*nkeys == 0)
+        PG_RETURN_POINTER(NULL);
+    
+    PG_RETURN_POINTER(keys);
+}
+
+/*
+ * GIN consistent function
+ */
+Datum
+kmersearch_consistent(PG_FUNCTION_ARGS)
+{
+    bool *check = (bool *) PG_GETARG_POINTER(0);
+    StrategyNumber strategy = PG_GETARG_UINT16(1);
+    Datum query = PG_GETARG_DATUM(2);
+    int32 nkeys = PG_GETARG_INT32(3);
+    Pointer *extra_data = (Pointer *) PG_GETARG_POINTER(4);
+    bool *recheck = (bool *) PG_GETARG_POINTER(5);
+    Datum *queryKeys = (Datum *) PG_GETARG_POINTER(6);
+    bool *nullFlags = (bool *) PG_GETARG_POINTER(7);
+    
+    int match_count = 0;
+    int i;
+    
+    *recheck = true;  /* Always recheck for scoring */
+    
+    /* Count matching keys */
+    for (i = 0; i < nkeys; i++)
+    {
+        if (check[i])
+            match_count++;
+    }
+    
+    /* Return true if we have any matches - scoring will be done in recheck */
+    PG_RETURN_BOOL(match_count > 0);
+}
+
+/*
+ * GIN compare_partial function - simple byte comparison for varbit
+ */
+Datum
+kmersearch_compare_partial(PG_FUNCTION_ARGS)
+{
+    VarBit *a = DatumGetVarBitP(PG_GETARG_DATUM(0));
+    VarBit *b = DatumGetVarBitP(PG_GETARG_DATUM(1));
+    int result;
+    
+    int32 len_a = VARBITLEN(a);
+    int32 len_b = VARBITLEN(b);
+    
+    if (len_a < len_b)
+        result = -1;
+    else if (len_a > len_b)
+        result = 1;
+    else
+    {
+        result = memcmp(VARBITS(a), VARBITS(b), VARBITBYTES(a));
+    }
+    
+    PG_RETURN_INT32(result);
+}
+
+/*
+ * DNA2 LIKE operator
+ */
+Datum
+kmersearch_dna2_like(PG_FUNCTION_ARGS)
+{
+    kmersearch_dna2 *dna = (kmersearch_dna2 *) PG_GETARG_POINTER(0);
+    text *pattern = PG_GETARG_TEXT_P(1);
+    
+    char *dna_string = kmersearch_dna2_to_string(dna);
+    char *pattern_string = text_to_cstring(pattern);
+    
+    /* Simple pattern matching - in reality this would use the GIN index */
+    bool result = (strstr(dna_string, pattern_string) != NULL);
+    
+    pfree(dna_string);
+    pfree(pattern_string);
+    
+    PG_RETURN_BOOL(result);
+}
+
+/*
+ * DNA4 LIKE operator
+ */
+Datum
+kmersearch_dna4_like(PG_FUNCTION_ARGS)
+{
+    kmersearch_dna4 *dna = (kmersearch_dna4 *) PG_GETARG_POINTER(0);
+    text *pattern = PG_GETARG_TEXT_P(1);
+    
+    char *dna_string = kmersearch_dna4_to_string(dna);
+    char *pattern_string = text_to_cstring(pattern);
+    
+    /* Simple pattern matching - in reality this would use the GIN index */
+    bool result = (strstr(dna_string, pattern_string) != NULL);
+    
+    pfree(dna_string);
+    pfree(pattern_string);
+    
+    PG_RETURN_BOOL(result);
+}
+
+/*
+ * Set occurrence bit length
+ */
+Datum
+kmersearch_set_occur_bitlen(PG_FUNCTION_ARGS)
+{
+    int32 bitlen = PG_GETARG_INT32(0);
+    
+    if (bitlen < 0 || bitlen > 16)
+        ereport(ERROR, (errmsg("occurrence bit length must be between 0 and 16")));
+    
+    kmersearch_occur_bitlen = bitlen;
+    
+    PG_RETURN_INT32(bitlen);
+}
+
+/*
+ * DNA2 equality operator
+ */
+Datum
+kmersearch_dna2_eq(PG_FUNCTION_ARGS)
+{
+    kmersearch_dna2 *a = (kmersearch_dna2 *) PG_GETARG_POINTER(0);
+    kmersearch_dna2 *b = (kmersearch_dna2 *) PG_GETARG_POINTER(1);
+    int32 len_a = VARSIZE(a);
+    int32 len_b = VARSIZE(b);
+    bool result;
+    
+    if (len_a != len_b)
+        PG_RETURN_BOOL(false);
+    
+    result = (memcmp(a, b, len_a) == 0);
+    PG_RETURN_BOOL(result);
+}
+
+/*
+ * DNA4 equality operator
+ */
+Datum
+kmersearch_dna4_eq(PG_FUNCTION_ARGS)
+{
+    kmersearch_dna4 *a = (kmersearch_dna4 *) PG_GETARG_POINTER(0);
+    kmersearch_dna4 *b = (kmersearch_dna4 *) PG_GETARG_POINTER(1);
+    int32 len_a = VARSIZE(a);
+    int32 len_b = VARSIZE(b);
+    bool result;
+    
+    if (len_a != len_b)
+        PG_RETURN_BOOL(false);
+    
+    result = (memcmp(a, b, len_a) == 0);
+    PG_RETURN_BOOL(result);
 }

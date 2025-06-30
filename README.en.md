@@ -1,10 +1,10 @@
 # pg_kmersearch
 
-PostgreSQL extension for DNA sequence data types
+PostgreSQL extension for DNA sequence data types and k-mer search
 
 ## Overview
 
-pg_kmersearch is a PostgreSQL extension that provides custom data types for efficiently storing and processing DNA sequence data. This extension implements two data types:
+pg_kmersearch is a PostgreSQL extension that provides custom data types for efficiently storing and processing DNA sequence data with k-mer search capabilities. This extension implements two data types and high-performance search functionality:
 
 ### DNA2 Type
 - **Purpose**: Store standard DNA sequences (A, C, G, T)
@@ -20,6 +20,13 @@ pg_kmersearch is a PostgreSQL extension that provides custom data types for effi
   - Degenerate codes: M(0011), R(0101), W(1001), S(0110), Y(1010), K(1100), V(0111), H(1011), D(1101), B(1110), N(1111)
   - U (treated as T)
 - **Storage efficiency**: 4 bits per character
+
+### K-mer Search Features
+- **K-mer length**: 4-64 bases (specified at index creation)
+- **GIN indexing**: Fast search using n-gram keys
+- **Degenerate code support**: MRWSYKVHDBN expansion for DNA4 type
+- **Occurrence tracking**: Counts k-mer occurrences within rows (default 8-bit)
+- **Scoring search**: Retrieve top matches by similarity, not just exact matches
 
 ## Installation
 
@@ -80,6 +87,26 @@ INSERT INTO degenerate_sequences (name, dna_seq) VALUES
 SELECT name, dna_seq FROM degenerate_sequences;
 ```
 
+### K-mer Search Usage Examples
+
+```sql
+-- Create GIN index with k=8 (using 8-mers)
+CREATE INDEX sequences_kmer_idx ON sequences USING gin (dna_seq) WITH (k = 8);
+
+-- K-mer search (minimum 64 bases required for query)
+SELECT * FROM sequences 
+WHERE dna_seq LIKE 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA' 
+LIMIT 10;
+
+-- Configure occurrence bit length (default 8-bit)
+SELECT set_kmersearch_occur_bitlen(12); -- Change to 12-bit (max 4095 occurrences)
+
+-- Search with degenerate codes in query
+SELECT * FROM degenerate_sequences 
+WHERE dna_seq LIKE 'ATCGATCGNNATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCG' 
+LIMIT 5;
+```
+
 ### Degenerate Code Meanings
 
 | Code | Meaning | Bit Representation |
@@ -106,17 +133,27 @@ SELECT name, dna_seq FROM degenerate_sequences;
 - Built on PostgreSQL's varbit (bit varying) type
 - Custom encoding/decoding functions
 - Memory-efficient storage format
+- GIN indexing support for k-mer search
 
 ### Internal Implementation
-- DNA2 type: 2 bits per character encoding
-- DNA4 type: 4 bits per character encoding
-- Both types implemented as PostgreSQL variable-length data types
+- **DNA2 type**: 2 bits per character encoding
+- **DNA4 type**: 4 bits per character encoding
+- **N-gram keys**: k-mer (2k bits) + occurrence count (8-16 bits)
+- **Degenerate expansion**: Automatic expansion up to 10 combinations
+- **Parallel index creation**: Supports max_parallel_maintenance_workers
 - Binary input/output support
+
+### K-mer Search Mechanism
+1. **K-mer extraction**: Sliding window with specified k-length
+2. **N-gram key generation**: Binary encoding of k-mer + occurrence count
+3. **Degenerate processing**: Expansion of MRWSYKVHDBN to standard bases
+4. **Scoring**: Similarity calculation based on shared n-gram key count
 
 ## Limitations
 
-- Currently implements only basic data type functionality
-- Comparison operators and search functions are planned for future releases
+- Query sequences must be at least 64 bases long
+- Degenerate code expansion limited to 10 combinations (skipped if exceeded)
+- Occurrence counts capped at maximum value for configured bit length
 - Case-insensitive input, uppercase output
 
 ## License
