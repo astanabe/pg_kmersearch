@@ -13,7 +13,7 @@ A PostgreSQL extension for DNA sequence similarity search using k-mer indexing.
 
 ```sql
 CREATE EXTENSION pg_kmersearch;
-CREATE TABLE sequences (id SERIAL, name TEXT, dna dna2);
+CREATE TABLE sequences (id SERIAL, name TEXT, dna DNA2);
 CREATE INDEX ON sequences USING gin(dna);
 INSERT INTO sequences (name, dna) VALUES ('seq1', 'ATCGATCG...');
 SELECT * FROM sequences WHERE dna =% 'ATCGATCG';

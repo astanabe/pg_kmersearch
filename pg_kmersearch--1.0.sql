@@ -1,45 +1,45 @@
 -- pg_kmersearch extension SQL definitions
 
 -- Create shell types first
-CREATE TYPE dna2;
-CREATE TYPE dna4;
+CREATE TYPE DNA2;
+CREATE TYPE DNA4;
 
 -- DNA2 input/output functions
-CREATE FUNCTION kmersearch_dna2_in(cstring) RETURNS dna2
+CREATE FUNCTION kmersearch_dna2_in(cstring) RETURNS DNA2
     AS 'MODULE_PATHNAME', 'kmersearch_dna2_in'
     LANGUAGE C IMMUTABLE STRICT;
 
-CREATE FUNCTION kmersearch_dna2_out(dna2) RETURNS cstring
+CREATE FUNCTION kmersearch_dna2_out(DNA2) RETURNS cstring
     AS 'MODULE_PATHNAME', 'kmersearch_dna2_out'
     LANGUAGE C IMMUTABLE STRICT;
 
-CREATE FUNCTION kmersearch_dna2_recv(internal) RETURNS dna2
+CREATE FUNCTION kmersearch_dna2_recv(internal) RETURNS DNA2
     AS 'MODULE_PATHNAME', 'kmersearch_dna2_recv'
     LANGUAGE C IMMUTABLE STRICT;
 
-CREATE FUNCTION kmersearch_dna2_send(dna2) RETURNS bytea
+CREATE FUNCTION kmersearch_dna2_send(DNA2) RETURNS bytea
     AS 'MODULE_PATHNAME', 'kmersearch_dna2_send'
     LANGUAGE C IMMUTABLE STRICT;
 
 -- DNA4 input/output functions
-CREATE FUNCTION kmersearch_dna4_in(cstring) RETURNS dna4
+CREATE FUNCTION kmersearch_dna4_in(cstring) RETURNS DNA4
     AS 'MODULE_PATHNAME', 'kmersearch_dna4_in'
     LANGUAGE C IMMUTABLE STRICT;
 
-CREATE FUNCTION kmersearch_dna4_out(dna4) RETURNS cstring
+CREATE FUNCTION kmersearch_dna4_out(DNA4) RETURNS cstring
     AS 'MODULE_PATHNAME', 'kmersearch_dna4_out'
     LANGUAGE C IMMUTABLE STRICT;
 
-CREATE FUNCTION kmersearch_dna4_recv(internal) RETURNS dna4
+CREATE FUNCTION kmersearch_dna4_recv(internal) RETURNS DNA4
     AS 'MODULE_PATHNAME', 'kmersearch_dna4_recv'
     LANGUAGE C IMMUTABLE STRICT;
 
-CREATE FUNCTION kmersearch_dna4_send(dna4) RETURNS bytea
+CREATE FUNCTION kmersearch_dna4_send(DNA4) RETURNS bytea
     AS 'MODULE_PATHNAME', 'kmersearch_dna4_send'
     LANGUAGE C IMMUTABLE STRICT;
 
 -- Complete DNA2 type definition
-CREATE TYPE dna2 (
+CREATE TYPE DNA2 (
     INPUT = kmersearch_dna2_in,
     OUTPUT = kmersearch_dna2_out,
     RECEIVE = kmersearch_dna2_recv,
@@ -49,7 +49,7 @@ CREATE TYPE dna2 (
 );
 
 -- Complete DNA4 type definition
-CREATE TYPE dna4 (
+CREATE TYPE DNA4 (
     INPUT = kmersearch_dna4_in,
     OUTPUT = kmersearch_dna4_out,
     RECEIVE = kmersearch_dna4_recv,
@@ -59,58 +59,58 @@ CREATE TYPE dna4 (
 );
 
 -- Equality operators
-CREATE FUNCTION kmersearch_dna2_eq(dna2, dna2) RETURNS boolean
+CREATE FUNCTION kmersearch_dna2_eq(DNA2, DNA2) RETURNS boolean
     AS 'MODULE_PATHNAME', 'kmersearch_dna2_eq'
     LANGUAGE C IMMUTABLE STRICT;
 
 CREATE OPERATOR = (
-    LEFTARG = dna2,
-    RIGHTARG = dna2,
+    LEFTARG = DNA2,
+    RIGHTARG = DNA2,
     FUNCTION = kmersearch_dna2_eq,
     COMMUTATOR = =,
     HASHES
 );
 
-CREATE FUNCTION kmersearch_dna4_eq(dna4, dna4) RETURNS boolean
+CREATE FUNCTION kmersearch_dna4_eq(DNA4, DNA4) RETURNS boolean
     AS 'MODULE_PATHNAME', 'kmersearch_dna4_eq'
     LANGUAGE C IMMUTABLE STRICT;
 
 CREATE OPERATOR = (
-    LEFTARG = dna4,
-    RIGHTARG = dna4,
+    LEFTARG = DNA4,
+    RIGHTARG = DNA4,
     FUNCTION = kmersearch_dna4_eq,
     COMMUTATOR = =,
     HASHES
 );
 
 -- =% operators for k-mer search
-CREATE FUNCTION kmersearch_dna2_match(dna2, text) RETURNS boolean
+CREATE FUNCTION kmersearch_dna2_match(DNA2, text) RETURNS boolean
     AS 'MODULE_PATHNAME', 'kmersearch_dna2_match'
     LANGUAGE C IMMUTABLE STRICT;
 
 CREATE OPERATOR =% (
-    LEFTARG = dna2,
+    LEFTARG = DNA2,
     RIGHTARG = text,
     FUNCTION = kmersearch_dna2_match
 );
 
-CREATE FUNCTION kmersearch_dna4_match(dna4, text) RETURNS boolean
+CREATE FUNCTION kmersearch_dna4_match(DNA4, text) RETURNS boolean
     AS 'MODULE_PATHNAME', 'kmersearch_dna4_match'
     LANGUAGE C IMMUTABLE STRICT;
 
 CREATE OPERATOR =% (
-    LEFTARG = dna4,
+    LEFTARG = DNA4,
     RIGHTARG = text,
     FUNCTION = kmersearch_dna4_match
 );
 
 -- GIN operator class support functions
-CREATE FUNCTION kmersearch_extract_value(dna2, internal)
+CREATE FUNCTION kmersearch_extract_value(DNA2, internal)
     RETURNS internal
     AS 'MODULE_PATHNAME', 'kmersearch_extract_value'
     LANGUAGE C IMMUTABLE STRICT;
 
-CREATE FUNCTION kmersearch_extract_value_dna4(dna4, internal)
+CREATE FUNCTION kmersearch_extract_value_dna4(DNA4, internal)
     RETURNS internal
     AS 'MODULE_PATHNAME', 'kmersearch_extract_value_dna4'
     LANGUAGE C IMMUTABLE STRICT;
@@ -127,19 +127,19 @@ CREATE FUNCTION kmersearch_consistent(internal, int2, text, int4, internal, inte
 
 -- GIN operator classes for DNA2 and DNA4
 CREATE OPERATOR CLASS kmersearch_dna2_gin_ops
-    DEFAULT FOR TYPE dna2 USING gin AS
-        OPERATOR 1 =% (dna2, text),
+    DEFAULT FOR TYPE DNA2 USING gin AS
+        OPERATOR 1 =% (DNA2, text),
         FUNCTION 1 varbitcmp(varbit, varbit),
-        FUNCTION 2 kmersearch_extract_value(dna2, internal),
+        FUNCTION 2 kmersearch_extract_value(DNA2, internal),
         FUNCTION 3 kmersearch_extract_query(text, internal, int2, internal, internal),
         FUNCTION 4 kmersearch_consistent(internal, int2, text, int4, internal, internal),
         STORAGE varbit;
 
 CREATE OPERATOR CLASS kmersearch_dna4_gin_ops
-    DEFAULT FOR TYPE dna4 USING gin AS
-        OPERATOR 1 =% (dna4, text),
+    DEFAULT FOR TYPE DNA4 USING gin AS
+        OPERATOR 1 =% (DNA4, text),
         FUNCTION 1 varbitcmp(varbit, varbit),
-        FUNCTION 2 kmersearch_extract_value_dna4(dna4, internal),
+        FUNCTION 2 kmersearch_extract_value_dna4(DNA4, internal),
         FUNCTION 3 kmersearch_extract_query(text, internal, int2, internal, internal),
         FUNCTION 4 kmersearch_consistent(internal, int2, text, int4, internal, internal),
         STORAGE varbit;
@@ -181,22 +181,22 @@ CREATE FUNCTION kmersearch_get_excluded_kmers(index_oid oid)
 
 
 -- Score calculation functions
-CREATE FUNCTION kmersearch_rawscore(dna2, text) 
+CREATE FUNCTION kmersearch_rawscore(DNA2, text) 
     RETURNS integer
     AS 'MODULE_PATHNAME', 'kmersearch_rawscore'
     LANGUAGE C IMMUTABLE STRICT;
 
-CREATE FUNCTION kmersearch_rawscore(dna4, text) 
+CREATE FUNCTION kmersearch_rawscore(DNA4, text) 
     RETURNS integer
     AS 'MODULE_PATHNAME', 'kmersearch_rawscore'
     LANGUAGE C IMMUTABLE STRICT;
 
-CREATE FUNCTION kmersearch_correctedscore(dna2, text) 
+CREATE FUNCTION kmersearch_correctedscore(DNA2, text) 
     RETURNS integer
     AS 'MODULE_PATHNAME', 'kmersearch_correctedscore'
     LANGUAGE C IMMUTABLE STRICT;
 
-CREATE FUNCTION kmersearch_correctedscore(dna4, text) 
+CREATE FUNCTION kmersearch_correctedscore(DNA4, text) 
     RETURNS integer
     AS 'MODULE_PATHNAME', 'kmersearch_correctedscore'
     LANGUAGE C IMMUTABLE STRICT;

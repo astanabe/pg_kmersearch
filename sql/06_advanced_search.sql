@@ -10,7 +10,7 @@ SET kmersearch.kmer_size = 6;
 CREATE TABLE test_k6_sequences (
     id SERIAL PRIMARY KEY,
     name TEXT,
-    sequence dna2
+    sequence DNA2
 );
 
 INSERT INTO test_k6_sequences (name, sequence) VALUES
@@ -33,7 +33,7 @@ SET kmersearch.kmer_size = 10;
 CREATE TABLE test_k10_sequences (
     id SERIAL PRIMARY KEY,
     name TEXT,
-    sequence dna2
+    sequence DNA2
 );
 
 INSERT INTO test_k10_sequences (name, sequence) VALUES
