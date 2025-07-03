@@ -1634,3 +1634,69 @@ kmersearch_is_kmer_excluded(Oid index_oid, VarBit *kmer_key)
     return false;
 }
 
+/*
+ * Length functions for DNA2 and DNA4 types
+ */
+
+/* DNA2 bit_length function */
+PG_FUNCTION_INFO_V1(kmersearch_dna2_bit_length);
+Datum
+kmersearch_dna2_bit_length(PG_FUNCTION_ARGS)
+{
+    VarBit *dna = PG_GETARG_VARBIT_P(0);
+    int32 bit_len = VARBITLEN(dna);
+    
+    PG_RETURN_INT32(bit_len);
+}
+
+/* DNA4 bit_length function */
+PG_FUNCTION_INFO_V1(kmersearch_dna4_bit_length);
+Datum
+kmersearch_dna4_bit_length(PG_FUNCTION_ARGS)
+{
+    VarBit *dna = PG_GETARG_VARBIT_P(0);
+    int32 bit_len = VARBITLEN(dna);
+    
+    PG_RETURN_INT32(bit_len);
+}
+
+/* DNA2 nuc_length function */
+PG_FUNCTION_INFO_V1(kmersearch_dna2_nuc_length);
+Datum
+kmersearch_dna2_nuc_length(PG_FUNCTION_ARGS)
+{
+    VarBit *dna = PG_GETARG_VARBIT_P(0);
+    int32 bit_len = VARBITLEN(dna);
+    int32 nuc_len = bit_len / 2;  /* DNA2 uses 2 bits per nucleotide */
+    
+    PG_RETURN_INT32(nuc_len);
+}
+
+/* DNA4 nuc_length function */
+PG_FUNCTION_INFO_V1(kmersearch_dna4_nuc_length);
+Datum
+kmersearch_dna4_nuc_length(PG_FUNCTION_ARGS)
+{
+    VarBit *dna = PG_GETARG_VARBIT_P(0);
+    int32 bit_len = VARBITLEN(dna);
+    int32 nuc_len = bit_len / 4;  /* DNA4 uses 4 bits per nucleotide */
+    
+    PG_RETURN_INT32(nuc_len);
+}
+
+/* DNA2 char_length function (same as nuc_length) */
+PG_FUNCTION_INFO_V1(kmersearch_dna2_char_length);
+Datum
+kmersearch_dna2_char_length(PG_FUNCTION_ARGS)
+{
+    return kmersearch_dna2_nuc_length(fcinfo);
+}
+
+/* DNA4 char_length function (same as nuc_length) */
+PG_FUNCTION_INFO_V1(kmersearch_dna4_char_length);
+Datum
+kmersearch_dna4_char_length(PG_FUNCTION_ARGS)
+{
+    return kmersearch_dna4_nuc_length(fcinfo);
+}
+

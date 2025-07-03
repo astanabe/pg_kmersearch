@@ -200,3 +200,49 @@ CREATE FUNCTION kmersearch_correctedscore(DNA4, text)
     RETURNS integer
     AS 'MODULE_PATHNAME', 'kmersearch_correctedscore'
     LANGUAGE C IMMUTABLE STRICT;
+
+-- Length functions for DNA2 and DNA4 types
+
+-- bit_length functions
+CREATE FUNCTION bit_length(DNA2) 
+    RETURNS integer
+    AS 'MODULE_PATHNAME', 'kmersearch_dna2_bit_length'
+    LANGUAGE C IMMUTABLE STRICT;
+
+CREATE FUNCTION bit_length(DNA4) 
+    RETURNS integer
+    AS 'MODULE_PATHNAME', 'kmersearch_dna4_bit_length'
+    LANGUAGE C IMMUTABLE STRICT;
+
+-- nuc_length functions
+CREATE FUNCTION nuc_length(DNA2) 
+    RETURNS integer
+    AS 'MODULE_PATHNAME', 'kmersearch_dna2_nuc_length'
+    LANGUAGE C IMMUTABLE STRICT;
+
+CREATE FUNCTION nuc_length(DNA4) 
+    RETURNS integer
+    AS 'MODULE_PATHNAME', 'kmersearch_dna4_nuc_length'
+    LANGUAGE C IMMUTABLE STRICT;
+
+-- char_length functions (same as nuc_length)
+CREATE FUNCTION char_length(DNA2) 
+    RETURNS integer
+    AS 'MODULE_PATHNAME', 'kmersearch_dna2_char_length'
+    LANGUAGE C IMMUTABLE STRICT;
+
+CREATE FUNCTION char_length(DNA4) 
+    RETURNS integer
+    AS 'MODULE_PATHNAME', 'kmersearch_dna4_char_length'
+    LANGUAGE C IMMUTABLE STRICT;
+
+-- length functions (same as nuc_length)
+CREATE FUNCTION length(DNA2) 
+    RETURNS integer
+    AS 'MODULE_PATHNAME', 'kmersearch_dna2_char_length'
+    LANGUAGE C IMMUTABLE STRICT;
+
+CREATE FUNCTION length(DNA4) 
+    RETURNS integer
+    AS 'MODULE_PATHNAME', 'kmersearch_dna4_char_length'
+    LANGUAGE C IMMUTABLE STRICT;

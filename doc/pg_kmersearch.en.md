@@ -210,6 +210,50 @@ FROM dna4_sequences WHERE dna_seq =% 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGAT
 ORDER BY score DESC;
 ```
 
+## Length Functions
+
+pg_kmersearch provides several length functions for DNA2 and DNA4 types that correctly handle padding and return accurate measurements:
+
+### Available Length Functions
+
+- **`bit_length(DNA2/DNA4)`**: Returns the actual bit length (excluding padding)
+- **`nuc_length(DNA2/DNA4)`**: Returns the number of nucleotides
+- **`char_length(DNA2/DNA4)`**: Same as `nuc_length()` (character count)
+- **`length(DNA2/DNA4)`**: Same as `nuc_length()` (standard length function)
+
+### Function Relationships
+
+- **DNA2**: `nuc_length() = bit_length() / 2` (2 bits per nucleotide)
+- **DNA4**: `nuc_length() = bit_length() / 4` (4 bits per nucleotide)
+- **Consistency**: `char_length() = length() = nuc_length()`
+
+### Usage Examples
+
+```sql
+-- Basic length measurements
+SELECT 
+    bit_length('ATCGA'::DNA2) AS bits,      -- Returns: 10
+    nuc_length('ATCGA'::DNA2) AS nucs,      -- Returns: 5
+    char_length('ATCGA'::DNA2) AS chars,    -- Returns: 5
+    length('ATCGA'::DNA2) AS len;           -- Returns: 5
+
+-- DNA4 with degenerate codes
+SELECT 
+    bit_length('ATCGMRWSYKN'::DNA4) AS bits,  -- Returns: 44
+    nuc_length('ATCGMRWSYKN'::DNA4) AS nucs;  -- Returns: 11
+
+-- Padding verification (non-multiples of 4/8)
+SELECT 
+    bit_length('ATCGATCGA'::DNA2) AS bits,    -- 9 nucleotides * 2 = 18 bits
+    nuc_length('ATCGATCGA'::DNA2) AS nucs;    -- Returns: 9
+
+-- Using length functions in queries
+SELECT id, name, length(dna_seq) AS sequence_length
+FROM sequences
+WHERE length(dna_seq) >= 50
+ORDER BY length(dna_seq) DESC;
+```
+
 ### Degenerate Code Meanings
 
 | Code | Meaning | Bit Representation |

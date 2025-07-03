@@ -210,6 +210,50 @@ FROM dna4_sequences WHERE dna_seq =% 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGAT
 ORDER BY score DESC;
 ```
 
+## 長さ関数
+
+pg_kmersearchは、DNA2型およびDNA4型に対してパディングを正しく処理し、正確な測定値を返す複数の長さ関数を提供します：
+
+### 利用可能な長さ関数
+
+- **`bit_length(DNA2/DNA4)`**: 実際のビット長を返す（パディングを除く）
+- **`nuc_length(DNA2/DNA4)`**: 塩基数を返す
+- **`char_length(DNA2/DNA4)`**: `nuc_length()`と同じ（文字数）
+- **`length(DNA2/DNA4)`**: `nuc_length()`と同じ（標準の長さ関数）
+
+### 関数の関係性
+
+- **DNA2**: `nuc_length() = bit_length() / 2` (1塩基あたり2ビット)
+- **DNA4**: `nuc_length() = bit_length() / 4` (1塩基あたり4ビット)
+- **一貫性**: `char_length() = length() = nuc_length()`
+
+### 使用例
+
+```sql
+-- 基本的な長さ測定
+SELECT 
+    bit_length('ATCGA'::DNA2) AS bits,      -- 戻り値: 10
+    nuc_length('ATCGA'::DNA2) AS nucs,      -- 戻り値: 5
+    char_length('ATCGA'::DNA2) AS chars,    -- 戻り値: 5
+    length('ATCGA'::DNA2) AS len;           -- 戻り値: 5
+
+-- 縮重コードを含むDNA4
+SELECT 
+    bit_length('ATCGMRWSYKN'::DNA4) AS bits,  -- 戻り値: 44
+    nuc_length('ATCGMRWSYKN'::DNA4) AS nucs;  -- 戻り値: 11
+
+-- パディング検証（4/8の倍数でない場合）
+SELECT 
+    bit_length('ATCGATCGA'::DNA2) AS bits,    -- 9塩基 * 2 = 18ビット
+    nuc_length('ATCGATCGA'::DNA2) AS nucs;    -- 戻り値: 9
+
+-- クエリでの長さ関数の使用
+SELECT id, name, length(dna_seq) AS sequence_length
+FROM sequences
+WHERE length(dna_seq) >= 50
+ORDER BY length(dna_seq) DESC;
+```
+
 ### 縮重コードの意味
 
 | コード | 意味 | ビット表現 |

@@ -3,7 +3,7 @@
 EXTENSION = pg_kmersearch
 DATA = pg_kmersearch--1.0.sql
 MODULES = pg_kmersearch
-REGRESS = 01_basic_types 02_configuration 03_tables_indexes 04_search_operators 05_scoring_functions 06_advanced_search
+REGRESS = 01_basic_types 02_configuration 03_tables_indexes 04_search_operators 05_scoring_functions 06_advanced_search 07_length_functions
 
 PG_CONFIG = pg_config
 PGXS := $(shell $(PG_CONFIG) --pgxs)
