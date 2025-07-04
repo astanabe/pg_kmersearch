@@ -32,6 +32,12 @@ SHOW kmersearch.min_score;
  1
 (1 row)
 
+SHOW kmersearch.min_shared_ngram_key_rate;
+ kmersearch.min_shared_ngram_key_rate 
+-------------------------------------
+ 0.9
+(1 row)
+
 -- Test setting valid values
 SET kmersearch.kmer_size = 12;
 SHOW kmersearch.kmer_size;
@@ -68,6 +74,13 @@ SHOW kmersearch.min_score;
  5
 (1 row)
 
+SET kmersearch.min_shared_ngram_key_rate = 0.8;
+SHOW kmersearch.min_shared_ngram_key_rate;
+ kmersearch.min_shared_ngram_key_rate 
+-------------------------------------
+ 0.8
+(1 row)
+
 -- Test boundary values
 SET kmersearch.kmer_size = 4;  -- minimum
 SHOW kmersearch.kmer_size;
@@ -97,6 +110,20 @@ SHOW kmersearch.occur_bitlen;
  16
 (1 row)
 
+SET kmersearch.min_shared_ngram_key_rate = 0.0;  -- minimum
+SHOW kmersearch.min_shared_ngram_key_rate;
+ kmersearch.min_shared_ngram_key_rate 
+-------------------------------------
+ 0
+(1 row)
+
+SET kmersearch.min_shared_ngram_key_rate = 1.0;  -- maximum
+SHOW kmersearch.min_shared_ngram_key_rate;
+ kmersearch.min_shared_ngram_key_rate 
+-------------------------------------
+ 1
+(1 row)
+
 -- Test invalid values (should error)
 \set ON_ERROR_STOP off
 SET kmersearch.kmer_size = 3;   -- below minimum
@@ -107,6 +134,10 @@ SET kmersearch.occur_bitlen = 17; -- above maximum
 ERROR:  17 is outside the valid range for parameter "kmersearch.occur_bitlen" (0 .. 16)
 SET kmersearch.max_appearance_rate = 1.1; -- above maximum
 ERROR:  1.1 is outside the valid range for parameter "kmersearch.max_appearance_rate" (0 .. 1)
+SET kmersearch.min_shared_ngram_key_rate = -0.1;  -- below minimum
+ERROR:  -0.1 is outside the valid range for parameter "kmersearch.min_shared_ngram_key_rate" (0 .. 1)
+SET kmersearch.min_shared_ngram_key_rate = 1.1;   -- above maximum
+ERROR:  1.1 is outside the valid range for parameter "kmersearch.min_shared_ngram_key_rate" (0 .. 1)
 \set ON_ERROR_STOP on
 -- Reset to defaults for other tests
 SET kmersearch.kmer_size = 8;
@@ -114,4 +145,5 @@ SET kmersearch.occur_bitlen = 8;
 SET kmersearch.max_appearance_rate = 0.05;
 SET kmersearch.max_appearance_nrow = 0;
 SET kmersearch.min_score = 1;
+SET kmersearch.min_shared_ngram_key_rate = 0.9;
 DROP EXTENSION pg_kmersearch CASCADE;

@@ -9,6 +9,7 @@ SHOW kmersearch.occur_bitlen;
 SHOW kmersearch.max_appearance_rate;
 SHOW kmersearch.max_appearance_nrow;
 SHOW kmersearch.min_score;
+SHOW kmersearch.min_shared_ngram_key_rate;
 
 -- Test setting valid values
 SET kmersearch.kmer_size = 12;
@@ -26,6 +27,9 @@ SHOW kmersearch.max_appearance_nrow;
 SET kmersearch.min_score = 5;
 SHOW kmersearch.min_score;
 
+SET kmersearch.min_shared_ngram_key_rate = 0.8;
+SHOW kmersearch.min_shared_ngram_key_rate;
+
 -- Test boundary values
 SET kmersearch.kmer_size = 4;  -- minimum
 SHOW kmersearch.kmer_size;
@@ -39,12 +43,20 @@ SHOW kmersearch.occur_bitlen;
 SET kmersearch.occur_bitlen = 16; -- maximum
 SHOW kmersearch.occur_bitlen;
 
+SET kmersearch.min_shared_ngram_key_rate = 0.0;  -- minimum
+SHOW kmersearch.min_shared_ngram_key_rate;
+
+SET kmersearch.min_shared_ngram_key_rate = 1.0;  -- maximum
+SHOW kmersearch.min_shared_ngram_key_rate;
+
 -- Test invalid values (should error)
 \set ON_ERROR_STOP off
 SET kmersearch.kmer_size = 3;   -- below minimum
 SET kmersearch.kmer_size = 65;  -- above maximum
 SET kmersearch.occur_bitlen = 17; -- above maximum
 SET kmersearch.max_appearance_rate = 1.1; -- above maximum
+SET kmersearch.min_shared_ngram_key_rate = -0.1;  -- below minimum
+SET kmersearch.min_shared_ngram_key_rate = 1.1;   -- above maximum
 \set ON_ERROR_STOP on
 
 -- Reset to defaults for other tests
@@ -53,5 +65,6 @@ SET kmersearch.occur_bitlen = 8;
 SET kmersearch.max_appearance_rate = 0.05;
 SET kmersearch.max_appearance_nrow = 0;
 SET kmersearch.min_score = 1;
+SET kmersearch.min_shared_ngram_key_rate = 0.9;
 
 DROP EXTENSION pg_kmersearch CASCADE;

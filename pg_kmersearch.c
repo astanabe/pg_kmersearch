@@ -38,6 +38,7 @@ static int kmersearch_kmer_size = 8;  /* Default k-mer size */
 static double kmersearch_max_appearance_rate = 0.05;  /* Default max appearance rate */
 static int kmersearch_max_appearance_nrow = 0;  /* Default max appearance nrow (0 = undefined) */
 static int kmersearch_min_score = 1;  /* Default minimum score for GIN search */
+static double kmersearch_min_shared_ngram_key_rate = 0.9;  /* Default minimum shared n-gram key rate for =% operator */
 
 /* Hash table entry for k-mer frequency counting */
 typedef struct KmerFreqEntry
@@ -53,6 +54,40 @@ typedef struct KmerHashKey
     int         key_len;            /* Length of the key data */
     char        data[FLEXIBLE_ARRAY_MEMBER];
 } KmerHashKey;
+
+/* Combined result structure for k-mer matching and scoring */
+typedef struct KmerMatchResult
+{
+    int         shared_count;       /* Number of shared k-mers (rawscore) */
+    int         seq_nkeys;          /* Number of k-mers in sequence */
+    int         query_nkeys;        /* Number of k-mers in query */
+    double      sharing_rate;       /* Calculated sharing rate */
+    bool        match_result;       /* Boolean match result for =% operator */
+    bool        valid;              /* Whether the result is valid */
+} KmerMatchResult;
+
+/* Macro for safe memory cleanup */
+#define CLEANUP_KMER_ARRAYS(seq_keys, seq_nkeys, query_keys, query_nkeys) \
+    do { \
+        if (seq_keys) { \
+            int i; \
+            for (i = 0; i < (seq_nkeys); i++) { \
+                if (seq_keys[i]) \
+                    pfree(seq_keys[i]); \
+            } \
+            pfree(seq_keys); \
+            seq_keys = NULL; \
+        } \
+        if (query_keys) { \
+            int i; \
+            for (i = 0; i < (query_nkeys); i++) { \
+                if (query_keys[i]) \
+                    pfree(query_keys[i]); \
+            } \
+            pfree(query_keys); \
+            query_keys = NULL; \
+        } \
+    } while(0)
 
 /* Forward declarations */
 static bool kmersearch_is_kmer_excluded(Oid index_oid, VarBit *kmer_key);
@@ -72,6 +107,14 @@ static VarBit *kmersearch_create_ngram_key_from_dna2_bits(VarBit *seq, int start
 static Datum *kmersearch_extract_dna2_kmers_direct(VarBit *seq, int k, int *nkeys);
 static Datum *kmersearch_extract_dna4_kmers_with_expansion_direct(VarBit *seq, int k, int *nkeys);
 static VarBit *kmersearch_create_ngram_key_with_occurrence_from_dna2(VarBit *dna2_kmer, int k, int occurrence);
+static VarBit **kmersearch_extract_query_kmers(const char *query, int k, int *nkeys);
+static int kmersearch_count_matching_kmers_fast(VarBit **seq_keys, int seq_nkeys, VarBit **query_keys, int query_nkeys);
+static VarBit *kmersearch_create_kmer_key_only(const char *kmer, int k);
+static bool kmersearch_kmer_based_match_dna2(VarBit *sequence, const char *query_string);
+static bool kmersearch_kmer_based_match_dna4(VarBit *sequence, const char *query_string);
+static bool kmersearch_evaluate_match_conditions(int shared_count, int query_total);
+static KmerMatchResult kmersearch_calculate_kmer_match_and_score_dna2(VarBit *sequence, const char *query_string);
+static KmerMatchResult kmersearch_calculate_kmer_match_and_score_dna4(VarBit *sequence, const char *query_string);
 
 /* Custom GUC variables */
 void _PG_init(void);
@@ -195,7 +238,8 @@ PG_FUNCTION_INFO_V1(kmersearch_analyze_table_frequency);
 PG_FUNCTION_INFO_V1(kmersearch_get_excluded_kmers);
 
 /* Score calculation functions */
-PG_FUNCTION_INFO_V1(kmersearch_rawscore);
+PG_FUNCTION_INFO_V1(kmersearch_rawscore_dna2);
+PG_FUNCTION_INFO_V1(kmersearch_rawscore_dna4);
 PG_FUNCTION_INFO_V1(kmersearch_correctedscore);
 
 /* Operator support functions */
@@ -556,6 +600,19 @@ _PG_init(void)
                            NULL,
                            NULL,
                            NULL);
+    
+    DefineCustomRealVariable("kmersearch.min_shared_ngram_key_rate",
+                            "Minimum shared n-gram key rate for =% operator matching",
+                            "Minimum ratio of shared n-gram keys between query and target sequence (0.0-1.0)",
+                            &kmersearch_min_shared_ngram_key_rate,
+                            0.9,
+                            0.0,
+                            1.0,
+                            PGC_USERSET,
+                            0,
+                            NULL,
+                            NULL,
+                            NULL);
 }
 
 /*
@@ -732,8 +789,7 @@ kmersearch_will_exceed_degenerate_limit_dna4_bits(VarBit *seq, int start_pos, in
         }
         
         /* Check expansion count using lookup table */
-        int expansion_count;
-        expansion_count = kmersearch_dna4_to_dna2_table[encoded][0];
+        int expansion_count = kmersearch_dna4_to_dna2_table[encoded][0];
         
         if (expansion_count == 4)  /* N */
         {
@@ -1259,8 +1315,7 @@ kmersearch_create_ngram_key_with_occurrence_from_dna2(VarBit *dna2_kmer, int k, 
     dst_data = VARBITS(result);
     
     /* Copy k-mer bits directly */
-    int kmer_bytes;
-    kmer_bytes = (kmer_bits + 7) / 8;
+    int kmer_bytes = (kmer_bits + 7) / 8;
     memcpy(dst_data, src_data, kmer_bytes);
     
     /* Encode occurrence count */
@@ -1279,6 +1334,120 @@ kmersearch_create_ngram_key_with_occurrence_from_dna2(VarBit *dna2_kmer, int k, 
     
     return result;
 }
+
+/*
+ * Extract k-mers from query string with degenerate code expansion
+ */
+static VarBit **
+kmersearch_extract_query_kmers(const char *query, int k, int *nkeys)
+{
+    int query_len = strlen(query);
+    int max_kmers = (query_len >= k) ? (query_len - k + 1) : 0;
+    VarBit **keys;
+    int key_count = 0;
+    int i;
+    bool has_degenerate;
+    int j;
+    
+    *nkeys = 0;
+    if (max_kmers <= 0)
+        return NULL;
+    
+    /* Allocate keys array with room for degenerate expansions */
+    keys = (VarBit **) palloc(max_kmers * 10 * sizeof(VarBit *));
+    
+    /* Extract k-mers from query */
+    for (i = 0; i <= query_len - k; i++)
+    {
+        char kmer[65];
+        strncpy(kmer, query + i, k);
+        kmer[k] = '\0';
+        
+        /* Check if this k-mer has degenerate codes */
+        if (kmersearch_will_exceed_degenerate_limit(kmer, k))
+            continue;  /* Skip k-mers with too many combinations */
+        
+        /* Check for degenerate codes */
+        has_degenerate = false;
+        for (j = 0; j < k; j++)
+        {
+            char c = toupper(kmer[j]);
+            if (c != 'A' && c != 'C' && c != 'G' && c != 'T' && c != 'U')
+            {
+                has_degenerate = true;
+                break;
+            }
+        }
+        
+        if (has_degenerate)
+        {
+            /* Expand degenerate codes */
+            char *expanded[10];
+            int expand_count;
+            
+            kmersearch_expand_degenerate_sequence(kmer, k, expanded, &expand_count);
+            
+            for (j = 0; j < expand_count; j++)
+            {
+                VarBit *kmer_key = kmersearch_create_kmer_key_only(expanded[j], k);
+                keys[key_count++] = kmer_key;
+                pfree(expanded[j]);
+            }
+        }
+        else
+        {
+            /* Simple case - no degenerate codes */
+            VarBit *kmer_key = kmersearch_create_kmer_key_only(kmer, k);
+            keys[key_count++] = kmer_key;
+        }
+    }
+    
+    *nkeys = key_count;
+    return keys;
+}
+
+/*
+ * Fast k-mer matching using hash table
+ */
+static int
+kmersearch_count_matching_kmers_fast(VarBit **seq_keys, int seq_nkeys, VarBit **query_keys, int query_nkeys)
+{
+    HTAB *query_hash;
+    HASHCTL hash_ctl;
+    int match_count = 0;
+    int i;
+    
+    if (seq_nkeys == 0 || query_nkeys == 0)
+        return 0;
+    
+    /* Create hash table for query k-mers */
+    memset(&hash_ctl, 0, sizeof(hash_ctl));
+    hash_ctl.keysize = sizeof(VarBit *);
+    hash_ctl.entrysize = sizeof(bool);
+    hash_ctl.hash = tag_hash;
+    query_hash = hash_create("QueryKmerHash", query_nkeys, &hash_ctl,
+                             HASH_ELEM | HASH_FUNCTION);
+    
+    /* Insert all query k-mers into hash table */
+    for (i = 0; i < query_nkeys; i++)
+    {
+        bool found;
+        hash_search(query_hash, &query_keys[i], HASH_ENTER, &found);
+    }
+    
+    /* Count matches in sequence k-mers */
+    for (i = 0; i < seq_nkeys; i++)
+    {
+        bool found;
+        hash_search(query_hash, &seq_keys[i], HASH_FIND, &found);
+        if (found)
+            match_count++;
+    }
+    
+    hash_destroy(query_hash);
+    return match_count;
+}
+
 
 /*
  * Extract k-mers from DNA sequence and create n-gram keys
@@ -1654,16 +1823,15 @@ kmersearch_dna2_match(PG_FUNCTION_ARGS)
     VarBit *dna = PG_GETARG_VARBIT_P(0);
     text *pattern = PG_GETARG_TEXT_P(1);
     
-    char *dna_string = kmersearch_dna2_to_string(dna);
     char *pattern_string = text_to_cstring(pattern);
     
-    /* Simple pattern matching - in reality this would use k-mer similarity scoring */
-    bool result = (strstr(dna_string, pattern_string) != NULL);
+    /* Use common calculation function */
+    KmerMatchResult result = kmersearch_calculate_kmer_match_and_score_dna2(dna, pattern_string);
     
-    pfree(dna_string);
     pfree(pattern_string);
     
-    PG_RETURN_BOOL(result);
+    /* Return boolean match result */
+    PG_RETURN_BOOL(result.valid ? result.match_result : false);
 }
 
 /*
@@ -1675,16 +1843,15 @@ kmersearch_dna4_match(PG_FUNCTION_ARGS)
     VarBit *dna = PG_GETARG_VARBIT_P(0);
     text *pattern = PG_GETARG_TEXT_P(1);
     
-    char *dna_string = kmersearch_dna4_to_string(dna);
     char *pattern_string = text_to_cstring(pattern);
     
-    /* Simple pattern matching - in reality this would use k-mer similarity scoring */
-    bool result = (strstr(dna_string, pattern_string) != NULL);
+    /* Use common calculation function */
+    KmerMatchResult result = kmersearch_calculate_kmer_match_and_score_dna4(dna, pattern_string);
     
-    pfree(dna_string);
     pfree(pattern_string);
     
-    PG_RETURN_BOOL(result);
+    /* Return boolean match result */
+    PG_RETURN_BOOL(result.valid ? result.match_result : false);
 }
 
 
@@ -2081,19 +2248,43 @@ kmersearch_extract_kmers_from_query(const char *query, int k, int *nkeys)
 }
 
 /*
- * Raw score calculation function
+ * Raw score calculation function for DNA2
  */
 Datum
-kmersearch_rawscore(PG_FUNCTION_ARGS)
+kmersearch_rawscore_dna2(PG_FUNCTION_ARGS)
 {
     VarBit *sequence = PG_GETARG_VARBIT_P(0);
     text *query_text = PG_GETARG_TEXT_P(1);
-    int score;
     
-    /* Calculate raw score between sequence and query */
-    score = kmersearch_calculate_raw_score(sequence, NULL, query_text);
+    char *query_string = text_to_cstring(query_text);
     
-    PG_RETURN_INT32(score);
+    /* Use common calculation function */
+    KmerMatchResult result = kmersearch_calculate_kmer_match_and_score_dna2(sequence, query_string);
+    
+    pfree(query_string);
+    
+    /* Return shared count as raw score */
+    PG_RETURN_INT32(result.valid ? result.shared_count : 0);
+}
+
+/*
+ * Raw score calculation function for DNA4
+ */
+Datum
+kmersearch_rawscore_dna4(PG_FUNCTION_ARGS)
+{
+    VarBit *sequence = PG_GETARG_VARBIT_P(0);
+    text *query_text = PG_GETARG_TEXT_P(1);
+    
+    char *query_string = text_to_cstring(query_text);
+    
+    /* Use common calculation function */
+    KmerMatchResult result = kmersearch_calculate_kmer_match_and_score_dna4(sequence, query_string);
+    
+    pfree(query_string);
+    
+    /* Return shared count as raw score */
+    PG_RETURN_INT32(result.valid ? result.shared_count : 0);
 }
 
 /*
@@ -2195,3 +2386,282 @@ kmersearch_dna4_char_length(PG_FUNCTION_ARGS)
     return kmersearch_dna4_nuc_length(fcinfo);
 }
 
+/*
+ * Helper function to evaluate match conditions using both score and rate thresholds
+ */
+static bool
+kmersearch_evaluate_match_conditions(int shared_count, int query_total)
+{
+    /* Condition 1: Absolute shared key count */
+    bool score_condition = (shared_count >= kmersearch_min_score);
+    
+    /* Condition 2: Relative shared key rate */
+    double sharing_rate;
+    bool rate_condition;
+    
+    if (query_total > 0) {
+        sharing_rate = (double)shared_count / (double)query_total;
+    } else {
+        sharing_rate = 0.0;
+    }
+    rate_condition = (sharing_rate >= kmersearch_min_shared_ngram_key_rate);
+    
+    /* AND condition */
+    return (score_condition && rate_condition);
+}
+
+/*
+ * K-mer based matching for DNA2 sequences
+ */
+static bool
+kmersearch_kmer_based_match_dna2(VarBit *sequence, const char *query_string)
+{
+    VarBit **seq_keys;
+    VarBit **query_keys;
+    int seq_nkeys, query_nkeys;
+    int shared_count;
+    int k = kmersearch_kmer_size;
+    bool result;
+    
+    /* Extract k-mers from DNA2 sequence (no degenerate expansion) */
+    seq_keys = (VarBit **)kmersearch_extract_dna2_kmers_direct(sequence, k, &seq_nkeys);
+    if (seq_keys == NULL || seq_nkeys == 0) {
+        return false;
+    }
+    
+    /* Extract k-mers from query (with degenerate expansion) */
+    query_keys = kmersearch_extract_query_kmers(query_string, k, &query_nkeys);
+    if (query_keys == NULL || query_nkeys == 0) {
+        /* Free sequence keys */
+        if (seq_keys) {
+            int i;
+            for (i = 0; i < seq_nkeys; i++) {
+                if (seq_keys[i])
+                    pfree(seq_keys[i]);
+            }
+            pfree(seq_keys);
+        }
+        return false;
+    }
+    
+    /* Count shared keys */
+    shared_count = kmersearch_count_matching_kmers_fast(seq_keys, seq_nkeys, query_keys, query_nkeys);
+    
+    /* Evaluate match conditions */
+    result = kmersearch_evaluate_match_conditions(shared_count, query_nkeys);
+    
+    /* Free memory */
+    if (seq_keys) {
+        int i;
+        for (i = 0; i < seq_nkeys; i++) {
+            if (seq_keys[i])
+                pfree(seq_keys[i]);
+        }
+        pfree(seq_keys);
+    }
+    
+    if (query_keys) {
+        int i;
+        for (i = 0; i < query_nkeys; i++) {
+            if (query_keys[i])
+                pfree(query_keys[i]);
+        }
+        pfree(query_keys);
+    }
+    
+    return result;
+}
+
+/*
+ * K-mer based matching for DNA4 sequences
+ */
+static bool
+kmersearch_kmer_based_match_dna4(VarBit *sequence, const char *query_string)
+{
+    VarBit **seq_keys;
+    VarBit **query_keys;
+    int seq_nkeys, query_nkeys;
+    int shared_count;
+    int k = kmersearch_kmer_size;
+    bool result;
+    
+    /* Extract k-mers from DNA4 sequence (with degenerate expansion) */
+    seq_keys = (VarBit **)kmersearch_extract_dna4_kmers_with_expansion_direct(sequence, k, &seq_nkeys);
+    if (seq_keys == NULL || seq_nkeys == 0) {
+        return false;
+    }
+    
+    /* Extract k-mers from query (with degenerate expansion) */
+    query_keys = kmersearch_extract_query_kmers(query_string, k, &query_nkeys);
+    if (query_keys == NULL || query_nkeys == 0) {
+        /* Free sequence keys */
+        if (seq_keys) {
+            int i;
+            for (i = 0; i < seq_nkeys; i++) {
+                if (seq_keys[i])
+                    pfree(seq_keys[i]);
+            }
+            pfree(seq_keys);
+        }
+        return false;
+    }
+    
+    /* Count shared keys */
+    shared_count = kmersearch_count_matching_kmers_fast(seq_keys, seq_nkeys, query_keys, query_nkeys);
+    
+    /* Evaluate match conditions */
+    result = kmersearch_evaluate_match_conditions(shared_count, query_nkeys);
+    
+    /* Free memory */
+    if (seq_keys) {
+        int i;
+        for (i = 0; i < seq_nkeys; i++) {
+            if (seq_keys[i])
+                pfree(seq_keys[i]);
+        }
+        pfree(seq_keys);
+    }
+    
+    if (query_keys) {
+        int i;
+        for (i = 0; i < query_nkeys; i++) {
+            if (query_keys[i])
+                pfree(query_keys[i]);
+        }
+        pfree(query_keys);
+    }
+    
+    return result;
+}
+
+
+
+/*
+ * Core k-mer matching and scoring function for DNA2 sequences
+ * Performs all k-mer extraction, comparison, and evaluation in one pass
+ */
+static KmerMatchResult
+kmersearch_calculate_kmer_match_and_score_dna2(VarBit *sequence, const char *query_string)
+{
+    KmerMatchResult result = {0};
+    VarBit **seq_keys = NULL;
+    VarBit **query_keys = NULL;
+    int k = kmersearch_kmer_size;
+    
+    /* Initialize result */
+    result.valid = false;
+    result.shared_count = 0;
+    result.seq_nkeys = 0;
+    result.query_nkeys = 0;
+    result.sharing_rate = 0.0;
+    result.match_result = false;
+    
+    /* Input validation */
+    if (sequence == NULL || query_string == NULL) {
+        return result;
+    }
+    
+    /* Query length validation */
+    int query_len;
+    query_len = strlen(query_string);
+    if (query_len < k) {
+        return result;
+    }
+    
+    /* Extract k-mers from DNA2 sequence (no degenerate expansion) */
+    seq_keys = (VarBit **)kmersearch_extract_dna2_kmers_direct(sequence, k, &result.seq_nkeys);
+    if (seq_keys == NULL || result.seq_nkeys == 0) {
+        goto cleanup;
+    }
+    
+    /* Extract k-mers from query (with degenerate expansion) */
+    query_keys = kmersearch_extract_query_kmers(query_string, k, &result.query_nkeys);
+    if (query_keys == NULL || result.query_nkeys == 0) {
+        goto cleanup;
+    }
+    
+    /* Calculate shared k-mer count (this becomes the rawscore) */
+    result.shared_count = kmersearch_count_matching_kmers_fast(seq_keys, result.seq_nkeys, 
+                                                               query_keys, result.query_nkeys);
+    
+    /* Calculate sharing rate */
+    if (result.query_nkeys > 0) {
+        result.sharing_rate = (double)result.shared_count / (double)result.query_nkeys;
+    }
+    
+    /* Evaluate match conditions for =% operator */
+    result.match_result = kmersearch_evaluate_match_conditions(result.shared_count, result.query_nkeys);
+    
+    result.valid = true;
+    
+cleanup:
+    /* Unified memory cleanup */
+    CLEANUP_KMER_ARRAYS(seq_keys, result.seq_nkeys, query_keys, result.query_nkeys);
+    
+    return result;
+}
+
+/*
+ * Core k-mer matching and scoring function for DNA4 sequences
+ * Performs all k-mer extraction, comparison, and evaluation in one pass
+ */
+static KmerMatchResult
+kmersearch_calculate_kmer_match_and_score_dna4(VarBit *sequence, const char *query_string)
+{
+    KmerMatchResult result = {0};
+    VarBit **seq_keys = NULL;
+    VarBit **query_keys = NULL;
+    int k = kmersearch_kmer_size;
+    
+    /* Initialize result */
+    result.valid = false;
+    result.shared_count = 0;
+    result.seq_nkeys = 0;
+    result.query_nkeys = 0;
+    result.sharing_rate = 0.0;
+    result.match_result = false;
+    
+    /* Input validation */
+    if (sequence == NULL || query_string == NULL) {
+        return result;
+    }
+    
+    /* Query length validation */
+    int query_len;
+    query_len = strlen(query_string);
+    if (query_len < k) {
+        return result;
+    }
+    
+    /* Extract k-mers from DNA4 sequence (with degenerate expansion) */
+    seq_keys = (VarBit **)kmersearch_extract_dna4_kmers_with_expansion_direct(sequence, k, &result.seq_nkeys);
+    if (seq_keys == NULL || result.seq_nkeys == 0) {
+        goto cleanup;
+    }
+    
+    /* Extract k-mers from query (with degenerate expansion) */
+    query_keys = kmersearch_extract_query_kmers(query_string, k, &result.query_nkeys);
+    if (query_keys == NULL || result.query_nkeys == 0) {
+        goto cleanup;
+    }
+    
+    /* Calculate shared k-mer count (this becomes the rawscore) */
+    result.shared_count = kmersearch_count_matching_kmers_fast(seq_keys, result.seq_nkeys, 
+                                                               query_keys, result.query_nkeys);
+    
+    /* Calculate sharing rate */
+    if (result.query_nkeys > 0) {
+        result.sharing_rate = (double)result.shared_count / (double)result.query_nkeys;
+    }
+    
+    /* Evaluate match conditions for =% operator */
+    result.match_result = kmersearch_evaluate_match_conditions(result.shared_count, result.query_nkeys);
+    
+    result.valid = true;
+    
+cleanup:
+    /* Unified memory cleanup */
+    CLEANUP_KMER_ARRAYS(seq_keys, result.seq_nkeys, query_keys, result.query_nkeys);
+    
+    return result;
+}

@@ -181,14 +181,14 @@ CREATE FUNCTION kmersearch_get_excluded_kmers(index_oid oid)
 
 
 -- Score calculation functions
-CREATE FUNCTION kmersearch_rawscore(DNA2, text) 
+CREATE FUNCTION kmersearch_rawscore_dna2(DNA2, text) 
     RETURNS integer
-    AS 'MODULE_PATHNAME', 'kmersearch_rawscore'
+    AS 'MODULE_PATHNAME', 'kmersearch_rawscore_dna2'
     LANGUAGE C IMMUTABLE STRICT;
 
-CREATE FUNCTION kmersearch_rawscore(DNA4, text) 
+CREATE FUNCTION kmersearch_rawscore_dna4(DNA4, text) 
     RETURNS integer
-    AS 'MODULE_PATHNAME', 'kmersearch_rawscore'
+    AS 'MODULE_PATHNAME', 'kmersearch_rawscore_dna4'
     LANGUAGE C IMMUTABLE STRICT;
 
 CREATE FUNCTION kmersearch_correctedscore(DNA2, text) 
