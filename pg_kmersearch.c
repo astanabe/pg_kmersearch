@@ -65,6 +65,13 @@ static VarBit **kmersearch_extract_kmers_from_query(const char *query, int k, in
 static Datum *kmersearch_extract_kmers_with_degenerate(const char *sequence, int seq_len, int k, int *nkeys);
 static int kmersearch_count_degenerate_combinations(const char *kmer, int k);
 static VarBit *kmersearch_create_ngram_key_with_occurrence(const char *kmer, int k, int occurrence);
+static bool kmersearch_will_exceed_degenerate_limit(const char *seq, int len);
+static bool kmersearch_will_exceed_degenerate_limit_dna4_bits(VarBit *seq, int start_pos, int k);
+static VarBit **kmersearch_expand_dna4_kmer_to_dna2_direct(VarBit *dna4_seq, int start_pos, int k, int *expansion_count);
+static VarBit *kmersearch_create_ngram_key_from_dna2_bits(VarBit *seq, int start_pos, int k, int occurrence);
+static Datum *kmersearch_extract_dna2_kmers_direct(VarBit *seq, int k, int *nkeys);
+static Datum *kmersearch_extract_dna4_kmers_with_expansion_direct(VarBit *seq, int k, int *nkeys);
+static VarBit *kmersearch_create_ngram_key_with_occurrence_from_dna2(VarBit *dna2_kmer, int k, int occurrence);
 
 /* Custom GUC variables */
 void _PG_init(void);
@@ -141,6 +148,27 @@ static const char kmersearch_dna4_decode_table[16] = {
     'N'   /* 1111 */
 };
 
+/* DNA4 to DNA2 expansion table */
+/* Each entry contains: [expansion_count, base1, base2, base3, base4] */
+static const uint8 kmersearch_dna4_to_dna2_table[16][5] = {
+    {0, 0, 0, 0, 0},     /* 0000 - invalid */
+    {1, 0, 0, 0, 0},     /* 0001 - A */
+    {1, 1, 0, 0, 0},     /* 0010 - C */
+    {2, 0, 1, 0, 0},     /* 0011 - M (A,C) */
+    {1, 2, 0, 0, 0},     /* 0100 - G */
+    {2, 0, 2, 0, 0},     /* 0101 - R (A,G) */
+    {2, 1, 2, 0, 0},     /* 0110 - S (C,G) */
+    {3, 0, 1, 2, 0},     /* 0111 - V (A,C,G) */
+    {1, 3, 0, 0, 0},     /* 1000 - T */
+    {2, 0, 3, 0, 0},     /* 1001 - W (A,T) */
+    {2, 1, 3, 0, 0},     /* 1010 - Y (C,T) */
+    {3, 0, 1, 3, 0},     /* 1011 - H (A,C,T) */
+    {2, 2, 3, 0, 0},     /* 1100 - K (G,T) */
+    {3, 0, 2, 3, 0},     /* 1101 - D (A,G,T) */
+    {3, 1, 2, 3, 0},     /* 1110 - B (C,G,T) */
+    {4, 0, 1, 2, 3}      /* 1111 - N (A,C,G,T) */
+};
+
 /* DNA2 functions */
 PG_FUNCTION_INFO_V1(kmersearch_dna2_in);
 PG_FUNCTION_INFO_V1(kmersearch_dna2_out);
@@ -154,7 +182,7 @@ PG_FUNCTION_INFO_V1(kmersearch_dna4_recv);
 PG_FUNCTION_INFO_V1(kmersearch_dna4_send);
 
 /* K-mer and GIN index functions */
-PG_FUNCTION_INFO_V1(kmersearch_extract_value);
+PG_FUNCTION_INFO_V1(kmersearch_extract_value_dna2);
 PG_FUNCTION_INFO_V1(kmersearch_extract_value_dna4);
 PG_FUNCTION_INFO_V1(kmersearch_extract_query);
 PG_FUNCTION_INFO_V1(kmersearch_consistent);
@@ -623,6 +651,212 @@ kmersearch_dna4_to_string(VarBit *dna)
 }
 
 /*
+ * Fast check if degenerate combinations exceed limit (11+)
+ * Returns true if combinations will exceed 10
+ */
+static bool
+kmersearch_will_exceed_degenerate_limit(const char *seq, int len)
+{
+    int n_count = 0, vhdb_count = 0, mrwsyk_count = 0;
+    int i;
+    
+    for (i = 0; i < len; i++)
+    {
+        char c = toupper(seq[i]);
+        if (c == 'N')
+        {
+            n_count++;
+            /* Early exit: 2+ N's always exceed limit */
+            if (n_count >= 2)
+                return true;
+        }
+        else if (c == 'V' || c == 'H' || c == 'D' || c == 'B')
+        {
+            vhdb_count++;
+            /* Early exit: 3+ VHDB always exceed limit */
+            if (vhdb_count >= 3)
+                return true;
+            /* Early exit: N + VHDB exceed limit */
+            if (n_count >= 1 && vhdb_count >= 1)
+                return true;
+        }
+        else if (c == 'M' || c == 'R' || c == 'W' || c == 'S' || c == 'Y' || c == 'K')
+        {
+            mrwsyk_count++;
+            /* Early exit: 4+ MRWSYK always exceed limit */
+            if (mrwsyk_count >= 4)
+                return true;
+            /* Early exit: N + 2+ MRWSYK exceed limit */
+            if (n_count >= 1 && mrwsyk_count >= 2)
+                return true;
+            /* Early exit: 2+ VHDB + MRWSYK exceed limit */
+            if (vhdb_count >= 2 && mrwsyk_count >= 1)
+                return true;
+            /* Early exit: VHDB + 2+ MRWSYK exceed limit */
+            if (vhdb_count >= 1 && mrwsyk_count >= 2)
+                return true;
+        }
+    }
+    
+    return false;  /* Within limit */
+}
+
+/*
+ * Fast check if DNA4 k-mer will exceed degenerate limit using bit operations
+ */
+static bool
+kmersearch_will_exceed_degenerate_limit_dna4_bits(VarBit *seq, int start_pos, int k)
+{
+    int n_count = 0, vhdb_count = 0, mrwsyk_count = 0;
+    bits8 *data = VARBITS(seq);
+    int i;
+    
+    for (i = 0; i < k; i++)
+    {
+        int bit_pos = (start_pos + i) * 4;
+        int byte_pos = bit_pos / 8;
+        int bit_offset = bit_pos % 8;
+        uint8 encoded;
+        
+        /* Extract 4 bits for this base */
+        if (bit_offset <= 4)
+        {
+            encoded = (data[byte_pos] >> (4 - bit_offset)) & 0xF;
+        }
+        else
+        {
+            encoded = ((data[byte_pos] << (bit_offset - 4)) & 0xF);
+            if (byte_pos + 1 < VARBITBYTES(seq))
+                encoded |= (data[byte_pos + 1] >> (12 - bit_offset));
+            encoded &= 0xF;
+        }
+        
+        /* Check expansion count using lookup table */
+        int expansion_count;
+        expansion_count = kmersearch_dna4_to_dna2_table[encoded][0];
+        
+        if (expansion_count == 4)  /* N */
+        {
+            n_count++;
+            if (n_count >= 2)
+                return true;
+        }
+        else if (expansion_count == 3)  /* V,H,D,B */
+        {
+            vhdb_count++;
+            if (vhdb_count >= 3)
+                return true;
+            if (n_count >= 1 && vhdb_count >= 1)
+                return true;
+        }
+        else if (expansion_count == 2)  /* M,R,W,S,Y,K */
+        {
+            mrwsyk_count++;
+            if (mrwsyk_count >= 4)
+                return true;
+            if (n_count >= 1 && mrwsyk_count >= 2)
+                return true;
+            if (vhdb_count >= 2 && mrwsyk_count >= 1)
+                return true;
+            if (vhdb_count >= 1 && mrwsyk_count >= 2)
+                return true;
+        }
+    }
+    
+    return false;
+}
+
+/*
+ * Expand single DNA4 k-mer to multiple DNA2 k-mers using bit operations
+ */
+static VarBit **
+kmersearch_expand_dna4_kmer_to_dna2_direct(VarBit *dna4_seq, int start_pos, int k, int *expansion_count)
+{
+    bits8 *data = VARBITS(dna4_seq);
+    uint8 base_expansions[64][4];  /* Max k=64, max 4 expansions per base */
+    int base_counts[64];
+    int total_combinations = 1;
+    VarBit **results;
+    int i, combo;
+    
+    *expansion_count = 0;
+    
+    /* Check if expansion will exceed limit */
+    if (kmersearch_will_exceed_degenerate_limit_dna4_bits(dna4_seq, start_pos, k))
+        return NULL;
+    
+    /* Extract expansion info for each base */
+    for (i = 0; i < k; i++)
+    {
+        int bit_pos = (start_pos + i) * 4;
+        int byte_pos = bit_pos / 8;
+        int bit_offset = bit_pos % 8;
+        uint8 encoded;
+        int exp_count;
+        int j;
+        
+        /* Extract 4 bits */
+        if (bit_offset <= 4)
+        {
+            encoded = (data[byte_pos] >> (4 - bit_offset)) & 0xF;
+        }
+        else
+        {
+            encoded = ((data[byte_pos] << (bit_offset - 4)) & 0xF);
+            if (byte_pos + 1 < VARBITBYTES(dna4_seq))
+                encoded |= (data[byte_pos + 1] >> (12 - bit_offset));
+            encoded &= 0xF;
+        }
+        
+        /* Get expansion from table */
+        exp_count = kmersearch_dna4_to_dna2_table[encoded][0];
+        base_counts[i] = exp_count;
+        
+        for (j = 0; j < exp_count; j++)
+        {
+            base_expansions[i][j] = kmersearch_dna4_to_dna2_table[encoded][j + 1];
+        }
+        
+        total_combinations *= exp_count;
+    }
+    
+    /* Allocate result array */
+    results = (VarBit **) palloc(total_combinations * sizeof(VarBit *));
+    
+    /* Generate all combinations */
+    for (combo = 0; combo < total_combinations; combo++)
+    {
+        int kmer_bits = k * 2;
+        int kmer_bytes = (kmer_bits + 7) / 8;
+        VarBit *result = (VarBit *) palloc0(VARHDRSZ + sizeof(int32) + kmer_bytes);
+        bits8 *result_data;
+        int temp_combo = combo;
+        
+        SET_VARSIZE(result, VARHDRSZ + sizeof(int32) + kmer_bytes);
+        VARBITLEN(result) = kmer_bits;
+        result_data = VARBITS(result);
+        
+        /* Generate this combination */
+        for (i = 0; i < k; i++)
+        {
+            int base_idx = temp_combo % base_counts[i];
+            uint8 dna2_base = base_expansions[i][base_idx];
+            int dst_bit_pos = i * 2;
+            int dst_byte_pos = dst_bit_pos / 8;
+            int dst_bit_offset = dst_bit_pos % 8;
+            
+            result_data[dst_byte_pos] |= (dna2_base << (6 - dst_bit_offset));
+            temp_combo /= base_counts[i];
+        }
+        
+        results[combo] = result;
+    }
+    
+    *expansion_count = total_combinations;
+    return results;
+}
+
+/*
  * Count combinations for degenerate code expansion
  */
 static int
@@ -774,6 +1008,279 @@ kmersearch_create_ngram_key(const char *kmer, int k, int occurrence)
 }
 
 /*
+ * Create n-gram key directly from DNA2 bit sequence
+ */
+static VarBit *
+kmersearch_create_ngram_key_from_dna2_bits(VarBit *seq, int start_pos, int k, int occurrence)
+{
+    int kmer_bits = k * 2;
+    int occur_bits = kmersearch_occur_bitlen;
+    int total_bits = kmer_bits + occur_bits;
+    int total_bytes = (total_bits + 7) / 8;
+    int adj_occurrence = occurrence - 1;
+    VarBit *result;
+    bits8 *src_data, *dst_data;
+    int i;
+    
+    result = (VarBit *) palloc0(VARBITHDRSZ + total_bytes);
+    SET_VARSIZE(result, VARBITHDRSZ + total_bytes);
+    VARBITLEN(result) = total_bits;
+    
+    src_data = VARBITS(seq);
+    dst_data = VARBITS(result);
+    
+    /* Copy k-mer bits directly from source */
+    for (i = 0; i < k; i++)
+    {
+        int src_bit_pos = (start_pos + i) * 2;
+        int dst_bit_pos = i * 2;
+        int src_byte_pos = src_bit_pos / 8;
+        int src_bit_offset = src_bit_pos % 8;
+        int dst_byte_pos = dst_bit_pos / 8;
+        int dst_bit_offset = dst_bit_pos % 8;
+        
+        /* Extract 2 bits from source */
+        uint8 base_bits = (src_data[src_byte_pos] >> (6 - src_bit_offset)) & 0x3;
+        
+        /* Store 2 bits in destination */
+        dst_data[dst_byte_pos] |= (base_bits << (6 - dst_bit_offset));
+    }
+    
+    /* Encode occurrence count */
+    if (adj_occurrence >= (1 << occur_bits))
+        adj_occurrence = (1 << occur_bits) - 1;
+    
+    for (i = 0; i < occur_bits; i++)
+    {
+        int bit_pos = kmer_bits + i;
+        int byte_pos = bit_pos / 8;
+        int bit_offset = bit_pos % 8;
+        
+        if (adj_occurrence & (1 << (occur_bits - 1 - i)))
+            dst_data[byte_pos] |= (1 << (7 - bit_offset));
+    }
+    
+    return result;
+}
+
+/*
+ * Extract k-mers directly from DNA2 bit sequence
+ */
+static Datum *
+kmersearch_extract_dna2_kmers_direct(VarBit *seq, int k, int *nkeys)
+{
+    int seq_bits = VARBITLEN(seq);
+    int seq_bases = seq_bits / 2;
+    int max_kmers = (seq_bases >= k) ? (seq_bases - k + 1) : 0;
+    Datum *keys;
+    int key_count = 0;
+    HTAB *occurrence_hash;
+    HASHCTL hash_ctl;
+    int i;
+    
+    *nkeys = 0;
+    if (max_kmers <= 0)
+        return NULL;
+    
+    keys = (Datum *) palloc(max_kmers * sizeof(Datum));
+    
+    /* Create hash table for tracking k-mer occurrences */
+    memset(&hash_ctl, 0, sizeof(hash_ctl));
+    hash_ctl.keysize = sizeof(uint64_t) * ((k * 2 + 63) / 64);  /* Round up to uint64_t units */
+    hash_ctl.entrysize = sizeof(int);
+    occurrence_hash = hash_create("KmerOccurrenceHash", 1000, &hash_ctl,
+                                  HASH_ELEM | HASH_BLOBS);
+    
+    /* Extract k-mers */
+    for (i = 0; i <= seq_bases - k; i++)
+    {
+        /* Create k-mer key for hash lookup */
+        uint64_t kmer_key_data[4] = {0};  /* Support up to k=128 */
+        bool found;
+        int *occurrence_ptr;
+        VarBit *ngram_key;
+        bits8 *src_data = VARBITS(seq);
+        int j;
+        
+        /* Extract k-mer bits for hash key */
+        for (j = 0; j < k; j++)
+        {
+            int bit_pos = (i + j) * 2;
+            int byte_pos = bit_pos / 8;
+            int bit_offset = bit_pos % 8;
+            uint8 base_bits = (src_data[byte_pos] >> (6 - bit_offset)) & 0x3;
+            
+            /* Store in hash key */
+            int key_bit_pos = j * 2;
+            int key_word_pos = key_bit_pos / 64;
+            int key_bit_offset = key_bit_pos % 64;
+            kmer_key_data[key_word_pos] |= ((uint64_t)base_bits << (62 - key_bit_offset));
+        }
+        
+        /* Get or create occurrence count */
+        occurrence_ptr = (int *) hash_search(occurrence_hash, kmer_key_data, HASH_ENTER, &found);
+        if (!found)
+            *occurrence_ptr = 0;
+        
+        (*occurrence_ptr)++;
+        
+        /* Skip if occurrence exceeds bit limit */
+        if (*occurrence_ptr > (1 << kmersearch_occur_bitlen))
+            continue;
+        
+        /* Create n-gram key */
+        ngram_key = kmersearch_create_ngram_key_from_dna2_bits(seq, i, k, *occurrence_ptr);
+        keys[key_count++] = PointerGetDatum(ngram_key);
+    }
+    
+    hash_destroy(occurrence_hash);
+    
+    *nkeys = key_count;
+    return keys;
+}
+
+/*
+ * Extract k-mers directly from DNA4 bit sequence with degenerate expansion
+ */
+static Datum *
+kmersearch_extract_dna4_kmers_with_expansion_direct(VarBit *seq, int k, int *nkeys)
+{
+    int seq_bits = VARBITLEN(seq);
+    int seq_bases = seq_bits / 4;
+    int max_kmers = (seq_bases >= k) ? (seq_bases - k + 1) : 0;
+    Datum *keys;
+    int key_count = 0;
+    HTAB *occurrence_hash;
+    HASHCTL hash_ctl;
+    int i;
+    
+    *nkeys = 0;
+    if (max_kmers <= 0)
+        return NULL;
+    
+    /* Allocate keys array with room for expansions */
+    keys = (Datum *) palloc(max_kmers * 10 * sizeof(Datum));  /* Max 10 expansions */
+    
+    /* Create hash table for tracking k-mer occurrences */
+    memset(&hash_ctl, 0, sizeof(hash_ctl));
+    hash_ctl.keysize = sizeof(uint64_t) * ((k * 2 + 63) / 64);
+    hash_ctl.entrysize = sizeof(int);
+    occurrence_hash = hash_create("DNA4KmerOccurrenceHash", 1000, &hash_ctl,
+                                  HASH_ELEM | HASH_BLOBS);
+    
+    /* Extract k-mers */
+    for (i = 0; i <= seq_bases - k; i++)
+    {
+        VarBit **expanded_kmers;
+        int expansion_count;
+        int j;
+        
+        /* Expand DNA4 k-mer to DNA2 k-mers */
+        expanded_kmers = kmersearch_expand_dna4_kmer_to_dna2_direct(seq, i, k, &expansion_count);
+        
+        if (!expanded_kmers || expansion_count == 0)
+            continue;
+        
+        /* Process each expanded k-mer */
+        for (j = 0; j < expansion_count; j++)
+        {
+            VarBit *dna2_kmer = expanded_kmers[j];
+            uint64_t kmer_key_data[4] = {0};
+            bool found;
+            int *occurrence_ptr;
+            VarBit *ngram_key;
+            bits8 *kmer_data = VARBITS(dna2_kmer);
+            int base_idx;
+            
+            /* Create hash key from DNA2 k-mer */
+            for (base_idx = 0; base_idx < k; base_idx++)
+            {
+                int bit_pos = base_idx * 2;
+                int byte_pos = bit_pos / 8;
+                int bit_offset = bit_pos % 8;
+                uint8 base_bits = (kmer_data[byte_pos] >> (6 - bit_offset)) & 0x3;
+                
+                int key_bit_pos = base_idx * 2;
+                int key_word_pos = key_bit_pos / 64;
+                int key_bit_offset = key_bit_pos % 64;
+                kmer_key_data[key_word_pos] |= ((uint64_t)base_bits << (62 - key_bit_offset));
+            }
+            
+            /* Get or create occurrence count */
+            occurrence_ptr = (int *) hash_search(occurrence_hash, kmer_key_data, HASH_ENTER, &found);
+            if (!found)
+                *occurrence_ptr = 0;
+            
+            (*occurrence_ptr)++;
+            
+            /* Skip if occurrence exceeds bit limit */
+            if (*occurrence_ptr > (1 << kmersearch_occur_bitlen))
+            {
+                pfree(dna2_kmer);
+                continue;
+            }
+            
+            /* Create n-gram key with occurrence count */
+            ngram_key = kmersearch_create_ngram_key_with_occurrence_from_dna2(dna2_kmer, k, *occurrence_ptr);
+            keys[key_count++] = PointerGetDatum(ngram_key);
+            
+            pfree(dna2_kmer);
+        }
+        
+        pfree(expanded_kmers);
+    }
+    
+    hash_destroy(occurrence_hash);
+    
+    *nkeys = key_count;
+    return keys;
+}
+
+/*
+ * Create n-gram key with occurrence count from DNA2 k-mer
+ */
+static VarBit *
+kmersearch_create_ngram_key_with_occurrence_from_dna2(VarBit *dna2_kmer, int k, int occurrence)
+{
+    int kmer_bits = k * 2;
+    int occur_bits = kmersearch_occur_bitlen;
+    int total_bits = kmer_bits + occur_bits;
+    int total_bytes = (total_bits + 7) / 8;
+    int adj_occurrence = occurrence - 1;
+    VarBit *result;
+    bits8 *src_data, *dst_data;
+    int i;
+    
+    result = (VarBit *) palloc0(VARBITHDRSZ + total_bytes);
+    SET_VARSIZE(result, VARBITHDRSZ + total_bytes);
+    VARBITLEN(result) = total_bits;
+    
+    src_data = VARBITS(dna2_kmer);
+    dst_data = VARBITS(result);
+    
+    /* Copy k-mer bits directly */
+    int kmer_bytes;
+    kmer_bytes = (kmer_bits + 7) / 8;
+    memcpy(dst_data, src_data, kmer_bytes);
+    
+    /* Encode occurrence count */
+    if (adj_occurrence >= (1 << occur_bits))
+        adj_occurrence = (1 << occur_bits) - 1;
+    
+    for (i = 0; i < occur_bits; i++)
+    {
+        int bit_pos = kmer_bits + i;
+        int byte_pos = bit_pos / 8;
+        int bit_offset = bit_pos % 8;
+        
+        if (adj_occurrence & (1 << (occur_bits - 1 - i)))
+            dst_data[byte_pos] |= (1 << (7 - bit_offset));
+    }
+    
+    return result;
+}
+
+/*
  * Extract k-mers from DNA sequence and create n-gram keys
  */
 static Datum *
@@ -855,25 +1362,19 @@ kmersearch_extract_kmers(const char *sequence, int seq_len, int k, int *nkeys)
  * GIN extract_value function for DNA2
  */
 Datum
-kmersearch_extract_value(PG_FUNCTION_ARGS)
+kmersearch_extract_value_dna2(PG_FUNCTION_ARGS)
 {
     kmersearch_dna2 *dna = (kmersearch_dna2 *) PG_DETOAST_DATUM(PG_GETARG_DATUM(0));
     int32 *nkeys = (int32 *) PG_GETARG_POINTER(1);
     
     Datum *keys;
-    char *sequence;
-    int seq_len;
     int k = kmersearch_kmer_size;  /* k-mer length from GUC variable */
     
     if (k < 4 || k > 64)
         ereport(ERROR, (errmsg("k-mer length must be between 4 and 64")));
     
-    sequence = kmersearch_dna2_to_string((VarBit *)dna);
-    seq_len = strlen(sequence);
-    
-    keys = kmersearch_extract_kmers(sequence, seq_len, k, nkeys);
-    
-    pfree(sequence);
+    /* Use direct bit extraction instead of string conversion */
+    keys = kmersearch_extract_dna2_kmers_direct((VarBit *)dna, k, nkeys);
     
     if (*nkeys == 0)
         PG_RETURN_POINTER(NULL);
@@ -891,19 +1392,13 @@ kmersearch_extract_value_dna4(PG_FUNCTION_ARGS)
     int32 *nkeys = (int32 *) PG_GETARG_POINTER(1);
     
     Datum *keys;
-    char *sequence;
-    int seq_len;
     int k = kmersearch_kmer_size;  /* k-mer length from GUC variable */
     
     if (k < 4 || k > 64)
         ereport(ERROR, (errmsg("k-mer length must be between 4 and 64")));
     
-    sequence = kmersearch_dna4_to_string((VarBit *)dna);
-    seq_len = strlen(sequence);
-    
-    keys = kmersearch_extract_kmers_with_degenerate(sequence, seq_len, k, nkeys);
-    
-    pfree(sequence);
+    /* Use direct bit extraction with degenerate expansion */
+    keys = kmersearch_extract_dna4_kmers_with_expansion_direct((VarBit *)dna, k, nkeys);
     
     if (*nkeys == 0)
         PG_RETURN_POINTER(NULL);

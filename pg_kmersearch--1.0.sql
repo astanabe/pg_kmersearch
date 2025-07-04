@@ -105,9 +105,9 @@ CREATE OPERATOR =% (
 );
 
 -- GIN operator class support functions
-CREATE FUNCTION kmersearch_extract_value(DNA2, internal)
+CREATE FUNCTION kmersearch_extract_value_dna2(DNA2, internal)
     RETURNS internal
-    AS 'MODULE_PATHNAME', 'kmersearch_extract_value'
+    AS 'MODULE_PATHNAME', 'kmersearch_extract_value_dna2'
     LANGUAGE C IMMUTABLE STRICT;
 
 CREATE FUNCTION kmersearch_extract_value_dna4(DNA4, internal)
@@ -130,7 +130,7 @@ CREATE OPERATOR CLASS kmersearch_dna2_gin_ops
     DEFAULT FOR TYPE DNA2 USING gin AS
         OPERATOR 1 =% (DNA2, text),
         FUNCTION 1 varbitcmp(varbit, varbit),
-        FUNCTION 2 kmersearch_extract_value(DNA2, internal),
+        FUNCTION 2 kmersearch_extract_value_dna2(DNA2, internal),
         FUNCTION 3 kmersearch_extract_query(text, internal, int2, internal, internal),
         FUNCTION 4 kmersearch_consistent(internal, int2, text, int4, internal, internal),
         STORAGE varbit;
