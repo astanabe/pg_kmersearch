@@ -71,12 +71,16 @@ ERROR:  Query sequence must be at least 8 bases long
 SELECT id, name FROM test_DNA2_sequences WHERE sequence =% 'atcgatcg' ORDER BY id;
  id | name 
 ----+------
-(0 rows)
+  1 | seq1
+  3 | seq3
+(2 rows)
 
 SELECT id, name FROM test_DNA4_sequences WHERE sequence =% 'atcgatcg' ORDER BY id;
  id | name 
 ----+------
-(0 rows)
+  1 | seq1
+  3 | seq3
+(2 rows)
 
 DROP EXTENSION pg_kmersearch CASCADE;
 NOTICE:  drop cascades to 2 other objects

@@ -34,8 +34,14 @@ SHOW kmersearch.min_score;
 
 SHOW kmersearch.min_shared_ngram_key_rate;
  kmersearch.min_shared_ngram_key_rate 
--------------------------------------
+--------------------------------------
  0.9
+(1 row)
+
+SHOW kmersearch.cache_max_entries;
+ kmersearch.cache_max_entries 
+------------------------------
+ 50000
 (1 row)
 
 -- Test setting valid values
@@ -77,8 +83,15 @@ SHOW kmersearch.min_score;
 SET kmersearch.min_shared_ngram_key_rate = 0.8;
 SHOW kmersearch.min_shared_ngram_key_rate;
  kmersearch.min_shared_ngram_key_rate 
--------------------------------------
+--------------------------------------
  0.8
+(1 row)
+
+SET kmersearch.cache_max_entries = 25000;
+SHOW kmersearch.cache_max_entries;
+ kmersearch.cache_max_entries 
+------------------------------
+ 25000
 (1 row)
 
 -- Test boundary values
@@ -113,15 +126,29 @@ SHOW kmersearch.occur_bitlen;
 SET kmersearch.min_shared_ngram_key_rate = 0.0;  -- minimum
 SHOW kmersearch.min_shared_ngram_key_rate;
  kmersearch.min_shared_ngram_key_rate 
--------------------------------------
+--------------------------------------
  0
 (1 row)
 
 SET kmersearch.min_shared_ngram_key_rate = 1.0;  -- maximum
 SHOW kmersearch.min_shared_ngram_key_rate;
  kmersearch.min_shared_ngram_key_rate 
--------------------------------------
+--------------------------------------
  1
+(1 row)
+
+SET kmersearch.cache_max_entries = 1000;  -- minimum
+SHOW kmersearch.cache_max_entries;
+ kmersearch.cache_max_entries 
+------------------------------
+ 1000
+(1 row)
+
+SET kmersearch.cache_max_entries = 10000000;  -- maximum
+SHOW kmersearch.cache_max_entries;
+ kmersearch.cache_max_entries 
+------------------------------
+ 10000000
 (1 row)
 
 -- Test invalid values (should error)
@@ -138,6 +165,10 @@ SET kmersearch.min_shared_ngram_key_rate = -0.1;  -- below minimum
 ERROR:  -0.1 is outside the valid range for parameter "kmersearch.min_shared_ngram_key_rate" (0 .. 1)
 SET kmersearch.min_shared_ngram_key_rate = 1.1;   -- above maximum
 ERROR:  1.1 is outside the valid range for parameter "kmersearch.min_shared_ngram_key_rate" (0 .. 1)
+SET kmersearch.cache_max_entries = 999;  -- below minimum
+ERROR:  999 is outside the valid range for parameter "kmersearch.cache_max_entries" (1000 .. 10000000)
+SET kmersearch.cache_max_entries = 10000001;  -- above maximum
+ERROR:  10000001 is outside the valid range for parameter "kmersearch.cache_max_entries" (1000 .. 10000000)
 \set ON_ERROR_STOP on
 -- Reset to defaults for other tests
 SET kmersearch.kmer_size = 8;
@@ -146,4 +177,18 @@ SET kmersearch.max_appearance_rate = 0.05;
 SET kmersearch.max_appearance_nrow = 0;
 SET kmersearch.min_score = 1;
 SET kmersearch.min_shared_ngram_key_rate = 0.9;
+SET kmersearch.cache_max_entries = 50000;
+-- Test cache management functions
+SELECT kmersearch_cache_stats(); -- Should show all zeros initially
+ kmersearch_cache_stats 
+------------------------
+ (0,0,0,0,0,0,0,0)
+(1 row)
+
+SELECT kmersearch_cache_free();  -- Should return 0 (no entries to free)
+ kmersearch_cache_free 
+-----------------------
+                     0
+(1 row)
+
 DROP EXTENSION pg_kmersearch CASCADE;

@@ -40,9 +40,9 @@ SELECT id, name,
 FROM test_DNA4_sequences ORDER BY id;
  id | name | rawscore 
 ----+------+----------
-  1 | seq1 |        0
+  1 | seq1 |       54
   2 | seq2 |        0
-  3 | seq3 |        0
+  3 | seq3 |       47
 (3 rows)
 
 -- Test correctedscore function with DNA2
@@ -77,7 +77,7 @@ SELECT kmersearch_rawscore('ATCGATCG'::DNA2, 'ATCGATCG') AS exact_match_score;
 SELECT kmersearch_rawscore('ATCGATCG'::DNA4, 'ATCGATCG') AS exact_match_score;
  exact_match_score 
 -------------------
-                 0
+                 1
 (1 row)
 
 -- Test with completely different sequences
@@ -103,7 +103,7 @@ SELECT kmersearch_rawscore('ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCG
 SELECT kmersearch_rawscore('ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA'::DNA4, 'ATCGATCG') AS partial_match;
  partial_match 
 ---------------
-             0
+            14
 (1 row)
 
 DROP EXTENSION pg_kmersearch CASCADE;
