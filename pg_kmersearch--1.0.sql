@@ -246,3 +246,14 @@ CREATE FUNCTION length(DNA4)
     RETURNS integer
     AS 'MODULE_PATHNAME', 'kmersearch_dna4_char_length'
     LANGUAGE C IMMUTABLE STRICT;
+
+-- Parallel k-mer analysis functions
+CREATE FUNCTION kmersearch_analyze_table(table_oid oid, column_name text, k integer, parallel_workers integer DEFAULT 0) 
+    RETURNS text
+    AS 'MODULE_PATHNAME', 'kmersearch_analyze_table'
+    LANGUAGE C VOLATILE STRICT;
+
+CREATE FUNCTION kmersearch_drop_analysis(table_oid oid, column_name text, k integer) 
+    RETURNS text
+    AS 'MODULE_PATHNAME', 'kmersearch_drop_analysis'
+    LANGUAGE C VOLATILE STRICT;
