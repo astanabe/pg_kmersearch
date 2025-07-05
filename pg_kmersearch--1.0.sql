@@ -201,6 +201,17 @@ CREATE FUNCTION kmersearch_correctedscore(DNA4, text)
     AS 'MODULE_PATHNAME', 'kmersearch_correctedscore'
     LANGUAGE C IMMUTABLE STRICT;
 
+-- Overloaded rawscore functions for backwards compatibility
+CREATE FUNCTION kmersearch_rawscore(DNA2, text) 
+    RETURNS integer
+    AS 'MODULE_PATHNAME', 'kmersearch_rawscore_dna2'
+    LANGUAGE C IMMUTABLE STRICT;
+
+CREATE FUNCTION kmersearch_rawscore(DNA4, text) 
+    RETURNS integer
+    AS 'MODULE_PATHNAME', 'kmersearch_rawscore_dna4'
+    LANGUAGE C IMMUTABLE STRICT;
+
 -- Length functions for DNA2 and DNA4 types
 
 -- bit_length functions
@@ -257,3 +268,30 @@ CREATE FUNCTION kmersearch_drop_analysis(table_oid oid, column_name text, k inte
     RETURNS text
     AS 'MODULE_PATHNAME', 'kmersearch_drop_analysis'
     LANGUAGE C VOLATILE STRICT;
+
+-- Index optimization function
+CREATE FUNCTION kmersearch_reduce_index(index_oid oid) 
+    RETURNS text
+    AS 'MODULE_PATHNAME', 'kmersearch_reduce_index'
+    LANGUAGE C VOLATILE STRICT;
+
+-- Cache statistics function
+CREATE FUNCTION kmersearch_cache_stats()
+    RETURNS TABLE (
+        dna2_hits bigint,
+        dna2_misses bigint,
+        dna2_entries integer,
+        dna2_max_entries integer,
+        dna4_hits bigint,
+        dna4_misses bigint,
+        dna4_entries integer,
+        dna4_max_entries integer
+    )
+    AS 'MODULE_PATHNAME', 'kmersearch_cache_stats'
+    LANGUAGE C STABLE;
+
+-- Cache management function
+CREATE FUNCTION kmersearch_cache_free()
+    RETURNS integer
+    AS 'MODULE_PATHNAME', 'kmersearch_cache_free'
+    LANGUAGE C VOLATILE;
