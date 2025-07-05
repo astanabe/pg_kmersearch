@@ -68,7 +68,7 @@ typedef struct KmerFreqEntry
 {
     VarBit      *kmer_key;      /* K-mer binary key (without occurrence count) */
     int         row_count;      /* Number of rows where this k-mer appears */
-    bool        excluded;       /* Whether this k-mer is excluded */
+    bool        highfreq;       /* Whether this k-mer is highly frequent */
 } KmerFreqEntry;
 
 /* Hash table key for k-mer frequency counting */
@@ -93,7 +93,7 @@ typedef struct KmerMatchResult
 typedef struct KmerAnalysisResult
 {
     int64       total_rows;                /* Total number of rows analyzed */
-    int         excluded_kmers_count;      /* Number of excluded k-mers */
+    int         highfreq_kmers_count;      /* Number of highly frequent k-mers */
     int         parallel_workers_used;     /* Number of parallel workers used */
     double      analysis_duration;        /* Analysis duration in seconds */
     double      max_appearance_rate_used; /* Max appearance rate used */
@@ -104,7 +104,7 @@ typedef struct KmerAnalysisResult
 typedef struct DropAnalysisResult
 {
     int         dropped_analyses;          /* Number of dropped analyses */
-    int         dropped_excluded_kmers;    /* Number of dropped excluded k-mers */
+    int         dropped_highfreq_kmers;    /* Number of dropped highly frequent k-mers */
     int64       freed_storage_bytes;       /* Freed storage in bytes */
 } DropAnalysisResult;
 
@@ -153,7 +153,7 @@ typedef struct CompactKmerFreq
 {
     KmerData    kmer_data;               /* Raw k-mer data */
     int         frequency_count;          /* Frequency count */
-    bool        is_excluded;              /* Whether this k-mer is excluded */
+    bool        is_highfreq;              /* Whether this k-mer is highly frequent */
 } CompactKmerFreq;
 
 /* Worker buffer for k-mer collection */
@@ -172,7 +172,7 @@ typedef struct KmerWorkerState
     BlockNumber start_block;              /* Starting block number */
     BlockNumber end_block;                /* Ending block number */
     KmerBuffer  buffer;                   /* Local k-mer buffer */
-    int         local_excluded_count;     /* Local count of excluded k-mers */
+    int         local_highfreq_count;     /* Local count of highly frequent k-mers */
     int64       rows_processed;           /* Number of rows processed */
     char       *temp_table_name;          /* Temporary table name for this worker */
 } KmerWorkerState;
@@ -201,11 +201,11 @@ typedef struct KmerWorkerState
     } while(0)
 
 /* Forward declarations */
-static bool kmersearch_is_kmer_excluded(Oid index_oid, VarBit *kmer_key);
-static int kmersearch_count_excluded_kmers_in_query(Oid index_oid, VarBit **query_keys, int nkeys);
+static bool kmersearch_is_kmer_highfreq(Oid index_oid, VarBit *kmer_key);
+static int kmersearch_count_highfreq_kmers_in_query(Oid index_oid, VarBit **query_keys, int nkeys);
 static int kmersearch_get_adjusted_min_score(Oid index_oid, VarBit **query_keys, int nkeys);
 static int kmersearch_calculate_raw_score(VarBit *seq1, VarBit *seq2, text *query_text);
-static int kmersearch_count_mutual_excluded_kmers(VarBit *seq1, VarBit *seq2, text *query_text, Oid index_oid);
+static int kmersearch_count_mutual_highfreq_kmers(VarBit *seq1, VarBit *seq2, text *query_text, Oid index_oid);
 static VarBit **kmersearch_extract_kmers_from_varbit(VarBit *seq, int k, int *nkeys);
 static VarBit **kmersearch_extract_kmers_from_query(const char *query, int k, int *nkeys);
 static Datum *kmersearch_extract_kmers_with_degenerate(const char *sequence, int seq_len, int k, int *nkeys);
@@ -244,8 +244,8 @@ static int kmersearch_determine_parallel_workers(int requested_workers, Relation
 static KmerAnalysisResult kmersearch_analyze_table_parallel(Oid table_oid, const char *column_name, int k_size, int parallel_workers);
 static void kmersearch_worker_analyze_blocks(KmerWorkerState *worker, Relation rel, const char *column_name, int k_size);
 static void kmersearch_merge_worker_results_sql(KmerWorkerState *workers, int num_workers, const char *final_table_name, int k_size, int threshold_rows);
-static void kmersearch_persist_excluded_kmers(Oid table_oid, const char *column_name, int k_size, void *unused_table, int threshold_rows);
-static void kmersearch_persist_excluded_kmers_from_temp(Oid table_oid, const char *column_name, int k_size, const char *temp_table_name);
+static void kmersearch_persist_highfreq_kmers(Oid table_oid, const char *column_name, int k_size, void *unused_table, int threshold_rows);
+static void kmersearch_persist_highfreq_kmers_from_temp(Oid table_oid, const char *column_name, int k_size, const char *temp_table_name);
 
 /* New memory-efficient k-mer functions */
 static size_t kmersearch_get_kmer_data_size(int k_size);
@@ -253,7 +253,7 @@ static bool kmersearch_get_index_info(Oid index_oid, Oid *table_oid, char **colu
 static void kmersearch_spi_connect_or_error(void);
 static void kmersearch_handle_spi_error(int spi_result, const char *operation);
 static bool kmersearch_delete_kmer_from_gin_index(Relation index_rel, VarBit *kmer_key);
-static List *kmersearch_get_excluded_kmers_list(Oid index_oid);
+static List *kmersearch_get_highfreq_kmers_list(Oid index_oid);
 static int kmersearch_calculate_buffer_size(int k_size);
 static KmerData kmersearch_encode_kmer_data(VarBit *kmer, int k_size);
 static void kmersearch_init_buffer(KmerBuffer *buffer, int k_size);
@@ -262,7 +262,7 @@ static void kmersearch_flush_buffer_to_table(KmerBuffer *buffer, const char *tem
 static void kmersearch_create_worker_temp_table(const char *temp_table_name, int k_size);
 static bool kmersearch_check_analysis_exists(Oid table_oid, const char *column_name, int k_size);
 static void kmersearch_validate_analysis_parameters(Oid table_oid, const char *column_name, int k_size);
-static Datum *kmersearch_filter_excluded_kmers(Oid table_oid, const char *column_name, int k_size, Datum *all_keys, int total_keys, int *filtered_count);
+static Datum *kmersearch_filter_highfreq_kmers(Oid table_oid, const char *column_name, int k_size, Datum *all_keys, int total_keys, int *filtered_count);
 static void kmersearch_delete_existing_analysis(Oid table_oid, const char *column_name, int k_size);
 static DropAnalysisResult kmersearch_drop_analysis_internal(Oid table_oid, const char *column_name, int k_size);
 
@@ -385,7 +385,7 @@ PG_FUNCTION_INFO_V1(kmersearch_dna4_match);
 
 /* K-mer frequency analysis functions */
 PG_FUNCTION_INFO_V1(kmersearch_analyze_table_frequency);
-PG_FUNCTION_INFO_V1(kmersearch_get_excluded_kmers);
+PG_FUNCTION_INFO_V1(kmersearch_get_highfreq_kmers);
 PG_FUNCTION_INFO_V1(kmersearch_analyze_table);
 PG_FUNCTION_INFO_V1(kmersearch_drop_analysis);
 PG_FUNCTION_INFO_V1(kmersearch_reduce_index);
@@ -693,7 +693,7 @@ _PG_init(void)
     /* Define custom GUC variables */
     DefineCustomRealVariable("kmersearch.max_appearance_rate",
                             "Maximum appearance rate for k-mers to be included in index",
-                            "K-mers appearing in more than this fraction of rows will be excluded",
+                            "K-mers appearing in more than this fraction of rows will be identified as highly frequent",
                             &kmersearch_max_appearance_rate,
                             0.05,
                             0.0,
@@ -706,7 +706,7 @@ _PG_init(void)
     
     DefineCustomIntVariable("kmersearch.max_appearance_nrow",
                            "Maximum number of rows for k-mers to be included in index",
-                           "K-mers appearing in more than this number of rows will be excluded (0 = unlimited)",
+                           "K-mers appearing in more than this number of rows will be identified as highly frequent (0 = unlimited)",
                            &kmersearch_max_appearance_nrow,
                            0,
                            0,
@@ -2240,7 +2240,7 @@ kmersearch_consistent(PG_FUNCTION_ARGS)
         query_key_array[i] = DatumGetVarBitP(queryKeys[i]);
     }
     
-    /* Calculate adjusted minimum score based on excluded k-mers in query */
+    /* Calculate adjusted minimum score based on highly frequent k-mers in query */
     adjusted_min_score = kmersearch_get_adjusted_min_score(index_oid, query_key_array, nkeys);
     
     pfree(query_key_array);
@@ -2411,7 +2411,7 @@ kmersearch_kmer_compare(const void *key1, const void *key2, Size keysize)
 }
 
 /*
- * Analyze table frequency and determine excluded k-mers
+ * Analyze table frequency and determine highly frequent k-mers
  */
 Datum
 kmersearch_analyze_table_frequency(PG_FUNCTION_ARGS)
@@ -2422,7 +2422,7 @@ kmersearch_analyze_table_frequency(PG_FUNCTION_ARGS)
     Oid index_oid = PG_GETARG_OID(3);
     
     char *column_name = text_to_cstring(column_name_text);
-    int excluded_count = 0;
+    int highfreq_count = 0;
     
     /* Check if high-frequency k-mer exclusion should be performed */
     bool should_exclude = false;
@@ -2437,10 +2437,10 @@ kmersearch_analyze_table_frequency(PG_FUNCTION_ARGS)
     
     if (!should_exclude)
     {
-        /* Skip frequency analysis - create empty excluded k-mer list */
+        /* Skip frequency analysis - create empty highly frequent k-mer list */
         ereport(NOTICE, (errmsg("High-frequency k-mer exclusion disabled, skipping table scan")));
         
-        /* Insert index info with zero excluded k-mers */
+        /* Insert index info with zero highly frequent k-mers */
         /* Note: This would normally insert into kmersearch_index_info table */
         /* For now, just return 0 indicating no exclusions */
         
@@ -2458,18 +2458,18 @@ kmersearch_analyze_table_frequency(PG_FUNCTION_ARGS)
      * 2. Extract k-mers from the specified column
      * 3. Count frequency of each k-mer
      * 4. Identify k-mers exceeding thresholds
-     * 5. Insert excluded k-mers into kmersearch_excluded_kmers table
+     * 5. Insert highly frequent k-mers into kmersearch_highfreq_kmers table
      * 6. Insert index statistics into kmersearch_index_info table
      */
     
-    PG_RETURN_INT32(excluded_count);
+    PG_RETURN_INT32(highfreq_count);
 }
 
 /*
- * Get excluded k-mers for an index
+ * Get highly frequent k-mers for an index
  */
 Datum
-kmersearch_get_excluded_kmers(PG_FUNCTION_ARGS)
+kmersearch_get_highfreq_kmers(PG_FUNCTION_ARGS)
 {
     Oid index_oid = PG_GETARG_OID(0);
     int ret;
@@ -2482,10 +2482,10 @@ kmersearch_get_excluded_kmers(PG_FUNCTION_ARGS)
     /* Connect to SPI */
     kmersearch_spi_connect_or_error();
     
-    /* Build query to get excluded k-mers */
+    /* Build query to get highly frequent k-mers */
     initStringInfo(&query);
     appendStringInfo(&query,
-        "SELECT kmer_key FROM kmersearch_excluded_kmers WHERE index_oid = %u ORDER BY kmer_key",
+        "SELECT kmer_key FROM kmersearch_highfreq_kmers WHERE index_oid = %u ORDER BY kmer_key",
         index_oid);
     
     /* Execute query */
@@ -2534,34 +2534,34 @@ kmersearch_get_excluded_kmers(PG_FUNCTION_ARGS)
 
 
 /*
- * Count excluded k-mers in query sequence
+ * Count highly frequent k-mers in query sequence
  */
 static int
-kmersearch_count_excluded_kmers_in_query(Oid index_oid, VarBit **query_keys, int nkeys)
+kmersearch_count_highfreq_kmers_in_query(Oid index_oid, VarBit **query_keys, int nkeys)
 {
-    int excluded_count = 0;
+    int highfreq_count = 0;
     int i;
     
-    /* For each k-mer in the query, check if it's excluded */
+    /* For each k-mer in the query, check if it's highly frequent */
     for (i = 0; i < nkeys; i++)
     {
-        if (kmersearch_is_kmer_excluded(index_oid, query_keys[i]))
+        if (kmersearch_is_kmer_highfreq(index_oid, query_keys[i]))
         {
-            excluded_count++;
+            highfreq_count++;
         }
     }
     
-    return excluded_count;
+    return highfreq_count;
 }
 
 /*
- * Calculate adjusted minimum score based on excluded k-mers in query
+ * Calculate adjusted minimum score based on highly frequent k-mers in query
  */
 static int
 kmersearch_get_adjusted_min_score(Oid index_oid, VarBit **query_keys, int nkeys)
 {
-    int excluded_count = kmersearch_count_excluded_kmers_in_query(index_oid, query_keys, nkeys);
-    int adjusted_score = kmersearch_min_score - excluded_count;
+    int highfreq_count = kmersearch_count_highfreq_kmers_in_query(index_oid, query_keys, nkeys);
+    int adjusted_score = kmersearch_min_score - highfreq_count;
     
     /* Ensure adjusted score is not negative */
     if (adjusted_score < 0)
@@ -2623,14 +2623,14 @@ kmersearch_calculate_raw_score(VarBit *seq1, VarBit *seq2, text *query_text)
 }
 
 /*
- * Count excluded k-mers that appear in both sequences
+ * Count highly frequent k-mers that appear in both sequences
  */
 static int
-kmersearch_count_mutual_excluded_kmers(VarBit *seq1, VarBit *seq2, text *query_text, Oid index_oid)
+kmersearch_count_mutual_highfreq_kmers(VarBit *seq1, VarBit *seq2, text *query_text, Oid index_oid)
 {
     char *query_string = text_to_cstring(query_text);
     int k = kmersearch_kmer_size;  /* k-mer length from GUC variable */
-    int mutual_excluded = 0;
+    int mutual_highfreq = 0;
     VarBit **seq1_keys, **seq2_keys;
     int seq1_nkeys, seq2_nkeys;
     int i, j;
@@ -2639,10 +2639,10 @@ kmersearch_count_mutual_excluded_kmers(VarBit *seq1, VarBit *seq2, text *query_t
     seq1_keys = kmersearch_extract_kmers_from_varbit(seq1, k, &seq1_nkeys);
     seq2_keys = kmersearch_extract_kmers_from_query(query_string, k, &seq2_nkeys);
     
-    /* Count excluded k-mers that appear in both sequences */
+    /* Count highly frequent k-mers that appear in both sequences */
     for (i = 0; i < seq1_nkeys; i++)
     {
-        if (!seq1_keys[i] || !kmersearch_is_kmer_excluded(index_oid, seq1_keys[i]))
+        if (!seq1_keys[i] || !kmersearch_is_kmer_highfreq(index_oid, seq1_keys[i]))
             continue;
             
         for (j = 0; j < seq2_nkeys; j++)
@@ -2652,7 +2652,7 @@ kmersearch_count_mutual_excluded_kmers(VarBit *seq1, VarBit *seq2, text *query_t
                 memcmp(VARBITS(seq1_keys[i]), VARBITS(seq2_keys[j]), 
                        VARBITBYTES(seq1_keys[i])) == 0)
             {
-                mutual_excluded++;
+                mutual_highfreq++;
                 break;
             }
         }
@@ -2673,7 +2673,7 @@ kmersearch_count_mutual_excluded_kmers(VarBit *seq1, VarBit *seq2, text *query_t
     }
     
     pfree(query_string);
-    return mutual_excluded;
+    return mutual_highfreq;
 }
 
 /*
@@ -2808,26 +2808,26 @@ kmersearch_correctedscore(PG_FUNCTION_ARGS)
 {
     VarBit *sequence = PG_GETARG_VARBIT_P(0);
     text *query_text = PG_GETARG_TEXT_P(1);
-    int raw_score, mutual_excluded, corrected_score;
+    int raw_score, mutual_highfreq, corrected_score;
     Oid index_oid = InvalidOid;  /* TODO: Get actual index OID from context */
     
     /* Calculate raw score */
     raw_score = kmersearch_calculate_raw_score(sequence, NULL, query_text);
     
-    /* Count mutual excluded k-mers */
-    mutual_excluded = kmersearch_count_mutual_excluded_kmers(sequence, NULL, query_text, index_oid);
+    /* Count mutual highly frequent k-mers */
+    mutual_highfreq = kmersearch_count_mutual_highfreq_kmers(sequence, NULL, query_text, index_oid);
     
-    /* Corrected score = raw score + mutual excluded k-mers */
-    corrected_score = raw_score + mutual_excluded;
+    /* Corrected score = raw score + mutual highly frequent k-mers */
+    corrected_score = raw_score + mutual_highfreq;
     
     PG_RETURN_INT32(corrected_score);
 }
 
 /*
- * Check if a k-mer is excluded for a given index
+ * Check if a k-mer is highly frequent for a given index
  */
 static bool
-kmersearch_is_kmer_excluded(Oid index_oid, VarBit *kmer_key)
+kmersearch_is_kmer_highfreq(Oid index_oid, VarBit *kmer_key)
 {
     /* For now, always return false - will implement proper check later */
     return false;
@@ -3516,7 +3516,7 @@ kmersearch_add_to_buffer(KmerBuffer *buffer, KmerData kmer_data, const char *tem
     entry = &buffer->entries[buffer->count];
     entry->kmer_data = kmer_data;
     entry->frequency_count = 1;
-    entry->is_excluded = false;
+    entry->is_highfreq = false;
     buffer->count++;
 }
 
@@ -3791,7 +3791,7 @@ kmersearch_analyze_table_parallel(Oid table_oid, const char *column_name, int k_
         workers[i].worker_id = i;
         workers[i].start_block = (RelationGetNumberOfBlocksInFork(rel, MAIN_FORKNUM) * i) / num_workers;
         workers[i].end_block = (RelationGetNumberOfBlocksInFork(rel, MAIN_FORKNUM) * (i + 1)) / num_workers;
-        workers[i].local_excluded_count = 0;
+        workers[i].local_highfreq_count = 0;
         workers[i].rows_processed = 0;
         workers[i].temp_table_name = NULL;
         
@@ -3804,7 +3804,7 @@ kmersearch_analyze_table_parallel(Oid table_oid, const char *column_name, int k_
         char *final_table_name = psprintf("temp_kmer_final_%d", getpid());
         kmersearch_merge_worker_results_sql(workers, num_workers, final_table_name, k_size, threshold_rows);
         
-        /* Count excluded k-mers */
+        /* Count highly frequent k-mers */
         SPI_connect();
         {
             StringInfoData count_query;
@@ -3812,15 +3812,15 @@ kmersearch_analyze_table_parallel(Oid table_oid, const char *column_name, int k_
             appendStringInfo(&count_query, "SELECT count(*) FROM %s", final_table_name);
             
             if (SPI_exec(count_query.data, 0) == SPI_OK_SELECT && SPI_processed > 0) {
-                result.excluded_kmers_count = DatumGetInt32(SPI_getbinval(SPI_tuptable->vals[0], 
+                result.highfreq_kmers_count = DatumGetInt32(SPI_getbinval(SPI_tuptable->vals[0], 
                                                                         SPI_tuptable->tupdesc, 1, NULL));
             }
             pfree(count_query.data);
         }
         SPI_finish();
         
-        /* Persist excluded k-mers to permanent tables */
-        kmersearch_persist_excluded_kmers_from_temp(table_oid, column_name, k_size, final_table_name);
+        /* Persist highly frequent k-mers to permanent tables */
+        kmersearch_persist_highfreq_kmers_from_temp(table_oid, column_name, k_size, final_table_name);
         
         pfree(final_table_name);
     }
@@ -3828,7 +3828,7 @@ kmersearch_analyze_table_parallel(Oid table_oid, const char *column_name, int k_
     /* Calculate total statistics */
     for (i = 0; i < num_workers; i++) {
         result.total_rows += workers[i].rows_processed;
-        result.excluded_kmers_count += workers[i].local_excluded_count;
+        result.highfreq_kmers_count += workers[i].local_highfreq_count;
     }
     
     /* Clean up */
@@ -3839,19 +3839,19 @@ kmersearch_analyze_table_parallel(Oid table_oid, const char *column_name, int k_
 }
 
 /*
- * Persist excluded k-mers from temporary table to permanent tables
+ * Persist highly frequent k-mers from temporary table to permanent tables
  */
 static void
-kmersearch_persist_excluded_kmers_from_temp(Oid table_oid, const char *column_name, int k_size,
+kmersearch_persist_highfreq_kmers_from_temp(Oid table_oid, const char *column_name, int k_size,
                                            const char *temp_table_name)
 {
     StringInfoData query;
     
     initStringInfo(&query);
     
-    /* Insert excluded k-mers into permanent table */
+    /* Insert highly frequent k-mers into permanent table */
     appendStringInfo(&query,
-        "INSERT INTO kmersearch_excluded_kmers (index_oid, kmer_key, frequency_count, exclusion_reason) "
+        "INSERT INTO kmersearch_highfreq_kmers (index_oid, kmer_key, frequency_count, detection_reason) "
         "SELECT %u, kmer_data::varbit, frequency_count, 'high_frequency' "
         "FROM %s",
         table_oid, temp_table_name);
@@ -3864,10 +3864,10 @@ kmersearch_persist_excluded_kmers_from_temp(Oid table_oid, const char *column_na
 }
 
 /*
- * Persist excluded k-mers to database tables (legacy - disabled in memory-efficient version)
+ * Persist highly frequent k-mers to database tables (legacy - disabled in memory-efficient version)
  */
 static void
-kmersearch_persist_excluded_kmers(Oid table_oid, const char *column_name, int k_size, 
+kmersearch_persist_highfreq_kmers(Oid table_oid, const char *column_name, int k_size, 
                                  void *unused_table, int threshold_rows)
 {
     /* Memory-efficient implementation uses SQL-based analysis instead */
@@ -4007,15 +4007,15 @@ kmersearch_validate_analysis_parameters(Oid table_oid, const char *column_name, 
 }
 
 /*
- * Filter excluded k-mers from the key array
+ * Filter highly frequent k-mers from the key array
  */
 static Datum *
-kmersearch_filter_excluded_kmers(Oid table_oid, const char *column_name, int k_size, 
+kmersearch_filter_highfreq_kmers(Oid table_oid, const char *column_name, int k_size, 
                                 Datum *all_keys, int total_keys, int *filtered_count)
 {
     int ret;
     StringInfoData query;
-    HTAB *excluded_hash = NULL;
+    HTAB *highfreq_hash = NULL;
     HASHCTL hash_ctl;
     Datum *filtered_keys;
     int filtered_idx = 0;
@@ -4031,7 +4031,7 @@ kmersearch_filter_excluded_kmers(Oid table_oid, const char *column_name, int k_s
     /* Connect to SPI */
     kmersearch_spi_connect_or_error();
     
-    /* Create hash table for excluded k-mers lookup */
+    /* Create hash table for highly frequent k-mers lookup */
     memset(&hash_ctl, 0, sizeof(hash_ctl));
     hash_ctl.keysize = sizeof(KmerHashKey);
     hash_ctl.entrysize = sizeof(KmerFreqEntry);
@@ -4039,13 +4039,13 @@ kmersearch_filter_excluded_kmers(Oid table_oid, const char *column_name, int k_s
     hash_ctl.match = kmersearch_kmer_compare;
     hash_ctl.hcxt = CurrentMemoryContext;
     
-    excluded_hash = hash_create("Excluded K-mers", 1024, &hash_ctl,
+    highfreq_hash = hash_create("Highly Frequent K-mers", 1024, &hash_ctl,
                                HASH_ELEM | HASH_FUNCTION | HASH_COMPARE | HASH_CONTEXT);
     
     /* Build query to get excluded k-mers from index info table */
     initStringInfo(&query);
     appendStringInfo(&query,
-        "SELECT ek.kmer_key FROM kmersearch_excluded_kmers ek "
+        "SELECT ek.kmer_key FROM kmersearch_highfreq_kmers ek "
         "JOIN kmersearch_index_info ii ON ek.index_oid = ii.index_oid "
         "WHERE ii.table_oid = %u AND ii.column_name = '%s' AND ii.k_value = %d",
         table_oid, column_name, k_size);
@@ -4075,12 +4075,12 @@ kmersearch_filter_excluded_kmers(Oid table_oid, const char *column_name, int k_s
                 memcpy(hash_key->data, kmer, VARSIZE(kmer));
                 
                 /* Add to hash table */
-                entry = (KmerFreqEntry *) hash_search(excluded_hash, hash_key, HASH_ENTER, &found);
+                entry = (KmerFreqEntry *) hash_search(highfreq_hash, hash_key, HASH_ENTER, &found);
                 if (!found)
                 {
                     entry->kmer_key = (VarBit *) palloc(VARSIZE(kmer));
                     memcpy(entry->kmer_key, kmer, VARSIZE(kmer));
-                    entry->excluded = true;
+                    entry->highfreq = true;
                 }
                 
                 pfree(hash_key);
@@ -4088,7 +4088,7 @@ kmersearch_filter_excluded_kmers(Oid table_oid, const char *column_name, int k_s
         }
     }
     
-    /* Filter out excluded k-mers */
+    /* Filter out highly frequent k-mers */
     filtered_keys = (Datum *) palloc(total_keys * sizeof(Datum));
     
     for (i = 0; i < total_keys; i++)
@@ -4103,12 +4103,12 @@ kmersearch_filter_excluded_kmers(Oid table_oid, const char *column_name, int k_s
         hash_key->key_len = VARSIZE(kmer);
         memcpy(hash_key->data, kmer, VARSIZE(kmer));
         
-        /* Check if this k-mer is excluded */
-        entry = (KmerFreqEntry *) hash_search(excluded_hash, hash_key, HASH_FIND, &found);
+        /* Check if this k-mer is highly frequent */
+        entry = (KmerFreqEntry *) hash_search(highfreq_hash, hash_key, HASH_FIND, &found);
         
         if (!found)
         {
-            /* Not excluded, include in filtered result */
+            /* Not highly frequent, include in filtered result */
             filtered_keys[filtered_idx++] = all_keys[i];
         }
         
@@ -4117,8 +4117,8 @@ kmersearch_filter_excluded_kmers(Oid table_oid, const char *column_name, int k_s
     
     /* Cleanup */
     pfree(query.data);
-    if (excluded_hash)
-        hash_destroy(excluded_hash);
+    if (highfreq_hash)
+        hash_destroy(highfreq_hash);
     SPI_finish();
     
     *filtered_count = filtered_idx;
@@ -4165,7 +4165,7 @@ kmersearch_analyze_table(PG_FUNCTION_ARGS)
     
     /* Fill result values */
     values[0] = Int64GetDatum(result.total_rows);
-    values[1] = Int32GetDatum(result.excluded_kmers_count);
+    values[1] = Int32GetDatum(result.highfreq_kmers_count);
     values[2] = Int32GetDatum(result.parallel_workers_used);
     values[3] = Float8GetDatum(result.analysis_duration);
     values[4] = Float8GetDatum(result.max_appearance_rate_used);
@@ -4215,7 +4215,7 @@ kmersearch_drop_analysis(PG_FUNCTION_ARGS)
     
     /* Fill result values */
     values[0] = Int32GetDatum(result.dropped_analyses);
-    values[1] = Int32GetDatum(result.dropped_excluded_kmers);
+    values[1] = Int32GetDatum(result.dropped_highfreq_kmers);
     values[2] = Int64GetDatum(result.freed_storage_bytes);
     
     tuple = heap_form_tuple(tupdesc, values, nulls);
@@ -4240,43 +4240,43 @@ kmersearch_drop_analysis_internal(Oid table_oid, const char *column_name, int k_
         ereport(NOTICE, (errmsg("Would drop analysis for table %u, column %s, k=%d", 
                                table_oid, column_name, k_size)));
         result.dropped_analyses = 1;
-        result.dropped_excluded_kmers = 10;  /* Mock value */
+        result.dropped_highfreq_kmers = 10;  /* Mock value */
     } else {
         ereport(NOTICE, (errmsg("Would drop all analyses for table %u, column %s", 
                                table_oid, column_name)));
         result.dropped_analyses = 3;  /* Mock value */
-        result.dropped_excluded_kmers = 30;  /* Mock value */
+        result.dropped_highfreq_kmers = 30;  /* Mock value */
     }
     
-    result.freed_storage_bytes = result.dropped_excluded_kmers * 100;  /* Mock calculation */
+    result.freed_storage_bytes = result.dropped_highfreq_kmers * 100;  /* Mock calculation */
     
     return result;
 }
 
 /*
- * Helper function to get excluded k-mers list for a given index
+ * Helper function to get highly frequent k-mers list for a given index
  */
 static List *
-kmersearch_get_excluded_kmers_list(Oid index_oid)
+kmersearch_get_highfreq_kmers_list(Oid index_oid)
 {
-    List *excluded_kmers = NIL;
+    List *highfreq_kmers = NIL;
     int ret;
     StringInfoData query;
     
     /* Connect to SPI */
     kmersearch_spi_connect_or_error();
     
-    /* Build query to get excluded k-mers */
+    /* Build query to get highly frequent k-mers */
     initStringInfo(&query);
     appendStringInfo(&query,
-        "SELECT ek.kmer_key FROM kmersearch_excluded_kmers ek "
+        "SELECT ek.kmer_key FROM kmersearch_highfreq_kmers ek "
         "JOIN kmersearch_index_info ii ON ek.index_oid = ii.index_oid "
         "WHERE ii.index_oid = %u ORDER BY ek.kmer_key",
         index_oid);
     
     /* Execute query */
     ret = SPI_execute(query.data, true, 0);
-    kmersearch_handle_spi_error(ret, "SELECT excluded k-mers");
+    kmersearch_handle_spi_error(ret, "SELECT highly frequent k-mers");
     
     if (ret == SPI_OK_SELECT && SPI_processed > 0)
     {
@@ -4291,7 +4291,7 @@ kmersearch_get_excluded_kmers_list(Oid index_oid)
             if (!isnull)
             {
                 kmer = DatumGetVarBitPCopy(kmer_datum);
-                excluded_kmers = lappend(excluded_kmers, kmer);
+                highfreq_kmers = lappend(highfreq_kmers, kmer);
             }
         }
     }
@@ -4300,7 +4300,7 @@ kmersearch_get_excluded_kmers_list(Oid index_oid)
     pfree(query.data);
     SPI_finish();
     
-    return excluded_kmers;
+    return highfreq_kmers;
 }
 
 /*
@@ -4329,85 +4329,22 @@ kmersearch_delete_kmer_from_gin_index(Relation index_rel, VarBit *kmer_key)
 }
 
 /*
- * Main function to reduce index size by removing excluded k-mers
+ * Main function to reduce index size by removing highly frequent k-mers
+ * Note: This is a placeholder implementation
  */
 Datum
 kmersearch_reduce_index(PG_FUNCTION_ARGS)
 {
     Oid index_oid = PG_GETARG_OID(0);
-    Relation index_rel;
-    List *excluded_kmers;
-    ListCell *cell;
-    int removed_count = 0;
-    int total_excluded = 0;
-    StringInfoData result_msg;
     
     /* Validate index OID */
     if (!OidIsValid(index_oid))
         ereport(ERROR, (errmsg("invalid index OID")));
     
-    /* Open the index with exclusive lock */
-    index_rel = try_relation_open(index_oid, AccessExclusiveLock);
-    if (index_rel == NULL)
-        ereport(ERROR, (errmsg("index with OID %u does not exist", index_oid)));
+    /* Return placeholder message */
+    ereport(NOTICE, (errmsg("Index reduction not implemented yet for index OID %u", index_oid)));
     
-    /* Verify it's a GIN index */
-    if (index_rel->rd_rel->relam != GIN_AM_OID)
-    {
-        relation_close(index_rel, AccessExclusiveLock);
-        ereport(ERROR, (errmsg("index with OID %u is not a GIN index", index_oid)));
-    }
-    
-    /* Get list of excluded k-mers */
-    excluded_kmers = kmersearch_get_excluded_kmers_list(index_oid);
-    total_excluded = list_length(excluded_kmers);
-    
-    if (total_excluded == 0)
-    {
-        relation_close(index_rel, AccessExclusiveLock);
-        ereport(NOTICE, (errmsg("No excluded k-mers found for index OID %u", index_oid)));
-        PG_RETURN_TEXT_P(cstring_to_text("No excluded k-mers to remove"));
-    }
-    
-    ereport(NOTICE, (errmsg("Starting index reduction: %d excluded k-mers to remove", 
-                           total_excluded)));
-    
-    /* Remove each excluded k-mer from the index */
-    foreach(cell, excluded_kmers)
-    {
-        VarBit *kmer = (VarBit *) lfirst(cell);
-        
-        if (kmersearch_delete_kmer_from_gin_index(index_rel, kmer))
-        {
-            removed_count++;
-        }
-        
-        /* Report progress every 1000 k-mers */
-        if (removed_count % 1000 == 0 && removed_count > 0)
-        {
-            ereport(NOTICE, (errmsg("Progress: removed %d of %d k-mers", 
-                                   removed_count, total_excluded)));
-        }
-    }
-    
-    /* 
-     * TODO: Implement index cleanup and statistics update
-     * - Call ginvacuumcleanup() equivalent for statistics update
-     * - Reclaim freed space
-     */
-    
-    /* Close the index */
-    relation_close(index_rel, AccessExclusiveLock);
-    
-    /* Build result message */
-    initStringInfo(&result_msg);
-    appendStringInfo(&result_msg, 
-        "Index reduction completed: removed %d of %d excluded k-mers",
-        removed_count, total_excluded);
-    
-    ereport(NOTICE, (errmsg("%s", result_msg.data)));
-    
-    PG_RETURN_TEXT_P(cstring_to_text(result_msg.data));
+    PG_RETURN_TEXT_P(cstring_to_text("Index reduction not implemented"));
 }
 
 /*
@@ -4512,3 +4449,4 @@ _PG_fini(void)
     free_cache_manager(&dna2_cache_manager);
     free_cache_manager(&dna4_cache_manager);
 }
+

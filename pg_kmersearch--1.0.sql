@@ -145,12 +145,12 @@ CREATE OPERATOR CLASS kmersearch_dna4_gin_ops
         STORAGE varbit;
 
 
--- System table for storing excluded k-mers
-CREATE TABLE kmersearch_excluded_kmers (
+-- System table for storing highly frequent k-mers
+CREATE TABLE kmersearch_highfreq_kmers (
     index_oid oid NOT NULL,
     kmer_key varbit NOT NULL,
     frequency_count integer NOT NULL,
-    exclusion_reason text,
+    detection_reason text,
     created_at timestamp with time zone DEFAULT now(),
     PRIMARY KEY (index_oid, kmer_key)
 );
@@ -162,7 +162,7 @@ CREATE TABLE kmersearch_index_info (
     column_name name NOT NULL,
     k_value integer NOT NULL,
     total_rows bigint NOT NULL,
-    excluded_kmers_count integer NOT NULL,
+    highfreq_kmers_count integer NOT NULL,
     max_appearance_rate real NOT NULL,
     max_appearance_nrow integer NOT NULL,
     created_at timestamp with time zone DEFAULT now()
@@ -174,9 +174,9 @@ CREATE FUNCTION kmersearch_analyze_table_frequency(table_oid oid, column_name te
     AS 'MODULE_PATHNAME', 'kmersearch_analyze_table_frequency'
     LANGUAGE C VOLATILE STRICT;
 
-CREATE FUNCTION kmersearch_get_excluded_kmers(index_oid oid) 
+CREATE FUNCTION kmersearch_get_highfreq_kmers(index_oid oid) 
     RETURNS varbit[]
-    AS 'MODULE_PATHNAME', 'kmersearch_get_excluded_kmers'
+    AS 'MODULE_PATHNAME', 'kmersearch_get_highfreq_kmers'
     LANGUAGE C STABLE STRICT;
 
 
