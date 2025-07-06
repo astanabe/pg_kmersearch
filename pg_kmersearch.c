@@ -71,12 +71,7 @@ typedef struct KmerFreqEntry
     bool        highfreq;       /* Whether this k-mer is highly frequent */
 } KmerFreqEntry;
 
-/* Hash table key for k-mer frequency counting */
-typedef struct KmerHashKey
-{
-    int         key_len;            /* Length of the key data */
-    char        data[FLEXIBLE_ARRAY_MEMBER];
-} KmerHashKey;
+/* A-3: Removed KmerHashKey structure - no longer needed for direct comparison */
 
 /* Combined result structure for k-mer matching and scoring */
 typedef struct KmerMatchResult
@@ -142,6 +137,33 @@ typedef struct KmerCacheManager
 /* Global cache managers */
 static KmerCacheManager *dna2_cache_manager = NULL;
 static KmerCacheManager *dna4_cache_manager = NULL;
+
+/* B-2: Query pattern cache structures */
+typedef struct QueryPatternCacheEntry
+{
+    uint64      hash_key;                  /* Hash key for this entry */
+    char        *query_string_copy;        /* Copy of query string */
+    int         k_size;                    /* K-mer size for this pattern */
+    VarBit      **extracted_kmers;         /* Cached extracted k-mers */
+    int         kmer_count;                /* Number of extracted k-mers */
+    struct QueryPatternCacheEntry *next;   /* For LRU chain */
+    struct QueryPatternCacheEntry *prev;   /* For LRU chain */
+} QueryPatternCacheEntry;
+
+typedef struct QueryPatternCacheManager
+{
+    HTAB        *hash_table;               /* PostgreSQL hash table */
+    MemoryContext cache_context;           /* Memory context for cache */
+    int         max_entries;               /* Maximum number of entries */
+    int         current_entries;           /* Current number of entries */
+    uint64      hits;                      /* Cache hit count */
+    uint64      misses;                    /* Cache miss count */
+    QueryPatternCacheEntry *lru_head;      /* LRU chain head (most recent) */
+    QueryPatternCacheEntry *lru_tail;      /* LRU chain tail (least recent) */
+} QueryPatternCacheManager;
+
+/* Global query pattern cache manager */
+static QueryPatternCacheManager *query_pattern_cache_manager = NULL;
 
 /* K-mer data union for different k-values */
 typedef union KmerData
@@ -238,6 +260,16 @@ static void lru_touch(KmerCacheManager *manager, KmerCacheEntry *entry);
 static void lru_evict_oldest(KmerCacheManager *manager);
 static KmerMatchResult get_cached_result_dna2(VarBit *sequence, const char *query_string);
 static KmerMatchResult get_cached_result_dna4(VarBit *sequence, const char *query_string);
+
+/* B-2: Query pattern cache functions */
+static void init_query_pattern_cache_manager(QueryPatternCacheManager **manager);
+static uint64 generate_query_pattern_cache_key(const char *query_string, int k_size);
+static QueryPatternCacheEntry *lookup_query_pattern_cache_entry(QueryPatternCacheManager *manager, const char *query_string, int k_size);
+static void store_query_pattern_cache_entry(QueryPatternCacheManager *manager, uint64 hash_key, const char *query_string, int k_size, VarBit **kmers, int kmer_count);
+static void lru_touch_query_pattern(QueryPatternCacheManager *manager, QueryPatternCacheEntry *entry);
+static void lru_evict_oldest_query_pattern(QueryPatternCacheManager *manager);
+static VarBit **get_cached_query_kmers(const char *query_string, int k_size, int *nkeys);
+static void free_query_pattern_cache_manager(QueryPatternCacheManager **manager);
 static Datum *kmersearch_extract_dna4_kmers_with_expansion_direct(VarBit *seq, int k, int *nkeys);
 static VarBit *kmersearch_create_ngram_key_with_occurrence_from_dna2(VarBit *dna2_kmer, int k, int occurrence);
 static VarBit **kmersearch_extract_query_kmers(const char *query, int k, int *nkeys);
@@ -1351,9 +1383,9 @@ kmersearch_extract_dna2_kmers_direct(VarBit *seq, int k, int *nkeys)
     int max_kmers = (seq_bases >= k) ? (seq_bases - k + 1) : 0;
     Datum *keys;
     int key_count = 0;
-    HTAB *occurrence_hash;
-    HASHCTL hash_ctl;
     int i;
+    KmerOccurrence *occurrences;
+    int occurrence_count = 0;
     
     *nkeys = 0;
     if (max_kmers <= 0)
@@ -1361,48 +1393,28 @@ kmersearch_extract_dna2_kmers_direct(VarBit *seq, int k, int *nkeys)
     
     keys = (Datum *) palloc(max_kmers * sizeof(Datum));
     
-    /* Create hash table for tracking k-mer occurrences */
-    memset(&hash_ctl, 0, sizeof(hash_ctl));
-    hash_ctl.keysize = sizeof(uint64_t) * ((k * 2 + 63) / 64);  /* Round up to uint64_t units */
-    hash_ctl.entrysize = sizeof(int);
-    occurrence_hash = hash_create("KmerOccurrenceHash", 1000, &hash_ctl,
-                                  HASH_ELEM | HASH_BLOBS);
+    /* Use simple array-based k-mer tracking (no hashing needed for k<=64) */
+    occurrences = (KmerOccurrence *) palloc(max_kmers * sizeof(KmerOccurrence));
     
     /* Extract k-mers */
     for (i = 0; i <= seq_bases - k; i++)
     {
-        /* Create k-mer key for hash lookup */
-        uint64_t kmer_key_data[4] = {0};  /* Support up to k=128 */
-        bool found;
-        int *occurrence_ptr;
+        uint64_t kmer_value;
+        int current_count;
         VarBit *ngram_key;
-        bits8 *src_data = VARBITS(seq);
-        int j;
         
-        /* Extract k-mer bits for hash key */
-        for (j = 0; j < k; j++)
-        {
-            int bit_pos = (i + j) * 2;
-            int byte_pos = bit_pos / 8;
-            int bit_offset = bit_pos % 8;
-            uint8 base_bits = (src_data[byte_pos] >> (6 - bit_offset)) & 0x3;
-            
-            /* Store in hash key */
-            int key_bit_pos = j * 2;
-            int key_word_pos = key_bit_pos / 64;
-            int key_bit_offset = key_bit_pos % 64;
-            kmer_key_data[key_word_pos] |= ((uint64_t)base_bits << (62 - key_bit_offset));
-        }
+        /* Extract k-mer as single uint64_t value */
+        kmer_value = kmersearch_extract_kmer_as_uint64(seq, i, k);
         
-        /* Get or create occurrence count */
-        occurrence_ptr = (int *) hash_search(occurrence_hash, kmer_key_data, HASH_ENTER, &found);
-        if (!found)
-            *occurrence_ptr = 0;
+        /* Find or add occurrence count using binary search */
+        current_count = kmersearch_find_or_add_kmer_occurrence(occurrences, &occurrence_count, 
+                                                              kmer_value, max_kmers);
         
-        (*occurrence_ptr)++;
+        if (current_count < 0)
+            continue;  /* Array full, skip */
         
         /* Skip if occurrence exceeds bit limit */
-        if (*occurrence_ptr > (1 << kmersearch_occur_bitlen))
+        if (current_count > (1 << kmersearch_occur_bitlen))
             continue;
         
         /* Create simple k-mer key (without occurrence count for matching) */
@@ -1410,7 +1422,8 @@ kmersearch_extract_dna2_kmers_direct(VarBit *seq, int k, int *nkeys)
         keys[key_count++] = PointerGetDatum(ngram_key);
     }
     
-    hash_destroy(occurrence_hash);
+    /* Cleanup */
+    pfree(occurrences);
     
     *nkeys = key_count;
     return keys;
@@ -1438,12 +1451,9 @@ kmersearch_extract_dna4_kmers_with_expansion_direct(VarBit *seq, int k, int *nke
     /* Allocate keys array with room for expansions */
     keys = (Datum *) palloc(max_kmers * 10 * sizeof(Datum));  /* Max 10 expansions */
     
-    /* Create hash table for tracking k-mer occurrences */
-    memset(&hash_ctl, 0, sizeof(hash_ctl));
-    hash_ctl.keysize = sizeof(uint64_t) * ((k * 2 + 63) / 64);
-    hash_ctl.entrysize = sizeof(int);
-    occurrence_hash = hash_create("DNA4KmerOccurrenceHash", 1000, &hash_ctl,
-                                  HASH_ELEM | HASH_BLOBS);
+    /* Use simple array-based k-mer tracking (no hashing needed for k<=64) */
+    KmerOccurrence *occurrences = (KmerOccurrence *) palloc(max_kmers * 10 * sizeof(KmerOccurrence));
+    int occurrence_count = 0;
     
     /* Extract k-mers */
     for (i = 0; i <= seq_bases - k; i++)
@@ -1462,36 +1472,22 @@ kmersearch_extract_dna4_kmers_with_expansion_direct(VarBit *seq, int k, int *nke
         for (j = 0; j < expansion_count; j++)
         {
             VarBit *dna2_kmer = expanded_kmers[j];
-            uint64_t kmer_key_data[4] = {0};
-            bool found;
-            int *occurrence_ptr;
+            uint64_t kmer_value;
+            int current_count;
             VarBit *ngram_key;
-            bits8 *kmer_data = VARBITS(dna2_kmer);
-            int base_idx;
             
-            /* Create hash key from DNA2 k-mer */
-            for (base_idx = 0; base_idx < k; base_idx++)
-            {
-                int bit_pos = base_idx * 2;
-                int byte_pos = bit_pos / 8;
-                int bit_offset = bit_pos % 8;
-                uint8 base_bits = (kmer_data[byte_pos] >> (6 - bit_offset)) & 0x3;
-                
-                int key_bit_pos = base_idx * 2;
-                int key_word_pos = key_bit_pos / 64;
-                int key_bit_offset = key_bit_pos % 64;
-                kmer_key_data[key_word_pos] |= ((uint64_t)base_bits << (62 - key_bit_offset));
-            }
+            /* Extract k-mer as single uint64_t value */
+            kmer_value = kmersearch_extract_kmer_as_uint64(dna2_kmer, 0, k);
             
-            /* Get or create occurrence count */
-            occurrence_ptr = (int *) hash_search(occurrence_hash, kmer_key_data, HASH_ENTER, &found);
-            if (!found)
-                *occurrence_ptr = 0;
+            /* Find or add occurrence count using binary search */
+            current_count = kmersearch_find_or_add_kmer_occurrence(occurrences, &occurrence_count, 
+                                                                  kmer_value, max_kmers * 10);
             
-            (*occurrence_ptr)++;
+            if (current_count < 0)
+                continue;  /* Array full, skip */
             
             /* Skip if occurrence exceeds bit limit */
-            if (*occurrence_ptr > (1 << kmersearch_occur_bitlen))
+            if (current_count > (1 << kmersearch_occur_bitlen))
                 continue;
             
             /* Create simple k-mer key (copy the DNA2 k-mer directly) */
@@ -1512,7 +1508,8 @@ kmersearch_extract_dna4_kmers_with_expansion_direct(VarBit *seq, int k, int *nke
         }
     }
     
-    hash_destroy(occurrence_hash);
+    /* Cleanup */
+    pfree(occurrences);
     
     *nkeys = key_count;
     return keys;
@@ -1883,6 +1880,266 @@ get_cached_result_dna4(VarBit *sequence, const char *query_string)
     store_cache_entry(dna4_cache_manager, hash_key, sequence, query_string, result);
     
     return result;
+}
+
+/*
+ * B-2: Query pattern cache implementation
+ */
+
+/*
+ * Initialize query pattern cache manager
+ */
+static void
+init_query_pattern_cache_manager(QueryPatternCacheManager **manager)
+{
+    if (*manager == NULL)
+    {
+        MemoryContext old_context = MemoryContextSwitchTo(TopMemoryContext);
+        HASHCTL hash_ctl;
+        
+        /* Allocate manager in TopMemoryContext */
+        *manager = (QueryPatternCacheManager *) palloc0(sizeof(QueryPatternCacheManager));
+        
+        /* Create cache context under TopMemoryContext */
+        (*manager)->cache_context = AllocSetContextCreate(TopMemoryContext,
+                                                         "QueryPatternCache",
+                                                         ALLOCSET_DEFAULT_SIZES);
+        
+        /* Initialize cache parameters */
+        (*manager)->max_entries = kmersearch_cache_max_entries / 4;  /* Use 1/4 of main cache size */
+        (*manager)->current_entries = 0;
+        (*manager)->hits = 0;
+        (*manager)->misses = 0;
+        (*manager)->lru_head = NULL;
+        (*manager)->lru_tail = NULL;
+        
+        /* Create hash table */
+        MemSet(&hash_ctl, 0, sizeof(hash_ctl));
+        hash_ctl.keysize = sizeof(uint64);
+        hash_ctl.entrysize = sizeof(QueryPatternCacheEntry);
+        hash_ctl.hcxt = (*manager)->cache_context;
+        
+        (*manager)->hash_table = hash_create("QueryPatternCache", 256, &hash_ctl,
+                                           HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
+        
+        MemoryContextSwitchTo(old_context);
+    }
+}
+
+/*
+ * Generate cache key for query pattern
+ */
+static uint64
+generate_query_pattern_cache_key(const char *query_string, int k_size)
+{
+    uint64 query_hash, k_hash;
+    
+    /* Hash query string */
+    query_hash = hash_any_extended((unsigned char*)query_string, strlen(query_string), 0);
+    
+    /* Hash k_size with different seed */
+    k_hash = hash_any_extended((unsigned char*)&k_size, sizeof(k_size), 1);
+    
+    /* Combine hashes */
+    return query_hash ^ (k_hash << 1);
+}
+
+/*
+ * Move entry to head of LRU chain (most recently used)
+ */
+static void
+lru_touch_query_pattern(QueryPatternCacheManager *manager, QueryPatternCacheEntry *entry)
+{
+    if (entry == manager->lru_head)
+        return;  /* Already at head */
+    
+    /* Remove from current position */
+    if (entry->prev)
+        entry->prev->next = entry->next;
+    else
+        manager->lru_tail = entry->next;
+    
+    if (entry->next)
+        entry->next->prev = entry->prev;
+    else
+        manager->lru_head = entry->prev;
+    
+    /* Add to head */
+    entry->prev = NULL;
+    entry->next = manager->lru_head;
+    if (manager->lru_head)
+        manager->lru_head->prev = entry;
+    else
+        manager->lru_tail = entry;
+    manager->lru_head = entry;
+}
+
+/*
+ * Evict oldest entry from cache
+ */
+static void
+lru_evict_oldest_query_pattern(QueryPatternCacheManager *manager)
+{
+    QueryPatternCacheEntry *tail = manager->lru_tail;
+    bool found;
+    int i;
+    
+    if (!tail)
+        return;
+    
+    /* Remove from hash table */
+    hash_search(manager->hash_table, &tail->hash_key, HASH_REMOVE, &found);
+    
+    /* Remove from LRU chain */
+    if (tail->prev)
+        tail->prev->next = NULL;
+    else
+        manager->lru_head = NULL;
+    manager->lru_tail = tail->prev;
+    
+    /* Free allocated memory */
+    if (tail->query_string_copy)
+        pfree(tail->query_string_copy);
+    if (tail->extracted_kmers)
+    {
+        for (i = 0; i < tail->kmer_count; i++)
+        {
+            if (tail->extracted_kmers[i])
+                pfree(tail->extracted_kmers[i]);
+        }
+        pfree(tail->extracted_kmers);
+    }
+    
+    manager->current_entries--;
+}
+
+/*
+ * Look up query pattern cache entry
+ */
+static QueryPatternCacheEntry *
+lookup_query_pattern_cache_entry(QueryPatternCacheManager *manager, const char *query_string, int k_size)
+{
+    uint64 hash_key = generate_query_pattern_cache_key(query_string, k_size);
+    QueryPatternCacheEntry *entry;
+    bool found;
+    
+    entry = (QueryPatternCacheEntry *) hash_search(manager->hash_table, &hash_key, HASH_FIND, &found);
+    
+    if (found && entry && strcmp(entry->query_string_copy, query_string) == 0 && entry->k_size == k_size)
+    {
+        /* Cache hit - move to head of LRU */
+        lru_touch_query_pattern(manager, entry);
+        manager->hits++;
+        return entry;
+    }
+    
+    return NULL;  /* Cache miss */
+}
+
+/*
+ * Store entry in query pattern cache
+ */
+static void
+store_query_pattern_cache_entry(QueryPatternCacheManager *manager, uint64 hash_key, 
+                               const char *query_string, int k_size, VarBit **kmers, int kmer_count)
+{
+    QueryPatternCacheEntry *entry;
+    MemoryContext old_context;
+    bool found;
+    int i;
+    
+    /* Evict oldest entries if cache is full */
+    while (manager->current_entries >= manager->max_entries)
+        lru_evict_oldest_query_pattern(manager);
+    
+    old_context = MemoryContextSwitchTo(manager->cache_context);
+    
+    /* Create new entry */
+    entry = (QueryPatternCacheEntry *) hash_search(manager->hash_table, &hash_key, HASH_ENTER, &found);
+    if (!found)
+    {
+        entry->hash_key = hash_key;
+        entry->query_string_copy = pstrdup(query_string);
+        entry->k_size = k_size;
+        entry->kmer_count = kmer_count;
+        
+        /* Copy k-mers */
+        entry->extracted_kmers = (VarBit **) palloc(kmer_count * sizeof(VarBit *));
+        for (i = 0; i < kmer_count; i++)
+        {
+            entry->extracted_kmers[i] = (VarBit *) palloc(VARSIZE(kmers[i]));
+            memcpy(entry->extracted_kmers[i], kmers[i], VARSIZE(kmers[i]));
+        }
+        
+        /* Add to LRU chain */
+        entry->prev = NULL;
+        entry->next = manager->lru_head;
+        if (manager->lru_head)
+            manager->lru_head->prev = entry;
+        else
+            manager->lru_tail = entry;
+        manager->lru_head = entry;
+        
+        manager->current_entries++;
+    }
+    
+    MemoryContextSwitchTo(old_context);
+}
+
+/*
+ * Get cached query k-mers or extract and cache them
+ */
+static VarBit **
+get_cached_query_kmers(const char *query_string, int k_size, int *nkeys)
+{
+    QueryPatternCacheEntry *entry;
+    VarBit **result_kmers;
+    uint64 hash_key;
+    int i;
+    
+    /* Initialize cache if needed */
+    if (!query_pattern_cache_manager)
+        init_query_pattern_cache_manager(&query_pattern_cache_manager);
+    
+    /* Look up in cache */
+    entry = lookup_query_pattern_cache_entry(query_pattern_cache_manager, query_string, k_size);
+    if (entry)
+    {
+        /* Cache hit - return copy of cached k-mers */
+        *nkeys = entry->kmer_count;
+        result_kmers = (VarBit **) palloc(entry->kmer_count * sizeof(VarBit *));
+        for (i = 0; i < entry->kmer_count; i++)
+        {
+            result_kmers[i] = (VarBit *) palloc(VARSIZE(entry->extracted_kmers[i]));
+            memcpy(result_kmers[i], entry->extracted_kmers[i], VARSIZE(entry->extracted_kmers[i]));
+        }
+        return result_kmers;
+    }
+    
+    /* Cache miss - extract k-mers and store in cache */
+    query_pattern_cache_manager->misses++;
+    result_kmers = kmersearch_extract_query_kmers(query_string, k_size, nkeys);
+    
+    /* Store in cache */
+    hash_key = generate_query_pattern_cache_key(query_string, k_size);
+    store_query_pattern_cache_entry(query_pattern_cache_manager, hash_key, query_string, k_size, result_kmers, *nkeys);
+    
+    return result_kmers;
+}
+
+/*
+ * Free query pattern cache manager
+ */
+static void
+free_query_pattern_cache_manager(QueryPatternCacheManager **manager)
+{
+    if (*manager)
+    {
+        /* Delete the cache context, which will free all allocated memory */
+        if ((*manager)->cache_context)
+            MemoryContextDelete((*manager)->cache_context);
+        *manager = NULL;
+    }
 }
 
 /*
@@ -2431,30 +2688,7 @@ kmersearch_create_kmer_key_only(const char *kmer, int k)
     return result;
 }
 
-/*
- * Hash function for k-mer keys
- */
-static uint32
-kmersearch_kmer_hash(const void *key, Size keysize)
-{
-    const KmerHashKey *k = (const KmerHashKey *) key;
-    return DatumGetUInt32(hash_any((unsigned char *) k->data, k->key_len));
-}
-
-/*
- * Compare function for k-mer keys
- */
-static int
-kmersearch_kmer_compare(const void *key1, const void *key2, Size keysize)
-{
-    const KmerHashKey *k1 = (const KmerHashKey *) key1;
-    const KmerHashKey *k2 = (const KmerHashKey *) key2;
-    
-    if (k1->key_len != k2->key_len)
-        return k1->key_len - k2->key_len;
-    
-    return memcmp(k1->data, k2->data, k1->key_len);
-}
+/* A-3: Removed kmersearch_kmer_hash and kmersearch_kmer_compare functions - no longer needed */
 
 /*
  * Analyze table frequency and determine highly frequent k-mers
@@ -3011,7 +3245,7 @@ kmersearch_kmer_based_match_dna2(VarBit *sequence, const char *query_string)
     }
     
     /* Extract k-mers from query (with degenerate expansion) */
-    query_keys = kmersearch_extract_query_kmers(query_string, k, &query_nkeys);
+    query_keys = get_cached_query_kmers(query_string, k, &query_nkeys);
     if (query_keys == NULL || query_nkeys == 0) {
         /* Free sequence keys */
         if (seq_keys) {
@@ -3073,7 +3307,7 @@ kmersearch_kmer_based_match_dna4(VarBit *sequence, const char *query_string)
     }
     
     /* Extract k-mers from query (with degenerate expansion) */
-    query_keys = kmersearch_extract_query_kmers(query_string, k, &query_nkeys);
+    query_keys = get_cached_query_kmers(query_string, k, &query_nkeys);
     if (query_keys == NULL || query_nkeys == 0) {
         /* Free sequence keys */
         if (seq_keys) {
@@ -3164,7 +3398,7 @@ kmersearch_calculate_kmer_match_and_score_dna2(VarBit *sequence, const char *que
     }
     
     /* Extract k-mers from query (with degenerate expansion) */
-    query_keys = kmersearch_extract_query_kmers(query_string, k, &result.query_nkeys);
+    query_keys = get_cached_query_kmers(query_string, k, &result.query_nkeys);
     if (query_keys == NULL || result.query_nkeys == 0) {
         goto cleanup;
     }
@@ -3240,7 +3474,7 @@ kmersearch_calculate_kmer_match_and_score_dna4(VarBit *sequence, const char *que
     }
     
     /* Extract k-mers from query (with degenerate expansion) */
-    query_keys = kmersearch_extract_query_kmers(query_string, k, &result.query_nkeys);
+    query_keys = get_cached_query_kmers(query_string, k, &result.query_nkeys);
     if (query_keys == NULL || result.query_nkeys == 0) {
         goto cleanup;
     }
@@ -4074,6 +4308,7 @@ kmersearch_validate_analysis_parameters(Oid table_oid, const char *column_name, 
 
 /*
  * Filter highly frequent k-mers from the key array
+ * A-2: Use direct VarBit comparison instead of hash table (k-mer+occurrence n-gram keys are small)
  */
 static Datum *
 kmersearch_filter_highfreq_kmers(Oid table_oid, const char *column_name, int k_size, 
@@ -4081,11 +4316,11 @@ kmersearch_filter_highfreq_kmers(Oid table_oid, const char *column_name, int k_s
 {
     int ret;
     StringInfoData query;
-    HTAB *highfreq_hash = NULL;
-    HASHCTL hash_ctl;
     Datum *filtered_keys;
     int filtered_idx = 0;
     int i;
+    VarBit **highfreq_kmers = NULL;
+    int highfreq_count = 0;
     
     /* Check if analysis exists */
     if (!kmersearch_check_analysis_exists(table_oid, column_name, k_size)) {
@@ -4097,17 +4332,6 @@ kmersearch_filter_highfreq_kmers(Oid table_oid, const char *column_name, int k_s
     /* Connect to SPI */
     kmersearch_spi_connect_or_error();
     
-    /* Create hash table for highly frequent k-mers lookup */
-    memset(&hash_ctl, 0, sizeof(hash_ctl));
-    hash_ctl.keysize = sizeof(KmerHashKey);
-    hash_ctl.entrysize = sizeof(KmerFreqEntry);
-    hash_ctl.hash = kmersearch_kmer_hash;
-    hash_ctl.match = kmersearch_kmer_compare;
-    hash_ctl.hcxt = CurrentMemoryContext;
-    
-    highfreq_hash = hash_create("Highly Frequent K-mers", 1024, &hash_ctl,
-                               HASH_ELEM | HASH_FUNCTION | HASH_COMPARE | HASH_CONTEXT);
-    
     /* Build query to get excluded k-mers from index info table */
     initStringInfo(&query);
     appendStringInfo(&query,
@@ -4116,75 +4340,77 @@ kmersearch_filter_highfreq_kmers(Oid table_oid, const char *column_name, int k_s
         "WHERE ii.table_oid = %u AND ii.column_name = '%s' AND ii.k_value = %d",
         table_oid, column_name, k_size);
     
-    /* Execute query and populate hash table */
+    /* Execute query and collect highly frequent k-mers in a simple array */
     ret = SPI_execute(query.data, true, 0);
     if (ret == SPI_OK_SELECT && SPI_processed > 0)
     {
         int j;
+        highfreq_count = SPI_processed;
+        highfreq_kmers = (VarBit **) palloc(highfreq_count * sizeof(VarBit *));
+        
         for (j = 0; j < SPI_processed; j++)
         {
             bool isnull;
             Datum kmer_datum;
             VarBit *kmer;
-            KmerHashKey *hash_key;
-            KmerFreqEntry *entry;
-            bool found;
             
             kmer_datum = SPI_getbinval(SPI_tuptable->vals[j], SPI_tuptable->tupdesc, 1, &isnull);
             if (!isnull)
             {
                 kmer = DatumGetVarBitP(kmer_datum);
                 
-                /* Create hash key */
-                hash_key = (KmerHashKey *) palloc(sizeof(KmerHashKey) + VARSIZE(kmer));
-                hash_key->key_len = VARSIZE(kmer);
-                memcpy(hash_key->data, kmer, VARSIZE(kmer));
-                
-                /* Add to hash table */
-                entry = (KmerFreqEntry *) hash_search(highfreq_hash, hash_key, HASH_ENTER, &found);
-                if (!found)
-                {
-                    entry->kmer_key = (VarBit *) palloc(VARSIZE(kmer));
-                    memcpy(entry->kmer_key, kmer, VARSIZE(kmer));
-                    entry->highfreq = true;
-                }
-                
-                pfree(hash_key);
+                /* Store copy of k-mer for direct comparison */
+                highfreq_kmers[j] = (VarBit *) palloc(VARSIZE(kmer));
+                memcpy(highfreq_kmers[j], kmer, VARSIZE(kmer));
+            }
+            else
+            {
+                highfreq_kmers[j] = NULL;
             }
         }
     }
     
-    /* Filter out highly frequent k-mers */
+    /* Filter out highly frequent k-mers using direct VarBit comparison */
     filtered_keys = (Datum *) palloc(total_keys * sizeof(Datum));
     
     for (i = 0; i < total_keys; i++)
     {
         VarBit *kmer = DatumGetVarBitP(all_keys[i]);
-        KmerHashKey *hash_key;
-        KmerFreqEntry *entry;
-        bool found;
+        bool is_highfreq = false;
+        int j;
         
-        /* Create hash key for lookup */
-        hash_key = (KmerHashKey *) palloc(sizeof(KmerHashKey) + VARSIZE(kmer));
-        hash_key->key_len = VARSIZE(kmer);
-        memcpy(hash_key->data, kmer, VARSIZE(kmer));
+        /* Direct comparison with highly frequent k-mers (no hashing) */
+        for (j = 0; j < highfreq_count; j++)
+        {
+            if (highfreq_kmers[j] != NULL &&
+                VARBITLEN(kmer) == VARBITLEN(highfreq_kmers[j]) &&
+                VARSIZE(kmer) == VARSIZE(highfreq_kmers[j]) &&
+                memcmp(VARBITS(kmer), VARBITS(highfreq_kmers[j]), VARBITBYTES(kmer)) == 0)
+            {
+                is_highfreq = true;
+                break;
+            }
+        }
         
-        /* Check if this k-mer is highly frequent */
-        entry = (KmerFreqEntry *) hash_search(highfreq_hash, hash_key, HASH_FIND, &found);
-        
-        if (!found)
+        if (!is_highfreq)
         {
             /* Not highly frequent, include in filtered result */
             filtered_keys[filtered_idx++] = all_keys[i];
         }
-        
-        pfree(hash_key);
     }
     
     /* Cleanup */
     pfree(query.data);
-    if (highfreq_hash)
-        hash_destroy(highfreq_hash);
+    if (highfreq_kmers)
+    {
+        int j;
+        for (j = 0; j < highfreq_count; j++)
+        {
+            if (highfreq_kmers[j])
+                pfree(highfreq_kmers[j]);
+        }
+        pfree(highfreq_kmers);
+    }
     SPI_finish();
     
     *filtered_count = filtered_idx;
@@ -4501,6 +4727,7 @@ kmersearch_cache_free(PG_FUNCTION_ARGS)
     /* Free both cache managers */
     free_cache_manager(&dna2_cache_manager);
     free_cache_manager(&dna4_cache_manager);
+    free_query_pattern_cache_manager(&query_pattern_cache_manager);
     
     PG_RETURN_INT32(freed_entries);
 }
@@ -4514,5 +4741,6 @@ _PG_fini(void)
     /* Free cache managers on module unload */
     free_cache_manager(&dna2_cache_manager);
     free_cache_manager(&dna4_cache_manager);
+    free_query_pattern_cache_manager(&query_pattern_cache_manager);
 }
 
