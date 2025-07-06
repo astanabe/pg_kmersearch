@@ -191,14 +191,26 @@ CREATE FUNCTION kmersearch_rawscore_dna4(DNA4, text)
     AS 'MODULE_PATHNAME', 'kmersearch_rawscore_dna4'
     LANGUAGE C IMMUTABLE STRICT;
 
+-- Type-specific correctedscore functions
+CREATE FUNCTION kmersearch_correctedscore_dna2(DNA2, text) 
+    RETURNS integer
+    AS 'MODULE_PATHNAME', 'kmersearch_correctedscore_dna2'
+    LANGUAGE C IMMUTABLE STRICT;
+
+CREATE FUNCTION kmersearch_correctedscore_dna4(DNA4, text) 
+    RETURNS integer
+    AS 'MODULE_PATHNAME', 'kmersearch_correctedscore_dna4'
+    LANGUAGE C IMMUTABLE STRICT;
+
+-- Overloaded correctedscore functions for backwards compatibility pattern
 CREATE FUNCTION kmersearch_correctedscore(DNA2, text) 
     RETURNS integer
-    AS 'MODULE_PATHNAME', 'kmersearch_correctedscore'
+    AS 'MODULE_PATHNAME', 'kmersearch_correctedscore_dna2'
     LANGUAGE C IMMUTABLE STRICT;
 
 CREATE FUNCTION kmersearch_correctedscore(DNA4, text) 
     RETURNS integer
-    AS 'MODULE_PATHNAME', 'kmersearch_correctedscore'
+    AS 'MODULE_PATHNAME', 'kmersearch_correctedscore_dna4'
     LANGUAGE C IMMUTABLE STRICT;
 
 -- Overloaded rawscore functions for backwards compatibility

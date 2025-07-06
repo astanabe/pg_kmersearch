@@ -205,7 +205,6 @@ static bool kmersearch_is_kmer_highfreq(Oid index_oid, VarBit *kmer_key);
 static int kmersearch_count_highfreq_kmers_in_query(Oid index_oid, VarBit **query_keys, int nkeys);
 static int kmersearch_get_adjusted_min_score(Oid index_oid, VarBit **query_keys, int nkeys);
 static int kmersearch_calculate_raw_score(VarBit *seq1, VarBit *seq2, text *query_text);
-static int kmersearch_count_mutual_highfreq_kmers(VarBit *seq1, VarBit *seq2, text *query_text, Oid index_oid);
 static VarBit **kmersearch_extract_kmers_from_varbit(VarBit *seq, int k, int *nkeys);
 static VarBit **kmersearch_extract_kmers_from_query(const char *query, int k, int *nkeys);
 static Datum *kmersearch_extract_kmers_with_degenerate(const char *sequence, int seq_len, int k, int *nkeys);
@@ -395,7 +394,8 @@ PG_FUNCTION_INFO_V1(kmersearch_cache_free);
 /* Score calculation functions */
 PG_FUNCTION_INFO_V1(kmersearch_rawscore_dna2);
 PG_FUNCTION_INFO_V1(kmersearch_rawscore_dna4);
-PG_FUNCTION_INFO_V1(kmersearch_correctedscore);
+PG_FUNCTION_INFO_V1(kmersearch_correctedscore_dna2);
+PG_FUNCTION_INFO_V1(kmersearch_correctedscore_dna4);
 
 /* Operator support functions */
 PG_FUNCTION_INFO_V1(kmersearch_dna2_eq);
@@ -2622,59 +2622,6 @@ kmersearch_calculate_raw_score(VarBit *seq1, VarBit *seq2, text *query_text)
     return score;
 }
 
-/*
- * Count highly frequent k-mers that appear in both sequences
- */
-static int
-kmersearch_count_mutual_highfreq_kmers(VarBit *seq1, VarBit *seq2, text *query_text, Oid index_oid)
-{
-    char *query_string = text_to_cstring(query_text);
-    int k = kmersearch_kmer_size;  /* k-mer length from GUC variable */
-    int mutual_highfreq = 0;
-    VarBit **seq1_keys, **seq2_keys;
-    int seq1_nkeys, seq2_nkeys;
-    int i, j;
-    
-    /* Extract k-mers from both sequences */
-    seq1_keys = kmersearch_extract_kmers_from_varbit(seq1, k, &seq1_nkeys);
-    seq2_keys = kmersearch_extract_kmers_from_query(query_string, k, &seq2_nkeys);
-    
-    /* Count highly frequent k-mers that appear in both sequences */
-    for (i = 0; i < seq1_nkeys; i++)
-    {
-        if (!seq1_keys[i] || !kmersearch_is_kmer_highfreq(index_oid, seq1_keys[i]))
-            continue;
-            
-        for (j = 0; j < seq2_nkeys; j++)
-        {
-            if (seq2_keys[j] && 
-                VARBITLEN(seq1_keys[i]) == VARBITLEN(seq2_keys[j]) &&
-                memcmp(VARBITS(seq1_keys[i]), VARBITS(seq2_keys[j]), 
-                       VARBITBYTES(seq1_keys[i])) == 0)
-            {
-                mutual_highfreq++;
-                break;
-            }
-        }
-    }
-    
-    /* Cleanup */
-    if (seq1_keys)
-    {
-        for (i = 0; i < seq1_nkeys; i++)
-            if (seq1_keys[i]) pfree(seq1_keys[i]);
-        pfree(seq1_keys);
-    }
-    if (seq2_keys)
-    {
-        for (j = 0; j < seq2_nkeys; j++)
-            if (seq2_keys[j]) pfree(seq2_keys[j]);
-        pfree(seq2_keys);
-    }
-    
-    pfree(query_string);
-    return mutual_highfreq;
-}
 
 /*
  * Extract k-mers from VarBit sequence
@@ -2801,26 +2748,40 @@ kmersearch_rawscore_dna4(PG_FUNCTION_ARGS)
 }
 
 /*
- * Corrected score calculation function
+ * Corrected score functions - currently equivalent to raw score
+ * 
+ * These functions are designed to return corrected scores that account
+ * for highly frequent k-mers that should be excluded from scoring.
+ * Currently, since high-frequency k-mer exclusion is not implemented,
+ * these functions simply call the corresponding raw score functions.
+ * 
+ * Future implementation will:
+ * 1. Get index OID from execution context
+ * 2. Count mutual high-frequency k-mers between sequence and query
+ * 3. Add this count to raw score for correction
  */
 Datum
-kmersearch_correctedscore(PG_FUNCTION_ARGS)
+kmersearch_correctedscore_dna2(PG_FUNCTION_ARGS)
 {
-    VarBit *sequence = PG_GETARG_VARBIT_P(0);
+    VarBit *sequence = PG_GETARG_VARBIT_P(0);  /* DNA2 is stored as VarBit */
     text *query_text = PG_GETARG_TEXT_P(1);
-    int raw_score, mutual_highfreq, corrected_score;
-    Oid index_oid = InvalidOid;  /* TODO: Get actual index OID from context */
     
-    /* Calculate raw score */
-    raw_score = kmersearch_calculate_raw_score(sequence, NULL, query_text);
+    /* Currently equivalent to rawscore - will implement correction later */
+    return DirectFunctionCall2(kmersearch_rawscore_dna2, 
+                              VarBitPGetDatum(sequence), 
+                              PointerGetDatum(query_text));
+}
+
+Datum
+kmersearch_correctedscore_dna4(PG_FUNCTION_ARGS)
+{
+    VarBit *sequence = PG_GETARG_VARBIT_P(0);  /* DNA4 is stored as VarBit */
+    text *query_text = PG_GETARG_TEXT_P(1);
     
-    /* Count mutual highly frequent k-mers */
-    mutual_highfreq = kmersearch_count_mutual_highfreq_kmers(sequence, NULL, query_text, index_oid);
-    
-    /* Corrected score = raw score + mutual highly frequent k-mers */
-    corrected_score = raw_score + mutual_highfreq;
-    
-    PG_RETURN_INT32(corrected_score);
+    /* Currently equivalent to rawscore - will implement correction later */
+    return DirectFunctionCall2(kmersearch_rawscore_dna4, 
+                              VarBitPGetDatum(sequence), 
+                              PointerGetDatum(query_text));
 }
 
 /*
