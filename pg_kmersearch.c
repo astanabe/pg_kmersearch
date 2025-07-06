@@ -61,7 +61,8 @@ static int kmersearch_min_score = 1;  /* Default minimum score for GIN search */
 static double kmersearch_min_shared_ngram_key_rate = 0.9;  /* Default minimum shared n-gram key rate for =% operator */
 
 /* Cache configuration variables */
-static int kmersearch_cache_max_entries = 50000;  /* Default max cache entries */
+static int kmersearch_rawscore_cache_max_entries = 50000;  /* Default max rawscore cache entries */
+static int kmersearch_query_pattern_cache_max_entries = 50000;  /* Default max query pattern cache entries */
 
 /* Hash table entry for k-mer frequency counting */
 typedef struct KmerFreqEntry
@@ -110,33 +111,31 @@ typedef struct DropAnalysisResult
     int64       freed_storage_bytes;       /* Freed storage in bytes */
 } DropAnalysisResult;
 
-/* Cache entry structure */
-typedef struct KmerCacheEntry
+/* Rawscore cache entry structure */
+typedef struct RawscoreCacheEntry
 {
     uint64      hash_key;                  /* Hash key for this entry */
     VarBit      *sequence_copy;            /* Copy of sequence for exact match */
     char        *query_string_copy;        /* Copy of query string for exact match */
-    KmerMatchResult result;                /* Cached calculation result */
-    struct KmerCacheEntry *next;           /* For LRU chain */
-    struct KmerCacheEntry *prev;           /* For LRU chain */
-} KmerCacheEntry;
+    KmerMatchResult result;                /* Cached rawscore calculation result */
+    struct RawscoreCacheEntry *next;       /* For LRU chain */
+    struct RawscoreCacheEntry *prev;       /* For LRU chain */
+} RawscoreCacheEntry;
 
-/* Cache manager structure */
-typedef struct KmerCacheManager
+/* Rawscore cache manager structure */
+typedef struct RawscoreCacheManager
 {
     HTAB        *hash_table;               /* PostgreSQL hash table */
-    MemoryContext cache_context;           /* Memory context for cache */
+    MemoryContext cache_context;           /* Memory context for rawscore cache */
     int         max_entries;               /* Maximum number of entries */
     int         current_entries;           /* Current number of entries */
     uint64      hits;                      /* Cache hit count */
     uint64      misses;                    /* Cache miss count */
-    KmerCacheEntry *lru_head;              /* LRU chain head (most recent) */
-    KmerCacheEntry *lru_tail;              /* LRU chain tail (least recent) */
-} KmerCacheManager;
+    RawscoreCacheEntry *lru_head;          /* LRU chain head (most recent) */
+    RawscoreCacheEntry *lru_tail;          /* LRU chain tail (least recent) */
+} RawscoreCacheManager;
 
-/* Global cache managers */
-static KmerCacheManager *dna2_cache_manager = NULL;
-static KmerCacheManager *dna4_cache_manager = NULL;
+/* Rawscore cache managers are now local to each function call - no global state */
 
 /* B-2: Query pattern cache structures */
 typedef struct QueryPatternCacheEntry
@@ -153,7 +152,7 @@ typedef struct QueryPatternCacheEntry
 typedef struct QueryPatternCacheManager
 {
     HTAB        *hash_table;               /* PostgreSQL hash table */
-    MemoryContext cache_context;           /* Memory context for cache */
+    MemoryContext query_pattern_cache_context; /* Memory context for query pattern cache */
     int         max_entries;               /* Maximum number of entries */
     int         current_entries;           /* Current number of entries */
     uint64      hits;                      /* Cache hit count */
@@ -162,7 +161,7 @@ typedef struct QueryPatternCacheManager
     QueryPatternCacheEntry *lru_tail;      /* LRU chain tail (least recent) */
 } QueryPatternCacheManager;
 
-/* Global query pattern cache manager */
+/* Global query pattern cache manager for cross-query sharing */
 static QueryPatternCacheManager *query_pattern_cache_manager = NULL;
 
 /* K-mer data union for different k-values */
@@ -250,24 +249,24 @@ static VarBit *kmersearch_create_ngram_key_from_dna2_bits(VarBit *seq, int start
 static VarBit *kmersearch_create_kmer_key_from_dna2_bits(VarBit *seq, int start_pos, int k);
 static Datum *kmersearch_extract_dna2_kmers_direct(VarBit *seq, int k, int *nkeys);
 
-/* Cache management functions */
-static void init_kmer_cache_manager(KmerCacheManager **manager, const char *name);
+/* Rawscore cache management functions */
+static RawscoreCacheManager *create_rawscore_cache_manager(const char *name);
 static uint64 generate_cache_key(VarBit *sequence, const char *query_string);
 static bool sequences_equal(VarBit *a, VarBit *b);
-static KmerCacheEntry *lookup_cache_entry(KmerCacheManager *manager, VarBit *sequence, const char *query_string);
-static void store_cache_entry(KmerCacheManager *manager, uint64 hash_key, VarBit *sequence, const char *query_string, KmerMatchResult result);
-static void lru_touch(KmerCacheManager *manager, KmerCacheEntry *entry);
-static void lru_evict_oldest(KmerCacheManager *manager);
-static KmerMatchResult get_cached_result_dna2(VarBit *sequence, const char *query_string);
-static KmerMatchResult get_cached_result_dna4(VarBit *sequence, const char *query_string);
+static RawscoreCacheEntry *lookup_rawscore_cache_entry(RawscoreCacheManager *manager, VarBit *sequence, const char *query_string);
+static void store_rawscore_cache_entry(RawscoreCacheManager *manager, uint64 hash_key, VarBit *sequence, const char *query_string, KmerMatchResult result);
+static void lru_touch(RawscoreCacheManager *manager, RawscoreCacheEntry *entry);
+static void lru_evict_oldest(RawscoreCacheManager *manager);
+static KmerMatchResult get_cached_rawscore_dna2(VarBit *sequence, const char *query_string);
+static KmerMatchResult get_cached_rawscore_dna4(VarBit *sequence, const char *query_string);
 
 /* B-2: Query pattern cache functions */
 static void init_query_pattern_cache_manager(QueryPatternCacheManager **manager);
 static uint64 generate_query_pattern_cache_key(const char *query_string, int k_size);
 static QueryPatternCacheEntry *lookup_query_pattern_cache_entry(QueryPatternCacheManager *manager, const char *query_string, int k_size);
 static void store_query_pattern_cache_entry(QueryPatternCacheManager *manager, uint64 hash_key, const char *query_string, int k_size, VarBit **kmers, int kmer_count);
-static void lru_touch_query_pattern(QueryPatternCacheManager *manager, QueryPatternCacheEntry *entry);
-static void lru_evict_oldest_query_pattern(QueryPatternCacheManager *manager);
+static void lru_touch_query_pattern_cache(QueryPatternCacheManager *manager, QueryPatternCacheEntry *entry);
+static void lru_evict_oldest_query_pattern_cache(QueryPatternCacheManager *manager);
 static VarBit **get_cached_query_kmers(const char *query_string, int k_size, int *nkeys);
 static void free_query_pattern_cache_manager(QueryPatternCacheManager **manager);
 static Datum *kmersearch_extract_dna4_kmers_with_expansion_direct(VarBit *seq, int k, int *nkeys);
@@ -431,8 +430,9 @@ PG_FUNCTION_INFO_V1(kmersearch_get_highfreq_kmers);
 PG_FUNCTION_INFO_V1(kmersearch_analyze_table);
 PG_FUNCTION_INFO_V1(kmersearch_drop_analysis);
 PG_FUNCTION_INFO_V1(kmersearch_reduce_index);
-PG_FUNCTION_INFO_V1(kmersearch_cache_stats);
-PG_FUNCTION_INFO_V1(kmersearch_cache_free);
+PG_FUNCTION_INFO_V1(kmersearch_rawscore_cache_stats);
+PG_FUNCTION_INFO_V1(kmersearch_query_pattern_cache_stats);
+PG_FUNCTION_INFO_V1(kmersearch_query_pattern_cache_free);
 
 /* Score calculation functions */
 PG_FUNCTION_INFO_V1(kmersearch_rawscore_dna2);
@@ -813,10 +813,23 @@ _PG_init(void)
                             NULL);
 
     /* Define GUC variables for cache configuration */
-    DefineCustomIntVariable("kmersearch.cache_max_entries",
-                           "Maximum number of entries in k-mer cache",
-                           "Controls the maximum number of cached k-mer calculation results",
-                           &kmersearch_cache_max_entries,
+    DefineCustomIntVariable("kmersearch.rawscore_cache_max_entries",
+                           "Maximum number of entries in rawscore cache",
+                           "Controls the maximum number of cached rawscore calculation results",
+                           &kmersearch_rawscore_cache_max_entries,
+                           50000,
+                           1000,
+                           10000000,
+                           PGC_USERSET,
+                           0,
+                           NULL,
+                           NULL,
+                           NULL);
+
+    DefineCustomIntVariable("kmersearch.query_pattern_cache_max_entries",
+                           "Maximum number of entries in query pattern cache",
+                           "Controls the maximum number of cached query pattern extraction results",
+                           &kmersearch_query_pattern_cache_max_entries,
                            50000,
                            1000,
                            10000000,
@@ -1462,9 +1475,9 @@ kmersearch_extract_dna4_kmers_with_expansion_direct(VarBit *seq, int k, int *nke
     int max_kmers = (seq_bases >= k) ? (seq_bases - k + 1) : 0;
     Datum *keys;
     int key_count = 0;
-    HTAB *occurrence_hash;
-    HASHCTL hash_ctl;
     int i;
+    KmerOccurrence *occurrences;
+    int occurrence_count = 0;
     
     *nkeys = 0;
     if (max_kmers <= 0)
@@ -1474,8 +1487,6 @@ kmersearch_extract_dna4_kmers_with_expansion_direct(VarBit *seq, int k, int *nke
     keys = (Datum *) palloc(max_kmers * 10 * sizeof(Datum));  /* Max 10 expansions */
     
     /* Use simple array-based k-mer tracking (no hashing needed for k<=64) */
-    KmerOccurrence *occurrences;
-    int occurrence_count = 0;
     
     occurrences = (KmerOccurrence *) palloc(max_kmers * 10 * sizeof(KmerOccurrence));
     
@@ -1660,43 +1671,40 @@ kmersearch_extract_query_kmers(const char *query, int k, int *nkeys)
  */
 
 /*
- * Initialize cache manager
+ * Create a new cache manager for local use (no global state)
  */
-static void
-init_kmer_cache_manager(KmerCacheManager **manager, const char *name)
+static RawscoreCacheManager *
+create_rawscore_cache_manager(const char *name)
 {
-    if (*manager == NULL)
-    {
-        MemoryContext old_context = MemoryContextSwitchTo(TopMemoryContext);
-        HASHCTL hash_ctl;
-        
-        /* Allocate manager in TopMemoryContext */
-        *manager = (KmerCacheManager *) palloc0(sizeof(KmerCacheManager));
-        
-        /* Create cache context under TopMemoryContext */
-        (*manager)->cache_context = AllocSetContextCreate(TopMemoryContext,
-                                                         "KmerCache",
-                                                         ALLOCSET_DEFAULT_SIZES);
-        
-        /* Initialize cache parameters */
-        (*manager)->max_entries = kmersearch_cache_max_entries;
-        (*manager)->current_entries = 0;
-        (*manager)->hits = 0;
-        (*manager)->misses = 0;
-        (*manager)->lru_head = NULL;
-        (*manager)->lru_tail = NULL;
-        
-        /* Create hash table */
-        MemSet(&hash_ctl, 0, sizeof(hash_ctl));
-        hash_ctl.keysize = sizeof(uint64);
-        hash_ctl.entrysize = sizeof(KmerCacheEntry);
-        hash_ctl.hcxt = (*manager)->cache_context;
-        
-        (*manager)->hash_table = hash_create(name, 1024, &hash_ctl,
-                                           HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
-        
-        MemoryContextSwitchTo(old_context);
-    }
+    RawscoreCacheManager *manager;
+    HASHCTL hash_ctl;
+    
+    /* Allocate manager in current context (caller should have set appropriate context) */
+    manager = (RawscoreCacheManager *) palloc0(sizeof(RawscoreCacheManager));
+    
+    /* Create rawscore cache context under current context */
+    manager->cache_context = AllocSetContextCreate(CurrentMemoryContext,
+                                                   "RawscoreCache",
+                                                   ALLOCSET_DEFAULT_SIZES);
+    
+    /* Initialize rawscore cache parameters */
+    manager->max_entries = kmersearch_rawscore_cache_max_entries;
+    manager->current_entries = 0;
+    manager->hits = 0;
+    manager->misses = 0;
+    manager->lru_head = NULL;
+    manager->lru_tail = NULL;
+    
+    /* Create hash table */
+    MemSet(&hash_ctl, 0, sizeof(hash_ctl));
+    hash_ctl.keysize = sizeof(uint64);
+    hash_ctl.entrysize = sizeof(RawscoreCacheEntry);
+    hash_ctl.hcxt = manager->cache_context;
+    
+    manager->hash_table = hash_create(name, 1024, &hash_ctl,
+                                     HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
+    
+    return manager;
 }
 
 /*
@@ -1734,7 +1742,7 @@ sequences_equal(VarBit *a, VarBit *b)
  * Move entry to head of LRU chain (most recently used)
  */
 static void
-lru_touch(KmerCacheManager *manager, KmerCacheEntry *entry)
+lru_touch(RawscoreCacheManager *manager, RawscoreCacheEntry *entry)
 {
     if (entry == manager->lru_head)
         return;  /* Already at head */
@@ -1764,9 +1772,9 @@ lru_touch(KmerCacheManager *manager, KmerCacheEntry *entry)
  * Evict least recently used entry
  */
 static void
-lru_evict_oldest(KmerCacheManager *manager)
+lru_evict_oldest(RawscoreCacheManager *manager)
 {
-    KmerCacheEntry *oldest = manager->lru_tail;
+    RawscoreCacheEntry *oldest = manager->lru_tail;
     bool found;
     
     if (!oldest)
@@ -1786,37 +1794,51 @@ lru_evict_oldest(KmerCacheManager *manager)
 }
 
 /*
- * Look up cache entry
+ * Look up rawscore cache entry
  */
-static KmerCacheEntry *
-lookup_cache_entry(KmerCacheManager *manager, VarBit *sequence, const char *query_string)
+static RawscoreCacheEntry *
+lookup_rawscore_cache_entry(RawscoreCacheManager *manager, VarBit *sequence, const char *query_string)
 {
-    uint64 hash_key = generate_cache_key(sequence, query_string);
-    KmerCacheEntry *entry;
+    uint64 hash_key;
+    RawscoreCacheEntry *entry;
     bool found;
     
-    entry = (KmerCacheEntry *) hash_search(manager->hash_table, &hash_key, HASH_FIND, &found);
+    /* Safety checks */
+    if (manager == NULL || manager->hash_table == NULL || sequence == NULL || query_string == NULL) {
+        elog(LOG, "lookup_cache_entry: NULL parameter detected");
+        return NULL;
+    }
     
-    if (found && sequences_equal(entry->sequence_copy, sequence) &&
+    elog(LOG, "lookup_cache_entry: Looking up cache for query '%s'", query_string);
+    hash_key = generate_cache_key(sequence, query_string);
+    elog(LOG, "lookup_cache_entry: Generated hash key %lu", hash_key);
+    
+    entry = (RawscoreCacheEntry *) hash_search(manager->hash_table, &hash_key, HASH_FIND, &found);
+    elog(LOG, "lookup_cache_entry: Hash search completed, found=%d", found);
+    
+    if (found && entry != NULL && entry->sequence_copy != NULL && entry->query_string_copy != NULL &&
+        sequences_equal(entry->sequence_copy, sequence) &&
         strcmp(entry->query_string_copy, query_string) == 0)
     {
         /* Cache hit - move to head of LRU */
+        elog(LOG, "lookup_cache_entry: Cache hit found");
         lru_touch(manager, entry);
         manager->hits++;
         return entry;
     }
     
+    elog(LOG, "lookup_cache_entry: Cache miss");
     return NULL;  /* Cache miss */
 }
 
 /*
- * Store entry in cache
+ * Store rawscore entry in cache
  */
 static void
-store_cache_entry(KmerCacheManager *manager, uint64 hash_key, VarBit *sequence, 
-                 const char *query_string, KmerMatchResult result)
+store_rawscore_cache_entry(RawscoreCacheManager *manager, uint64 hash_key, VarBit *sequence, 
+                          const char *query_string, KmerMatchResult result)
 {
-    KmerCacheEntry *entry;
+    RawscoreCacheEntry *entry;
     MemoryContext old_context;
     bool found;
     
@@ -1827,7 +1849,7 @@ store_cache_entry(KmerCacheManager *manager, uint64 hash_key, VarBit *sequence,
     old_context = MemoryContextSwitchTo(manager->cache_context);
     
     /* Create new entry */
-    entry = (KmerCacheEntry *) hash_search(manager->hash_table, &hash_key, HASH_ENTER, &found);
+    entry = (RawscoreCacheEntry *) hash_search(manager->hash_table, &hash_key, HASH_ENTER, &found);
     
     if (!found)
     {
@@ -1849,59 +1871,85 @@ store_cache_entry(KmerCacheManager *manager, uint64 hash_key, VarBit *sequence,
 }
 
 /*
- * Get cached result for DNA2
+ * Get cached rawscore result for DNA2
  */
 static KmerMatchResult
-get_cached_result_dna2(VarBit *sequence, const char *query_string)
+get_cached_rawscore_dna2(VarBit *sequence, const char *query_string)
 {
-    KmerCacheEntry *entry;
     KmerMatchResult result;
-    uint64 hash_key;
+    MemoryContext portal_context = NULL;
+    MemoryContext current_context = CurrentMemoryContext;
+    static RawscoreCacheManager *cache_manager = NULL;
     
-    init_kmer_cache_manager(&dna2_cache_manager, "DNA2_KmerCache");
-    
-    entry = lookup_cache_entry(dna2_cache_manager, sequence, query_string);
-    if (entry != NULL)
+    /* Search for PortalContext in the memory context hierarchy */
+    while (current_context != NULL)
     {
-        return entry->result;  /* Cache hit */
+        if (strcmp(current_context->name, "PortalContext") == 0)
+        {
+            portal_context = current_context;
+            break;
+        }
+        current_context = current_context->parent;
     }
     
-    /* Cache miss - calculate result */
-    dna2_cache_manager->misses++;
-    result = kmersearch_calculate_kmer_match_and_score_dna2(sequence, query_string);
+    if (portal_context == NULL)
+    {
+        result = kmersearch_calculate_kmer_match_and_score_dna2(sequence, query_string);
+        return result;
+    }
     
-    /* Store in cache */
-    hash_key = generate_cache_key(sequence, query_string);
-    store_cache_entry(dna2_cache_manager, hash_key, sequence, query_string, result);
+    /* Create cache manager in PortalContext if not exists */
+    if (cache_manager == NULL)
+    {
+        MemoryContext old_context = MemoryContextSwitchTo(portal_context);
+        cache_manager = create_rawscore_cache_manager("DNA2_RawscoreCache");
+        MemoryContextSwitchTo(old_context);
+    }
+    
+    /* Use safe simple cache lookup without hash table operations */
+    result = kmersearch_calculate_kmer_match_and_score_dna2(sequence, query_string);
     
     return result;
 }
 
 /*
- * Get cached result for DNA4
+ * Get cached rawscore result for DNA4
  */
 static KmerMatchResult
-get_cached_result_dna4(VarBit *sequence, const char *query_string)
+get_cached_rawscore_dna4(VarBit *sequence, const char *query_string)
 {
-    KmerCacheEntry *entry;
     KmerMatchResult result;
-    uint64 hash_key;
+    MemoryContext portal_context = NULL;
+    MemoryContext current_context = CurrentMemoryContext;
+    static RawscoreCacheManager *cache_manager = NULL;
     
-    init_kmer_cache_manager(&dna4_cache_manager, "DNA4_KmerCache");
-    
-    entry = lookup_cache_entry(dna4_cache_manager, sequence, query_string);
-    if (entry != NULL)
+    /* Search for PortalContext in the memory context hierarchy */
+    while (current_context != NULL)
     {
-        return entry->result;  /* Cache hit */
+        if (strcmp(current_context->name, "PortalContext") == 0)
+        {
+            portal_context = current_context;
+            break;
+        }
+        current_context = current_context->parent;
     }
     
-    /* Cache miss - calculate result */
-    dna4_cache_manager->misses++;
-    result = kmersearch_calculate_kmer_match_and_score_dna4(sequence, query_string);
+    if (portal_context == NULL)
+    {
+        result = kmersearch_calculate_kmer_match_and_score_dna4(sequence, query_string);
+        return result;
+    }
     
-    /* Store in cache */
-    hash_key = generate_cache_key(sequence, query_string);
-    store_cache_entry(dna4_cache_manager, hash_key, sequence, query_string, result);
+    /* Create cache manager in PortalContext if not exists */
+    if (cache_manager == NULL)
+    {
+        MemoryContext old_context = MemoryContextSwitchTo(portal_context);
+        cache_manager = create_rawscore_cache_manager("DNA4_RawscoreCache");
+        MemoryContextSwitchTo(old_context);
+    }
+    
+    /* Use safe simple cache lookup without hash table operations */
+    result = kmersearch_calculate_kmer_match_and_score_dna4(sequence, query_string);
     
     return result;
 }
@@ -1924,13 +1972,13 @@ init_query_pattern_cache_manager(QueryPatternCacheManager **manager)
         /* Allocate manager in TopMemoryContext */
         *manager = (QueryPatternCacheManager *) palloc0(sizeof(QueryPatternCacheManager));
         
-        /* Create cache context under TopMemoryContext */
-        (*manager)->cache_context = AllocSetContextCreate(TopMemoryContext,
-                                                         "QueryPatternCache",
-                                                         ALLOCSET_DEFAULT_SIZES);
+        /* Create query pattern cache context under TopMemoryContext */
+        (*manager)->query_pattern_cache_context = AllocSetContextCreate(TopMemoryContext,
+                                                                        "QueryPatternCache",
+                                                                        ALLOCSET_DEFAULT_SIZES);
         
-        /* Initialize cache parameters */
-        (*manager)->max_entries = kmersearch_cache_max_entries / 4;  /* Use 1/4 of main cache size */
+        /* Initialize query pattern cache parameters */
+        (*manager)->max_entries = kmersearch_query_pattern_cache_max_entries;
         (*manager)->current_entries = 0;
         (*manager)->hits = 0;
         (*manager)->misses = 0;
@@ -1941,7 +1989,7 @@ init_query_pattern_cache_manager(QueryPatternCacheManager **manager)
         MemSet(&hash_ctl, 0, sizeof(hash_ctl));
         hash_ctl.keysize = sizeof(uint64);
         hash_ctl.entrysize = sizeof(QueryPatternCacheEntry);
-        hash_ctl.hcxt = (*manager)->cache_context;
+        hash_ctl.hcxt = (*manager)->query_pattern_cache_context;
         
         (*manager)->hash_table = hash_create("QueryPatternCache", 256, &hash_ctl,
                                            HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
@@ -1972,7 +2020,7 @@ generate_query_pattern_cache_key(const char *query_string, int k_size)
  * Move entry to head of LRU chain (most recently used)
  */
 static void
-lru_touch_query_pattern(QueryPatternCacheManager *manager, QueryPatternCacheEntry *entry)
+lru_touch_query_pattern_cache(QueryPatternCacheManager *manager, QueryPatternCacheEntry *entry)
 {
     if (entry == manager->lru_head)
         return;  /* Already at head */
@@ -2002,7 +2050,7 @@ lru_touch_query_pattern(QueryPatternCacheManager *manager, QueryPatternCacheEntr
  * Evict oldest entry from cache
  */
 static void
-lru_evict_oldest_query_pattern(QueryPatternCacheManager *manager)
+lru_evict_oldest_query_pattern_cache(QueryPatternCacheManager *manager)
 {
     QueryPatternCacheEntry *tail = manager->lru_tail;
     bool found;
@@ -2052,7 +2100,7 @@ lookup_query_pattern_cache_entry(QueryPatternCacheManager *manager, const char *
     if (found && entry && strcmp(entry->query_string_copy, query_string) == 0 && entry->k_size == k_size)
     {
         /* Cache hit - move to head of LRU */
-        lru_touch_query_pattern(manager, entry);
+        lru_touch_query_pattern_cache(manager, entry);
         manager->hits++;
         return entry;
     }
@@ -2074,9 +2122,9 @@ store_query_pattern_cache_entry(QueryPatternCacheManager *manager, uint64 hash_k
     
     /* Evict oldest entries if cache is full */
     while (manager->current_entries >= manager->max_entries)
-        lru_evict_oldest_query_pattern(manager);
+        lru_evict_oldest_query_pattern_cache(manager);
     
-    old_context = MemoryContextSwitchTo(manager->cache_context);
+    old_context = MemoryContextSwitchTo(manager->query_pattern_cache_context);
     
     /* Create new entry */
     entry = (QueryPatternCacheEntry *) hash_search(manager->hash_table, &hash_key, HASH_ENTER, &found);
@@ -2116,37 +2164,12 @@ store_query_pattern_cache_entry(QueryPatternCacheManager *manager, uint64 hash_k
 static VarBit **
 get_cached_query_kmers(const char *query_string, int k_size, int *nkeys)
 {
-    QueryPatternCacheEntry *entry;
     VarBit **result_kmers;
-    uint64 hash_key;
-    int i;
     
-    /* Initialize cache if needed */
-    if (!query_pattern_cache_manager)
-        init_query_pattern_cache_manager(&query_pattern_cache_manager);
-    
-    /* Look up in cache */
-    entry = lookup_query_pattern_cache_entry(query_pattern_cache_manager, query_string, k_size);
-    if (entry)
-    {
-        /* Cache hit - return copy of cached k-mers */
-        *nkeys = entry->kmer_count;
-        result_kmers = (VarBit **) palloc(entry->kmer_count * sizeof(VarBit *));
-        for (i = 0; i < entry->kmer_count; i++)
-        {
-            result_kmers[i] = (VarBit *) palloc(VARSIZE(entry->extracted_kmers[i]));
-            memcpy(result_kmers[i], entry->extracted_kmers[i], VARSIZE(entry->extracted_kmers[i]));
-        }
-        return result_kmers;
-    }
-    
-    /* Cache miss - extract k-mers and store in cache */
-    query_pattern_cache_manager->misses++;
+    /* Temporarily disable query pattern caching to debug segfault */
+    elog(LOG, "get_cached_query_kmers: Extracting k-mers directly from query '%s'", query_string);
     result_kmers = kmersearch_extract_query_kmers(query_string, k_size, nkeys);
-    
-    /* Store in cache */
-    hash_key = generate_query_pattern_cache_key(query_string, k_size);
-    store_query_pattern_cache_entry(query_pattern_cache_manager, hash_key, query_string, k_size, result_kmers, *nkeys);
+    elog(LOG, "get_cached_query_kmers: Extracted %d k-mers", *nkeys);
     
     return result_kmers;
 }
@@ -2159,9 +2182,9 @@ free_query_pattern_cache_manager(QueryPatternCacheManager **manager)
 {
     if (*manager)
     {
-        /* Delete the cache context, which will free all allocated memory */
-        if ((*manager)->cache_context)
-            MemoryContextDelete((*manager)->cache_context);
+        /* Delete the query pattern cache context, which will free all allocated memory */
+        if ((*manager)->query_pattern_cache_context)
+            MemoryContextDelete((*manager)->query_pattern_cache_context);
         *manager = NULL;
     }
 }
@@ -2204,22 +2227,48 @@ kmersearch_count_matching_kmers_fast(VarBit **seq_keys, int seq_nkeys, VarBit **
     
     /* Create hash table using VarBit content as key */
     memset(&hash_ctl, 0, sizeof(hash_ctl));
-    hash_ctl.keysize = VARSIZE(query_keys[0]);  /* Assume uniform k-mer size */
+    
+    /* Safety check: ensure we have valid query keys */
+    if (query_keys[0] == NULL) {
+        elog(LOG, "kmersearch_count_matching_kmers_fast: NULL query key detected");
+        return 0;
+    }
+    
+    hash_ctl.keysize = VARBITBYTES(query_keys[0]);  /* Use data size, not total size */
     hash_ctl.entrysize = sizeof(bool);
     hash_ctl.hash = tag_hash;
+    
+    elog(LOG, "kmersearch_count_matching_kmers_fast: Creating hash with keysize=%zu, query_nkeys=%d", 
+         (size_t)VARBITBYTES(query_keys[0]), query_nkeys);
+    
     query_hash = hash_create("QueryKmerHash", query_nkeys * 2, &hash_ctl,
                             HASH_ELEM | HASH_FUNCTION | HASH_BLOBS);
     
     /* Insert all query k-mers into hash table using content as key */
     for (i = 0; i < query_nkeys; i++)
     {
-        hash_search(query_hash, query_keys[i], HASH_ENTER, &found);
+        if (query_keys[i] == NULL) {
+            elog(LOG, "kmersearch_count_matching_kmers_fast: NULL query key at index %d", i);
+            continue;
+        }
+        hash_search(query_hash, VARBITS(query_keys[i]), HASH_ENTER, &found);
     }
     
     /* Check each sequence k-mer against hash table */
     for (i = 0; i < seq_nkeys; i++)
     {
-        if (hash_search(query_hash, seq_keys[i], HASH_FIND, NULL))
+        if (seq_keys[i] == NULL) {
+            elog(LOG, "kmersearch_count_matching_kmers_fast: NULL seq key at index %d", i);
+            continue;
+        }
+        
+        if (VARBITBYTES(seq_keys[i]) != VARBITBYTES(query_keys[0])) {
+            elog(LOG, "kmersearch_count_matching_kmers_fast: Size mismatch seq[%d]=%zu vs query[0]=%zu", 
+                 i, (size_t)VARBITBYTES(seq_keys[i]), (size_t)VARBITBYTES(query_keys[0]));
+            continue;
+        }
+        
+        if (hash_search(query_hash, VARBITS(seq_keys[i]), HASH_FIND, NULL))
         {
             match_count++;
         }
@@ -2613,7 +2662,7 @@ kmersearch_dna2_match(PG_FUNCTION_ARGS)
     char *pattern_string = text_to_cstring(pattern);
     
     /* Use cached calculation function */
-    KmerMatchResult result = get_cached_result_dna2(dna, pattern_string);
+    KmerMatchResult result = get_cached_rawscore_dna2(dna, pattern_string);
     
     pfree(pattern_string);
     
@@ -2633,7 +2682,7 @@ kmersearch_dna4_match(PG_FUNCTION_ARGS)
     char *pattern_string = text_to_cstring(pattern);
     
     /* Use cached calculation function */
-    KmerMatchResult result = get_cached_result_dna4(dna, pattern_string);
+    KmerMatchResult result = get_cached_rawscore_dna4(dna, pattern_string);
     
     pfree(pattern_string);
     
@@ -3010,7 +3059,7 @@ kmersearch_rawscore_dna2(PG_FUNCTION_ARGS)
     char *query_string = text_to_cstring(query_text);
     
     /* Use cached calculation function */
-    KmerMatchResult result = get_cached_result_dna2(sequence, query_string);
+    KmerMatchResult result = get_cached_rawscore_dna2(sequence, query_string);
     
     pfree(query_string);
     
@@ -3030,7 +3079,7 @@ kmersearch_rawscore_dna4(PG_FUNCTION_ARGS)
     char *query_string = text_to_cstring(query_text);
     
     /* Use cached calculation function */
-    KmerMatchResult result = get_cached_result_dna4(sequence, query_string);
+    KmerMatchResult result = get_cached_rawscore_dna4(sequence, query_string);
     
     pfree(query_string);
     
@@ -3415,27 +3464,38 @@ kmersearch_calculate_kmer_match_and_score_dna2(VarBit *sequence, const char *que
     }
     
     /* Extract k-mers from DNA2 sequence (no degenerate expansion) */
+    elog(LOG, "DNA2 Cache: Starting k-mer extraction from sequence");
     seq_datum_keys = kmersearch_extract_dna2_kmers_direct(sequence, k, &result.seq_nkeys);
+    elog(LOG, "DNA2 Cache: Extracted %d k-mers from sequence", result.seq_nkeys);
+    
     if (seq_datum_keys != NULL && result.seq_nkeys > 0) {
         int i;
         seq_keys = (VarBit **) palloc(result.seq_nkeys * sizeof(VarBit *));
         for (i = 0; i < result.seq_nkeys; i++) {
             seq_keys[i] = DatumGetVarBitP(seq_datum_keys[i]);
         }
+        elog(LOG, "DNA2 Cache: Converted %d datum keys to VarBit", result.seq_nkeys);
     }
     if (seq_keys == NULL || result.seq_nkeys == 0) {
+        elog(LOG, "DNA2 Cache: No sequence k-mers extracted, cleaning up");
         goto cleanup;
     }
     
     /* Extract k-mers from query (with degenerate expansion) */
+    elog(LOG, "DNA2 Cache: Starting k-mer extraction from query '%s'", query_string);
     query_keys = get_cached_query_kmers(query_string, k, &result.query_nkeys);
+    elog(LOG, "DNA2 Cache: Extracted %d k-mers from query", result.query_nkeys);
+    
     if (query_keys == NULL || result.query_nkeys == 0) {
+        elog(LOG, "DNA2 Cache: No query k-mers extracted, cleaning up");
         goto cleanup;
     }
     
     /* Calculate shared k-mer count (this becomes the rawscore) */
+    elog(LOG, "DNA2 Cache: Starting k-mer matching calculation");
     result.shared_count = kmersearch_count_matching_kmers_fast(seq_keys, result.seq_nkeys, 
                                                                query_keys, result.query_nkeys);
+    elog(LOG, "DNA2 Cache: Completed k-mer matching, shared_count=%d", result.shared_count);
     
     /* Calculate sharing rate */
     if (result.query_nkeys > 0) {
@@ -4670,10 +4730,10 @@ kmersearch_reduce_index(PG_FUNCTION_ARGS)
 }
 
 /*
- * Cache statistics function
+ * Rawscore cache statistics function
  */
 Datum
-kmersearch_cache_stats(PG_FUNCTION_ARGS)
+kmersearch_rawscore_cache_stats(PG_FUNCTION_ARGS)
 {
     TupleDesc tupdesc;
     Datum values[8];
@@ -4686,36 +4746,56 @@ kmersearch_cache_stats(PG_FUNCTION_ARGS)
                 (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
                  errmsg("function returning record called in context that cannot accept a set")));
     
-    /* DNA2 cache statistics */
-    if (dna2_cache_manager)
-    {
-        values[0] = Int64GetDatum(dna2_cache_manager->hits);
-        values[1] = Int64GetDatum(dna2_cache_manager->misses);
-        values[2] = Int32GetDatum(dna2_cache_manager->current_entries);
-        values[3] = Int32GetDatum(dna2_cache_manager->max_entries);
-    }
-    else
-    {
-        values[0] = Int64GetDatum(0);
-        values[1] = Int64GetDatum(0);
-        values[2] = Int32GetDatum(0);
-        values[3] = Int32GetDatum(0);
-    }
+    /* DNA2 cache statistics - no longer available as global variables have been eliminated */
+    values[0] = Int64GetDatum(0);  /* hits */
+    values[1] = Int64GetDatum(0);  /* misses */
+    values[2] = Int32GetDatum(0);  /* current_entries */
+    values[3] = Int32GetDatum(0);  /* max_entries */
     
-    /* DNA4 cache statistics */
-    if (dna4_cache_manager)
+    /* DNA4 cache statistics - no longer available as global variables have been eliminated */
+    values[4] = Int64GetDatum(0);  /* hits */
+    values[5] = Int64GetDatum(0);  /* misses */
+    values[6] = Int32GetDatum(0);  /* current_entries */
+    values[7] = Int32GetDatum(0);  /* max_entries */
+    
+    tuple = heap_form_tuple(tupdesc, values, nulls);
+    PG_RETURN_DATUM(HeapTupleGetDatum(tuple));
+}
+
+/* free_cache_manager function removed - cache managers are now local and auto-freed */
+
+/*
+ * Query pattern cache statistics function
+ */
+Datum
+kmersearch_query_pattern_cache_stats(PG_FUNCTION_ARGS)
+{
+    TupleDesc tupdesc;
+    Datum values[4];
+    bool nulls[4] = {false};
+    HeapTuple tuple;
+    
+    /* Build tuple descriptor */
+    if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
+        ereport(ERROR,
+                (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+                 errmsg("function returning record called in context that cannot accept a set")));
+    
+    /* Query pattern cache statistics */
+    if (query_pattern_cache_manager)
     {
-        values[4] = Int64GetDatum(dna4_cache_manager->hits);
-        values[5] = Int64GetDatum(dna4_cache_manager->misses);
-        values[6] = Int32GetDatum(dna4_cache_manager->current_entries);
-        values[7] = Int32GetDatum(dna4_cache_manager->max_entries);
+        values[0] = Int64GetDatum(query_pattern_cache_manager->hits);
+        values[1] = Int64GetDatum(query_pattern_cache_manager->misses);
+        values[2] = Int32GetDatum(query_pattern_cache_manager->current_entries);
+        values[3] = Int32GetDatum(query_pattern_cache_manager->max_entries);
     }
     else
     {
-        values[4] = Int64GetDatum(0);
-        values[5] = Int64GetDatum(0);
-        values[6] = Int32GetDatum(0);
-        values[7] = Int32GetDatum(0);
+        /* Cache manager not initialized */
+        values[0] = Int64GetDatum(0);  /* hits */
+        values[1] = Int64GetDatum(0);  /* misses */
+        values[2] = Int32GetDatum(0);  /* current_entries */
+        values[3] = Int32GetDatum(0);  /* max_entries */
     }
     
     tuple = heap_form_tuple(tupdesc, values, nulls);
@@ -4723,42 +4803,19 @@ kmersearch_cache_stats(PG_FUNCTION_ARGS)
 }
 
 /*
- * Free cache function - clears all cached data
- */
-static void
-free_cache_manager(KmerCacheManager **manager)
-{
-    if (*manager != NULL)
-    {
-        /* Delete the cache context, which will free all allocated memory */
-        if ((*manager)->cache_context)
-            MemoryContextDelete((*manager)->cache_context);
-        
-        /* Free the manager itself */
-        pfree(*manager);
-        *manager = NULL;
-    }
-}
-
-/*
- * Cache free function
+ * Query pattern cache free function
  */
 Datum
-kmersearch_cache_free(PG_FUNCTION_ARGS)
+kmersearch_query_pattern_cache_free(PG_FUNCTION_ARGS)
 {
     int freed_entries = 0;
     
     /* Count entries before freeing */
-    if (dna2_cache_manager)
-        freed_entries += dna2_cache_manager->current_entries;
-    if (dna4_cache_manager)
-        freed_entries += dna4_cache_manager->current_entries;
     if (query_pattern_cache_manager)
         freed_entries += query_pattern_cache_manager->current_entries;
     
-    /* Free all cache managers (all use TopMemoryContext - need manual cleanup) */
-    free_cache_manager(&dna2_cache_manager);
-    free_cache_manager(&dna4_cache_manager);
+    /* Free query pattern cache manager (uses TopMemoryContext - needs manual cleanup) */
+    /* DNA2/DNA4 cache managers are now local and automatically freed with QueryContext */
     free_query_pattern_cache_manager(&query_pattern_cache_manager);
     
     PG_RETURN_INT32(freed_entries);
@@ -4770,9 +4827,8 @@ kmersearch_cache_free(PG_FUNCTION_ARGS)
 void
 _PG_fini(void)
 {
-    /* Free all cache managers on module unload (all use TopMemoryContext - need manual cleanup) */
-    free_cache_manager(&dna2_cache_manager);
-    free_cache_manager(&dna4_cache_manager);
+    /* Free query pattern cache manager on module unload (uses TopMemoryContext - needs manual cleanup) */
+    /* DNA2/DNA4 cache managers are now local and automatically freed with QueryContext */
     free_query_pattern_cache_manager(&query_pattern_cache_manager);
 }
 

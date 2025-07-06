@@ -287,8 +287,8 @@ CREATE FUNCTION kmersearch_reduce_index(index_oid oid)
     AS 'MODULE_PATHNAME', 'kmersearch_reduce_index'
     LANGUAGE C VOLATILE STRICT;
 
--- Cache statistics function
-CREATE FUNCTION kmersearch_cache_stats()
+-- Rawscore cache statistics function
+CREATE FUNCTION kmersearch_rawscore_cache_stats()
     RETURNS TABLE (
         dna2_hits bigint,
         dna2_misses bigint,
@@ -299,11 +299,22 @@ CREATE FUNCTION kmersearch_cache_stats()
         dna4_entries integer,
         dna4_max_entries integer
     )
-    AS 'MODULE_PATHNAME', 'kmersearch_cache_stats'
+    AS 'MODULE_PATHNAME', 'kmersearch_rawscore_cache_stats'
     LANGUAGE C STABLE;
 
--- Cache management function
-CREATE FUNCTION kmersearch_cache_free()
+-- Query pattern cache statistics function
+CREATE FUNCTION kmersearch_query_pattern_cache_stats()
+    RETURNS TABLE (
+        hits bigint,
+        misses bigint,
+        current_entries integer,
+        max_entries integer
+    )
+    AS 'MODULE_PATHNAME', 'kmersearch_query_pattern_cache_stats'
+    LANGUAGE C STABLE;
+
+-- Query pattern cache management function
+CREATE FUNCTION kmersearch_query_pattern_cache_free()
     RETURNS integer
-    AS 'MODULE_PATHNAME', 'kmersearch_cache_free'
+    AS 'MODULE_PATHNAME', 'kmersearch_query_pattern_cache_free'
     LANGUAGE C VOLATILE;

@@ -56,7 +56,7 @@ WHERE sequence =% 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA
 ORDER BY score DESC, id;
  id |   name    | score 
 ----+-----------+-------
-  1 | k10_test1 |    56
+  1 | k10_test1 |    52
 (1 row)
 
 -- Reset k-mer size for other tests
