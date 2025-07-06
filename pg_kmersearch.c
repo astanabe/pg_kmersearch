@@ -89,6 +89,13 @@ typedef struct KmerMatchResult
     bool        valid;              /* Whether the result is valid */
 } KmerMatchResult;
 
+/* Simple k-mer occurrence tracking for k<=64 (no hashing needed) */
+typedef struct KmerOccurrence
+{
+    uint64_t    kmer_value;         /* K-mer as single 64-bit value */
+    int         count;              /* Occurrence count */
+} KmerOccurrence;
+
 /* Analysis result structure */
 typedef struct KmerAnalysisResult
 {
@@ -205,6 +212,10 @@ static bool kmersearch_is_kmer_highfreq(Oid index_oid, VarBit *kmer_key);
 static int kmersearch_count_highfreq_kmers_in_query(Oid index_oid, VarBit **query_keys, int nkeys);
 static int kmersearch_get_adjusted_min_score(Oid index_oid, VarBit **query_keys, int nkeys);
 static int kmersearch_calculate_raw_score(VarBit *seq1, VarBit *seq2, text *query_text);
+
+/* Helper functions for direct k-mer management (no hashing) */
+static uint64_t kmersearch_extract_kmer_as_uint64(VarBit *seq, int start_pos, int k);
+static int kmersearch_find_or_add_kmer_occurrence(KmerOccurrence *occurrences, int *count, uint64_t kmer_value, int max_count);
 static VarBit **kmersearch_extract_kmers_from_varbit(VarBit *seq, int k, int *nkeys);
 static VarBit **kmersearch_extract_kmers_from_query(const char *query, int k, int *nkeys);
 static Datum *kmersearch_extract_kmers_with_degenerate(const char *sequence, int seq_len, int k, int *nkeys);
@@ -1875,31 +1886,66 @@ get_cached_result_dna4(VarBit *sequence, const char *query_string)
 }
 
 /*
- * Fast k-mer matching using hash table
+ * Fast k-mer matching using hash table - optimized O(n+m) implementation
  */
 static int
 kmersearch_count_matching_kmers_fast(VarBit **seq_keys, int seq_nkeys, VarBit **query_keys, int query_nkeys)
 {
     int match_count = 0;
-    int i, j;
+    int i;
+    HTAB *query_hash;
+    HASHCTL hash_ctl;
+    bool found;
     
     if (seq_nkeys == 0 || query_nkeys == 0)
         return 0;
     
-    /* Simple O(n*m) comparison - use hash table if performance becomes an issue */
-    for (i = 0; i < seq_nkeys; i++)
+    /* For small datasets, O(n*m) might be faster than hash table overhead */
+    if (seq_nkeys * query_nkeys < 100)
     {
-        for (j = 0; j < query_nkeys; j++)
+        /* Fall back to simple comparison for small datasets */
+        for (i = 0; i < seq_nkeys; i++)
         {
-            if (VARBITLEN(seq_keys[i]) == VARBITLEN(query_keys[j]) &&
-                VARSIZE(seq_keys[i]) == VARSIZE(query_keys[j]) &&
-                memcmp(VARBITS(seq_keys[i]), VARBITS(query_keys[j]), VARBITBYTES(seq_keys[i])) == 0)
+            int j;
+            for (j = 0; j < query_nkeys; j++)
             {
-                match_count++;
-                break;  /* Found a match, move to next seq k-mer */
+                if (VARBITLEN(seq_keys[i]) == VARBITLEN(query_keys[j]) &&
+                    VARSIZE(seq_keys[i]) == VARSIZE(query_keys[j]) &&
+                    memcmp(VARBITS(seq_keys[i]), VARBITS(query_keys[j]), VARBITBYTES(seq_keys[i])) == 0)
+                {
+                    match_count++;
+                    break;
+                }
             }
         }
+        return match_count;
     }
+    
+    /* Create hash table using VarBit content as key */
+    memset(&hash_ctl, 0, sizeof(hash_ctl));
+    hash_ctl.keysize = VARSIZE(query_keys[0]);  /* Assume uniform k-mer size */
+    hash_ctl.entrysize = sizeof(bool);
+    hash_ctl.hash = tag_hash;
+    query_hash = hash_create("QueryKmerHash", query_nkeys * 2, &hash_ctl,
+                            HASH_ELEM | HASH_FUNCTION | HASH_BLOBS);
+    
+    /* Insert all query k-mers into hash table using content as key */
+    for (i = 0; i < query_nkeys; i++)
+    {
+        hash_search(query_hash, query_keys[i], HASH_ENTER, &found);
+    }
+    
+    /* Check each sequence k-mer against hash table */
+    for (i = 0; i < seq_nkeys; i++)
+    {
+        if (hash_search(query_hash, seq_keys[i], HASH_FIND, NULL))
+        {
+            match_count++;
+        }
+    }
+    
+    /* Cleanup */
+    hash_destroy(query_hash);
     
     return match_count;
 }
@@ -2588,21 +2634,8 @@ kmersearch_calculate_raw_score(VarBit *seq1, VarBit *seq2, text *query_text)
     seq1_keys = kmersearch_extract_kmers_from_varbit(seq1, k, &seq1_nkeys);
     seq2_keys = kmersearch_extract_kmers_from_query(query_string, k, &seq2_nkeys);
     
-    /* Count matching k-mers */
-    for (i = 0; i < seq1_nkeys; i++)
-    {
-        for (j = 0; j < seq2_nkeys; j++)
-        {
-            if (seq1_keys[i] && seq2_keys[j] && 
-                VARBITLEN(seq1_keys[i]) == VARBITLEN(seq2_keys[j]) &&
-                memcmp(VARBITS(seq1_keys[i]), VARBITS(seq2_keys[j]), 
-                       VARBITBYTES(seq1_keys[i])) == 0)
-            {
-                score++;
-                break;  /* Count each k-mer only once */
-            }
-        }
-    }
+    /* Count matching k-mers using optimized function */
+    score = kmersearch_count_matching_kmers_fast(seq1_keys, seq1_nkeys, seq2_keys, seq2_nkeys);
     
     /* Cleanup */
     if (seq1_keys)
@@ -2782,6 +2815,78 @@ kmersearch_correctedscore_dna4(PG_FUNCTION_ARGS)
     return DirectFunctionCall2(kmersearch_rawscore_dna4, 
                               VarBitPGetDatum(sequence), 
                               PointerGetDatum(query_text));
+}
+
+/*
+ * Extract k-mer as single uint64_t value (for k <= 32)
+ */
+static uint64_t
+kmersearch_extract_kmer_as_uint64(VarBit *seq, int start_pos, int k)
+{
+    uint64_t kmer_value = 0;
+    bits8 *src_data = VARBITS(seq);
+    int j;
+    
+    for (j = 0; j < k; j++)
+    {
+        int bit_pos = (start_pos + j) * 2;
+        int byte_pos = bit_pos / 8;
+        int bit_offset = bit_pos % 8;
+        uint8 base_bits = (src_data[byte_pos] >> (6 - bit_offset)) & 0x3;
+        
+        kmer_value = (kmer_value << 2) | base_bits;
+    }
+    
+    return kmer_value;
+}
+
+/*
+ * Find or add k-mer occurrence in sorted array (no hashing)
+ */
+static int
+kmersearch_find_or_add_kmer_occurrence(KmerOccurrence *occurrences, int *count, uint64_t kmer_value, int max_count)
+{
+    int left = 0, right = *count - 1;
+    int insert_pos = *count;
+    
+    /* Binary search for existing k-mer */
+    while (left <= right)
+    {
+        int mid = (left + right) / 2;
+        if (occurrences[mid].kmer_value == kmer_value)
+        {
+            return ++occurrences[mid].count;  /* Found, increment and return */
+        }
+        else if (occurrences[mid].kmer_value < kmer_value)
+        {
+            left = mid + 1;
+        }
+        else
+        {
+            right = mid - 1;
+            insert_pos = mid;
+        }
+    }
+    
+    /* Not found, insert new entry if space available */
+    if (*count >= max_count)
+        return -1;  /* Array full */
+    
+    /* Shift elements to make room */
+    {
+        int i;
+        for (i = *count; i > insert_pos; i--)
+        {
+            occurrences[i] = occurrences[i-1];
+        }
+    }
+    
+    /* Insert new entry */
+    occurrences[insert_pos].kmer_value = kmer_value;
+    occurrences[insert_pos].count = 1;
+    (*count)++;
+    
+    return 1;
 }
 
 /*
