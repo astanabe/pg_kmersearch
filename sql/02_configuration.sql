@@ -82,6 +82,8 @@ SET kmersearch.rawscore_cache_max_entries = 999;  -- below minimum
 SET kmersearch.rawscore_cache_max_entries = 10000001;  -- above maximum
 SET kmersearch.query_pattern_cache_max_entries = 999;  -- below minimum
 SET kmersearch.query_pattern_cache_max_entries = 10000001;  -- above maximum
+SET kmersearch.actual_min_score_cache_max_entries = 999;  -- below minimum
+SET kmersearch.actual_min_score_cache_max_entries = 10000001;  -- above maximum
 \set ON_ERROR_STOP on
 
 -- Reset to defaults for other tests
@@ -93,10 +95,12 @@ SET kmersearch.min_score = 1;
 SET kmersearch.min_shared_ngram_key_rate = 0.9;
 SET kmersearch.rawscore_cache_max_entries = 50000;
 SET kmersearch.query_pattern_cache_max_entries = 50000;
+SET kmersearch.actual_min_score_cache_max_entries = 50000;
 
 -- Test cache management functions
 SELECT kmersearch_rawscore_cache_stats(); -- Should show all zeros initially
 SELECT kmersearch_query_pattern_cache_stats(); -- Should show all zeros initially
+SELECT kmersearch_actual_min_score_cache_stats(); -- Should show all zeros initially
 SELECT kmersearch_query_pattern_cache_free();  -- Should return 0 (no entries to free)
 
 DROP EXTENSION pg_kmersearch CASCADE;

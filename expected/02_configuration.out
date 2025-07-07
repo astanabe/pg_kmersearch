@@ -200,6 +200,10 @@ SET kmersearch.query_pattern_cache_max_entries = 999;  -- below minimum
 ERROR:  999 is outside the valid range for parameter "kmersearch.query_pattern_cache_max_entries" (1000 .. 10000000)
 SET kmersearch.query_pattern_cache_max_entries = 10000001;  -- above maximum
 ERROR:  10000001 is outside the valid range for parameter "kmersearch.query_pattern_cache_max_entries" (1000 .. 10000000)
+SET kmersearch.actual_min_score_cache_max_entries = 999;  -- below minimum
+ERROR:  999 is outside the valid range for parameter "kmersearch.actual_min_score_cache_max_entries" (1000 .. 10000000)
+SET kmersearch.actual_min_score_cache_max_entries = 10000001;  -- above maximum
+ERROR:  10000001 is outside the valid range for parameter "kmersearch.actual_min_score_cache_max_entries" (1000 .. 10000000)
 \set ON_ERROR_STOP on
 -- Reset to defaults for other tests
 SET kmersearch.kmer_size = 8;
@@ -210,6 +214,7 @@ SET kmersearch.min_score = 1;
 SET kmersearch.min_shared_ngram_key_rate = 0.9;
 SET kmersearch.rawscore_cache_max_entries = 50000;
 SET kmersearch.query_pattern_cache_max_entries = 50000;
+SET kmersearch.actual_min_score_cache_max_entries = 50000;
 -- Test cache management functions
 SELECT kmersearch_rawscore_cache_stats(); -- Should show all zeros initially
  kmersearch_rawscore_cache_stats 
@@ -220,6 +225,12 @@ SELECT kmersearch_rawscore_cache_stats(); -- Should show all zeros initially
 SELECT kmersearch_query_pattern_cache_stats(); -- Should show all zeros initially
  kmersearch_query_pattern_cache_stats 
 --------------------------------------
+ (0,0,0,0)
+(1 row)
+
+SELECT kmersearch_actual_min_score_cache_stats(); -- Should show all zeros initially
+ kmersearch_actual_min_score_cache_stats 
+-----------------------------------------
  (0,0,0,0)
 (1 row)
 
