@@ -6423,6 +6423,10 @@ kmersearch_extract_dna4_kmers_with_expansion_direct_avx2(VarBit *seq, int k, int
             if (!expanded_kmers || expansion_count == 0)
                 continue;
             
+            /* Only use SIMD processing for expansion_count >= 3 */
+            if (expansion_count < 3)
+                continue;
+            
             /* Process each expanded k-mer */
             for (exp_j = 0; exp_j < expansion_count; exp_j++)
             {
@@ -6464,8 +6468,8 @@ kmersearch_extract_dna4_kmers_with_expansion_direct_avx2(VarBit *seq, int k, int
         }
     }
     
-    /* Handle remaining k-mers with scalar processing */
-    for (i = simd_batch; i <= seq_bases - k; i++)
+    /* Handle all k-mers with scalar processing */
+    for (i = 0; i <= seq_bases - k; i++)
     {
         VarBit **expanded_kmers;
         int expansion_count;
@@ -6476,6 +6480,19 @@ kmersearch_extract_dna4_kmers_with_expansion_direct_avx2(VarBit *seq, int k, int
         
         if (!expanded_kmers || expansion_count == 0)
             continue;
+        
+        /* Skip k-mers that were already processed by SIMD (expansion_count >= 3 and within SIMD batch) */
+        if (i < simd_batch && expansion_count >= 3)
+        {
+            /* Free the expansion since it was already processed by SIMD */
+            for (j = 0; j < expansion_count; j++)
+            {
+                if (expanded_kmers[j])
+                    pfree(expanded_kmers[j]);
+            }
+            pfree(expanded_kmers);
+            continue;
+        }
         
         /* Process each expanded k-mer */
         for (j = 0; j < expansion_count; j++)
@@ -6778,6 +6795,10 @@ kmersearch_extract_dna4_kmers_with_expansion_direct_avx512(VarBit *seq, int k, i
             if (!expanded_kmers || expansion_count == 0)
                 continue;
             
+            /* Only use SIMD processing for expansion_count >= 3 */
+            if (expansion_count < 3)
+                continue;
+            
             for (exp_j = 0; exp_j < expansion_count; exp_j++)
             {
                 VarBit *dna2_kmer = expanded_kmers[exp_j];
@@ -6813,8 +6834,8 @@ kmersearch_extract_dna4_kmers_with_expansion_direct_avx512(VarBit *seq, int k, i
         }
     }
     
-    /* Handle remaining k-mers with scalar processing */
-    for (i = simd_batch; i <= seq_bases - k; i++)
+    /* Handle all k-mers with scalar processing */
+    for (i = 0; i <= seq_bases - k; i++)
     {
         VarBit **expanded_kmers;
         int expansion_count;
@@ -6824,6 +6845,19 @@ kmersearch_extract_dna4_kmers_with_expansion_direct_avx512(VarBit *seq, int k, i
         
         if (!expanded_kmers || expansion_count == 0)
             continue;
+        
+        /* Skip k-mers that were already processed by SIMD (expansion_count >= 3 and within SIMD batch) */
+        if (i < simd_batch && expansion_count >= 3)
+        {
+            /* Free the expansion since it was already processed by SIMD */
+            for (j = 0; j < expansion_count; j++)
+            {
+                if (expanded_kmers[j])
+                    pfree(expanded_kmers[j]);
+            }
+            pfree(expanded_kmers);
+            continue;
+        }
         
         for (j = 0; j < expansion_count; j++)
         {
@@ -7107,6 +7141,10 @@ kmersearch_extract_dna4_kmers_with_expansion_direct_neon(VarBit *seq, int k, int
             if (!expanded_kmers || expansion_count == 0)
                 continue;
             
+            /* Only use SIMD processing for expansion_count >= 3 */
+            if (expansion_count < 3)
+                continue;
+            
             for (exp_j = 0; exp_j < expansion_count; exp_j++)
             {
                 VarBit *dna2_kmer = expanded_kmers[exp_j];
@@ -7142,8 +7180,8 @@ kmersearch_extract_dna4_kmers_with_expansion_direct_neon(VarBit *seq, int k, int
         }
     }
     
-    /* Handle remaining k-mers with scalar processing */
-    for (i = simd_batch; i <= seq_bases - k; i++)
+    /* Handle all k-mers with scalar processing */
+    for (i = 0; i <= seq_bases - k; i++)
     {
         VarBit **expanded_kmers;
         int expansion_count;
@@ -7153,6 +7191,19 @@ kmersearch_extract_dna4_kmers_with_expansion_direct_neon(VarBit *seq, int k, int
         
         if (!expanded_kmers || expansion_count == 0)
             continue;
+        
+        /* Skip k-mers that were already processed by SIMD (expansion_count >= 3 and within SIMD batch) */
+        if (i < simd_batch && expansion_count >= 3)
+        {
+            /* Free the expansion since it was already processed by SIMD */
+            for (j = 0; j < expansion_count; j++)
+            {
+                if (expanded_kmers[j])
+                    pfree(expanded_kmers[j]);
+            }
+            pfree(expanded_kmers);
+            continue;
+        }
         
         for (j = 0; j < expansion_count; j++)
         {
@@ -7437,6 +7488,10 @@ kmersearch_extract_dna4_kmers_with_expansion_direct_sve(VarBit *seq, int k, int 
             if (!expanded_kmers || expansion_count == 0)
                 continue;
             
+            /* Only use SIMD processing for expansion_count >= 3 */
+            if (expansion_count < 3)
+                continue;
+            
             for (exp_j = 0; exp_j < expansion_count; exp_j++)
             {
                 VarBit *dna2_kmer = expanded_kmers[exp_j];
@@ -7472,8 +7527,8 @@ kmersearch_extract_dna4_kmers_with_expansion_direct_sve(VarBit *seq, int k, int 
         }
     }
     
-    /* Handle remaining k-mers with scalar processing */
-    for (i = simd_batch; i <= seq_bases - k; i++)
+    /* Handle all k-mers with scalar processing */
+    for (i = 0; i <= seq_bases - k; i++)
     {
         VarBit **expanded_kmers;
         int expansion_count;
@@ -7483,6 +7538,19 @@ kmersearch_extract_dna4_kmers_with_expansion_direct_sve(VarBit *seq, int k, int 
         
         if (!expanded_kmers || expansion_count == 0)
             continue;
+        
+        /* Skip k-mers that were already processed by SIMD (expansion_count >= 3 and within SIMD batch) */
+        if (i < simd_batch && expansion_count >= 3)
+        {
+            /* Free the expansion since it was already processed by SIMD */
+            for (j = 0; j < expansion_count; j++)
+            {
+                if (expanded_kmers[j])
+                    pfree(expanded_kmers[j]);
+            }
+            pfree(expanded_kmers);
+            continue;
+        }
         
         for (j = 0; j < expansion_count; j++)
         {
