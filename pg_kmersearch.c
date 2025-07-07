@@ -42,9 +42,41 @@
 #include <ctype.h>
 #include <string.h>
 #include <math.h>
+
+/* SIMD intrinsics headers */
+#ifdef __x86_64__
+#include <cpuid.h>
+#include <immintrin.h>
+#elif defined(__aarch64__)
+#include <arm_neon.h>
+#ifdef __ARM_FEATURE_SVE
+#include <arm_sve.h>
+#endif
+#endif
 #include <unistd.h>
 
 PG_MODULE_MAGIC;
+
+/* SIMD capability detection */
+typedef enum {
+    SIMD_NONE,
+    SIMD_AVX2,     /* AMD64: AVX2 + SSE4.x */
+    SIMD_AVX512,   /* AMD64: AVX512 + AVX2 + SSE4.x */
+    SIMD_NEON,     /* ARM64: Apple M1+ NEON */
+    SIMD_SVE       /* ARM64: Graviton4+ SVE */
+} simd_capability_t;
+
+/* Function pointers for different SIMD implementations */
+typedef struct {
+    void (*dna2_encode)(const char* input, uint8_t* output, int len);
+    void (*dna2_decode)(const uint8_t* input, char* output, int len);
+    void (*dna4_encode)(const char* input, uint8_t* output, int len);
+    void (*dna4_decode)(const uint8_t* input, char* output, int len);
+} simd_dispatch_table_t;
+
+/* Global SIMD dispatch table */
+static simd_dispatch_table_t simd_dispatch;
+static simd_capability_t simd_capability = SIMD_NONE;
 
 /*
  * Module load and unload functions
@@ -519,17 +551,9 @@ kmersearch_dna2_in(PG_FUNCTION_ARGS)
     SET_VARSIZE(result, VARHDRSZ + sizeof(int32) + byte_len);
     VARBITLEN(result) = bit_len;
     
-    /* Encode sequence */
+    /* Encode sequence using SIMD dispatch */
     data_ptr = VARBITS(result);
-    for (i = 0; i < input_len; i++)
-    {
-        uint8 encoded = kmersearch_dna2_encode_table[(unsigned char)input_string[i]];
-        int bit_pos = i * 2;
-        int byte_pos = bit_pos / 8;
-        int bit_offset = bit_pos % 8;
-        
-        data_ptr[byte_pos] |= (encoded << (6 - bit_offset));
-    }
+    simd_dispatch.dna2_encode(input_string, (uint8_t*)data_ptr, input_len);
     
     PG_RETURN_VARBIT_P(result);
 }
@@ -545,7 +569,6 @@ kmersearch_dna2_out(PG_FUNCTION_ARGS)
     int char_len = bit_len / 2;
     char *result;
     bits8 *data_ptr = VARBITS(dna);
-    int i;
     
     if (dna == NULL)
         ereport(ERROR, (errmsg("input DNA sequence is NULL")));
@@ -558,16 +581,9 @@ kmersearch_dna2_out(PG_FUNCTION_ARGS)
     
     result = (char *) palloc(char_len + 1);
     
-    for (i = 0; i < char_len; i++)
-    {
-        int bit_pos = i * 2;
-        int byte_pos = bit_pos / 8;
-        int bit_offset = bit_pos % 8;
-        uint8 encoded = (data_ptr[byte_pos] >> (6 - bit_offset)) & 0x3;
-        result[i] = kmersearch_dna2_decode_table[encoded];
-    }
+    /* Decode sequence using SIMD dispatch */
+    simd_dispatch.dna2_decode((uint8_t*)data_ptr, result, char_len);
     
-    result[char_len] = '\0';
     PG_RETURN_CSTRING(result);
 }
 
@@ -643,26 +659,9 @@ kmersearch_dna4_in(PG_FUNCTION_ARGS)
     SET_VARSIZE(result, VARHDRSZ + sizeof(int32) + byte_len);
     VARBITLEN(result) = bit_len;
     
-    /* Encode sequence */
+    /* Encode sequence using SIMD dispatch */
     data_ptr = VARBITS(result);
-    for (i = 0; i < input_len; i++)
-    {
-        uint8 encoded = kmersearch_dna4_encode_table[(unsigned char)input_string[i]];
-        int bit_pos = i * 4;
-        int byte_pos = bit_pos / 8;
-        int bit_offset = bit_pos % 8;
-        
-        if (bit_offset <= 4)
-        {
-            data_ptr[byte_pos] |= (encoded << (4 - bit_offset));
-        }
-        else
-        {
-            data_ptr[byte_pos] |= (encoded >> (bit_offset - 4));
-            if (byte_pos + 1 < byte_len)
-                data_ptr[byte_pos + 1] |= (encoded << (12 - bit_offset));
-        }
-    }
+    simd_dispatch.dna4_encode(input_string, (uint8_t*)data_ptr, input_len);
     
     PG_RETURN_VARBIT_P(result);
 }
@@ -691,29 +690,8 @@ kmersearch_dna4_out(PG_FUNCTION_ARGS)
     
     result = (char *) palloc(char_len + 1);
     
-    for (i = 0; i < char_len; i++)
-    {
-        int bit_pos = i * 4;
-        int byte_pos = bit_pos / 8;
-        int bit_offset = bit_pos % 8;
-        uint8 encoded;
-        
-        if (bit_offset <= 4)
-        {
-            encoded = (data_ptr[byte_pos] >> (4 - bit_offset)) & 0xF;
-        }
-        else
-        {
-            encoded = ((data_ptr[byte_pos] << (bit_offset - 4)) & 0xF);
-            if (byte_pos + 1 < (bit_len + 7) / 8)
-                encoded |= (data_ptr[byte_pos + 1] >> (12 - bit_offset));
-            encoded &= 0xF;
-        }
-        
-        result[i] = kmersearch_dna4_decode_table[encoded];
-    }
-    
-    result[char_len] = '\0';
+    /* Decode sequence using SIMD dispatch */
+    simd_dispatch.dna4_decode((uint8_t*)data_ptr, result, char_len);
     PG_RETURN_CSTRING(result);
 }
 
@@ -758,12 +736,52 @@ kmersearch_dna4_send(PG_FUNCTION_ARGS)
     PG_RETURN_BYTEA_P(pq_endtypsend(&buf));
 }
 
+/* SIMD capability detection functions */
+static simd_capability_t detect_cpu_capabilities(void);
+static void init_simd_dispatch_table(void);
+
+/* SIMD implementation functions */
+static void dna2_encode_scalar(const char* input, uint8_t* output, int len);
+static void dna2_decode_scalar(const uint8_t* input, char* output, int len);
+static void dna4_encode_scalar(const char* input, uint8_t* output, int len);
+static void dna4_decode_scalar(const uint8_t* input, char* output, int len);
+
+#ifdef __x86_64__
+static void dna2_encode_avx2(const char* input, uint8_t* output, int len);
+static void dna2_decode_avx2(const uint8_t* input, char* output, int len);
+static void dna4_encode_avx2(const char* input, uint8_t* output, int len);
+static void dna4_decode_avx2(const uint8_t* input, char* output, int len);
+
+static void dna2_encode_avx512(const char* input, uint8_t* output, int len);
+static void dna2_decode_avx512(const uint8_t* input, char* output, int len);
+static void dna4_encode_avx512(const char* input, uint8_t* output, int len);
+static void dna4_decode_avx512(const uint8_t* input, char* output, int len);
+#endif
+
+#ifdef __aarch64__
+static void dna2_encode_neon(const char* input, uint8_t* output, int len);
+static void dna2_decode_neon(const uint8_t* input, char* output, int len);
+static void dna4_encode_neon(const char* input, uint8_t* output, int len);
+static void dna4_decode_neon(const uint8_t* input, char* output, int len);
+
+#ifdef __ARM_FEATURE_SVE
+static void dna2_encode_sve(const char* input, uint8_t* output, int len);
+static void dna2_decode_sve(const uint8_t* input, char* output, int len);
+static void dna4_encode_sve(const char* input, uint8_t* output, int len);
+static void dna4_decode_sve(const uint8_t* input, char* output, int len);
+#endif
+#endif
+
 /*
  * Module initialization
  */
 void
 _PG_init(void)
 {
+    /* Initialize SIMD capabilities */
+    simd_capability = detect_cpu_capabilities();
+    init_simd_dispatch_table();
+    
     /* Define custom GUC variables */
     DefineCustomRealVariable("kmersearch.max_appearance_rate",
                             "Maximum appearance rate for k-mers to be included in index",
@@ -882,6 +900,96 @@ _PG_init(void)
                            NULL,
                            NULL,
                            NULL);
+}
+
+/*
+ * CPU capability detection
+ */
+static simd_capability_t detect_cpu_capabilities(void)
+{
+#ifdef __x86_64__
+    unsigned int eax, ebx, ecx, edx;
+    
+    /* Check for AVX512 support */
+    if (__get_cpuid_max(0, NULL) >= 7) {
+        __cpuid_count(7, 0, eax, ebx, ecx, edx);
+        if (ebx & (1 << 16)) { /* AVX512F */
+            if (ebx & (1 << 30)) { /* AVX512BW */
+                return SIMD_AVX512;
+            }
+        }
+    }
+    
+    /* Check for AVX2 support */
+    if (__get_cpuid_max(0, NULL) >= 7) {
+        __cpuid_count(7, 0, eax, ebx, ecx, edx);
+        if (ebx & (1 << 5)) { /* AVX2 */
+            return SIMD_AVX2;
+        }
+    }
+#elif defined(__aarch64__)
+    /* Check for SVE support */
+#ifdef __ARM_FEATURE_SVE
+    if (access("/proc/sys/abi/sve_default_vector_length", F_OK) == 0) {
+        return SIMD_SVE;
+    }
+#endif
+    
+    /* ARM64 always has NEON */
+    return SIMD_NEON;
+#endif
+    
+    return SIMD_NONE;
+}
+
+/*
+ * Initialize SIMD dispatch table
+ */
+static void init_simd_dispatch_table(void)
+{
+    /* Set default scalar implementations */
+    simd_dispatch.dna2_encode = dna2_encode_scalar;
+    simd_dispatch.dna2_decode = dna2_decode_scalar;
+    simd_dispatch.dna4_encode = dna4_encode_scalar;
+    simd_dispatch.dna4_decode = dna4_decode_scalar;
+    
+    /* Override with SIMD implementations if available */
+    switch (simd_capability) {
+#ifdef __x86_64__
+        case SIMD_AVX512:
+            simd_dispatch.dna2_encode = dna2_encode_avx512;
+            simd_dispatch.dna2_decode = dna2_decode_avx512;
+            simd_dispatch.dna4_encode = dna4_encode_avx512;
+            simd_dispatch.dna4_decode = dna4_decode_avx512;
+            break;
+        case SIMD_AVX2:
+            simd_dispatch.dna2_encode = dna2_encode_avx2;
+            simd_dispatch.dna2_decode = dna2_decode_avx2;
+            simd_dispatch.dna4_encode = dna4_encode_avx2;
+            simd_dispatch.dna4_decode = dna4_decode_avx2;
+            break;
+#endif
+#ifdef __aarch64__
+#ifdef __ARM_FEATURE_SVE
+        case SIMD_SVE:
+            simd_dispatch.dna2_encode = dna2_encode_sve;
+            simd_dispatch.dna2_decode = dna2_decode_sve;
+            simd_dispatch.dna4_encode = dna4_encode_sve;
+            simd_dispatch.dna4_decode = dna4_decode_sve;
+            break;
+#endif
+        case SIMD_NEON:
+            simd_dispatch.dna2_encode = dna2_encode_neon;
+            simd_dispatch.dna2_decode = dna2_decode_neon;
+            simd_dispatch.dna4_encode = dna4_encode_neon;
+            simd_dispatch.dna4_decode = dna4_decode_neon;
+            break;
+#endif
+        case SIMD_NONE:
+        default:
+            /* Already set to scalar implementations */
+            break;
+    }
 }
 
 /*
@@ -5190,4 +5298,246 @@ _PG_fini(void)
     /* Free actual min score cache manager on module unload */
     free_actual_min_score_cache_manager(&actual_min_score_cache_manager);
 }
+
+/*
+ * SIMD Implementation Functions
+ */
+
+/* Scalar implementations (fallback) */
+static void dna2_encode_scalar(const char* input, uint8_t* output, int len)
+{
+    int byte_len = (len * 2 + 7) / 8;
+    memset(output, 0, byte_len);
+    
+    for (int i = 0; i < len; i++) {
+        uint8_t encoded = kmersearch_dna2_encode_table[(unsigned char)input[i]];
+        int bit_pos = i * 2;
+        int byte_pos = bit_pos / 8;
+        int bit_offset = bit_pos % 8;
+        
+        output[byte_pos] |= (encoded << (6 - bit_offset));
+    }
+}
+
+static void dna2_decode_scalar(const uint8_t* input, char* output, int len)
+{
+    for (int i = 0; i < len; i++) {
+        int bit_pos = i * 2;
+        int byte_pos = bit_pos / 8;
+        int bit_offset = bit_pos % 8;
+        uint8_t encoded = (input[byte_pos] >> (6 - bit_offset)) & 0x3;
+        output[i] = kmersearch_dna2_decode_table[encoded];
+    }
+    output[len] = '\0';
+}
+
+static void dna4_encode_scalar(const char* input, uint8_t* output, int len)
+{
+    int byte_len = (len * 4 + 7) / 8;
+    memset(output, 0, byte_len);
+    
+    for (int i = 0; i < len; i++) {
+        uint8_t encoded = kmersearch_dna4_encode_table[(unsigned char)input[i]];
+        int bit_pos = i * 4;
+        int byte_pos = bit_pos / 8;
+        int bit_offset = bit_pos % 8;
+        
+        if (bit_offset <= 4) {
+            output[byte_pos] |= (encoded << (4 - bit_offset));
+        } else {
+            output[byte_pos] |= (encoded >> (bit_offset - 4));
+            if (byte_pos + 1 < byte_len)
+                output[byte_pos + 1] |= (encoded << (12 - bit_offset));
+        }
+    }
+}
+
+static void dna4_decode_scalar(const uint8_t* input, char* output, int len)
+{
+    int bit_len = len * 4;
+    
+    for (int i = 0; i < len; i++) {
+        int bit_pos = i * 4;
+        int byte_pos = bit_pos / 8;
+        int bit_offset = bit_pos % 8;
+        uint8_t encoded;
+        
+        if (bit_offset <= 4) {
+            encoded = (input[byte_pos] >> (4 - bit_offset)) & 0xF;
+        } else {
+            encoded = ((input[byte_pos] << (bit_offset - 4)) & 0xF);
+            if (byte_pos + 1 < (bit_len + 7) / 8)
+                encoded |= (input[byte_pos + 1] >> (12 - bit_offset));
+            encoded &= 0xF;
+        }
+        
+        output[i] = kmersearch_dna4_decode_table[encoded];
+    }
+    output[len] = '\0';
+}
+
+#ifdef __x86_64__
+/* AVX2 implementations */
+__attribute__((target("avx2")))
+static void dna2_encode_avx2(const char* input, uint8_t* output, int len)
+{
+    int byte_len = (len * 2 + 7) / 8;
+    memset(output, 0, byte_len);
+    
+    /* Process 32 characters at a time with AVX2 */
+    int simd_len = len & ~31;  /* Round down to multiple of 32 */
+    
+    for (int i = 0; i < simd_len; i += 32) {
+        __m256i chars = _mm256_loadu_si256((__m256i*)(input + i));
+        
+        /* Create comparison masks for each DNA base */
+        __m256i mask_A = _mm256_or_si256(_mm256_cmpeq_epi8(chars, _mm256_set1_epi8('A')),
+                                         _mm256_cmpeq_epi8(chars, _mm256_set1_epi8('a')));
+        __m256i mask_C = _mm256_or_si256(_mm256_cmpeq_epi8(chars, _mm256_set1_epi8('C')),
+                                         _mm256_cmpeq_epi8(chars, _mm256_set1_epi8('c')));
+        __m256i mask_G = _mm256_or_si256(_mm256_cmpeq_epi8(chars, _mm256_set1_epi8('G')),
+                                         _mm256_cmpeq_epi8(chars, _mm256_set1_epi8('g')));
+        __m256i mask_T = _mm256_or_si256(_mm256_cmpeq_epi8(chars, _mm256_set1_epi8('T')),
+                                         _mm256_cmpeq_epi8(chars, _mm256_set1_epi8('t')));
+        __m256i mask_U = _mm256_or_si256(_mm256_cmpeq_epi8(chars, _mm256_set1_epi8('U')),
+                                         _mm256_cmpeq_epi8(chars, _mm256_set1_epi8('u')));
+        
+        /* Combine T and U masks */
+        mask_T = _mm256_or_si256(mask_T, mask_U);
+        
+        /* Generate 2-bit encoded values */
+        __m256i encoded = _mm256_setzero_si256();
+        encoded = _mm256_or_si256(encoded, _mm256_and_si256(mask_C, _mm256_set1_epi8(1)));
+        encoded = _mm256_or_si256(encoded, _mm256_and_si256(mask_G, _mm256_set1_epi8(2)));
+        encoded = _mm256_or_si256(encoded, _mm256_and_si256(mask_T, _mm256_set1_epi8(3)));
+        
+        /* Pack 2-bit values into bytes - simplified approach */
+        /* For full implementation, we'd need complex bit packing */
+        /* Fall back to scalar for bit packing part */
+        uint8_t temp[32];
+        _mm256_storeu_si256((__m256i*)temp, encoded);
+        
+        for (int j = 0; j < 32; j++) {
+            int bit_pos = (i + j) * 2;
+            int byte_pos = bit_pos / 8;
+            int bit_offset = bit_pos % 8;
+            output[byte_pos] |= (temp[j] << (6 - bit_offset));
+        }
+    }
+    
+    /* Handle remaining characters with scalar */
+    for (int i = simd_len; i < len; i++) {
+        uint8_t encoded = kmersearch_dna2_encode_table[(unsigned char)input[i]];
+        int bit_pos = i * 2;
+        int byte_pos = bit_pos / 8;
+        int bit_offset = bit_pos % 8;
+        
+        output[byte_pos] |= (encoded << (6 - bit_offset));
+    }
+}
+
+__attribute__((target("avx2")))
+static void dna2_decode_avx2(const uint8_t* input, char* output, int len)
+{
+    /* For simplicity, fall back to scalar for now */
+    dna2_decode_scalar(input, output, len);
+}
+
+__attribute__((target("avx2")))
+static void dna4_encode_avx2(const char* input, uint8_t* output, int len)
+{
+    /* For simplicity, fall back to scalar for now */
+    dna4_encode_scalar(input, output, len);
+}
+
+__attribute__((target("avx2")))
+static void dna4_decode_avx2(const uint8_t* input, char* output, int len)
+{
+    /* For simplicity, fall back to scalar for now */
+    dna4_decode_scalar(input, output, len);
+}
+
+/* AVX512 implementations */
+__attribute__((target("avx512f")))
+static void dna2_encode_avx512(const char* input, uint8_t* output, int len)
+{
+    /* For simplicity, fall back to AVX2 for now */
+    dna2_encode_avx2(input, output, len);
+}
+
+__attribute__((target("avx512f")))
+static void dna2_decode_avx512(const uint8_t* input, char* output, int len)
+{
+    /* For simplicity, fall back to scalar for now */
+    dna2_decode_scalar(input, output, len);
+}
+
+__attribute__((target("avx512f")))
+static void dna4_encode_avx512(const char* input, uint8_t* output, int len)
+{
+    /* For simplicity, fall back to scalar for now */
+    dna4_encode_scalar(input, output, len);
+}
+
+__attribute__((target("avx512f")))
+static void dna4_decode_avx512(const uint8_t* input, char* output, int len)
+{
+    /* For simplicity, fall back to scalar for now */
+    dna4_decode_scalar(input, output, len);
+}
+#endif
+
+#ifdef __aarch64__
+/* NEON implementations */
+static void dna2_encode_neon(const char* input, uint8_t* output, int len)
+{
+    /* For simplicity, fall back to scalar for now */
+    dna2_encode_scalar(input, output, len);
+}
+
+static void dna2_decode_neon(const uint8_t* input, char* output, int len)
+{
+    /* For simplicity, fall back to scalar for now */
+    dna2_decode_scalar(input, output, len);
+}
+
+static void dna4_encode_neon(const char* input, uint8_t* output, int len)
+{
+    /* For simplicity, fall back to scalar for now */
+    dna4_encode_scalar(input, output, len);
+}
+
+static void dna4_decode_neon(const uint8_t* input, char* output, int len)
+{
+    /* For simplicity, fall back to scalar for now */
+    dna4_decode_scalar(input, output, len);
+}
+
+#ifdef __ARM_FEATURE_SVE
+/* SVE implementations */
+static void dna2_encode_sve(const char* input, uint8_t* output, int len)
+{
+    /* For simplicity, fall back to NEON for now */
+    dna2_encode_neon(input, output, len);
+}
+
+static void dna2_decode_sve(const uint8_t* input, char* output, int len)
+{
+    /* For simplicity, fall back to NEON for now */
+    dna2_decode_neon(input, output, len);
+}
+
+static void dna4_encode_sve(const char* input, uint8_t* output, int len)
+{
+    /* For simplicity, fall back to NEON for now */
+    dna4_encode_neon(input, output, len);
+}
+
+static void dna4_decode_sve(const uint8_t* input, char* output, int len)
+{
+    /* For simplicity, fall back to NEON for now */
+    dna4_decode_neon(input, output, len);
+}
+#endif
+#endif
 
