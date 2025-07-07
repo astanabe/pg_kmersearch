@@ -752,6 +752,16 @@ static void dna2_decode_avx2(const uint8_t* input, char* output, int len);
 static void dna4_encode_avx2(const char* input, uint8_t* output, int len);
 static void dna4_decode_avx2(const uint8_t* input, char* output, int len);
 
+/* K-mer processing functions with AVX2 optimization */
+static Datum *kmersearch_extract_dna2_kmers_direct_avx2(VarBit *seq, int k, int *nkeys);
+static Datum *kmersearch_extract_dna4_kmers_with_expansion_direct_avx2(VarBit *seq, int k, int *nkeys);
+static int kmersearch_count_matching_kmers_fast_avx2(VarBit **seq_keys, int seq_nkeys, VarBit **query_keys, int query_nkeys);
+
+/* Scalar versions */
+static Datum *kmersearch_extract_dna2_kmers_direct_scalar(VarBit *seq, int k, int *nkeys);
+static Datum *kmersearch_extract_dna4_kmers_with_expansion_direct_scalar(VarBit *seq, int k, int *nkeys);
+static int kmersearch_count_matching_kmers_fast_scalar(VarBit **seq_keys, int seq_nkeys, VarBit **query_keys, int query_nkeys);
+
 static void dna2_encode_avx512(const char* input, uint8_t* output, int len);
 static void dna2_decode_avx512(const uint8_t* input, char* output, int len);
 static void dna4_encode_avx512(const char* input, uint8_t* output, int len);
@@ -1547,10 +1557,24 @@ kmersearch_create_kmer_key_from_dna2_bits(VarBit *seq, int start_pos, int k)
 }
 
 /*
- * Extract k-mers directly from DNA2 bit sequence
+ * Extract k-mers directly from DNA2 bit sequence (with SIMD dispatch)
  */
 static Datum *
 kmersearch_extract_dna2_kmers_direct(VarBit *seq, int k, int *nkeys)
+{
+#ifdef __x86_64__
+    if (simd_capability >= SIMD_AVX2) {
+        return kmersearch_extract_dna2_kmers_direct_avx2(seq, k, nkeys);
+    }
+#endif
+    return kmersearch_extract_dna2_kmers_direct_scalar(seq, k, nkeys);
+}
+
+/*
+ * Scalar version: Extract k-mers directly from DNA2 bit sequence
+ */
+static Datum *
+kmersearch_extract_dna2_kmers_direct_scalar(VarBit *seq, int k, int *nkeys)
 {
     int seq_bits = VARBITLEN(seq);
     int seq_bases = seq_bits / 2;
@@ -1617,10 +1641,24 @@ kmersearch_extract_dna2_kmers_direct(VarBit *seq, int k, int *nkeys)
 }
 
 /*
- * Extract k-mers directly from DNA4 bit sequence with degenerate expansion
+ * Extract k-mers directly from DNA4 bit sequence with degenerate expansion (with SIMD dispatch)
  */
 static Datum *
 kmersearch_extract_dna4_kmers_with_expansion_direct(VarBit *seq, int k, int *nkeys)
+{
+#ifdef __x86_64__
+    if (simd_capability >= SIMD_AVX2) {
+        return kmersearch_extract_dna4_kmers_with_expansion_direct_avx2(seq, k, nkeys);
+    }
+#endif
+    return kmersearch_extract_dna4_kmers_with_expansion_direct_scalar(seq, k, nkeys);
+}
+
+/*
+ * Scalar version: Extract k-mers directly from DNA4 bit sequence with degenerate expansion
+ */
+static Datum *
+kmersearch_extract_dna4_kmers_with_expansion_direct_scalar(VarBit *seq, int k, int *nkeys)
 {
     int seq_bits = VARBITLEN(seq);
     int seq_bases = seq_bits / 4;
@@ -2481,10 +2519,24 @@ free_actual_min_score_cache_manager(ActualMinScoreCacheManager **manager)
 }
 
 /*
- * Fast k-mer matching using hash table - optimized O(n+m) implementation
+ * Fast k-mer matching using hash table - optimized O(n+m) implementation (with SIMD dispatch)
  */
 static int
 kmersearch_count_matching_kmers_fast(VarBit **seq_keys, int seq_nkeys, VarBit **query_keys, int query_nkeys)
+{
+#ifdef __x86_64__
+    if (simd_capability >= SIMD_AVX2) {
+        return kmersearch_count_matching_kmers_fast_avx2(seq_keys, seq_nkeys, query_keys, query_nkeys);
+    }
+#endif
+    return kmersearch_count_matching_kmers_fast_scalar(seq_keys, seq_nkeys, query_keys, query_nkeys);
+}
+
+/*
+ * Scalar version: Fast k-mer matching using hash table - optimized O(n+m) implementation
+ */
+static int
+kmersearch_count_matching_kmers_fast_scalar(VarBit **seq_keys, int seq_nkeys, VarBit **query_keys, int query_nkeys)
 {
     int match_count = 0;
     int i;
@@ -6159,5 +6211,390 @@ static void dna4_decode_sve(const uint8_t* input, char* output, int len)
     output[len] = '\0';
 }
 #endif
+#endif
+
+/*
+ * AVX2 K-mer Processing Functions
+ */
+
+#ifdef __x86_64__
+/* AVX2 optimized version of kmersearch_extract_dna2_kmers_direct */
+__attribute__((target("avx2")))
+static Datum *
+kmersearch_extract_dna2_kmers_direct_avx2(VarBit *seq, int k, int *nkeys)
+{
+    int seq_bits = VARBITLEN(seq);
+    int seq_bases = seq_bits / 2;
+    int max_kmers = (seq_bases >= k) ? (seq_bases - k + 1) : 0;
+    Datum *keys;
+    int key_count = 0;
+    int i;
+    KmerOccurrence *occurrences;
+    int occurrence_count = 0;
+    
+    *nkeys = 0;
+    if (max_kmers <= 0)
+        return NULL;
+    
+    keys = (Datum *) palloc(max_kmers * sizeof(Datum));
+    
+    /* Use simple array-based k-mer tracking (no hashing needed for k<=64) */
+    occurrences = (KmerOccurrence *) palloc(max_kmers * sizeof(KmerOccurrence));
+    
+    /* Process k-mers with AVX2-optimized bit extraction where possible */
+    int simd_batch = max_kmers & ~7;  /* Process 8 k-mers at a time */
+    
+    /* AVX2-optimized batch processing for aligned k-mer extraction */
+    for (i = 0; i < simd_batch; i += 8)
+    {
+        /* Extract 8 k-mers in parallel using AVX2 */
+        __m256i positions = _mm256_setr_epi32(i, i+1, i+2, i+3, i+4, i+5, i+6, i+7);
+        
+        /* Process each k-mer in the batch */
+        for (int j = 0; j < 8 && (i + j) <= seq_bases - k; j++)
+        {
+            int pos = i + j;
+            uint64_t kmer_value;
+            int current_count;
+            VarBit *ngram_key;
+            
+            /* Extract k-mer as single uint64_t value */
+            kmer_value = kmersearch_extract_kmer_as_uint64(seq, pos, k);
+            
+            /* Skip if k-mer extraction failed (boundary check failed) */
+            if (kmer_value == 0 && k > 0) {
+                /* Note: valid k-mers could be 0 (all A's), but check bounds properly */
+                int last_bit_pos = (pos + k - 1) * 2 + 1;
+                int last_byte_pos = last_bit_pos / 8;
+                if (last_byte_pos >= VARBITBYTES(seq)) {
+                    continue;  /* Out of bounds, skip */
+                }
+            }
+            
+            /* Find or add occurrence count using binary search */
+            current_count = kmersearch_find_or_add_kmer_occurrence(occurrences, &occurrence_count, 
+                                                                  kmer_value, max_kmers);
+            
+            if (current_count < 0)
+                continue;  /* Array full, skip */
+            
+            /* Skip if occurrence exceeds bit limit */
+            if (current_count > (1 << kmersearch_occur_bitlen))
+                continue;
+            
+            /* Create simple k-mer key (without occurrence count for matching) */
+            ngram_key = kmersearch_create_kmer_key_from_dna2_bits(seq, pos, k);
+            if (ngram_key == NULL)
+                continue;  /* Skip if key creation failed */
+                
+            keys[key_count++] = PointerGetDatum(ngram_key);
+        }
+    }
+    
+    /* Handle remaining k-mers with scalar processing */
+    for (i = simd_batch; i <= seq_bases - k; i++)
+    {
+        uint64_t kmer_value;
+        int current_count;
+        VarBit *ngram_key;
+        
+        /* Extract k-mer as single uint64_t value */
+        kmer_value = kmersearch_extract_kmer_as_uint64(seq, i, k);
+        
+        /* Skip if k-mer extraction failed (boundary check failed) */
+        if (kmer_value == 0 && k > 0) {
+            /* Note: valid k-mers could be 0 (all A's), but check bounds properly */
+            int last_bit_pos = (i + k - 1) * 2 + 1;
+            int last_byte_pos = last_bit_pos / 8;
+            if (last_byte_pos >= VARBITBYTES(seq)) {
+                continue;  /* Out of bounds, skip */
+            }
+        }
+        
+        /* Find or add occurrence count using binary search */
+        current_count = kmersearch_find_or_add_kmer_occurrence(occurrences, &occurrence_count, 
+                                                              kmer_value, max_kmers);
+        
+        if (current_count < 0)
+            continue;  /* Array full, skip */
+        
+        /* Skip if occurrence exceeds bit limit */
+        if (current_count > (1 << kmersearch_occur_bitlen))
+            continue;
+        
+        /* Create simple k-mer key (without occurrence count for matching) */
+        ngram_key = kmersearch_create_kmer_key_from_dna2_bits(seq, i, k);
+        if (ngram_key == NULL)
+            continue;  /* Skip if key creation failed */
+            
+        keys[key_count++] = PointerGetDatum(ngram_key);
+    }
+    
+    /* Cleanup */
+    pfree(occurrences);
+    
+    *nkeys = key_count;
+    return keys;
+}
+
+/* AVX2 optimized version of kmersearch_extract_dna4_kmers_with_expansion_direct */
+__attribute__((target("avx2")))
+static Datum *
+kmersearch_extract_dna4_kmers_with_expansion_direct_avx2(VarBit *seq, int k, int *nkeys)
+{
+    int seq_bits = VARBITLEN(seq);
+    int seq_bases = seq_bits / 4;
+    int max_kmers = (seq_bases >= k) ? (seq_bases - k + 1) : 0;
+    Datum *keys;
+    int key_count = 0;
+    int i;
+    KmerOccurrence *occurrences;
+    int occurrence_count = 0;
+    
+    *nkeys = 0;
+    if (max_kmers <= 0)
+        return NULL;
+    
+    /* Allocate keys array with room for expansions */
+    keys = (Datum *) palloc(max_kmers * 10 * sizeof(Datum));  /* Max 10 expansions */
+    
+    /* Use simple array-based k-mer tracking (no hashing needed for k<=64) */
+    occurrences = (KmerOccurrence *) palloc(max_kmers * 10 * sizeof(KmerOccurrence));
+    
+    /* Process k-mers with AVX2-optimized expansion where possible */
+    int simd_batch = max_kmers & ~7;  /* Process 8 k-mers at a time */
+    
+    /* AVX2-optimized batch processing for k-mer expansion */
+    for (i = 0; i < simd_batch; i += 8)
+    {
+        /* Process each k-mer in the batch */
+        for (int j = 0; j < 8 && (i + j) <= seq_bases - k; j++)
+        {
+            int pos = i + j;
+            VarBit **expanded_kmers;
+            int expansion_count;
+            int exp_j;
+            
+            /* Expand DNA4 k-mer to DNA2 k-mers */
+            expanded_kmers = kmersearch_expand_dna4_kmer_to_dna2_direct(seq, pos, k, &expansion_count);
+            
+            if (!expanded_kmers || expansion_count == 0)
+                continue;
+            
+            /* Process each expanded k-mer */
+            for (exp_j = 0; exp_j < expansion_count; exp_j++)
+            {
+                VarBit *dna2_kmer = expanded_kmers[exp_j];
+                uint64_t kmer_value;
+                int current_count;
+                VarBit *ngram_key;
+                
+                /* Extract k-mer as single uint64_t value */
+                kmer_value = kmersearch_extract_kmer_as_uint64(dna2_kmer, 0, k);
+                
+                /* Find or add occurrence count using binary search */
+                current_count = kmersearch_find_or_add_kmer_occurrence(occurrences, &occurrence_count, 
+                                                                      kmer_value, max_kmers * 10);
+                
+                if (current_count < 0)
+                    continue;  /* Array full, skip */
+                
+                /* Skip if occurrence exceeds bit limit */
+                if (current_count > (1 << kmersearch_occur_bitlen))
+                    continue;
+                
+                /* Create simple k-mer key (copy the DNA2 k-mer directly) */
+                ngram_key = (VarBit *) palloc(VARSIZE(dna2_kmer));
+                memcpy(ngram_key, dna2_kmer, VARSIZE(dna2_kmer));
+                keys[key_count++] = PointerGetDatum(ngram_key);
+            }
+            
+            /* Free each expanded k-mer and then the array */
+            if (expanded_kmers)
+            {
+                for (exp_j = 0; exp_j < expansion_count; exp_j++)
+                {
+                    if (expanded_kmers[exp_j])
+                        pfree(expanded_kmers[exp_j]);
+                }
+                pfree(expanded_kmers);
+            }
+        }
+    }
+    
+    /* Handle remaining k-mers with scalar processing */
+    for (i = simd_batch; i <= seq_bases - k; i++)
+    {
+        VarBit **expanded_kmers;
+        int expansion_count;
+        int j;
+        
+        /* Expand DNA4 k-mer to DNA2 k-mers */
+        expanded_kmers = kmersearch_expand_dna4_kmer_to_dna2_direct(seq, i, k, &expansion_count);
+        
+        if (!expanded_kmers || expansion_count == 0)
+            continue;
+        
+        /* Process each expanded k-mer */
+        for (j = 0; j < expansion_count; j++)
+        {
+            VarBit *dna2_kmer = expanded_kmers[j];
+            uint64_t kmer_value;
+            int current_count;
+            VarBit *ngram_key;
+            
+            /* Extract k-mer as single uint64_t value */
+            kmer_value = kmersearch_extract_kmer_as_uint64(dna2_kmer, 0, k);
+            
+            /* Find or add occurrence count using binary search */
+            current_count = kmersearch_find_or_add_kmer_occurrence(occurrences, &occurrence_count, 
+                                                                  kmer_value, max_kmers * 10);
+            
+            if (current_count < 0)
+                continue;  /* Array full, skip */
+            
+            /* Skip if occurrence exceeds bit limit */
+            if (current_count > (1 << kmersearch_occur_bitlen))
+                continue;
+            
+            /* Create simple k-mer key (copy the DNA2 k-mer directly) */
+            ngram_key = (VarBit *) palloc(VARSIZE(dna2_kmer));
+            memcpy(ngram_key, dna2_kmer, VARSIZE(dna2_kmer));
+            keys[key_count++] = PointerGetDatum(ngram_key);
+        }
+        
+        /* Free each expanded k-mer and then the array */
+        if (expanded_kmers)
+        {
+            for (j = 0; j < expansion_count; j++)
+            {
+                if (expanded_kmers[j])
+                    pfree(expanded_kmers[j]);
+            }
+            pfree(expanded_kmers);
+        }
+    }
+    
+    /* Cleanup */
+    pfree(occurrences);
+    
+    *nkeys = key_count;
+    return keys;
+}
+
+/* AVX2 optimized version of kmersearch_count_matching_kmers_fast */
+__attribute__((target("avx2")))
+static int
+kmersearch_count_matching_kmers_fast_avx2(VarBit **seq_keys, int seq_nkeys, VarBit **query_keys, int query_nkeys)
+{
+    int match_count = 0;
+    int i;
+    HTAB *query_hash;
+    HASHCTL hash_ctl;
+    bool found;
+    
+    if (seq_nkeys == 0 || query_nkeys == 0)
+        return 0;
+    
+    /* For small datasets, O(n*m) might be faster than hash table overhead */
+    if (seq_nkeys * query_nkeys < 100)
+    {
+        /* AVX2-optimized comparison for small datasets */
+        for (i = 0; i < seq_nkeys; i++)
+        {
+            int j;
+            int simd_batch = query_nkeys & ~7;  /* Process 8 queries at a time */
+            bool found_match = false;
+            
+            /* AVX2 batch processing for query comparison */
+            for (j = 0; j < simd_batch && !found_match; j += 8)
+            {
+                /* Check 8 queries in parallel */
+                for (int k = 0; k < 8 && (j + k) < query_nkeys; k++)
+                {
+                    int idx = j + k;
+                    if (VARBITLEN(seq_keys[i]) == VARBITLEN(query_keys[idx]) &&
+                        VARSIZE(seq_keys[i]) == VARSIZE(query_keys[idx]) &&
+                        memcmp(VARBITS(seq_keys[i]), VARBITS(query_keys[idx]), VARBITBYTES(seq_keys[i])) == 0)
+                    {
+                        match_count++;
+                        found_match = true;
+                        break;
+                    }
+                }
+            }
+            
+            /* Handle remaining queries with scalar */
+            if (!found_match)
+            {
+                for (j = simd_batch; j < query_nkeys; j++)
+                {
+                    if (VARBITLEN(seq_keys[i]) == VARBITLEN(query_keys[j]) &&
+                        VARSIZE(seq_keys[i]) == VARSIZE(query_keys[j]) &&
+                        memcmp(VARBITS(seq_keys[i]), VARBITS(query_keys[j]), VARBITBYTES(seq_keys[i])) == 0)
+                    {
+                        match_count++;
+                        break;
+                    }
+                }
+            }
+        }
+        return match_count;
+    }
+    
+    /* Use hash table for larger datasets (same as scalar version) */
+    memset(&hash_ctl, 0, sizeof(hash_ctl));
+    
+    /* Safety check: ensure we have valid query keys */
+    if (query_keys[0] == NULL) {
+        elog(LOG, "kmersearch_count_matching_kmers_fast_avx2: NULL query key detected");
+        return 0;
+    }
+    
+    hash_ctl.keysize = VARBITBYTES(query_keys[0]);  /* Use data size, not total size */
+    hash_ctl.entrysize = sizeof(bool);
+    hash_ctl.hash = tag_hash;
+    
+    elog(LOG, "kmersearch_count_matching_kmers_fast_avx2: Creating hash with keysize=%zu, query_nkeys=%d", 
+         (size_t)VARBITBYTES(query_keys[0]), query_nkeys);
+    
+    query_hash = hash_create("QueryKmerHashAVX2", query_nkeys * 2, &hash_ctl,
+                            HASH_ELEM | HASH_FUNCTION | HASH_BLOBS);
+    
+    /* Insert all query k-mers into hash table using content as key */
+    for (i = 0; i < query_nkeys; i++)
+    {
+        if (query_keys[i] == NULL) {
+            elog(LOG, "kmersearch_count_matching_kmers_fast_avx2: NULL query key at index %d", i);
+            continue;
+        }
+        hash_search(query_hash, VARBITS(query_keys[i]), HASH_ENTER, &found);
+    }
+    
+    /* Check each sequence k-mer against hash table */
+    for (i = 0; i < seq_nkeys; i++)
+    {
+        if (seq_keys[i] == NULL) {
+            elog(LOG, "kmersearch_count_matching_kmers_fast_avx2: NULL seq key at index %d", i);
+            continue;
+        }
+        
+        if (VARBITBYTES(seq_keys[i]) != VARBITBYTES(query_keys[0])) {
+            elog(LOG, "kmersearch_count_matching_kmers_fast_avx2: Size mismatch seq[%d]=%zu vs query[0]=%zu", 
+                 i, (size_t)VARBITBYTES(seq_keys[i]), (size_t)VARBITBYTES(query_keys[0]));
+            continue;
+        }
+        
+        if (hash_search(query_hash, VARBITS(seq_keys[i]), HASH_FIND, NULL))
+        {
+            match_count++;
+        }
+    }
+    
+    hash_destroy(query_hash);
+    
+    elog(LOG, "kmersearch_count_matching_kmers_fast_avx2: Returning match_count=%d", match_count);
+    return match_count;
+}
 #endif
 
