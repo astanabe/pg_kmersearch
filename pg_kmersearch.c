@@ -121,7 +121,7 @@ typedef struct KmerMatchResult
 /* Actual min score cache entry for TopMemoryContext caching */
 typedef struct ActualMinScoreCacheEntry
 {
-    uint32      query_hash;                /* Hash value of query string */
+    uint64      query_hash;                /* Hash value of query string */
     int         actual_min_score;          /* Actual minimum score for this query */
 } ActualMinScoreCacheEntry;
 
@@ -1960,7 +1960,7 @@ create_actual_min_score_cache_manager(void)
     
     /* Create hash table */
     MemSet(&hash_ctl, 0, sizeof(hash_ctl));
-    hash_ctl.keysize = sizeof(uint32);  /* Hash value as key */
+    hash_ctl.keysize = sizeof(uint64);  /* Hash value as key */
     hash_ctl.entrysize = sizeof(ActualMinScoreCacheEntry);
     hash_ctl.hcxt = manager->cache_context;
     
@@ -3720,7 +3720,7 @@ static int
 get_cached_actual_min_score(const char *query_string, int query_total_kmers)
 {
     ActualMinScoreCacheEntry *cache_entry;
-    uint32 query_hash;
+    uint64 query_hash;
     bool found;
     MemoryContext old_context;
     int actual_min_score;
@@ -3745,8 +3745,8 @@ get_cached_actual_min_score(const char *query_string, int query_total_kmers)
         MemoryContextSwitchTo(old_context);
     }
     
-    /* Calculate hash value for query string using safer hash function */
-    query_hash = (uint32)hash_bytes((unsigned char *)query_string, strlen(query_string));
+    /* Calculate hash value for query string using 64-bit hash function */
+    query_hash = hash_bytes_extended((unsigned char *)query_string, strlen(query_string), 0);
     
     /* Look up in hash table */
     cache_entry = (ActualMinScoreCacheEntry *) hash_search(actual_min_score_cache_manager->cache_hash,
