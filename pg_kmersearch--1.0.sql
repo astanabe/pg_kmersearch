@@ -318,3 +318,20 @@ CREATE FUNCTION kmersearch_query_pattern_cache_free()
     RETURNS integer
     AS 'MODULE_PATHNAME', 'kmersearch_query_pattern_cache_free'
     LANGUAGE C VOLATILE;
+
+-- Actual min score cache statistics function
+CREATE FUNCTION kmersearch_actual_min_score_cache_stats()
+    RETURNS TABLE (
+        hits bigint,
+        misses bigint,
+        current_entries integer,
+        max_entries integer
+    )
+    AS 'MODULE_PATHNAME', 'kmersearch_actual_min_score_cache_stats'
+    LANGUAGE C STABLE;
+
+-- Actual min score cache management function
+CREATE FUNCTION kmersearch_actual_min_score_cache_free()
+    RETURNS integer
+    AS 'MODULE_PATHNAME', 'kmersearch_actual_min_score_cache_free'
+    LANGUAGE C VOLATILE;

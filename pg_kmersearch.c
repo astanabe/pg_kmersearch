@@ -63,6 +63,7 @@ static double kmersearch_min_shared_ngram_key_rate = 0.9;  /* Default minimum sh
 /* Cache configuration variables */
 static int kmersearch_rawscore_cache_max_entries = 50000;  /* Default max rawscore cache entries */
 static int kmersearch_query_pattern_cache_max_entries = 50000;  /* Default max query pattern cache entries */
+static int kmersearch_actual_min_score_cache_max_entries = 50000;  /* Default max actual min score cache entries */
 
 /* Hash table entry for k-mer frequency counting */
 typedef struct KmerFreqEntry
@@ -84,6 +85,27 @@ typedef struct KmerMatchResult
     bool        match_result;       /* Boolean match result for =% operator */
     bool        valid;              /* Whether the result is valid */
 } KmerMatchResult;
+
+/* Actual min score cache entry for TopMemoryContext caching */
+typedef struct ActualMinScoreCacheEntry
+{
+    uint32      query_hash;                /* Hash value of query string */
+    int         actual_min_score;          /* Actual minimum score for this query */
+} ActualMinScoreCacheEntry;
+
+/* Actual min score cache manager for TopMemoryContext */
+typedef struct ActualMinScoreCacheManager
+{
+    HTAB        *cache_hash;               /* Hash table for actual min score cache */
+    MemoryContext cache_context;           /* Memory context for cache */
+    int         hits;                      /* Cache hit count */
+    int         misses;                    /* Cache miss count */
+    int         max_entries;               /* Maximum number of entries */
+    int         current_entries;           /* Current number of entries */
+} ActualMinScoreCacheManager;
+
+/* Global cache managers */
+static ActualMinScoreCacheManager *actual_min_score_cache_manager = NULL;
 
 /* Simple k-mer occurrence tracking for k<=64 (no hashing needed) */
 typedef struct KmerOccurrence
@@ -118,8 +140,7 @@ typedef struct RawscoreCacheEntry
     VarBit      *sequence_copy;            /* Copy of sequence for exact match */
     char        *query_string_copy;        /* Copy of query string for exact match */
     KmerMatchResult result;                /* Cached rawscore calculation result */
-    struct RawscoreCacheEntry *next;       /* For LRU chain */
-    struct RawscoreCacheEntry *prev;       /* For LRU chain */
+    int         heap_index;                /* Index in min-heap array (-1 if not in heap) */
 } RawscoreCacheEntry;
 
 /* Rawscore cache manager structure */
@@ -131,8 +152,8 @@ typedef struct RawscoreCacheManager
     int         current_entries;           /* Current number of entries */
     uint64      hits;                      /* Cache hit count */
     uint64      misses;                    /* Cache miss count */
-    RawscoreCacheEntry *lru_head;          /* LRU chain head (most recent) */
-    RawscoreCacheEntry *lru_tail;          /* LRU chain tail (least recent) */
+    RawscoreCacheEntry **min_heap;         /* Min-heap array for score-based eviction */
+    int         heap_size;                 /* Current heap size */
 } RawscoreCacheManager;
 
 /* Rawscore cache managers are now local to each function call - no global state */
@@ -255,8 +276,9 @@ static uint64 generate_cache_key(VarBit *sequence, const char *query_string);
 static bool sequences_equal(VarBit *a, VarBit *b);
 static RawscoreCacheEntry *lookup_rawscore_cache_entry(RawscoreCacheManager *manager, VarBit *sequence, const char *query_string);
 static void store_rawscore_cache_entry(RawscoreCacheManager *manager, uint64 hash_key, VarBit *sequence, const char *query_string, KmerMatchResult result);
-static void lru_touch(RawscoreCacheManager *manager, RawscoreCacheEntry *entry);
-static void lru_evict_oldest(RawscoreCacheManager *manager);
+static void rawscore_heap_insert(RawscoreCacheManager *manager, RawscoreCacheEntry *entry);
+static void rawscore_heap_remove(RawscoreCacheManager *manager, RawscoreCacheEntry *entry);
+static void rawscore_heap_evict_lowest_score(RawscoreCacheManager *manager);
 static KmerMatchResult get_cached_rawscore_dna2(VarBit *sequence, const char *query_string);
 static KmerMatchResult get_cached_rawscore_dna4(VarBit *sequence, const char *query_string);
 
@@ -269,6 +291,7 @@ static void lru_touch_query_pattern_cache(QueryPatternCacheManager *manager, Que
 static void lru_evict_oldest_query_pattern_cache(QueryPatternCacheManager *manager);
 static VarBit **get_cached_query_kmers(const char *query_string, int k_size, int *nkeys);
 static void free_query_pattern_cache_manager(QueryPatternCacheManager **manager);
+static void free_actual_min_score_cache_manager(ActualMinScoreCacheManager **manager);
 static Datum *kmersearch_extract_dna4_kmers_with_expansion_direct(VarBit *seq, int k, int *nkeys);
 static VarBit *kmersearch_create_ngram_key_with_occurrence_from_dna2(VarBit *dna2_kmer, int k, int occurrence);
 static VarBit **kmersearch_extract_query_kmers(const char *query, int k, int *nkeys);
@@ -279,6 +302,12 @@ static bool kmersearch_kmer_based_match_dna4(VarBit *sequence, const char *query
 static bool kmersearch_evaluate_match_conditions(int shared_count, int query_total);
 static KmerMatchResult kmersearch_calculate_kmer_match_and_score_dna2(VarBit *sequence, const char *query_string);
 static KmerMatchResult kmersearch_calculate_kmer_match_and_score_dna4(VarBit *sequence, const char *query_string);
+
+/* Actual min score cache functions */
+static ActualMinScoreCacheManager *create_actual_min_score_cache_manager(void);
+static int calculate_actual_min_score(int query_total_kmers);
+static int get_cached_actual_min_score(const char *query_string, int query_total_kmers);
+static bool evaluate_optimized_match_condition(int shared_count, const char *query_string, int query_total_kmers);
 
 /* New parallel analysis functions */
 static int kmersearch_determine_parallel_workers(int requested_workers, Relation target_relation);
@@ -433,6 +462,8 @@ PG_FUNCTION_INFO_V1(kmersearch_reduce_index);
 PG_FUNCTION_INFO_V1(kmersearch_rawscore_cache_stats);
 PG_FUNCTION_INFO_V1(kmersearch_query_pattern_cache_stats);
 PG_FUNCTION_INFO_V1(kmersearch_query_pattern_cache_free);
+PG_FUNCTION_INFO_V1(kmersearch_actual_min_score_cache_stats);
+PG_FUNCTION_INFO_V1(kmersearch_actual_min_score_cache_free);
 
 /* Score calculation functions */
 PG_FUNCTION_INFO_V1(kmersearch_rawscore_dna2);
@@ -830,6 +861,19 @@ _PG_init(void)
                            "Maximum number of entries in query pattern cache",
                            "Controls the maximum number of cached query pattern extraction results",
                            &kmersearch_query_pattern_cache_max_entries,
+                           50000,
+                           1000,
+                           10000000,
+                           PGC_USERSET,
+                           0,
+                           NULL,
+                           NULL,
+                           NULL);
+
+    DefineCustomIntVariable("kmersearch.actual_min_score_cache_max_entries",
+                           "Maximum number of entries in actual min score cache",
+                           "Controls the maximum number of cached actual min score calculation results",
+                           &kmersearch_actual_min_score_cache_max_entries,
                            50000,
                            1000,
                            10000000,
@@ -1692,8 +1736,14 @@ create_rawscore_cache_manager(const char *name)
     manager->current_entries = 0;
     manager->hits = 0;
     manager->misses = 0;
-    manager->lru_head = NULL;
-    manager->lru_tail = NULL;
+    manager->heap_size = 0;
+    
+    /* Allocate min-heap array in cache context */
+    {
+        MemoryContext old_context = MemoryContextSwitchTo(manager->cache_context);
+        manager->min_heap = (RawscoreCacheEntry **) palloc0(manager->max_entries * sizeof(RawscoreCacheEntry *));
+        MemoryContextSwitchTo(old_context);
+    }
     
     /* Create hash table */
     MemSet(&hash_ctl, 0, sizeof(hash_ctl));
@@ -1705,6 +1755,52 @@ create_rawscore_cache_manager(const char *name)
                                      HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
     
     return manager;
+}
+
+/*
+ * Create actual min score cache manager
+ */
+static ActualMinScoreCacheManager *
+create_actual_min_score_cache_manager(void)
+{
+    ActualMinScoreCacheManager *manager;
+    HASHCTL hash_ctl;
+    
+    /* Allocate manager in current context (caller should have set appropriate context) */
+    manager = (ActualMinScoreCacheManager *) palloc0(sizeof(ActualMinScoreCacheManager));
+    
+    /* Create actual min score cache context under current context */
+    manager->cache_context = AllocSetContextCreate(CurrentMemoryContext,
+                                                   "ActualMinScoreCache",
+                                                   ALLOCSET_DEFAULT_SIZES);
+    
+    /* Initialize parameters */
+    manager->hits = 0;
+    manager->misses = 0;
+    manager->max_entries = kmersearch_actual_min_score_cache_max_entries;
+    manager->current_entries = 0;
+    
+    /* Create hash table */
+    MemSet(&hash_ctl, 0, sizeof(hash_ctl));
+    hash_ctl.keysize = sizeof(uint32);  /* Hash value as key */
+    hash_ctl.entrysize = sizeof(ActualMinScoreCacheEntry);
+    hash_ctl.hcxt = manager->cache_context;
+    
+    manager->cache_hash = hash_create("ActualMinScoreCache", 256, &hash_ctl,
+                                     HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
+    
+    return manager;
+}
+
+
+/*
+ * Clean up query conditions manager when PortalContext is destroyed
+ */
+static void
+cleanup_query_conditions_manager(void)
+{
+    /* This function will be called when the PortalContext is destroyed */
+    /* The static pointer will be automatically set to NULL */
 }
 
 /*
@@ -1739,56 +1835,122 @@ sequences_equal(VarBit *a, VarBit *b)
 }
 
 /*
- * Move entry to head of LRU chain (most recently used)
+ * Helper functions for min-heap operations
  */
 static void
-lru_touch(RawscoreCacheManager *manager, RawscoreCacheEntry *entry)
+rawscore_heap_swap(RawscoreCacheManager *manager, int i, int j)
 {
-    if (entry == manager->lru_head)
-        return;  /* Already at head */
+    RawscoreCacheEntry *temp = manager->min_heap[i];
+    manager->min_heap[i] = manager->min_heap[j];
+    manager->min_heap[j] = temp;
     
-    /* Remove from current position */
-    if (entry->prev)
-        entry->prev->next = entry->next;
-    else
-        manager->lru_tail = entry->next;
+    /* Update heap indices */
+    manager->min_heap[i]->heap_index = i;
+    manager->min_heap[j]->heap_index = j;
+}
+
+static void
+rawscore_heap_bubble_up(RawscoreCacheManager *manager, int index)
+{
+    int parent;
     
-    if (entry->next)
-        entry->next->prev = entry->prev;
-    else
-        manager->lru_head = entry->prev;
+    while (index > 0)
+    {
+        parent = (index - 1) / 2;
+        if (manager->min_heap[index]->result.shared_count >= manager->min_heap[parent]->result.shared_count)
+            break;
+        
+        rawscore_heap_swap(manager, index, parent);
+        index = parent;
+    }
+}
+
+static void
+rawscore_heap_bubble_down(RawscoreCacheManager *manager, int index)
+{
+    int smallest = index;
+    int left = 2 * index + 1;
+    int right = 2 * index + 2;
     
-    /* Add to head */
-    entry->prev = NULL;
-    entry->next = manager->lru_head;
-    if (manager->lru_head)
-        manager->lru_head->prev = entry;
-    else
-        manager->lru_tail = entry;
-    manager->lru_head = entry;
+    if (left < manager->heap_size && 
+        manager->min_heap[left]->result.shared_count < manager->min_heap[smallest]->result.shared_count)
+        smallest = left;
+    
+    if (right < manager->heap_size && 
+        manager->min_heap[right]->result.shared_count < manager->min_heap[smallest]->result.shared_count)
+        smallest = right;
+    
+    if (smallest != index)
+    {
+        rawscore_heap_swap(manager, index, smallest);
+        rawscore_heap_bubble_down(manager, smallest);
+    }
 }
 
 /*
- * Evict least recently used entry
+ * Insert entry into min-heap
  */
 static void
-lru_evict_oldest(RawscoreCacheManager *manager)
+rawscore_heap_insert(RawscoreCacheManager *manager, RawscoreCacheEntry *entry)
 {
-    RawscoreCacheEntry *oldest = manager->lru_tail;
+    if (manager->heap_size >= manager->max_entries)
+        return;  /* Heap is full */
+    
+    /* Add to end of heap */
+    manager->min_heap[manager->heap_size] = entry;
+    entry->heap_index = manager->heap_size;
+    manager->heap_size++;
+    
+    /* Bubble up to maintain heap property */
+    rawscore_heap_bubble_up(manager, entry->heap_index);
+}
+
+/*
+ * Remove entry from min-heap
+ */
+static void
+rawscore_heap_remove(RawscoreCacheManager *manager, RawscoreCacheEntry *entry)
+{
+    int index = entry->heap_index;
+    
+    if (index < 0 || index >= manager->heap_size)
+        return;  /* Entry not in heap */
+    
+    /* Move last element to this position */
+    manager->heap_size--;
+    if (index != manager->heap_size)
+    {
+        manager->min_heap[index] = manager->min_heap[manager->heap_size];
+        manager->min_heap[index]->heap_index = index;
+        
+        /* Restore heap property */
+        rawscore_heap_bubble_up(manager, index);
+        rawscore_heap_bubble_down(manager, index);
+    }
+    
+    entry->heap_index = -1;
+}
+
+/*
+ * Evict entry with lowest rawscore
+ */
+static void
+rawscore_heap_evict_lowest_score(RawscoreCacheManager *manager)
+{
+    RawscoreCacheEntry *lowest;
     bool found;
     
-    if (!oldest)
+    if (manager->heap_size == 0)
         return;
     
-    /* Remove from LRU chain */
-    if (oldest->prev)
-        oldest->prev->next = NULL;
-    else
-        manager->lru_head = NULL;
-    manager->lru_tail = oldest->prev;
+    /* Root of min-heap has lowest score */
+    lowest = manager->min_heap[0];
+    
+    /* Remove from heap */
+    rawscore_heap_remove(manager, lowest);
     
     /* Remove from hash table */
-    hash_search(manager->hash_table, &oldest->hash_key, HASH_REMOVE, &found);
+    hash_search(manager->hash_table, &lowest->hash_key, HASH_REMOVE, &found);
     
     manager->current_entries--;
 }
@@ -1820,9 +1982,8 @@ lookup_rawscore_cache_entry(RawscoreCacheManager *manager, VarBit *sequence, con
         sequences_equal(entry->sequence_copy, sequence) &&
         strcmp(entry->query_string_copy, query_string) == 0)
     {
-        /* Cache hit - move to head of LRU */
+        /* Cache hit - no need to update position in score-based cache */
         elog(LOG, "lookup_cache_entry: Cache hit found");
-        lru_touch(manager, entry);
         manager->hits++;
         return entry;
     }
@@ -1842,9 +2003,17 @@ store_rawscore_cache_entry(RawscoreCacheManager *manager, uint64 hash_key, VarBi
     MemoryContext old_context;
     bool found;
     
+    /* Check if this result is worth caching based on actual minimum score */
+    int actual_min_score = get_cached_actual_min_score(query_string, result.query_nkeys);
+    if (result.shared_count < actual_min_score)
+    {
+        /* Don't cache results that can never match the condition */
+        return;
+    }
+    
     /* Check if we need to evict */
     while (manager->current_entries >= manager->max_entries)
-        lru_evict_oldest(manager);
+        rawscore_heap_evict_lowest_score(manager);
     
     old_context = MemoryContextSwitchTo(manager->cache_context);
     
@@ -1859,11 +2028,10 @@ store_rawscore_cache_entry(RawscoreCacheManager *manager, uint64 hash_key, VarBi
         memcpy(entry->sequence_copy, sequence, VARSIZE(sequence));
         entry->query_string_copy = pstrdup(query_string);
         entry->result = result;
-        entry->next = NULL;
-        entry->prev = NULL;
+        entry->heap_index = -1;
         
-        /* Add to head of LRU chain */
-        lru_touch(manager, entry);
+        /* Add to min-heap */
+        rawscore_heap_insert(manager, entry);
         manager->current_entries++;
     }
     
@@ -2185,6 +2353,21 @@ free_query_pattern_cache_manager(QueryPatternCacheManager **manager)
         /* Delete the query pattern cache context, which will free all allocated memory */
         if ((*manager)->query_pattern_cache_context)
             MemoryContextDelete((*manager)->query_pattern_cache_context);
+        *manager = NULL;
+    }
+}
+
+/*
+ * Free actual min score cache manager
+ */
+static void
+free_actual_min_score_cache_manager(ActualMinScoreCacheManager **manager)
+{
+    if (*manager)
+    {
+        /* Delete the actual min score cache context, which will free all allocated memory */
+        if ((*manager)->cache_context)
+            MemoryContextDelete((*manager)->cache_context);
         *manager = NULL;
     }
 }
@@ -3305,6 +3488,122 @@ kmersearch_evaluate_match_conditions(int shared_count, int query_total)
 }
 
 /*
+ * Calculate actual minimum score for optimized condition evaluation
+ * This combines both absolute and relative thresholds into a single value
+ */
+static int
+calculate_actual_min_score(int query_total_kmers)
+{
+    int absolute_min = kmersearch_min_score;
+    int relative_min;
+    
+    if (query_total_kmers > 0) {
+        /* Calculate minimum score from relative threshold */
+        /* kmersearch_min_shared_ngram_key_rate <= shared_count / query_total_kmers */
+        /* shared_count >= kmersearch_min_shared_ngram_key_rate * query_total_kmers */
+        double relative_threshold = kmersearch_min_shared_ngram_key_rate * query_total_kmers;
+        relative_min = (int)ceil(relative_threshold);
+    } else {
+        relative_min = 0;
+    }
+    
+    /* Return the maximum of absolute and relative minimums */
+    return (absolute_min > relative_min) ? absolute_min : relative_min;
+}
+
+/*
+ * Get cached actual min score using TopMemoryContext cache (global)
+ */
+static int
+get_cached_actual_min_score(const char *query_string, int query_total_kmers)
+{
+    ActualMinScoreCacheEntry *cache_entry;
+    uint32 query_hash;
+    bool found;
+    MemoryContext old_context;
+    int actual_min_score;
+    
+    /* Create cache manager in TopMemoryContext if not exists */
+    if (actual_min_score_cache_manager == NULL)
+    {
+        old_context = MemoryContextSwitchTo(TopMemoryContext);
+        
+        PG_TRY();
+        {
+            actual_min_score_cache_manager = create_actual_min_score_cache_manager();
+        }
+        PG_CATCH();
+        {
+            MemoryContextSwitchTo(old_context);
+            /* Fallback to direct calculation if cache creation fails */
+            return calculate_actual_min_score(query_total_kmers);
+        }
+        PG_END_TRY();
+        
+        MemoryContextSwitchTo(old_context);
+    }
+    
+    /* Calculate hash value for query string using safer hash function */
+    query_hash = (uint32)hash_bytes((unsigned char *)query_string, strlen(query_string));
+    
+    /* Look up in hash table */
+    cache_entry = (ActualMinScoreCacheEntry *) hash_search(actual_min_score_cache_manager->cache_hash,
+                                                          &query_hash, HASH_FIND, &found);
+    
+    if (found) {
+        actual_min_score_cache_manager->hits++;
+        return cache_entry->actual_min_score;
+    }
+    
+    /* Not found - calculate and cache */
+    actual_min_score_cache_manager->misses++;
+    actual_min_score = calculate_actual_min_score(query_total_kmers);
+    
+    /* Add to cache if not at capacity */
+    if (actual_min_score_cache_manager->current_entries < actual_min_score_cache_manager->max_entries)
+    {
+        old_context = MemoryContextSwitchTo(actual_min_score_cache_manager->cache_context);
+        
+        PG_TRY();
+        {
+            cache_entry = (ActualMinScoreCacheEntry *) hash_search(actual_min_score_cache_manager->cache_hash,
+                                                                  &query_hash, HASH_ENTER, &found);
+            
+            if (cache_entry != NULL && !found) {
+                cache_entry->query_hash = query_hash;
+                cache_entry->actual_min_score = actual_min_score;
+                actual_min_score_cache_manager->current_entries++;
+            }
+        }
+        PG_CATCH();
+        {
+            /* Ignore cache storage errors and continue */
+        }
+        PG_END_TRY();
+        
+        MemoryContextSwitchTo(old_context);
+    }
+    
+    return actual_min_score;
+}
+
+
+/*
+ * Optimized match condition evaluation using pre-calculated actual minimum score
+ */
+static bool
+evaluate_optimized_match_condition(int shared_count, const char *query_string, int query_total_kmers)
+{
+    int actual_min_score;
+    
+    /* Get cached actual min score (with TopMemoryContext caching for performance) */
+    actual_min_score = get_cached_actual_min_score(query_string, query_total_kmers);
+    
+    /* Use optimized condition check with cached actual_min_score */
+    return (shared_count >= actual_min_score);
+}
+
+/*
  * K-mer based matching for DNA2 sequences
  */
 static bool
@@ -3341,8 +3640,8 @@ kmersearch_kmer_based_match_dna2(VarBit *sequence, const char *query_string)
     /* Count shared keys */
     shared_count = kmersearch_count_matching_kmers_fast(seq_keys, seq_nkeys, query_keys, query_nkeys);
     
-    /* Evaluate match conditions */
-    result = kmersearch_evaluate_match_conditions(shared_count, query_nkeys);
+    /* Evaluate match conditions using optimized method */
+    result = evaluate_optimized_match_condition(shared_count, query_string, query_nkeys);
     
     /* Free memory */
     if (seq_keys) {
@@ -3403,8 +3702,8 @@ kmersearch_kmer_based_match_dna4(VarBit *sequence, const char *query_string)
     /* Count shared keys */
     shared_count = kmersearch_count_matching_kmers_fast(seq_keys, seq_nkeys, query_keys, query_nkeys);
     
-    /* Evaluate match conditions */
-    result = kmersearch_evaluate_match_conditions(shared_count, query_nkeys);
+    /* Evaluate match conditions using optimized method */
+    result = evaluate_optimized_match_condition(shared_count, query_string, query_nkeys);
     
     /* Free memory */
     if (seq_keys) {
@@ -3502,8 +3801,8 @@ kmersearch_calculate_kmer_match_and_score_dna2(VarBit *sequence, const char *que
         result.sharing_rate = (double)result.shared_count / (double)result.query_nkeys;
     }
     
-    /* Evaluate match conditions for =% operator */
-    result.match_result = kmersearch_evaluate_match_conditions(result.shared_count, result.query_nkeys);
+    /* Evaluate match conditions for =% operator using optimized method */
+    result.match_result = evaluate_optimized_match_condition(result.shared_count, query_string, result.query_nkeys);
     
     result.valid = true;
     
@@ -3578,8 +3877,8 @@ kmersearch_calculate_kmer_match_and_score_dna4(VarBit *sequence, const char *que
         result.sharing_rate = (double)result.shared_count / (double)result.query_nkeys;
     }
     
-    /* Evaluate match conditions for =% operator */
-    result.match_result = kmersearch_evaluate_match_conditions(result.shared_count, result.query_nkeys);
+    /* Evaluate match conditions for =% operator using optimized method */
+    result.match_result = evaluate_optimized_match_condition(result.shared_count, query_string, result.query_nkeys);
     
     result.valid = true;
     
@@ -4802,6 +5101,7 @@ kmersearch_query_pattern_cache_stats(PG_FUNCTION_ARGS)
     PG_RETURN_DATUM(HeapTupleGetDatum(tuple));
 }
 
+
 /*
  * Query pattern cache free function
  */
@@ -4822,6 +5122,62 @@ kmersearch_query_pattern_cache_free(PG_FUNCTION_ARGS)
 }
 
 /*
+ * Free actual min score cache
+ */
+Datum
+kmersearch_actual_min_score_cache_free(PG_FUNCTION_ARGS)
+{
+    int freed_entries = 0;
+    
+    /* Count entries before freeing */
+    if (actual_min_score_cache_manager)
+        freed_entries = actual_min_score_cache_manager->current_entries;
+    
+    /* Free actual min score cache manager (uses TopMemoryContext - needs manual cleanup) */
+    free_actual_min_score_cache_manager(&actual_min_score_cache_manager);
+    
+    PG_RETURN_INT32(freed_entries);
+}
+
+/*
+ * Actual min score cache statistics function
+ */
+Datum
+kmersearch_actual_min_score_cache_stats(PG_FUNCTION_ARGS)
+{
+    TupleDesc tupdesc;
+    Datum values[4];
+    bool nulls[4] = {false};
+    HeapTuple tuple;
+    
+    /* Build tuple descriptor */
+    if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
+        ereport(ERROR,
+                (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+                 errmsg("function returning record called in context that cannot accept a set")));
+    
+    /* Actual min score cache statistics */
+    if (actual_min_score_cache_manager)
+    {
+        values[0] = Int64GetDatum(actual_min_score_cache_manager->hits);
+        values[1] = Int64GetDatum(actual_min_score_cache_manager->misses);
+        values[2] = Int32GetDatum(actual_min_score_cache_manager->current_entries);
+        values[3] = Int32GetDatum(actual_min_score_cache_manager->max_entries);
+    }
+    else
+    {
+        /* Cache manager not initialized */
+        values[0] = Int64GetDatum(0);  /* hits */
+        values[1] = Int64GetDatum(0);  /* misses */
+        values[2] = Int32GetDatum(0);  /* current_entries */
+        values[3] = Int32GetDatum(0);  /* max_entries */
+    }
+    
+    tuple = heap_form_tuple(tupdesc, values, nulls);
+    PG_RETURN_DATUM(HeapTupleGetDatum(tuple));
+}
+
+/*
  * Module cleanup function
  */
 void
@@ -4830,5 +5186,8 @@ _PG_fini(void)
     /* Free query pattern cache manager on module unload (uses TopMemoryContext - needs manual cleanup) */
     /* DNA2/DNA4 cache managers are now local and automatically freed with QueryContext */
     free_query_pattern_cache_manager(&query_pattern_cache_manager);
+    
+    /* Free actual min score cache manager on module unload */
+    free_actual_min_score_cache_manager(&actual_min_score_cache_manager);
 }
 
