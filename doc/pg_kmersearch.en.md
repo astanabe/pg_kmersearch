@@ -135,6 +135,10 @@ pg_kmersearch provides several configuration variables that can be set using Pos
 | `kmersearch.max_appearance_rate` | 0.05 | 0.0-1.0 | Maximum k-mer appearance rate for indexing |
 | `kmersearch.max_appearance_nrow` | 0 | 0-∞ | Maximum rows containing k-mer (0=unlimited) |
 | `kmersearch.min_score` | 1 | 0-∞ | Minimum similarity score for search results |
+| `kmersearch.min_shared_ngram_key_rate` | 0.9 | 0.0-1.0 | Minimum threshold for shared n-gram key rate |
+| `kmersearch.rawscore_cache_max_entries` | 50000 | 1000-10000000 | Maximum entries for rawscore cache |
+| `kmersearch.query_pattern_cache_max_entries` | 50000 | 1000-10000000 | Maximum entries for query pattern cache |
+| `kmersearch.actual_min_score_cache_max_entries` | 50000 | 1000-10000000 | Maximum entries for actual min score cache |
 
 ### High-Frequency K-mer Exclusion
 
@@ -290,6 +294,7 @@ ORDER BY length(dna_seq) DESC;
 - **Parallel index creation**: Supports max_parallel_maintenance_workers
 - **High-frequency exclusion**: Full table scan before index creation
 - **System tables**: Metadata storage for excluded k-mers and index statistics
+- **Cache system**: TopMemoryContext-based high-performance caching
 - Binary input/output support
 
 ### K-mer Search Mechanism
@@ -299,6 +304,45 @@ ORDER BY length(dna_seq) DESC;
 4. **N-gram key generation**: Binary encoding of k-mer + occurrence count
 5. **Degenerate processing**: Expansion of MRWSYKVHDBN to standard bases
 6. **Scoring**: Similarity calculation based on shared n-gram key count
+
+## Cache Management Features
+
+pg_kmersearch provides three types of high-performance cache systems to improve search performance:
+
+### Actual Min Score Cache
+- **Purpose**: Optimization of search condition evaluation for the `=%` operator
+- **Mechanism**: Pre-calculates and caches `actual_min_score = max(kmersearch_min_score, ceil(kmersearch_min_shared_ngram_key_rate × query_total_kmers))`
+- **Use cases**: 
+  - Matching condition evaluation in `=%` operator
+  - Value judgment for rawscore cache storage
+- **Memory management**: TopMemoryContext-based implementation
+
+### Rawscore Cache
+- **Purpose**: Fast retrieval of calculated rawscores
+- **Mechanism**: Caches sequence and query combination results
+- **Memory management**: PortalContext-based implementation
+
+### Query Pattern Cache
+- **Purpose**: Performance improvement through query pattern reuse
+- **Memory management**: PortalContext-based implementation
+
+### Cache Statistics and Management Functions
+
+```sql
+-- Check cache statistics
+SELECT * FROM kmersearch_actual_min_score_cache_stats();
+SELECT * FROM kmersearch_rawscore_cache_stats();
+SELECT * FROM kmersearch_query_pattern_cache_stats();
+
+-- Clear caches
+SELECT kmersearch_actual_min_score_cache_free();
+SELECT kmersearch_query_pattern_cache_free();
+
+-- Configure cache sizes
+SET kmersearch.actual_min_score_cache_max_entries = 25000;
+SET kmersearch.rawscore_cache_max_entries = 25000;
+SET kmersearch.query_pattern_cache_max_entries = 25000;
+```
 
 ## Limitations
 

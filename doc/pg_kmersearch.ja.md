@@ -135,6 +135,10 @@ pg_kmersearchは、PostgreSQLの`SET`コマンドで設定可能な複数の設�
 | `kmersearch.max_appearance_rate` | 0.05 | 0.0-1.0 | インデックス化するk-merの最大出現率 |
 | `kmersearch.max_appearance_nrow` | 0 | 0-∞ | k-merが含まれる最大行数（0=無制限） |
 | `kmersearch.min_score` | 1 | 0-∞ | 検索結果の最小類似度スコア |
+| `kmersearch.min_shared_ngram_key_rate` | 0.9 | 0.0-1.0 | 共有n-gramキー率の最小閾値 |
+| `kmersearch.rawscore_cache_max_entries` | 50000 | 1000-10000000 | rawscoreキャッシュの最大エントリ数 |
+| `kmersearch.query_pattern_cache_max_entries` | 50000 | 1000-10000000 | クエリパターンキャッシュの最大エントリ数 |
+| `kmersearch.actual_min_score_cache_max_entries` | 50000 | 1000-10000000 | actual min scoreキャッシュの最大エントリ数 |
 
 ### 高頻出k-mer除外機能
 
@@ -290,6 +294,7 @@ ORDER BY length(dna_seq) DESC;
 - **並列インデックス作成**: max_parallel_maintenance_workersに対応
 - **高頻出除外**: インデックス作成前の全テーブルスキャン
 - **システムテーブル**: 除外k-merとインデックス統計のメタデータ格納
+- **キャッシュシステム**: TopMemoryContext-based高速キャッシュ
 - バイナリ入出力サポート
 
 ### k-mer検索の仕組み
@@ -299,6 +304,45 @@ ORDER BY length(dna_seq) DESC;
 4. **n-gramキー生成**: k-mer + 出現回数をバイナリエンコード
 5. **縮重コード処理**: MRWSYKVHDBN を標準塩基に展開
 6. **スコアリング**: 共有n-gramキー数による類似度計算
+
+## キャッシュ管理機能
+
+pg_kmersearchは、検索性能を向上させるための3種類の高速キャッシュシステムを提供します：
+
+### Actual Min Score Cache
+- **目的**: `=%`演算子での検索条件評価の最適化
+- **仕組み**: `actual_min_score = max(kmersearch_min_score, ceil(kmersearch_min_shared_ngram_key_rate × query_total_kmers))`を事前計算してキャッシュ
+- **使用場面**: 
+  - `=%`演算子でのマッチング条件判定
+  - rawscore cacheへの格納価値判定
+- **メモリ管理**: TopMemoryContext-based実装
+
+### Rawscore Cache
+- **目的**: 計算済みrawscoreの高速取得
+- **仕組み**: 配列とクエリの組み合わせ結果をキャッシュ
+- **メモリ管理**: PortalContext-based実装
+
+### Query Pattern Cache
+- **目的**: クエリパターンの再利用による高速化
+- **メモリ管理**: PortalContext-based実装
+
+### キャッシュ統計・管理関数
+
+```sql
+-- キャッシュ統計情報の確認
+SELECT * FROM kmersearch_actual_min_score_cache_stats();
+SELECT * FROM kmersearch_rawscore_cache_stats();
+SELECT * FROM kmersearch_query_pattern_cache_stats();
+
+-- キャッシュクリア
+SELECT kmersearch_actual_min_score_cache_free();
+SELECT kmersearch_query_pattern_cache_free();
+
+-- キャッシュサイズ設定
+SET kmersearch.actual_min_score_cache_max_entries = 25000;
+SET kmersearch.rawscore_cache_max_entries = 25000;
+SET kmersearch.query_pattern_cache_max_entries = 25000;
+```
 
 ## 制限事項
 
