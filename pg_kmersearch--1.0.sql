@@ -155,6 +155,30 @@ CREATE TABLE kmersearch_highfreq_kmers (
     PRIMARY KEY (index_oid, kmer_key)
 );
 
+-- High-frequency k-mers metadata table
+CREATE TABLE kmersearch_highfreq_kmers_meta (
+    table_oid oid NOT NULL,
+    column_name name NOT NULL,
+    k_value integer NOT NULL,
+    max_appearance_rate real NOT NULL,
+    max_appearance_nrow integer NOT NULL,
+    analysis_timestamp timestamp with time zone DEFAULT now(),
+    PRIMARY KEY (table_oid, column_name, k_value)
+);
+
+-- GIN index metadata table
+CREATE TABLE kmersearch_gin_index_meta (
+    index_oid oid PRIMARY KEY,
+    table_oid oid NOT NULL,
+    column_name name NOT NULL,
+    highfreq_filtered boolean NOT NULL,
+    highfreq_source_table name NOT NULL,
+    k_value integer NOT NULL,
+    max_appearance_rate real NOT NULL,
+    max_appearance_nrow integer NOT NULL,
+    created_at timestamp with time zone DEFAULT now()
+);
+
 -- Index tracking table
 CREATE TABLE kmersearch_index_info (
     index_oid oid PRIMARY KEY,

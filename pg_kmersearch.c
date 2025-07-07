@@ -246,6 +246,28 @@ typedef struct KmerBuffer
     int             k_size;              /* K-mer size */
 } KmerBuffer;
 
+/* High-frequency k-mer hash entry */
+typedef struct HighfreqKmerHashEntry
+{
+    VarBit         *kmer_key;             /* K-mer key for hashing */
+    uint64          hash_value;           /* Precomputed hash value */
+} HighfreqKmerHashEntry;
+
+/* High-frequency k-mer cache for index creation */
+typedef struct HighfreqKmerCache
+{
+    Oid         current_table_oid;        /* Current table OID */
+    char       *current_column_name;      /* Current column name (TopMemoryContext) */
+    int         current_k_value;          /* Current k-mer size */
+    HTAB       *highfreq_hash;           /* Hash table for fast lookup (TopMemoryContext) */
+    VarBit    **highfreq_kmers;          /* Array of high-frequency k-mers (TopMemoryContext) */
+    int         highfreq_count;          /* Number of high-frequency k-mers */
+    bool        is_valid;                /* Cache validity flag */
+} HighfreqKmerCache;
+
+/* Global high-frequency k-mer cache */
+static HighfreqKmerCache global_highfreq_cache = {0};
+
 /* Worker state for parallel k-mer analysis */
 typedef struct KmerWorkerState
 {
@@ -286,6 +308,18 @@ static bool kmersearch_is_kmer_highfreq(Oid index_oid, VarBit *kmer_key);
 static int kmersearch_count_highfreq_kmers_in_query(Oid index_oid, VarBit **query_keys, int nkeys);
 static int kmersearch_get_adjusted_min_score(Oid index_oid, VarBit **query_keys, int nkeys);
 static int kmersearch_calculate_raw_score(VarBit *seq1, VarBit *seq2, text *query_text);
+
+/* High-frequency k-mer filtering functions */
+static VarBit **kmersearch_get_highfreq_kmers_from_table(Oid table_oid, const char *column_name, int k, int *nkeys);
+static HTAB *kmersearch_create_highfreq_hash_from_array(VarBit **kmers, int nkeys);
+static Datum *kmersearch_filter_highfreq_kmers_from_keys(Datum *original_keys, int *nkeys, HTAB *highfreq_hash, int k);
+static VarBit *kmersearch_remove_occurrence_bits(VarBit *key_with_occurrence, int k);
+
+/* High-frequency k-mer cache management functions */
+static void kmersearch_highfreq_kmers_cache_init(void);
+static bool kmersearch_highfreq_kmers_cache_load(Oid table_oid, const char *column_name, int k_value);
+static void kmersearch_highfreq_kmers_cache_free(void);
+static bool kmersearch_highfreq_kmers_cache_is_valid(Oid table_oid, const char *column_name, int k_value);
 
 /* Helper functions for direct k-mer management (no hashing) */
 static uint64_t kmersearch_extract_kmer_as_uint64(VarBit *seq, int start_pos, int k);
@@ -922,6 +956,9 @@ _PG_init(void)
                            NULL,
                            NULL,
                            NULL);
+    
+    /* Initialize high-frequency k-mer cache */
+    kmersearch_highfreq_kmers_cache_init();
 }
 
 /*
@@ -2764,6 +2801,12 @@ kmersearch_extract_value_dna2(PG_FUNCTION_ARGS)
     /* Use direct bit extraction instead of string conversion */
     keys = kmersearch_extract_dna2_kmers_direct((VarBit *)dna, k, nkeys);
     
+    /* Apply high-frequency k-mer filtering if cache is available */
+    if (keys && *nkeys > 0 && global_highfreq_cache.is_valid) {
+        /* Use cached hash table for filtering */
+        keys = kmersearch_filter_highfreq_kmers_from_keys(keys, nkeys, global_highfreq_cache.highfreq_hash, k);
+    }
+    
     if (*nkeys == 0)
         PG_RETURN_POINTER(NULL);
     
@@ -2789,6 +2832,12 @@ kmersearch_extract_value_dna4(PG_FUNCTION_ARGS)
     
     /* Use direct bit extraction with degenerate expansion */
     keys = kmersearch_extract_dna4_kmers_with_expansion_direct((VarBit *)dna, k, nkeys);
+    
+    /* Apply high-frequency k-mer filtering if cache is available */
+    if (keys && *nkeys > 0 && global_highfreq_cache.is_valid) {
+        /* Use cached hash table for filtering */
+        keys = kmersearch_filter_highfreq_kmers_from_keys(keys, nkeys, global_highfreq_cache.highfreq_hash, k);
+    }
     
     if (*nkeys == 0)
         PG_RETURN_POINTER(NULL);
@@ -5391,6 +5440,354 @@ _PG_fini(void)
     
     /* Free actual min score cache manager on module unload */
     free_actual_min_score_cache_manager(&actual_min_score_cache_manager);
+    
+    /* Free high-frequency k-mer cache on module unload */
+    kmersearch_highfreq_kmers_cache_free();
+}
+
+/*
+ * High-frequency k-mer filtering functions implementation
+ */
+static VarBit *
+kmersearch_remove_occurrence_bits(VarBit *key_with_occurrence, int k)
+{
+    VarBit *result;
+    int kmer_bits;
+    int kmer_bytes;
+    int total_bits;
+    int occur_bits;
+    
+    if (!key_with_occurrence || k <= 0)
+        return NULL;
+    
+    occur_bits = kmersearch_occur_bitlen;
+    total_bits = VARBITLEN(key_with_occurrence);
+    kmer_bits = total_bits - occur_bits;
+    
+    if (kmer_bits <= 0)
+        return NULL;
+    
+    kmer_bytes = (kmer_bits + 7) / 8;
+    result = (VarBit *) palloc(VARHDRSZ + kmer_bytes);
+    SET_VARSIZE(result, VARHDRSZ + kmer_bytes);
+    VARBITLEN(result) = kmer_bits;
+    
+    memcpy(VARBITS(result), VARBITS(key_with_occurrence), kmer_bytes);
+    
+    return result;
+}
+
+static VarBit **
+kmersearch_get_highfreq_kmers_from_table(Oid table_oid, const char *column_name, int k, int *nkeys)
+{
+    VarBit **result = NULL;
+    int ret;
+    StringInfoData query;
+    int i;
+    
+    if (!nkeys)
+        return NULL;
+    
+    *nkeys = 0;
+    
+    /* Connect to SPI */
+    if (SPI_connect() != SPI_OK_CONNECT)
+        ereport(ERROR, (errmsg("kmersearch_get_highfreq_kmers_from_table: SPI_connect failed")));
+    
+    /* Build query to get highly frequent k-mers */
+    initStringInfo(&query);
+    appendStringInfo(&query,
+        "SELECT DISTINCT hkm.kmer_key FROM kmersearch_highfreq_kmers hkm "
+        "JOIN kmersearch_highfreq_kmers_meta hkm_meta ON "
+        "(hkm_meta.table_oid = %u AND hkm_meta.column_name = '%s' AND hkm_meta.k_value = %d) "
+        "ORDER BY hkm.kmer_key",
+        table_oid, column_name, k);
+    
+    /* Execute query */
+    ret = SPI_execute(query.data, true, 0);
+    if (ret == SPI_OK_SELECT && SPI_processed > 0)
+    {
+        *nkeys = SPI_processed;
+        result = (VarBit **) palloc(*nkeys * sizeof(VarBit *));
+        
+        for (i = 0; i < *nkeys; i++)
+        {
+            bool isnull;
+            Datum kmer_datum;
+            
+            kmer_datum = SPI_getbinval(SPI_tuptable->vals[i], SPI_tuptable->tupdesc, 1, &isnull);
+            if (!isnull)
+            {
+                /* Copy the varbit value */
+                result[i] = DatumGetVarBitPCopy(kmer_datum);
+            }
+            else
+            {
+                result[i] = NULL;
+            }
+        }
+    }
+    
+    /* Cleanup */
+    pfree(query.data);
+    SPI_finish();
+    
+    return result;
+}
+
+static HTAB *
+kmersearch_create_highfreq_hash_from_array(VarBit **kmers, int nkeys)
+{
+    HTAB *hash_table;
+    HASHCTL hash_ctl;
+    int i;
+    
+    if (!kmers || nkeys <= 0)
+        return NULL;
+    
+    /* Set up hash table */
+    MemSet(&hash_ctl, 0, sizeof(hash_ctl));
+    hash_ctl.keysize = sizeof(VarBit *);
+    hash_ctl.entrysize = sizeof(HighfreqKmerHashEntry);
+    hash_ctl.hash = tag_hash;
+    hash_ctl.hcxt = CurrentMemoryContext;
+    
+    hash_table = hash_create("HighfreqKmerHash",
+                            nkeys,
+                            &hash_ctl,
+                            HASH_ELEM | HASH_FUNCTION | HASH_CONTEXT);
+    
+    if (!hash_table)
+        return NULL;
+    
+    /* Add each k-mer to the hash table */
+    for (i = 0; i < nkeys; i++)
+    {
+        HighfreqKmerHashEntry *entry;
+        bool found;
+        
+        if (!kmers[i])
+            continue;
+        
+        entry = (HighfreqKmerHashEntry *) hash_search(hash_table,
+                                                     (void *) &kmers[i],
+                                                     HASH_ENTER,
+                                                     &found);
+        
+        if (entry && !found)
+        {
+            entry->kmer_key = kmers[i];
+            entry->hash_value = DatumGetUInt64(hash_any((unsigned char *) VARBITS(kmers[i]), VARBITBYTES(kmers[i])));
+        }
+    }
+    
+    return hash_table;
+}
+
+static Datum *
+kmersearch_filter_highfreq_kmers_from_keys(Datum *original_keys, int *nkeys, HTAB *highfreq_hash, int k)
+{
+    Datum *filtered_keys;
+    int original_count;
+    int filtered_count;
+    int i;
+    
+    if (!original_keys || !nkeys || *nkeys <= 0)
+        return NULL;
+    
+    /* If no high-frequency hash, return original keys unchanged */
+    if (!highfreq_hash)
+        return original_keys;
+    
+    original_count = *nkeys;
+    filtered_keys = (Datum *) palloc(original_count * sizeof(Datum));
+    filtered_count = 0;
+    
+    /* Filter out high-frequency k-mers */
+    for (i = 0; i < original_count; i++)
+    {
+        VarBit *key_with_occurrence;
+        VarBit *kmer_only;
+        HighfreqKmerHashEntry *entry;
+        bool found;
+        
+        key_with_occurrence = DatumGetVarBitP(original_keys[i]);
+        if (!key_with_occurrence)
+            continue;
+        
+        /* Remove occurrence bits to get pure k-mer */
+        kmer_only = kmersearch_remove_occurrence_bits(key_with_occurrence, k);
+        if (!kmer_only)
+        {
+            /* If we can't extract the k-mer, keep the original key */
+            filtered_keys[filtered_count++] = original_keys[i];
+            continue;
+        }
+        
+        /* Check if this k-mer is in the high-frequency list */
+        entry = (HighfreqKmerHashEntry *) hash_search(highfreq_hash,
+                                                     (void *) &kmer_only,
+                                                     HASH_FIND,
+                                                     &found);
+        
+        if (!found)
+        {
+            /* Not a high-frequency k-mer, keep it */
+            filtered_keys[filtered_count++] = original_keys[i];
+        }
+        
+        /* Clean up the temporary k-mer */
+        pfree(kmer_only);
+    }
+    
+    /* Update the count */
+    *nkeys = filtered_count;
+    
+    /* If no keys left, return NULL */
+    if (filtered_count == 0)
+    {
+        pfree(filtered_keys);
+        return NULL;
+    }
+    
+    /* Resize the array if significantly smaller */
+    if (filtered_count < original_count / 2)
+    {
+        filtered_keys = (Datum *) repalloc(filtered_keys, filtered_count * sizeof(Datum));
+    }
+    
+    return filtered_keys;
+}
+
+/*
+ * High-frequency k-mer cache management functions implementation
+ */
+static void
+kmersearch_highfreq_kmers_cache_init(void)
+{
+    MemoryContext old_context;
+    
+    /* Switch to TopMemoryContext */
+    old_context = MemoryContextSwitchTo(TopMemoryContext);
+    
+    /* Initialize cache structure */
+    memset(&global_highfreq_cache, 0, sizeof(HighfreqKmerCache));
+    global_highfreq_cache.is_valid = false;
+    global_highfreq_cache.current_table_oid = InvalidOid;
+    global_highfreq_cache.current_column_name = NULL;
+    global_highfreq_cache.current_k_value = 0;
+    global_highfreq_cache.highfreq_hash = NULL;
+    global_highfreq_cache.highfreq_kmers = NULL;
+    global_highfreq_cache.highfreq_count = 0;
+    
+    MemoryContextSwitchTo(old_context);
+}
+
+static bool
+kmersearch_highfreq_kmers_cache_load(Oid table_oid, const char *column_name, int k_value)
+{
+    MemoryContext old_context;
+    VarBit **highfreq_kmers;
+    int highfreq_count;
+    
+    if (!column_name || k_value <= 0)
+        return false;
+    
+    /* Clear existing cache if valid */
+    if (global_highfreq_cache.is_valid) {
+        kmersearch_highfreq_kmers_cache_free();
+    }
+    
+    /* Get high-frequency k-mers list */
+    highfreq_kmers = kmersearch_get_highfreq_kmers_from_table(table_oid, column_name, k_value, &highfreq_count);
+    
+    if (!highfreq_kmers || highfreq_count <= 0) {
+        /* No high-frequency k-mers found, cache remains invalid */
+        return false;
+    }
+    
+    /* Switch to TopMemoryContext for cache storage */
+    old_context = MemoryContextSwitchTo(TopMemoryContext);
+    
+    /* Store in cache */
+    global_highfreq_cache.current_table_oid = table_oid;
+    global_highfreq_cache.current_column_name = pstrdup(column_name);  /* TopMemoryContext copy */
+    global_highfreq_cache.current_k_value = k_value;
+    global_highfreq_cache.highfreq_kmers = highfreq_kmers;
+    global_highfreq_cache.highfreq_count = highfreq_count;
+    
+    /* Create hash table in TopMemoryContext */
+    global_highfreq_cache.highfreq_hash = kmersearch_create_highfreq_hash_from_array(highfreq_kmers, highfreq_count);
+    
+    if (global_highfreq_cache.highfreq_hash) {
+        global_highfreq_cache.is_valid = true;
+    } else {
+        /* Hash table creation failed, clean up */
+        if (global_highfreq_cache.current_column_name) {
+            pfree(global_highfreq_cache.current_column_name);
+            global_highfreq_cache.current_column_name = NULL;
+        }
+        global_highfreq_cache.is_valid = false;
+    }
+    
+    MemoryContextSwitchTo(old_context);
+    
+    return global_highfreq_cache.is_valid;
+}
+
+static void
+kmersearch_highfreq_kmers_cache_free(void)
+{
+    MemoryContext old_context;
+    int i;
+    
+    if (!global_highfreq_cache.is_valid) {
+        return;
+    }
+    
+    old_context = MemoryContextSwitchTo(TopMemoryContext);
+    
+    /* Destroy hash table */
+    if (global_highfreq_cache.highfreq_hash) {
+        hash_destroy(global_highfreq_cache.highfreq_hash);
+        global_highfreq_cache.highfreq_hash = NULL;
+    }
+    
+    /* Free k-mer array */
+    if (global_highfreq_cache.highfreq_kmers) {
+        for (i = 0; i < global_highfreq_cache.highfreq_count; i++) {
+            if (global_highfreq_cache.highfreq_kmers[i]) {
+                pfree(global_highfreq_cache.highfreq_kmers[i]);
+            }
+        }
+        pfree(global_highfreq_cache.highfreq_kmers);
+        global_highfreq_cache.highfreq_kmers = NULL;
+    }
+    
+    /* Free column name */
+    if (global_highfreq_cache.current_column_name) {
+        pfree(global_highfreq_cache.current_column_name);
+        global_highfreq_cache.current_column_name = NULL;
+    }
+    
+    /* Reset cache state */
+    global_highfreq_cache.is_valid = false;
+    global_highfreq_cache.current_table_oid = InvalidOid;
+    global_highfreq_cache.current_k_value = 0;
+    global_highfreq_cache.highfreq_count = 0;
+    
+    MemoryContextSwitchTo(old_context);
+}
+
+static bool
+kmersearch_highfreq_kmers_cache_is_valid(Oid table_oid, const char *column_name, int k_value)
+{
+    return (global_highfreq_cache.is_valid &&
+            global_highfreq_cache.current_table_oid == table_oid &&
+            global_highfreq_cache.current_k_value == k_value &&
+            global_highfreq_cache.current_column_name &&
+            column_name &&
+            strcmp(global_highfreq_cache.current_column_name, column_name) == 0);
 }
 
 /*
@@ -7693,4 +8090,3 @@ kmersearch_count_matching_kmers_fast_sve(VarBit **seq_keys, int seq_nkeys, VarBi
     return match_count;
 }
 #endif
-
