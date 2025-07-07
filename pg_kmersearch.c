@@ -5439,51 +5439,332 @@ static void dna2_encode_avx2(const char* input, uint8_t* output, int len)
 __attribute__((target("avx2")))
 static void dna2_decode_avx2(const uint8_t* input, char* output, int len)
 {
-    /* For simplicity, fall back to scalar for now */
-    dna2_decode_scalar(input, output, len);
+    /* Process 32 characters at a time with AVX2 */
+    int simd_len = len & ~31;  /* Round down to multiple of 32 */
+    
+    for (int i = 0; i < simd_len; i += 32) {
+        /* Extract 16 bytes (128 bits) to process 32 characters */
+        __m128i data = _mm_loadu_si128((__m128i*)(input + i/4));
+        
+        /* Expand to 32 bytes for easier processing */
+        uint8_t temp[16];
+        _mm_storeu_si128((__m128i*)temp, data);
+        
+        /* Decode each 2-bit pair */
+        for (int j = 0; j < 32; j++) {
+            int bit_pos = (i + j) * 2;
+            int byte_pos = bit_pos / 8;
+            int bit_offset = bit_pos % 8;
+            uint8_t encoded = (temp[byte_pos] >> (6 - bit_offset)) & 0x3;
+            output[i + j] = kmersearch_dna2_decode_table[encoded];
+        }
+    }
+    
+    /* Handle remaining characters with scalar */
+    for (int i = simd_len; i < len; i++) {
+        int bit_pos = i * 2;
+        int byte_pos = bit_pos / 8;
+        int bit_offset = bit_pos % 8;
+        uint8_t encoded = (input[byte_pos] >> (6 - bit_offset)) & 0x3;
+        output[i] = kmersearch_dna2_decode_table[encoded];
+    }
+    output[len] = '\0';
 }
 
 __attribute__((target("avx2")))
 static void dna4_encode_avx2(const char* input, uint8_t* output, int len)
 {
-    /* For simplicity, fall back to scalar for now */
-    dna4_encode_scalar(input, output, len);
+    int byte_len = (len * 4 + 7) / 8;
+    memset(output, 0, byte_len);
+    
+    /* Process 32 characters at a time with AVX2 */
+    int simd_len = len & ~31;  /* Round down to multiple of 32 */
+    
+    for (int i = 0; i < simd_len; i += 32) {
+        __m256i chars = _mm256_loadu_si256((__m256i*)(input + i));
+        
+        /* Use lookup table approach for DNA4 encoding */
+        uint8_t temp[32];
+        _mm256_storeu_si256((__m256i*)temp, chars);
+        
+        for (int j = 0; j < 32; j++) {
+            uint8_t encoded = kmersearch_dna4_encode_table[(unsigned char)temp[j]];
+            int bit_pos = (i + j) * 4;
+            int byte_pos = bit_pos / 8;
+            int bit_offset = bit_pos % 8;
+            
+            if (bit_offset <= 4) {
+                output[byte_pos] |= (encoded << (4 - bit_offset));
+            } else {
+                output[byte_pos] |= (encoded >> (bit_offset - 4));
+                if (byte_pos + 1 < byte_len)
+                    output[byte_pos + 1] |= (encoded << (12 - bit_offset));
+            }
+        }
+    }
+    
+    /* Handle remaining characters with scalar */
+    for (int i = simd_len; i < len; i++) {
+        uint8_t encoded = kmersearch_dna4_encode_table[(unsigned char)input[i]];
+        int bit_pos = i * 4;
+        int byte_pos = bit_pos / 8;
+        int bit_offset = bit_pos % 8;
+        
+        if (bit_offset <= 4) {
+            output[byte_pos] |= (encoded << (4 - bit_offset));
+        } else {
+            output[byte_pos] |= (encoded >> (bit_offset - 4));
+            if (byte_pos + 1 < byte_len)
+                output[byte_pos + 1] |= (encoded << (12 - bit_offset));
+        }
+    }
 }
 
 __attribute__((target("avx2")))
 static void dna4_decode_avx2(const uint8_t* input, char* output, int len)
 {
-    /* For simplicity, fall back to scalar for now */
-    dna4_decode_scalar(input, output, len);
+    int bit_len = len * 4;
+    
+    /* Process characters with AVX2 assistance */
+    int simd_len = len & ~31;  /* Round down to multiple of 32 */
+    
+    for (int i = 0; i < simd_len; i += 32) {
+        /* Load 16 bytes to process 32 characters */
+        __m128i data = _mm_loadu_si128((__m128i*)(input + i/2));
+        uint8_t temp[16];
+        _mm_storeu_si128((__m128i*)temp, data);
+        
+        /* Decode each 4-bit nibble */
+        for (int j = 0; j < 32; j++) {
+            int bit_pos = (i + j) * 4;
+            int byte_pos = bit_pos / 8;
+            int bit_offset = bit_pos % 8;
+            uint8_t encoded;
+            
+            if (bit_offset <= 4) {
+                encoded = (temp[byte_pos] >> (4 - bit_offset)) & 0xF;
+            } else {
+                encoded = ((temp[byte_pos] << (bit_offset - 4)) & 0xF);
+                if (byte_pos + 1 < (bit_len + 7) / 8)
+                    encoded |= (temp[byte_pos + 1] >> (12 - bit_offset));
+                encoded &= 0xF;
+            }
+            
+            output[i + j] = kmersearch_dna4_decode_table[encoded];
+        }
+    }
+    
+    /* Handle remaining characters with scalar */
+    for (int i = simd_len; i < len; i++) {
+        int bit_pos = i * 4;
+        int byte_pos = bit_pos / 8;
+        int bit_offset = bit_pos % 8;
+        uint8_t encoded;
+        
+        if (bit_offset <= 4) {
+            encoded = (input[byte_pos] >> (4 - bit_offset)) & 0xF;
+        } else {
+            encoded = ((input[byte_pos] << (bit_offset - 4)) & 0xF);
+            if (byte_pos + 1 < (bit_len + 7) / 8)
+                encoded |= (input[byte_pos + 1] >> (12 - bit_offset));
+            encoded &= 0xF;
+        }
+        
+        output[i] = kmersearch_dna4_decode_table[encoded];
+    }
+    output[len] = '\0';
 }
 
 /* AVX512 implementations */
-__attribute__((target("avx512f")))
+__attribute__((target("avx512f,avx512bw")))
 static void dna2_encode_avx512(const char* input, uint8_t* output, int len)
 {
-    /* For simplicity, fall back to AVX2 for now */
-    dna2_encode_avx2(input, output, len);
+    int byte_len = (len * 2 + 7) / 8;
+    memset(output, 0, byte_len);
+    
+    /* Process 64 characters at a time with AVX512 */
+    int simd_len = len & ~63;  /* Round down to multiple of 64 */
+    
+    for (int i = 0; i < simd_len; i += 64) {
+        __m512i chars = _mm512_loadu_si512((__m512i*)(input + i));
+        
+        /* Create comparison masks for each DNA base */
+        __mmask64 mask_A = _mm512_cmpeq_epi8_mask(chars, _mm512_set1_epi8('A')) |
+                          _mm512_cmpeq_epi8_mask(chars, _mm512_set1_epi8('a'));
+        __mmask64 mask_C = _mm512_cmpeq_epi8_mask(chars, _mm512_set1_epi8('C')) |
+                          _mm512_cmpeq_epi8_mask(chars, _mm512_set1_epi8('c'));
+        __mmask64 mask_G = _mm512_cmpeq_epi8_mask(chars, _mm512_set1_epi8('G')) |
+                          _mm512_cmpeq_epi8_mask(chars, _mm512_set1_epi8('g'));
+        __mmask64 mask_T = _mm512_cmpeq_epi8_mask(chars, _mm512_set1_epi8('T')) |
+                          _mm512_cmpeq_epi8_mask(chars, _mm512_set1_epi8('t')) |
+                          _mm512_cmpeq_epi8_mask(chars, _mm512_set1_epi8('U')) |
+                          _mm512_cmpeq_epi8_mask(chars, _mm512_set1_epi8('u'));
+        
+        /* Generate 2-bit encoded values using mask operations */
+        __m512i encoded = _mm512_setzero_si512();
+        encoded = _mm512_mask_or_epi32(encoded, mask_C, encoded, _mm512_set1_epi8(1));
+        encoded = _mm512_mask_or_epi32(encoded, mask_G, encoded, _mm512_set1_epi8(2));
+        encoded = _mm512_mask_or_epi32(encoded, mask_T, encoded, _mm512_set1_epi8(3));
+        
+        /* Store and pack bits */
+        uint8_t temp[64];
+        _mm512_storeu_si512((__m512i*)temp, encoded);
+        
+        for (int j = 0; j < 64; j++) {
+            int bit_pos = (i + j) * 2;
+            int byte_pos = bit_pos / 8;
+            int bit_offset = bit_pos % 8;
+            output[byte_pos] |= (temp[j] << (6 - bit_offset));
+        }
+    }
+    
+    /* Handle remaining characters with scalar */
+    for (int i = simd_len; i < len; i++) {
+        uint8_t encoded = kmersearch_dna2_encode_table[(unsigned char)input[i]];
+        int bit_pos = i * 2;
+        int byte_pos = bit_pos / 8;
+        int bit_offset = bit_pos % 8;
+        
+        output[byte_pos] |= (encoded << (6 - bit_offset));
+    }
 }
 
-__attribute__((target("avx512f")))
+__attribute__((target("avx512f,avx512bw")))
 static void dna2_decode_avx512(const uint8_t* input, char* output, int len)
 {
-    /* For simplicity, fall back to scalar for now */
-    dna2_decode_scalar(input, output, len);
+    /* Process 64 characters at a time with AVX512 */
+    int simd_len = len & ~63;  /* Round down to multiple of 64 */
+    
+    for (int i = 0; i < simd_len; i += 64) {
+        /* Load 32 bytes to process 64 characters */
+        __m256i data = _mm256_loadu_si256((__m256i*)(input + i/4));
+        
+        uint8_t temp[32];
+        _mm256_storeu_si256((__m256i*)temp, data);
+        
+        /* Decode each 2-bit pair */
+        for (int j = 0; j < 64; j++) {
+            int bit_pos = (i + j) * 2;
+            int byte_pos = bit_pos / 8;
+            int bit_offset = bit_pos % 8;
+            uint8_t encoded = (temp[byte_pos] >> (6 - bit_offset)) & 0x3;
+            output[i + j] = kmersearch_dna2_decode_table[encoded];
+        }
+    }
+    
+    /* Handle remaining characters with scalar */
+    for (int i = simd_len; i < len; i++) {
+        int bit_pos = i * 2;
+        int byte_pos = bit_pos / 8;
+        int bit_offset = bit_pos % 8;
+        uint8_t encoded = (input[byte_pos] >> (6 - bit_offset)) & 0x3;
+        output[i] = kmersearch_dna2_decode_table[encoded];
+    }
+    output[len] = '\0';
 }
 
-__attribute__((target("avx512f")))
+__attribute__((target("avx512f,avx512bw")))
 static void dna4_encode_avx512(const char* input, uint8_t* output, int len)
 {
-    /* For simplicity, fall back to scalar for now */
-    dna4_encode_scalar(input, output, len);
+    int byte_len = (len * 4 + 7) / 8;
+    memset(output, 0, byte_len);
+    
+    /* Process 64 characters at a time with AVX512 */
+    int simd_len = len & ~63;  /* Round down to multiple of 64 */
+    
+    for (int i = 0; i < simd_len; i += 64) {
+        __m512i chars = _mm512_loadu_si512((__m512i*)(input + i));
+        
+        /* Use lookup table approach for DNA4 encoding */
+        uint8_t temp[64];
+        _mm512_storeu_si512((__m512i*)temp, chars);
+        
+        for (int j = 0; j < 64; j++) {
+            uint8_t encoded = kmersearch_dna4_encode_table[(unsigned char)temp[j]];
+            int bit_pos = (i + j) * 4;
+            int byte_pos = bit_pos / 8;
+            int bit_offset = bit_pos % 8;
+            
+            if (bit_offset <= 4) {
+                output[byte_pos] |= (encoded << (4 - bit_offset));
+            } else {
+                output[byte_pos] |= (encoded >> (bit_offset - 4));
+                if (byte_pos + 1 < byte_len)
+                    output[byte_pos + 1] |= (encoded << (12 - bit_offset));
+            }
+        }
+    }
+    
+    /* Handle remaining characters with scalar */
+    for (int i = simd_len; i < len; i++) {
+        uint8_t encoded = kmersearch_dna4_encode_table[(unsigned char)input[i]];
+        int bit_pos = i * 4;
+        int byte_pos = bit_pos / 8;
+        int bit_offset = bit_pos % 8;
+        
+        if (bit_offset <= 4) {
+            output[byte_pos] |= (encoded << (4 - bit_offset));
+        } else {
+            output[byte_pos] |= (encoded >> (bit_offset - 4));
+            if (byte_pos + 1 < byte_len)
+                output[byte_pos + 1] |= (encoded << (12 - bit_offset));
+        }
+    }
 }
 
-__attribute__((target("avx512f")))
+__attribute__((target("avx512f,avx512bw")))
 static void dna4_decode_avx512(const uint8_t* input, char* output, int len)
 {
-    /* For simplicity, fall back to scalar for now */
-    dna4_decode_scalar(input, output, len);
+    int bit_len = len * 4;
+    
+    /* Process 64 characters at a time with AVX512 */
+    int simd_len = len & ~63;  /* Round down to multiple of 64 */
+    
+    for (int i = 0; i < simd_len; i += 64) {
+        /* Load 32 bytes to process 64 characters */
+        __m256i data = _mm256_loadu_si256((__m256i*)(input + i/2));
+        uint8_t temp[32];
+        _mm256_storeu_si256((__m256i*)temp, data);
+        
+        /* Decode each 4-bit nibble */
+        for (int j = 0; j < 64; j++) {
+            int bit_pos = (i + j) * 4;
+            int byte_pos = bit_pos / 8;
+            int bit_offset = bit_pos % 8;
+            uint8_t encoded;
+            
+            if (bit_offset <= 4) {
+                encoded = (temp[byte_pos] >> (4 - bit_offset)) & 0xF;
+            } else {
+                encoded = ((temp[byte_pos] << (bit_offset - 4)) & 0xF);
+                if (byte_pos + 1 < (bit_len + 7) / 8)
+                    encoded |= (temp[byte_pos + 1] >> (12 - bit_offset));
+                encoded &= 0xF;
+            }
+            
+            output[i + j] = kmersearch_dna4_decode_table[encoded];
+        }
+    }
+    
+    /* Handle remaining characters with scalar */
+    for (int i = simd_len; i < len; i++) {
+        int bit_pos = i * 4;
+        int byte_pos = bit_pos / 8;
+        int bit_offset = bit_pos % 8;
+        uint8_t encoded;
+        
+        if (bit_offset <= 4) {
+            encoded = (input[byte_pos] >> (4 - bit_offset)) & 0xF;
+        } else {
+            encoded = ((input[byte_pos] << (bit_offset - 4)) & 0xF);
+            if (byte_pos + 1 < (bit_len + 7) / 8)
+                encoded |= (input[byte_pos + 1] >> (12 - bit_offset));
+            encoded &= 0xF;
+        }
+        
+        output[i] = kmersearch_dna4_decode_table[encoded];
+    }
+    output[len] = '\0';
 }
 #endif
 
@@ -5491,52 +5772,391 @@ static void dna4_decode_avx512(const uint8_t* input, char* output, int len)
 /* NEON implementations */
 static void dna2_encode_neon(const char* input, uint8_t* output, int len)
 {
-    /* For simplicity, fall back to scalar for now */
-    dna2_encode_scalar(input, output, len);
+    int byte_len = (len * 2 + 7) / 8;
+    memset(output, 0, byte_len);
+    
+    /* Process 16 characters at a time with NEON */
+    int simd_len = len & ~15;  /* Round down to multiple of 16 */
+    
+    for (int i = 0; i < simd_len; i += 16) {
+        uint8x16_t chars = vld1q_u8((uint8_t*)(input + i));
+        
+        /* Create comparison masks for each DNA base */
+        uint8x16_t mask_A = vorrq_u8(vceqq_u8(chars, vdupq_n_u8('A')),
+                                     vceqq_u8(chars, vdupq_n_u8('a')));
+        uint8x16_t mask_C = vorrq_u8(vceqq_u8(chars, vdupq_n_u8('C')),
+                                     vceqq_u8(chars, vdupq_n_u8('c')));
+        uint8x16_t mask_G = vorrq_u8(vceqq_u8(chars, vdupq_n_u8('G')),
+                                     vceqq_u8(chars, vdupq_n_u8('g')));
+        uint8x16_t mask_T = vorrq_u8(vceqq_u8(chars, vdupq_n_u8('T')),
+                                     vceqq_u8(chars, vdupq_n_u8('t')));
+        uint8x16_t mask_U = vorrq_u8(vceqq_u8(chars, vdupq_n_u8('U')),
+                                     vceqq_u8(chars, vdupq_n_u8('u')));
+        
+        /* Combine T and U masks */
+        mask_T = vorrq_u8(mask_T, mask_U);
+        
+        /* Generate 2-bit encoded values */
+        uint8x16_t encoded = vdupq_n_u8(0);
+        encoded = vorrq_u8(encoded, vandq_u8(mask_C, vdupq_n_u8(1)));
+        encoded = vorrq_u8(encoded, vandq_u8(mask_G, vdupq_n_u8(2)));
+        encoded = vorrq_u8(encoded, vandq_u8(mask_T, vdupq_n_u8(3)));
+        
+        /* Store and pack bits */
+        uint8_t temp[16];
+        vst1q_u8(temp, encoded);
+        
+        for (int j = 0; j < 16; j++) {
+            int bit_pos = (i + j) * 2;
+            int byte_pos = bit_pos / 8;
+            int bit_offset = bit_pos % 8;
+            output[byte_pos] |= (temp[j] << (6 - bit_offset));
+        }
+    }
+    
+    /* Handle remaining characters with scalar */
+    for (int i = simd_len; i < len; i++) {
+        uint8_t encoded = kmersearch_dna2_encode_table[(unsigned char)input[i]];
+        int bit_pos = i * 2;
+        int byte_pos = bit_pos / 8;
+        int bit_offset = bit_pos % 8;
+        
+        output[byte_pos] |= (encoded << (6 - bit_offset));
+    }
 }
 
 static void dna2_decode_neon(const uint8_t* input, char* output, int len)
 {
-    /* For simplicity, fall back to scalar for now */
-    dna2_decode_scalar(input, output, len);
+    /* Process 16 characters at a time with NEON */
+    int simd_len = len & ~15;  /* Round down to multiple of 16 */
+    
+    for (int i = 0; i < simd_len; i += 16) {
+        /* Load 4 bytes to process 16 characters */
+        uint32_t data_word;
+        memcpy(&data_word, input + i/4, 4);
+        uint8_t temp[4] = {data_word & 0xFF, (data_word >> 8) & 0xFF, (data_word >> 16) & 0xFF, (data_word >> 24) & 0xFF};
+        
+        /* Decode each 2-bit pair */
+        for (int j = 0; j < 16; j++) {
+            int bit_pos = (i + j) * 2;
+            int byte_pos = bit_pos / 8;
+            int bit_offset = bit_pos % 8;
+            uint8_t encoded = (temp[byte_pos] >> (6 - bit_offset)) & 0x3;
+            output[i + j] = kmersearch_dna2_decode_table[encoded];
+        }
+    }
+    
+    /* Handle remaining characters with scalar */
+    for (int i = simd_len; i < len; i++) {
+        int bit_pos = i * 2;
+        int byte_pos = bit_pos / 8;
+        int bit_offset = bit_pos % 8;
+        uint8_t encoded = (input[byte_pos] >> (6 - bit_offset)) & 0x3;
+        output[i] = kmersearch_dna2_decode_table[encoded];
+    }
+    output[len] = '\0';
 }
 
 static void dna4_encode_neon(const char* input, uint8_t* output, int len)
 {
-    /* For simplicity, fall back to scalar for now */
-    dna4_encode_scalar(input, output, len);
+    int byte_len = (len * 4 + 7) / 8;
+    memset(output, 0, byte_len);
+    
+    /* Process 16 characters at a time with NEON */
+    int simd_len = len & ~15;  /* Round down to multiple of 16 */
+    
+    for (int i = 0; i < simd_len; i += 16) {
+        uint8x16_t chars = vld1q_u8((uint8_t*)(input + i));
+        
+        /* Use lookup table approach for DNA4 encoding */
+        uint8_t temp[16];
+        vst1q_u8(temp, chars);
+        
+        for (int j = 0; j < 16; j++) {
+            uint8_t encoded = kmersearch_dna4_encode_table[(unsigned char)temp[j]];
+            int bit_pos = (i + j) * 4;
+            int byte_pos = bit_pos / 8;
+            int bit_offset = bit_pos % 8;
+            
+            if (bit_offset <= 4) {
+                output[byte_pos] |= (encoded << (4 - bit_offset));
+            } else {
+                output[byte_pos] |= (encoded >> (bit_offset - 4));
+                if (byte_pos + 1 < byte_len)
+                    output[byte_pos + 1] |= (encoded << (12 - bit_offset));
+            }
+        }
+    }
+    
+    /* Handle remaining characters with scalar */
+    for (int i = simd_len; i < len; i++) {
+        uint8_t encoded = kmersearch_dna4_encode_table[(unsigned char)input[i]];
+        int bit_pos = i * 4;
+        int byte_pos = bit_pos / 8;
+        int bit_offset = bit_pos % 8;
+        
+        if (bit_offset <= 4) {
+            output[byte_pos] |= (encoded << (4 - bit_offset));
+        } else {
+            output[byte_pos] |= (encoded >> (bit_offset - 4));
+            if (byte_pos + 1 < byte_len)
+                output[byte_pos + 1] |= (encoded << (12 - bit_offset));
+        }
+    }
 }
 
 static void dna4_decode_neon(const uint8_t* input, char* output, int len)
 {
-    /* For simplicity, fall back to scalar for now */
-    dna4_decode_scalar(input, output, len);
+    int bit_len = len * 4;
+    
+    /* Process 16 characters at a time with NEON */
+    int simd_len = len & ~15;  /* Round down to multiple of 16 */
+    
+    for (int i = 0; i < simd_len; i += 16) {
+        /* Load 8 bytes to process 16 characters */
+        uint64_t data_word;
+        memcpy(&data_word, input + i/2, 8);
+        uint8_t temp[8];
+        for (int k = 0; k < 8; k++) {
+            temp[k] = (data_word >> (k * 8)) & 0xFF;
+        }
+        
+        /* Decode each 4-bit nibble */
+        for (int j = 0; j < 16; j++) {
+            int bit_pos = (i + j) * 4;
+            int byte_pos = bit_pos / 8;
+            int bit_offset = bit_pos % 8;
+            uint8_t encoded;
+            
+            if (bit_offset <= 4) {
+                encoded = (temp[byte_pos] >> (4 - bit_offset)) & 0xF;
+            } else {
+                encoded = ((temp[byte_pos] << (bit_offset - 4)) & 0xF);
+                if (byte_pos + 1 < (bit_len + 7) / 8)
+                    encoded |= (temp[byte_pos + 1] >> (12 - bit_offset));
+                encoded &= 0xF;
+            }
+            
+            output[i + j] = kmersearch_dna4_decode_table[encoded];
+        }
+    }
+    
+    /* Handle remaining characters with scalar */
+    for (int i = simd_len; i < len; i++) {
+        int bit_pos = i * 4;
+        int byte_pos = bit_pos / 8;
+        int bit_offset = bit_pos % 8;
+        uint8_t encoded;
+        
+        if (bit_offset <= 4) {
+            encoded = (input[byte_pos] >> (4 - bit_offset)) & 0xF;
+        } else {
+            encoded = ((input[byte_pos] << (bit_offset - 4)) & 0xF);
+            if (byte_pos + 1 < (bit_len + 7) / 8)
+                encoded |= (input[byte_pos + 1] >> (12 - bit_offset));
+            encoded &= 0xF;
+        }
+        
+        output[i] = kmersearch_dna4_decode_table[encoded];
+    }
+    output[len] = '\0';
 }
 
 #ifdef __ARM_FEATURE_SVE
 /* SVE implementations */
 static void dna2_encode_sve(const char* input, uint8_t* output, int len)
 {
-    /* For simplicity, fall back to NEON for now */
-    dna2_encode_neon(input, output, len);
+    int byte_len = (len * 2 + 7) / 8;
+    memset(output, 0, byte_len);
+    
+    /* Get SVE vector length */
+    int sve_len = svcntb();
+    int simd_len = len & ~(sve_len - 1);  /* Round down to SVE vector multiple */
+    
+    for (int i = 0; i < simd_len; i += sve_len) {
+        svbool_t pg = svwhilelt_b8_s32(i, len);
+        svuint8_t chars = svld1_u8(pg, (uint8_t*)(input + i));
+        
+        /* Create comparison masks for each DNA base */
+        svbool_t mask_A = svorr_b_z(pg, svcmpeq_u8(pg, chars, svdup_n_u8('A')),
+                                        svcmpeq_u8(pg, chars, svdup_n_u8('a')));
+        svbool_t mask_C = svorr_b_z(pg, svcmpeq_u8(pg, chars, svdup_n_u8('C')),
+                                        svcmpeq_u8(pg, chars, svdup_n_u8('c')));
+        svbool_t mask_G = svorr_b_z(pg, svcmpeq_u8(pg, chars, svdup_n_u8('G')),
+                                        svcmpeq_u8(pg, chars, svdup_n_u8('g')));
+        svbool_t mask_T = svorr_b_z(pg, svcmpeq_u8(pg, chars, svdup_n_u8('T')),
+                                        svcmpeq_u8(pg, chars, svdup_n_u8('t')));
+        svbool_t mask_U = svorr_b_z(pg, svcmpeq_u8(pg, chars, svdup_n_u8('U')),
+                                        svcmpeq_u8(pg, chars, svdup_n_u8('u')));
+        
+        /* Combine T and U masks */
+        mask_T = svorr_b_z(pg, mask_T, mask_U);
+        
+        /* Generate 2-bit encoded values */
+        svuint8_t encoded = svdup_n_u8(0);
+        encoded = svorr_u8_m(mask_C, encoded, svdup_n_u8(1));
+        encoded = svorr_u8_m(mask_G, encoded, svdup_n_u8(2));
+        encoded = svorr_u8_m(mask_T, encoded, svdup_n_u8(3));
+        
+        /* Store and pack bits */
+        uint8_t temp[sve_len];
+        svst1_u8(pg, temp, encoded);
+        
+        for (int j = 0; j < sve_len && (i + j) < len; j++) {
+            int bit_pos = (i + j) * 2;
+            int byte_pos = bit_pos / 8;
+            int bit_offset = bit_pos % 8;
+            output[byte_pos] |= (temp[j] << (6 - bit_offset));
+        }
+    }
+    
+    /* Handle remaining characters with scalar */
+    for (int i = simd_len; i < len; i++) {
+        uint8_t encoded = kmersearch_dna2_encode_table[(unsigned char)input[i]];
+        int bit_pos = i * 2;
+        int byte_pos = bit_pos / 8;
+        int bit_offset = bit_pos % 8;
+        
+        output[byte_pos] |= (encoded << (6 - bit_offset));
+    }
 }
 
 static void dna2_decode_sve(const uint8_t* input, char* output, int len)
 {
-    /* For simplicity, fall back to NEON for now */
-    dna2_decode_neon(input, output, len);
+    /* Get SVE vector length */
+    int sve_len = svcntb();
+    int simd_len = len & ~(sve_len - 1);  /* Round down to SVE vector multiple */
+    
+    for (int i = 0; i < simd_len; i += sve_len) {
+        /* Load packed data for processing */
+        int bytes_needed = (sve_len * 2 + 7) / 8;
+        uint8_t temp[bytes_needed];
+        memcpy(temp, input + i/4, bytes_needed);
+        
+        /* Decode each 2-bit pair */
+        for (int j = 0; j < sve_len && (i + j) < len; j++) {
+            int bit_pos = (i + j) * 2;
+            int byte_pos = bit_pos / 8;
+            int bit_offset = bit_pos % 8;
+            uint8_t encoded = (temp[byte_pos] >> (6 - bit_offset)) & 0x3;
+            output[i + j] = kmersearch_dna2_decode_table[encoded];
+        }
+    }
+    
+    /* Handle remaining characters with scalar */
+    for (int i = simd_len; i < len; i++) {
+        int bit_pos = i * 2;
+        int byte_pos = bit_pos / 8;
+        int bit_offset = bit_pos % 8;
+        uint8_t encoded = (input[byte_pos] >> (6 - bit_offset)) & 0x3;
+        output[i] = kmersearch_dna2_decode_table[encoded];
+    }
+    output[len] = '\0';
 }
 
 static void dna4_encode_sve(const char* input, uint8_t* output, int len)
 {
-    /* For simplicity, fall back to NEON for now */
-    dna4_encode_neon(input, output, len);
+    int byte_len = (len * 4 + 7) / 8;
+    memset(output, 0, byte_len);
+    
+    /* Get SVE vector length */
+    int sve_len = svcntb();
+    int simd_len = len & ~(sve_len - 1);  /* Round down to SVE vector multiple */
+    
+    for (int i = 0; i < simd_len; i += sve_len) {
+        svbool_t pg = svwhilelt_b8_s32(i, len);
+        svuint8_t chars = svld1_u8(pg, (uint8_t*)(input + i));
+        
+        /* Use lookup table approach for DNA4 encoding */
+        uint8_t temp[sve_len];
+        svst1_u8(pg, temp, chars);
+        
+        for (int j = 0; j < sve_len && (i + j) < len; j++) {
+            uint8_t encoded = kmersearch_dna4_encode_table[(unsigned char)temp[j]];
+            int bit_pos = (i + j) * 4;
+            int byte_pos = bit_pos / 8;
+            int bit_offset = bit_pos % 8;
+            
+            if (bit_offset <= 4) {
+                output[byte_pos] |= (encoded << (4 - bit_offset));
+            } else {
+                output[byte_pos] |= (encoded >> (bit_offset - 4));
+                if (byte_pos + 1 < byte_len)
+                    output[byte_pos + 1] |= (encoded << (12 - bit_offset));
+            }
+        }
+    }
+    
+    /* Handle remaining characters with scalar */
+    for (int i = simd_len; i < len; i++) {
+        uint8_t encoded = kmersearch_dna4_encode_table[(unsigned char)input[i]];
+        int bit_pos = i * 4;
+        int byte_pos = bit_pos / 8;
+        int bit_offset = bit_pos % 8;
+        
+        if (bit_offset <= 4) {
+            output[byte_pos] |= (encoded << (4 - bit_offset));
+        } else {
+            output[byte_pos] |= (encoded >> (bit_offset - 4));
+            if (byte_pos + 1 < byte_len)
+                output[byte_pos + 1] |= (encoded << (12 - bit_offset));
+        }
+    }
 }
 
 static void dna4_decode_sve(const uint8_t* input, char* output, int len)
 {
-    /* For simplicity, fall back to NEON for now */
-    dna4_decode_neon(input, output, len);
+    int bit_len = len * 4;
+    
+    /* Get SVE vector length */
+    int sve_len = svcntb();
+    int simd_len = len & ~(sve_len - 1);  /* Round down to SVE vector multiple */
+    
+    for (int i = 0; i < simd_len; i += sve_len) {
+        /* Load packed data for processing */
+        int bytes_needed = (sve_len * 4 + 7) / 8;
+        uint8_t temp[bytes_needed];
+        memcpy(temp, input + i/2, bytes_needed);
+        
+        /* Decode each 4-bit nibble */
+        for (int j = 0; j < sve_len && (i + j) < len; j++) {
+            int bit_pos = (i + j) * 4;
+            int byte_pos = bit_pos / 8;
+            int bit_offset = bit_pos % 8;
+            uint8_t encoded;
+            
+            if (bit_offset <= 4) {
+                encoded = (temp[byte_pos] >> (4 - bit_offset)) & 0xF;
+            } else {
+                encoded = ((temp[byte_pos] << (bit_offset - 4)) & 0xF);
+                if (byte_pos + 1 < (bit_len + 7) / 8)
+                    encoded |= (temp[byte_pos + 1] >> (12 - bit_offset));
+                encoded &= 0xF;
+            }
+            
+            output[i + j] = kmersearch_dna4_decode_table[encoded];
+        }
+    }
+    
+    /* Handle remaining characters with scalar */
+    for (int i = simd_len; i < len; i++) {
+        int bit_pos = i * 4;
+        int byte_pos = bit_pos / 8;
+        int bit_offset = bit_pos % 8;
+        uint8_t encoded;
+        
+        if (bit_offset <= 4) {
+            encoded = (input[byte_pos] >> (4 - bit_offset)) & 0xF;
+        } else {
+            encoded = ((input[byte_pos] << (bit_offset - 4)) & 0xF);
+            if (byte_pos + 1 < (bit_len + 7) / 8)
+                encoded |= (input[byte_pos + 1] >> (12 - bit_offset));
+            encoded &= 0xF;
+        }
+        
+        output[i] = kmersearch_dna4_decode_table[encoded];
+    }
+    output[len] = '\0';
 }
 #endif
 #endif
