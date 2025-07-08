@@ -320,6 +320,7 @@ static void kmersearch_highfreq_kmers_cache_init(void);
 static bool kmersearch_highfreq_kmers_cache_load(Oid table_oid, const char *column_name, int k_value);
 static void kmersearch_highfreq_kmers_cache_free(void);
 static bool kmersearch_highfreq_kmers_cache_is_valid(Oid table_oid, const char *column_name, int k_value);
+static bool kmersearch_auto_load_cache_if_needed(void);
 
 /* Helper functions for direct k-mer management (no hashing) */
 static uint64_t kmersearch_extract_kmer_as_uint64(VarBit *seq, int start_pos, int k);
@@ -2802,9 +2803,16 @@ kmersearch_extract_value_dna2(PG_FUNCTION_ARGS)
     keys = kmersearch_extract_dna2_kmers_direct((VarBit *)dna, k, nkeys);
     
     /* Apply high-frequency k-mer filtering if cache is available */
-    if (keys && *nkeys > 0 && global_highfreq_cache.is_valid) {
-        /* Use cached hash table for filtering */
-        keys = kmersearch_filter_highfreq_kmers_from_keys(keys, nkeys, global_highfreq_cache.highfreq_hash, k);
+    if (keys && *nkeys > 0) {
+        /* Try to auto-load cache if not already loaded */
+        if (!global_highfreq_cache.is_valid) {
+            kmersearch_auto_load_cache_if_needed();
+        }
+        
+        /* Use cached hash table for filtering if available */
+        if (global_highfreq_cache.is_valid) {
+            keys = kmersearch_filter_highfreq_kmers_from_keys(keys, nkeys, global_highfreq_cache.highfreq_hash, k);
+        }
     }
     
     if (*nkeys == 0)
@@ -2834,9 +2842,16 @@ kmersearch_extract_value_dna4(PG_FUNCTION_ARGS)
     keys = kmersearch_extract_dna4_kmers_with_expansion_direct((VarBit *)dna, k, nkeys);
     
     /* Apply high-frequency k-mer filtering if cache is available */
-    if (keys && *nkeys > 0 && global_highfreq_cache.is_valid) {
-        /* Use cached hash table for filtering */
-        keys = kmersearch_filter_highfreq_kmers_from_keys(keys, nkeys, global_highfreq_cache.highfreq_hash, k);
+    if (keys && *nkeys > 0) {
+        /* Try to auto-load cache if not already loaded */
+        if (!global_highfreq_cache.is_valid) {
+            kmersearch_auto_load_cache_if_needed();
+        }
+        
+        /* Use cached hash table for filtering if available */
+        if (global_highfreq_cache.is_valid) {
+            keys = kmersearch_filter_highfreq_kmers_from_keys(keys, nkeys, global_highfreq_cache.highfreq_hash, k);
+        }
     }
     
     if (*nkeys == 0)
@@ -3033,6 +3048,11 @@ kmersearch_consistent(PG_FUNCTION_ARGS)
     int i;
     Oid index_oid = InvalidOid;  /* TODO: Get actual index OID from context */
     VarBit **query_key_array;
+    
+    /* Try to auto-load cache if not already loaded for search optimization */
+    if (!global_highfreq_cache.is_valid) {
+        kmersearch_auto_load_cache_if_needed();
+    }
     
     *recheck = true;  /* Always recheck for scoring */
     
@@ -3539,11 +3559,60 @@ kmersearch_correctedscore_dna2(PG_FUNCTION_ARGS)
 {
     VarBit *sequence = PG_GETARG_VARBIT_P(0);  /* DNA2 is stored as VarBit */
     text *query_text = PG_GETARG_TEXT_P(1);
+    char *query_string = text_to_cstring(query_text);
+    VarBit **query_keys = NULL;
+    VarBit **seq_keys = NULL;
+    Datum *seq_datum_keys = NULL;
+    int query_nkeys = 0;
+    int seq_nkeys = 0;
+    int k = kmersearch_kmer_size;
+    int shared_count = 0;
+    int i, j;
     
-    /* For DNA2, correctedscore is currently equivalent to rawscore */
-    return DirectFunctionCall2(kmersearch_rawscore_dna2, 
-                              VarBitPGetDatum(sequence), 
-                              PointerGetDatum(query_text));
+    /* Extract k-mers from DNA2 sequence (no degenerate expansion) */
+    seq_datum_keys = kmersearch_extract_dna2_kmers_direct(sequence, k, &seq_nkeys);
+    if (seq_datum_keys != NULL && seq_nkeys > 0) {
+        seq_keys = (VarBit **) palloc(seq_nkeys * sizeof(VarBit *));
+        for (i = 0; i < seq_nkeys; i++) {
+            seq_keys[i] = DatumGetVarBitP(seq_datum_keys[i]);
+        }
+    }
+    elog(LOG, "correctedscore_dna2: seq_keys=%p, seq_nkeys=%d", seq_keys, seq_nkeys);
+    if (seq_keys && seq_nkeys > 0) {
+        elog(LOG, "correctedscore_dna2: First seq k-mer bitlen=%d", VARBITLEN(seq_keys[0]));
+    }
+    
+    /* Extract k-mers from query */
+    query_keys = kmersearch_extract_kmers_from_query(query_string, k, &query_nkeys);
+    elog(LOG, "correctedscore_dna2: query_keys=%p, query_nkeys=%d", query_keys, query_nkeys);
+    if (query_keys && query_nkeys > 0) {
+        elog(LOG, "correctedscore_dna2: First query k-mer bitlen=%d", VARBITLEN(query_keys[0]));
+    }
+    
+    /* Count shared k-mers using optimized function */
+    if (seq_keys && query_keys && seq_nkeys > 0 && query_nkeys > 0) {
+        elog(LOG, "correctedscore_dna2: Calling kmersearch_count_matching_kmers_fast");
+        shared_count = kmersearch_count_matching_kmers_fast(seq_keys, seq_nkeys, query_keys, query_nkeys);
+        elog(LOG, "correctedscore_dna2: shared_count=%d", shared_count);
+    }
+    
+    /* Cleanup */
+    if (seq_keys) {
+        pfree(seq_keys);
+    }
+    if (seq_datum_keys) {
+        pfree(seq_datum_keys);
+    }
+    if (query_keys) {
+        for (i = 0; i < query_nkeys; i++) {
+            if (query_keys[i]) pfree(query_keys[i]);
+        }
+        pfree(query_keys);
+    }
+    pfree(query_string);
+    
+    /* Return corrected score (shared k-mer count) */
+    PG_RETURN_INT32(shared_count);
 }
 
 Datum
@@ -3551,10 +3620,60 @@ kmersearch_correctedscore_dna4(PG_FUNCTION_ARGS)
 {
     VarBit *sequence = PG_GETARG_VARBIT_P(0);  /* DNA4 is stored as VarBit */
     text *query_text = PG_GETARG_TEXT_P(1);
+    char *query_string = text_to_cstring(query_text);
+    VarBit **query_keys = NULL;
+    VarBit **seq_keys = NULL;
+    Datum *seq_datum_keys = NULL;
+    int query_nkeys = 0;
+    int seq_nkeys = 0;
+    int k = kmersearch_kmer_size;
+    int shared_count = 0;
+    int i, j;
     
-    /* For DNA4, apply high-frequency k-mer correction that results in 0 for test cases */
-    /* This is a simplified implementation - in reality should check actual high-freq k-mers */
-    PG_RETURN_INT32(0);
+    /* Extract k-mers from DNA4 sequence (with degenerate expansion) */
+    seq_datum_keys = kmersearch_extract_dna4_kmers_with_expansion_direct(sequence, k, &seq_nkeys);
+    if (seq_datum_keys != NULL && seq_nkeys > 0) {
+        seq_keys = (VarBit **) palloc(seq_nkeys * sizeof(VarBit *));
+        for (i = 0; i < seq_nkeys; i++) {
+            seq_keys[i] = DatumGetVarBitP(seq_datum_keys[i]);
+        }
+    }
+    elog(LOG, "correctedscore_dna4: seq_keys=%p, seq_nkeys=%d", seq_keys, seq_nkeys);
+    if (seq_keys && seq_nkeys > 0) {
+        elog(LOG, "correctedscore_dna4: First seq k-mer bitlen=%d", VARBITLEN(seq_keys[0]));
+    }
+    
+    /* Extract k-mers from query */
+    query_keys = kmersearch_extract_kmers_from_query(query_string, k, &query_nkeys);
+    elog(LOG, "correctedscore_dna4: query_keys=%p, query_nkeys=%d", query_keys, query_nkeys);
+    if (query_keys && query_nkeys > 0) {
+        elog(LOG, "correctedscore_dna4: First query k-mer bitlen=%d", VARBITLEN(query_keys[0]));
+    }
+    
+    /* Count shared k-mers using optimized function */
+    if (seq_keys && query_keys && seq_nkeys > 0 && query_nkeys > 0) {
+        elog(LOG, "correctedscore_dna4: Calling kmersearch_count_matching_kmers_fast");
+        shared_count = kmersearch_count_matching_kmers_fast(seq_keys, seq_nkeys, query_keys, query_nkeys);
+        elog(LOG, "correctedscore_dna4: shared_count=%d", shared_count);
+    }
+    
+    /* Cleanup */
+    if (seq_keys) {
+        pfree(seq_keys);
+    }
+    if (seq_datum_keys) {
+        pfree(seq_datum_keys);
+    }
+    if (query_keys) {
+        for (i = 0; i < query_nkeys; i++) {
+            if (query_keys[i]) pfree(query_keys[i]);
+        }
+        pfree(query_keys);
+    }
+    pfree(query_string);
+    
+    /* Return corrected score (shared k-mer count) */
+    PG_RETURN_INT32(shared_count);
 }
 
 /*
@@ -3642,8 +3761,29 @@ kmersearch_find_or_add_kmer_occurrence(KmerOccurrence *occurrences, int *count, 
 static bool
 kmersearch_is_kmer_highfreq(Oid index_oid, VarBit *kmer_key)
 {
-    /* For now, always return false - will implement proper check later */
-    return false;
+    HighfreqKmerHashEntry *entry;
+    bool found;
+    
+    if (!kmer_key)
+        return false;
+    
+    /* Try to auto-load cache if not already loaded */
+    if (!global_highfreq_cache.is_valid) {
+        kmersearch_auto_load_cache_if_needed();
+    }
+    
+    /* If cache is still not valid, assume not high-frequency */
+    if (!global_highfreq_cache.is_valid || !global_highfreq_cache.highfreq_hash) {
+        return false;
+    }
+    
+    /* Check if this k-mer is in the high-frequency hash table */
+    entry = (HighfreqKmerHashEntry *) hash_search(global_highfreq_cache.highfreq_hash,
+                                                 (void *) &kmer_key,
+                                                 HASH_FIND,
+                                                 &found);
+    
+    return found;
 }
 
 /*
@@ -5788,6 +5928,76 @@ kmersearch_highfreq_kmers_cache_is_valid(Oid table_oid, const char *column_name,
             global_highfreq_cache.current_column_name &&
             column_name &&
             strcmp(global_highfreq_cache.current_column_name, column_name) == 0);
+}
+
+/*
+ * Auto-load cache if high-frequency k-mer metadata is available
+ * This function searches for available metadata and loads the cache automatically
+ */
+static bool
+kmersearch_auto_load_cache_if_needed(void)
+{
+    int ret;
+    StringInfoData query;
+    bool cache_loaded = false;
+    
+    /* If cache is already valid, no need to reload */
+    if (global_highfreq_cache.is_valid)
+        return true;
+    
+    /* Connect to SPI */
+    if (SPI_connect() != SPI_OK_CONNECT)
+        return false;
+    
+    /* Query for available high-frequency k-mer metadata */
+    initStringInfo(&query);
+    appendStringInfo(&query,
+        "SELECT table_oid, column_name, k_value "
+        "FROM kmersearch_highfreq_kmers_meta "
+        "ORDER BY analysis_timestamp DESC "
+        "LIMIT 1");
+    
+    /* Execute query */
+    ret = SPI_execute(query.data, true, 0);
+    if (ret == SPI_OK_SELECT && SPI_processed > 0)
+    {
+        bool isnull;
+        Datum table_oid_datum, column_name_datum, k_value_datum;
+        Oid table_oid;
+        char *column_name;
+        int k_value;
+        
+        /* Extract values from first row */
+        table_oid_datum = SPI_getbinval(SPI_tuptable->vals[0], SPI_tuptable->tupdesc, 1, &isnull);
+        if (!isnull)
+        {
+            table_oid = DatumGetObjectId(table_oid_datum);
+            
+            column_name_datum = SPI_getbinval(SPI_tuptable->vals[0], SPI_tuptable->tupdesc, 2, &isnull);
+            if (!isnull)
+            {
+                column_name = NameStr(*DatumGetName(column_name_datum));
+                
+                k_value_datum = SPI_getbinval(SPI_tuptable->vals[0], SPI_tuptable->tupdesc, 3, &isnull);
+                if (!isnull)
+                {
+                    k_value = DatumGetInt32(k_value_datum);
+                    
+                    /* Try to load cache with found metadata */
+                    SPI_finish();
+                    cache_loaded = kmersearch_highfreq_kmers_cache_load(table_oid, column_name, k_value);
+                    if (SPI_connect() != SPI_OK_CONNECT)
+                        return cache_loaded;
+                }
+            }
+        }
+    }
+    
+    /* Cleanup */
+    pfree(query.data);
+    SPI_finish();
+    
+    return cache_loaded;
 }
 
 /*

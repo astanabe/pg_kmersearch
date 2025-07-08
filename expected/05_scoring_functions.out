@@ -62,9 +62,9 @@ SELECT id, name,
 FROM test_DNA4_sequences ORDER BY id;
  id | name | correctedscore 
 ----+------+----------------
-  1 | seq1 |              0
+  1 | seq1 |             54
   2 | seq2 |              0
-  3 | seq3 |              0
+  3 | seq3 |             47
 (3 rows)
 
 -- Test with shorter sequences for exact match
