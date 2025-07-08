@@ -220,7 +220,7 @@ SELECT 'After query execution - query pattern cache:' as test_phase;
 SELECT * FROM kmersearch_query_pattern_cache_stats();
  hits | misses | current_entries | max_entries 
 ------+--------+-----------------+-------------
-    0 |      0 |               0 |           0
+   28 |      8 |               3 |       50000
 (1 row)
 
 -- Test cache clearing functions
@@ -239,13 +239,13 @@ SELECT 'Clearing actual min score cache:' as action, kmersearch_actual_min_score
 SELECT 'Clearing rawscore cache:' as action, kmersearch_rawscore_cache_free() as freed_entries;
           action          | freed_entries 
 --------------------------+---------------
- Clearing rawscore cache: |            14
+ Clearing rawscore cache: |             7
 (1 row)
 
 SELECT 'Clearing query pattern cache:' as action, kmersearch_query_pattern_cache_free() as freed_entries;
             action             | freed_entries 
 -------------------------------+---------------
- Clearing query pattern cache: |             0
+ Clearing query pattern cache: |             3
 (1 row)
 
 -- Verify caches are cleared
@@ -298,13 +298,13 @@ SET kmersearch.min_shared_ngram_key_rate = 0.8;
 SELECT COUNT(*) FROM test_cache_DNA2 WHERE sequence =% 'ATCGATCG';
  count 
 -------
-     2
+     1
 (1 row)
 
 SELECT COUNT(*) FROM test_cache_DNA2 WHERE sequence =% 'ATCGATCG';
  count 
 -------
-     2
+     1
 (1 row)
 
 -- Check cache after configuration change
@@ -317,7 +317,7 @@ SELECT 'With changed settings - actual min score cache:' as test_phase;
 SELECT * FROM kmersearch_actual_min_score_cache_stats();
  hits | misses | current_entries | max_entries 
 ------+--------+-----------------+-------------
-   11 |      1 |               1 |       50000
+   17 |      1 |               1 |       50000
 (1 row)
 
 -- Reset to defaults
@@ -374,7 +374,7 @@ SELECT 'Final cache state:' as test_phase;
 SELECT * FROM kmersearch_actual_min_score_cache_stats();
  hits | misses | current_entries | max_entries 
 ------+--------+-----------------+-------------
-   32 |      4 |               4 |        1000
+   36 |      4 |               4 |        1000
 (1 row)
 
 -- Clean up
