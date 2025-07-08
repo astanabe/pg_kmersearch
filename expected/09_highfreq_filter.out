@@ -33,8 +33,9 @@ SELECT proname FROM pg_proc WHERE proname LIKE '%cache%' AND proname LIKE 'kmers
  kmersearch_actual_min_score_cache_stats
  kmersearch_query_pattern_cache_free
  kmersearch_query_pattern_cache_stats
+ kmersearch_rawscore_cache_free
  kmersearch_rawscore_cache_stats
-(5 rows)
+(6 rows)
 
 -- Create GIN indexes to test filtering
 CREATE INDEX idx_test_dna2_gin ON test_highfreq_filter USING gin (dna2_seq);

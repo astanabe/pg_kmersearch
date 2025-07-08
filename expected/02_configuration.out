@@ -52,6 +52,7 @@ SHOW kmersearch.query_pattern_cache_max_entries;
 
 -- Test setting valid values
 SET kmersearch.kmer_size = 12;
+WARNING:  High-frequency k-mer cache has been cleared. You may need to manually execute kmersearch_highfreq_kmers_cache_load() to reload the cache if needed.
 SHOW kmersearch.kmer_size;
  kmersearch.kmer_size 
 ----------------------
@@ -59,6 +60,7 @@ SHOW kmersearch.kmer_size;
 (1 row)
 
 SET kmersearch.occur_bitlen = 10;
+WARNING:  High-frequency k-mer cache has been cleared. You may need to manually execute kmersearch_highfreq_kmers_cache_load() to reload the cache if needed.
 SHOW kmersearch.occur_bitlen;
  kmersearch.occur_bitlen 
 -------------------------
@@ -66,6 +68,7 @@ SHOW kmersearch.occur_bitlen;
 (1 row)
 
 SET kmersearch.max_appearance_rate = 0.1;
+WARNING:  High-frequency k-mer cache has been cleared. You may need to manually execute kmersearch_highfreq_kmers_cache_load() to reload the cache if needed.
 SHOW kmersearch.max_appearance_rate;
  kmersearch.max_appearance_rate 
 --------------------------------
@@ -73,6 +76,7 @@ SHOW kmersearch.max_appearance_rate;
 (1 row)
 
 SET kmersearch.max_appearance_nrow = 1000;
+WARNING:  High-frequency k-mer cache has been cleared. You may need to manually execute kmersearch_highfreq_kmers_cache_load() to reload the cache if needed.
 SHOW kmersearch.max_appearance_nrow;
  kmersearch.max_appearance_nrow 
 --------------------------------
@@ -109,6 +113,7 @@ SHOW kmersearch.query_pattern_cache_max_entries;
 
 -- Test boundary values
 SET kmersearch.kmer_size = 4;  -- minimum
+WARNING:  High-frequency k-mer cache has been cleared. You may need to manually execute kmersearch_highfreq_kmers_cache_load() to reload the cache if needed.
 SHOW kmersearch.kmer_size;
  kmersearch.kmer_size 
 ----------------------
@@ -116,6 +121,7 @@ SHOW kmersearch.kmer_size;
 (1 row)
 
 SET kmersearch.kmer_size = 64; -- maximum
+WARNING:  High-frequency k-mer cache has been cleared. You may need to manually execute kmersearch_highfreq_kmers_cache_load() to reload the cache if needed.
 SHOW kmersearch.kmer_size;
  kmersearch.kmer_size 
 ----------------------
@@ -123,6 +129,7 @@ SHOW kmersearch.kmer_size;
 (1 row)
 
 SET kmersearch.occur_bitlen = 0;  -- minimum
+WARNING:  High-frequency k-mer cache has been cleared. You may need to manually execute kmersearch_highfreq_kmers_cache_load() to reload the cache if needed.
 SHOW kmersearch.occur_bitlen;
  kmersearch.occur_bitlen 
 -------------------------
@@ -130,6 +137,7 @@ SHOW kmersearch.occur_bitlen;
 (1 row)
 
 SET kmersearch.occur_bitlen = 16; -- maximum
+WARNING:  High-frequency k-mer cache has been cleared. You may need to manually execute kmersearch_highfreq_kmers_cache_load() to reload the cache if needed.
 SHOW kmersearch.occur_bitlen;
  kmersearch.occur_bitlen 
 -------------------------
@@ -207,9 +215,13 @@ ERROR:  10000001 is outside the valid range for parameter "kmersearch.actual_min
 \set ON_ERROR_STOP on
 -- Reset to defaults for other tests
 SET kmersearch.kmer_size = 8;
+WARNING:  High-frequency k-mer cache has been cleared. You may need to manually execute kmersearch_highfreq_kmers_cache_load() to reload the cache if needed.
 SET kmersearch.occur_bitlen = 8;
+WARNING:  High-frequency k-mer cache has been cleared. You may need to manually execute kmersearch_highfreq_kmers_cache_load() to reload the cache if needed.
 SET kmersearch.max_appearance_rate = 0.05;
+WARNING:  High-frequency k-mer cache has been cleared. You may need to manually execute kmersearch_highfreq_kmers_cache_load() to reload the cache if needed.
 SET kmersearch.max_appearance_nrow = 0;
+WARNING:  High-frequency k-mer cache has been cleared. You may need to manually execute kmersearch_highfreq_kmers_cache_load() to reload the cache if needed.
 SET kmersearch.min_score = 1;
 SET kmersearch.min_shared_ngram_key_rate = 0.9;
 SET kmersearch.rawscore_cache_max_entries = 50000;

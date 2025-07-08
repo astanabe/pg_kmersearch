@@ -326,6 +326,12 @@ CREATE FUNCTION kmersearch_rawscore_cache_stats()
     AS 'MODULE_PATHNAME', 'kmersearch_rawscore_cache_stats'
     LANGUAGE C STABLE;
 
+-- Rawscore cache management function
+CREATE FUNCTION kmersearch_rawscore_cache_free()
+    RETURNS integer
+    AS 'MODULE_PATHNAME', 'kmersearch_rawscore_cache_free'
+    LANGUAGE C VOLATILE;
+
 -- Query pattern cache statistics function
 CREATE FUNCTION kmersearch_query_pattern_cache_stats()
     RETURNS TABLE (

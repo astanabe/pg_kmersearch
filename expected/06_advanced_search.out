@@ -3,6 +3,7 @@ CREATE EXTENSION pg_kmersearch;
 -- This test covers different k-mer sizes and configuration options
 -- Test with different k-mer sizes
 SET kmersearch.kmer_size = 6;
+WARNING:  High-frequency k-mer cache has been cleared. You may need to manually execute kmersearch_highfreq_kmers_cache_load() to reload the cache if needed.
 -- Create a new index with k=6
 CREATE TABLE test_k6_sequences (
     id SERIAL PRIMARY KEY,
@@ -32,6 +33,7 @@ FROM test_k6_sequences ORDER BY id;
 
 -- Test with k=10
 SET kmersearch.kmer_size = 10;
+WARNING:  High-frequency k-mer cache has been cleared. You may need to manually execute kmersearch_highfreq_kmers_cache_load() to reload the cache if needed.
 CREATE TABLE test_k10_sequences (
     id SERIAL PRIMARY KEY,
     name TEXT,
@@ -61,6 +63,7 @@ ORDER BY score DESC, id;
 
 -- Reset k-mer size for other tests
 SET kmersearch.kmer_size = 8;
+WARNING:  High-frequency k-mer cache has been cleared. You may need to manually execute kmersearch_highfreq_kmers_cache_load() to reload the cache if needed.
 DROP EXTENSION pg_kmersearch CASCADE;
 NOTICE:  drop cascades to 2 other objects
 DETAIL:  drop cascades to column sequence of table test_k6_sequences

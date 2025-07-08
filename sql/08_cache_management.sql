@@ -101,11 +101,15 @@ SELECT * FROM kmersearch_query_pattern_cache_stats();
 SELECT 'Testing cache clear functions...' as test_phase;
 
 SELECT 'Clearing actual min score cache:' as action, kmersearch_actual_min_score_cache_free() as freed_entries;
+SELECT 'Clearing rawscore cache:' as action, kmersearch_rawscore_cache_free() as freed_entries;
 SELECT 'Clearing query pattern cache:' as action, kmersearch_query_pattern_cache_free() as freed_entries;
 
 -- Verify caches are cleared
 SELECT 'After clearing - actual min score cache:' as test_phase;
 SELECT * FROM kmersearch_actual_min_score_cache_stats();
+
+SELECT 'After clearing - rawscore cache:' as test_phase;
+SELECT * FROM kmersearch_rawscore_cache_stats();
 
 SELECT 'After clearing - query pattern cache:' as test_phase;
 SELECT * FROM kmersearch_query_pattern_cache_stats();

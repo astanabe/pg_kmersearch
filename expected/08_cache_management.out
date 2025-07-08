@@ -196,7 +196,7 @@ SELECT 'After query execution - actual min score cache:' as test_phase;
 SELECT * FROM kmersearch_actual_min_score_cache_stats();
  hits | misses | current_entries | max_entries 
 ------+--------+-----------------+-------------
-   36 |      3 |               3 |       50000
+   59 |      3 |               3 |       50000
 (1 row)
 
 SELECT 'After query execution - rawscore cache:' as test_phase;
@@ -208,7 +208,7 @@ SELECT 'After query execution - rawscore cache:' as test_phase;
 SELECT * FROM kmersearch_rawscore_cache_stats();
  dna2_hits | dna2_misses | dna2_entries | dna2_max_entries | dna4_hits | dna4_misses | dna4_entries | dna4_max_entries 
 -----------+-------------+--------------+------------------+-----------+-------------+--------------+------------------
-         0 |           0 |            0 |                0 |         0 |           0 |            0 |                0
+         8 |          26 |            7 |            50000 |         0 |          10 |            7 |            50000
 (1 row)
 
 SELECT 'After query execution - query pattern cache:' as test_phase;
@@ -236,6 +236,12 @@ SELECT 'Clearing actual min score cache:' as action, kmersearch_actual_min_score
  Clearing actual min score cache: |             3
 (1 row)
 
+SELECT 'Clearing rawscore cache:' as action, kmersearch_rawscore_cache_free() as freed_entries;
+          action          | freed_entries 
+--------------------------+---------------
+ Clearing rawscore cache: |            14
+(1 row)
+
 SELECT 'Clearing query pattern cache:' as action, kmersearch_query_pattern_cache_free() as freed_entries;
             action             | freed_entries 
 -------------------------------+---------------
@@ -253,6 +259,18 @@ SELECT * FROM kmersearch_actual_min_score_cache_stats();
  hits | misses | current_entries | max_entries 
 ------+--------+-----------------+-------------
     0 |      0 |               0 |           0
+(1 row)
+
+SELECT 'After clearing - rawscore cache:' as test_phase;
+            test_phase            
+----------------------------------
+ After clearing - rawscore cache:
+(1 row)
+
+SELECT * FROM kmersearch_rawscore_cache_stats();
+ dna2_hits | dna2_misses | dna2_entries | dna2_max_entries | dna4_hits | dna4_misses | dna4_entries | dna4_max_entries 
+-----------+-------------+--------------+------------------+-----------+-------------+--------------+------------------
+         0 |           0 |            0 |                0 |         0 |           0 |            0 |                0
 (1 row)
 
 SELECT 'After clearing - query pattern cache:' as test_phase;
@@ -280,13 +298,13 @@ SET kmersearch.min_shared_ngram_key_rate = 0.8;
 SELECT COUNT(*) FROM test_cache_DNA2 WHERE sequence =% 'ATCGATCG';
  count 
 -------
-     1
+     2
 (1 row)
 
 SELECT COUNT(*) FROM test_cache_DNA2 WHERE sequence =% 'ATCGATCG';
  count 
 -------
-     1
+     2
 (1 row)
 
 -- Check cache after configuration change
@@ -299,7 +317,7 @@ SELECT 'With changed settings - actual min score cache:' as test_phase;
 SELECT * FROM kmersearch_actual_min_score_cache_stats();
  hits | misses | current_entries | max_entries 
 ------+--------+-----------------+-------------
-    9 |      1 |               1 |       50000
+   11 |      1 |               1 |       50000
 (1 row)
 
 -- Reset to defaults
@@ -318,7 +336,7 @@ SET kmersearch.actual_min_score_cache_max_entries = 1000;
 SELECT kmersearch_actual_min_score_cache_free();
  kmersearch_actual_min_score_cache_free 
 ----------------------------------------
-                                      1
+                                      0
 (1 row)
 
 -- Execute multiple different queries to test eviction
@@ -356,7 +374,7 @@ SELECT 'Final cache state:' as test_phase;
 SELECT * FROM kmersearch_actual_min_score_cache_stats();
  hits | misses | current_entries | max_entries 
 ------+--------+-----------------+-------------
-   16 |      4 |               4 |        1000
+   32 |      4 |               4 |        1000
 (1 row)
 
 -- Clean up
