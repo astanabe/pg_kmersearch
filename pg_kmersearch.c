@@ -333,8 +333,8 @@ static VarBit *kmersearch_remove_occurrence_bits(VarBit *key_with_occurrence, in
 
 /* High-frequency k-mer cache management functions */
 static void kmersearch_highfreq_kmers_cache_init(void);
-static bool kmersearch_highfreq_kmers_cache_load(Oid table_oid, const char *column_name, int k_value);
-static void kmersearch_highfreq_kmers_cache_free(void);
+static bool kmersearch_highfreq_kmers_cache_load_internal(Oid table_oid, const char *column_name, int k_value);
+static void kmersearch_highfreq_kmers_cache_free_internal(void);
 static bool kmersearch_highfreq_kmers_cache_is_valid(Oid table_oid, const char *column_name, int k_value);
 static bool kmersearch_auto_load_cache_if_needed(void);
 
@@ -413,6 +413,7 @@ static KmerData kmersearch_encode_kmer_data(VarBit *kmer, int k_size);
 static void kmersearch_init_buffer(KmerBuffer *buffer, int k_size);
 static void kmersearch_add_to_buffer(KmerBuffer *buffer, KmerData kmer_data, const char *temp_table_name);
 static void kmersearch_flush_buffer_to_table(KmerBuffer *buffer, const char *temp_table_name);
+static void kmersearch_aggregate_buffer_entries(KmerBuffer *buffer);
 static void kmersearch_create_worker_temp_table(const char *temp_table_name, int k_size);
 static bool kmersearch_check_analysis_exists(Oid table_oid, const char *column_name, int k_size);
 static void kmersearch_validate_analysis_parameters(Oid table_oid, const char *column_name, int k_size);
@@ -549,6 +550,8 @@ PG_FUNCTION_INFO_V1(kmersearch_query_pattern_cache_stats);
 PG_FUNCTION_INFO_V1(kmersearch_query_pattern_cache_free);
 PG_FUNCTION_INFO_V1(kmersearch_actual_min_score_cache_stats);
 PG_FUNCTION_INFO_V1(kmersearch_actual_min_score_cache_free);
+PG_FUNCTION_INFO_V1(kmersearch_highfreq_kmers_cache_load);
+PG_FUNCTION_INFO_V1(kmersearch_highfreq_kmers_cache_free);
 
 /* Score calculation functions */
 PG_FUNCTION_INFO_V1(kmersearch_rawscore_dna2);
@@ -855,7 +858,7 @@ static void dna4_decode_sve(const uint8_t* input, char* output, int len);
 static void 
 clear_highfreq_cache_with_warning(void)
 {
-    kmersearch_highfreq_kmers_cache_free();
+    kmersearch_highfreq_kmers_cache_free_internal();
     elog(WARNING, "High-frequency k-mer cache has been cleared. "
                   "You may need to manually execute kmersearch_highfreq_kmers_cache_load() "
                   "to reload the cache if needed.");
@@ -4817,6 +4820,57 @@ kmersearch_init_buffer(KmerBuffer *buffer, int k_size)
 }
 
 /*
+ * Aggregate buffer entries with same kmer_data to prevent ON CONFLICT issues
+ */
+static void
+kmersearch_aggregate_buffer_entries(KmerBuffer *buffer)
+{
+    int i, j;
+    int write_pos = 0;
+    bool merged;
+    
+    if (buffer->count <= 1) return;
+    
+    for (i = 0; i < buffer->count; i++) {
+        merged = false;
+        
+        /* Check if this entry can be merged with any previous entry */
+        for (j = 0; j < write_pos; j++) {
+            bool same_kmer = false;
+            
+            if (buffer->k_size <= 8) {
+                same_kmer = (buffer->entries[i].kmer_data.k8_data == buffer->entries[j].kmer_data.k8_data);
+            } else if (buffer->k_size <= 16) {
+                same_kmer = (buffer->entries[i].kmer_data.k16_data == buffer->entries[j].kmer_data.k16_data);
+            } else if (buffer->k_size <= 32) {
+                same_kmer = (buffer->entries[i].kmer_data.k32_data == buffer->entries[j].kmer_data.k32_data);
+            } else {
+                same_kmer = (buffer->entries[i].kmer_data.k64_data.high == buffer->entries[j].kmer_data.k64_data.high &&
+                           buffer->entries[i].kmer_data.k64_data.low == buffer->entries[j].kmer_data.k64_data.low);
+            }
+            
+            if (same_kmer) {
+                /* Merge frequency counts */
+                buffer->entries[j].frequency_count += buffer->entries[i].frequency_count;
+                merged = true;
+                break;
+            }
+        }
+        
+        /* If not merged, add to write position */
+        if (!merged) {
+            if (write_pos != i) {
+                buffer->entries[write_pos] = buffer->entries[i];
+            }
+            write_pos++;
+        }
+    }
+    
+    /* Update count to reflect aggregated entries */
+    buffer->count = write_pos;
+}
+
+/*
  * Flush buffer contents to temporary table
  */
 static void
@@ -4826,6 +4880,9 @@ kmersearch_flush_buffer_to_table(KmerBuffer *buffer, const char *temp_table_name
     int i;
     
     if (buffer->count == 0) return;
+    
+    /* Aggregate entries with same kmer_data before insertion */
+    kmersearch_aggregate_buffer_entries(buffer);
     
     initStringInfo(&query);
     
@@ -4902,9 +4959,9 @@ kmersearch_create_worker_temp_table(const char *temp_table_name, int k_size)
     
     /* Choose appropriate data type based on k-size */
     if (k_size <= 8) {
-        data_type = "smallint";
+        data_type = "integer";  /* k=8 needs up to 65535, exceeds smallint range */
     } else if (k_size <= 16) {
-        data_type = "integer";
+        data_type = "bigint";   /* k=16 needs up to 4B values */
     } else if (k_size <= 32) {
         data_type = "bigint";
     } else {
@@ -5075,9 +5132,9 @@ kmersearch_merge_worker_results_sql(KmerWorkerState *workers, int num_workers,
     
     /* Choose appropriate data type based on k-size */
     if (k_size <= 8) {
-        data_type = "smallint";
+        data_type = "integer";  /* k=8 needs up to 65535, exceeds smallint range */
     } else if (k_size <= 16) {
-        data_type = "integer";
+        data_type = "bigint";   /* k=16 needs up to 4B values */
     } else if (k_size <= 32) {
         data_type = "bigint";
     } else {
@@ -5924,6 +5981,45 @@ kmersearch_actual_min_score_cache_stats(PG_FUNCTION_ARGS)
 }
 
 /*
+ * High-frequency k-mer cache load function
+ */
+Datum
+kmersearch_highfreq_kmers_cache_load(PG_FUNCTION_ARGS)
+{
+    Oid table_oid = PG_GETARG_OID(0);
+    text *column_name_text = PG_GETARG_TEXT_P(1);
+    int k_value = PG_GETARG_INT32(2);
+    
+    char *column_name = text_to_cstring(column_name_text);
+    bool success;
+    
+    /* Call internal cache load function */
+    success = kmersearch_highfreq_kmers_cache_load_internal(table_oid, column_name, k_value);
+    
+    pfree(column_name);
+    
+    PG_RETURN_BOOL(success);
+}
+
+/*
+ * High-frequency k-mer cache free function
+ */
+Datum
+kmersearch_highfreq_kmers_cache_free(PG_FUNCTION_ARGS)
+{
+    int freed_entries = 0;
+    
+    /* Count current entries before clearing */
+    if (global_highfreq_cache.is_valid)
+        freed_entries = global_highfreq_cache.highfreq_count;
+    
+    /* Call internal cache free function */
+    kmersearch_highfreq_kmers_cache_free_internal();
+    
+    PG_RETURN_INT32(freed_entries);
+}
+
+/*
  * Module cleanup function
  */
 void
@@ -5937,7 +6033,7 @@ _PG_fini(void)
     free_actual_min_score_cache_manager(&actual_min_score_cache_manager);
     
     /* Free high-frequency k-mer cache on module unload */
-    kmersearch_highfreq_kmers_cache_free();
+    kmersearch_highfreq_kmers_cache_free_internal();
 }
 
 /*
@@ -6185,7 +6281,7 @@ kmersearch_highfreq_kmers_cache_init(void)
 }
 
 static bool
-kmersearch_highfreq_kmers_cache_load(Oid table_oid, const char *column_name, int k_value)
+kmersearch_highfreq_kmers_cache_load_internal(Oid table_oid, const char *column_name, int k_value)
 {
     MemoryContext old_context;
     VarBit **highfreq_kmers;
@@ -6196,7 +6292,7 @@ kmersearch_highfreq_kmers_cache_load(Oid table_oid, const char *column_name, int
     
     /* Clear existing cache if valid */
     if (global_highfreq_cache.is_valid) {
-        kmersearch_highfreq_kmers_cache_free();
+        kmersearch_highfreq_kmers_cache_free_internal();
     }
     
     /* Get high-frequency k-mers list */
@@ -6237,7 +6333,7 @@ kmersearch_highfreq_kmers_cache_load(Oid table_oid, const char *column_name, int
 }
 
 static void
-kmersearch_highfreq_kmers_cache_free(void)
+kmersearch_highfreq_kmers_cache_free_internal(void)
 {
     if (!global_highfreq_cache.is_valid) {
         return;
@@ -6325,7 +6421,7 @@ kmersearch_auto_load_cache_if_needed(void)
                     
                     /* Try to load cache with found metadata */
                     SPI_finish();
-                    cache_loaded = kmersearch_highfreq_kmers_cache_load(table_oid, column_name, k_value);
+                    cache_loaded = kmersearch_highfreq_kmers_cache_load_internal(table_oid, column_name, k_value);
                     if (SPI_connect() != SPI_OK_CONNECT)
                         return cache_loaded;
                 }

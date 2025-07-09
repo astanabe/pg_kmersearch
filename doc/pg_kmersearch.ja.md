@@ -30,6 +30,7 @@ pg_kmersearchは、PostgreSQL用のDNA配列データを効率的に格納・処
 - **高頻出k-mer除外**: インデックス作成時に過度に頻出するk-merを自動除外
 - **スコアベースフィルタリング**: 除外k-merに応じて自動調整される最小スコア閾値
 - **スコア計算関数**: 個別配列のスコア算出用の`kmersearch_rawscore()`と`kmersearch_correctedscore()`関数
+- **高頻出k-mer管理**: `kmersearch_analyze_table()`による高頻出k-mer解析と`kmersearch_highfreq_kmers_cache_load()`および`kmersearch_highfreq_kmers_cache_free()`によるキャッシュ管理
 
 ## インストール
 

@@ -379,3 +379,4 @@ SELECT * FROM kmersearch_actual_min_score_cache_stats();
 
 -- Clean up
 DROP TABLE test_cache_DNA2, test_cache_DNA4 CASCADE;
+DROP EXTENSION pg_kmersearch CASCADE;

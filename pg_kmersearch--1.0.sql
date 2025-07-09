@@ -365,3 +365,14 @@ CREATE FUNCTION kmersearch_actual_min_score_cache_free()
     RETURNS integer
     AS 'MODULE_PATHNAME', 'kmersearch_actual_min_score_cache_free'
     LANGUAGE C VOLATILE;
+
+-- High-frequency k-mer cache management functions
+CREATE FUNCTION kmersearch_highfreq_kmers_cache_load(table_oid oid, column_name text, k_value integer)
+    RETURNS boolean
+    AS 'MODULE_PATHNAME', 'kmersearch_highfreq_kmers_cache_load'
+    LANGUAGE C VOLATILE STRICT;
+
+CREATE FUNCTION kmersearch_highfreq_kmers_cache_free()
+    RETURNS integer
+    AS 'MODULE_PATHNAME', 'kmersearch_highfreq_kmers_cache_free'
+    LANGUAGE C VOLATILE;

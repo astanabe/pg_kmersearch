@@ -30,6 +30,7 @@ pg_kmersearch is a PostgreSQL extension that provides custom data types for effi
 - **High-frequency k-mer exclusion**: Automatically excludes overly common k-mers during index creation
 - **Score-based filtering**: Minimum score thresholds with automatic adjustment for excluded k-mers
 - **Score calculation functions**: `kmersearch_rawscore()` and `kmersearch_correctedscore()` for individual sequence scoring
+- **High-frequency k-mer management**: `kmersearch_analyze_table()` for high-frequency k-mer analysis and `kmersearch_highfreq_kmers_cache_load()` and `kmersearch_highfreq_kmers_cache_free()` for cache management
 
 ## Installation
 
