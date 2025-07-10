@@ -140,6 +140,8 @@ pg_kmersearchは、PostgreSQLの`SET`コマンドで設定可能な複数の設�
 | `kmersearch.rawscore_cache_max_entries` | 50000 | 1000-10000000 | rawscoreキャッシュの最大エントリ数 |
 | `kmersearch.query_pattern_cache_max_entries` | 50000 | 1000-10000000 | クエリパターンキャッシュの最大エントリ数 |
 | `kmersearch.actual_min_score_cache_max_entries` | 50000 | 1000-10000000 | actual min scoreキャッシュの最大エントリ数 |
+| `kmersearch.preclude_highfreq_kmer` | false | true/false | GINインデックス構築時の高頻出k-mer除外の有効化 |
+| `kmersearch.force_use_dshash` | false | true/false | 高頻出k-mer検索での並列dshashキャッシュの強制使用 |
 
 ### 高頻出k-mer除外機能
 
@@ -344,6 +346,107 @@ SET kmersearch.actual_min_score_cache_max_entries = 25000;
 SET kmersearch.rawscore_cache_max_entries = 25000;
 SET kmersearch.query_pattern_cache_max_entries = 25000;
 ```
+
+## 高頻出k-mer階層キャッシュシステム
+
+pg_kmersearchは、PostgreSQL 16/18に最適化された多層キャッシュアーキテクチャを提供し、高頻出k-mer検索のパフォーマンスを最大化します：
+
+### キャッシュ階層
+
+高頻出k-mer検索では、以下の優先順位でキャッシュが使用されます：
+
+1. **グローバルキャッシュ** (`global_highfreq_cache`)
+   - 最も高速なアクセス
+   - TopMemoryContextで管理
+   - 単一プロセス内での再利用
+
+2. **並列キャッシュ** (`parallel_highfreq_cache`) 
+   - PostgreSQL dshash（動的共有ハッシュテーブル）実装
+   - DSM（Dynamic Shared Memory）による複数プロセス間共有
+   - 将来のPostgreSQL 18並列GINインデックス対応
+
+3. **テーブル参照フォールバック** (`kmersearch_highfreq_kmers`)
+   - システムテーブルへの直接アクセス
+   - キャッシュ不在時の最終手段
+
+### GUC設定検証機能
+
+キャッシュ読み込み時に以下のGUC変数が自動検証されます：
+
+- `kmersearch.max_appearance_rate`
+- `kmersearch.max_appearance_nrow` 
+- `kmersearch.occur_bitlen`
+- `kmersearch.kmer_size`
+
+設定不一致時は詳細なエラーメッセージとヒントが提供されます。
+
+### 並列キャッシュの技術実装
+
+- **メモリ管理**: DSMセグメントピン機能による自動クリーンアップ防止
+- **プロセス識別**: メインプロセスとワーカーでの差別化されたリソース管理  
+- **エラーハンドリング**: 包括的なPG_TRY/PG_CATCHによる安全な操作
+- **ロック管理**: dshash_release_lock()による適切な並行制御
+
+### キャッシュ使用例
+
+```sql
+-- 高頻出k-mer解析の実行（メタデータ作成）
+SELECT kmersearch_analyze_table(
+    (SELECT oid FROM pg_class WHERE relname = 'sequences'), 
+    'dna_seq', 
+    8,    -- k-mer長
+    100   -- 最大出現行数閾値
+);
+
+-- GUC設定をメタデータに合わせる
+SET kmersearch.max_appearance_rate = 0.05;
+SET kmersearch.max_appearance_nrow = 100;
+SET kmersearch.occur_bitlen = 8;
+SET kmersearch.kmer_size = 8;
+
+-- グローバルキャッシュの読み込み
+SELECT kmersearch_highfreq_kmers_cache_load(
+    (SELECT oid FROM pg_class WHERE relname = 'sequences'),
+    'dna_seq', 8
+);
+
+-- 並列キャッシュの読み込み（オプション）
+SELECT kmersearch_parallel_highfreq_kmers_cache_load(
+    (SELECT oid FROM pg_class WHERE relname = 'sequences'),
+    'dna_seq', 8
+);
+
+-- キャッシュ階層を使用した高速検索
+SELECT id, name FROM sequences 
+WHERE dna_seq =% 'ATCGATCG'
+ORDER BY kmersearch_rawscore(dna_seq, 'ATCGATCG') DESC;
+
+-- キャッシュの解放
+SELECT kmersearch_highfreq_kmers_cache_free();
+SELECT kmersearch_parallel_highfreq_kmers_cache_free();
+```
+
+### 並列キャッシュ関数
+
+- **`kmersearch_parallel_highfreq_kmers_cache_load(table_oid, column_name, k_value)`**: 高頻出k-merを共有dshashキャッシュに読み込み
+- **`kmersearch_parallel_highfreq_kmers_cache_free()`**: 並列キャッシュからすべてのエントリを解放し、共有メモリ構造を破棄
+
+### 使用シナリオ
+
+並列キャッシュシステムは以下の用途に特に有用です：
+
+1. **大規模ゲノム解析**での複数の並行クエリ
+2. **DNA配列検索のバッチ処理**
+3. **将来のPostgreSQL 18並列GINインデックス操作**
+4. **高スループットバイオインフォマティクスアプリケーション**
+
+### 技術的実装
+
+- **メモリコンテキスト**: 適切なクリーンアップのためのTopMemoryContext
+- **共有メモリ**: 自動ピン機能付きDSA（Dynamic Shared Areas）
+- **エラーハンドリング**: 包括的なPG_TRY/PG_CATCHブロック
+- **ロック管理**: すべての操作での適切なdshash_release_lock()呼び出し
+- **プロセス検出**: 適切なワーカー識別のためのIsParallelWorker()
 
 ## 制限事項
 

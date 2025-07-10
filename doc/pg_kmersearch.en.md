@@ -140,6 +140,8 @@ pg_kmersearch provides several configuration variables that can be set using Pos
 | `kmersearch.rawscore_cache_max_entries` | 50000 | 1000-10000000 | Maximum entries for rawscore cache |
 | `kmersearch.query_pattern_cache_max_entries` | 50000 | 1000-10000000 | Maximum entries for query pattern cache |
 | `kmersearch.actual_min_score_cache_max_entries` | 50000 | 1000-10000000 | Maximum entries for actual min score cache |
+| `kmersearch.preclude_highfreq_kmer` | false | true/false | Enable high-frequency k-mer exclusion during GIN index construction |
+| `kmersearch.force_use_dshash` | false | true/false | Force use of dshash parallel cache for high-frequency k-mer lookups |
 
 ### High-Frequency K-mer Exclusion
 
@@ -344,6 +346,107 @@ SET kmersearch.actual_min_score_cache_max_entries = 25000;
 SET kmersearch.rawscore_cache_max_entries = 25000;
 SET kmersearch.query_pattern_cache_max_entries = 25000;
 ```
+
+## High-Frequency K-mer Hierarchical Cache System
+
+pg_kmersearch provides a multi-layered cache architecture optimized for PostgreSQL 16/18, maximizing high-frequency k-mer search performance:
+
+### Cache Hierarchy
+
+High-frequency k-mer searches utilize caches in the following priority order:
+
+1. **Global Cache** (`global_highfreq_cache`)
+   - Fastest access
+   - Managed in TopMemoryContext
+   - Single-process reuse
+
+2. **Parallel Cache** (`parallel_highfreq_cache`)
+   - PostgreSQL dshash (dynamic shared hash tables) implementation
+   - DSM (Dynamic Shared Memory) sharing across multiple processes
+   - Future PostgreSQL 18 parallel GIN index support
+
+3. **Table Reference Fallback** (`kmersearch_highfreq_kmers`)
+   - Direct system table access
+   - Final fallback when caches are unavailable
+
+### GUC Validation Feature
+
+The following GUC variables are automatically validated during cache loading:
+
+- `kmersearch.max_appearance_rate`
+- `kmersearch.max_appearance_nrow`
+- `kmersearch.occur_bitlen`
+- `kmersearch.kmer_size`
+
+Detailed error messages and hints are provided when settings mismatch.
+
+### Parallel Cache Technical Implementation
+
+- **Memory Management**: DSM segment pinning prevents automatic cleanup
+- **Process Identification**: Differentiated resource management for main process and workers
+- **Error Handling**: Comprehensive PG_TRY/PG_CATCH for safe operations
+- **Lock Management**: Proper concurrent control with dshash_release_lock()
+
+### Cache Usage Examples
+
+```sql
+-- Execute high-frequency k-mer analysis (create metadata)
+SELECT kmersearch_analyze_table(
+    (SELECT oid FROM pg_class WHERE relname = 'sequences'), 
+    'dna_seq', 
+    8,    -- k-mer length
+    100   -- max appearance row threshold
+);
+
+-- Set GUC variables to match metadata
+SET kmersearch.max_appearance_rate = 0.05;
+SET kmersearch.max_appearance_nrow = 100;
+SET kmersearch.occur_bitlen = 8;
+SET kmersearch.kmer_size = 8;
+
+-- Load global cache
+SELECT kmersearch_highfreq_kmers_cache_load(
+    (SELECT oid FROM pg_class WHERE relname = 'sequences'),
+    'dna_seq', 8
+);
+
+-- Load parallel cache (optional)
+SELECT kmersearch_parallel_highfreq_kmers_cache_load(
+    (SELECT oid FROM pg_class WHERE relname = 'sequences'),
+    'dna_seq', 8
+);
+
+-- High-speed search using cache hierarchy
+SELECT id, name FROM sequences 
+WHERE dna_seq =% 'ATCGATCG'
+ORDER BY kmersearch_rawscore(dna_seq, 'ATCGATCG') DESC;
+
+-- Free caches
+SELECT kmersearch_highfreq_kmers_cache_free();
+SELECT kmersearch_parallel_highfreq_kmers_cache_free();
+```
+
+### Parallel Cache Functions
+
+- **`kmersearch_parallel_highfreq_kmers_cache_load(table_oid, column_name, k_value)`**: Load high-frequency k-mers into shared dshash cache
+- **`kmersearch_parallel_highfreq_kmers_cache_free()`**: Free all entries from the parallel cache and destroy shared memory structures
+
+### Usage Scenarios
+
+The parallel cache system is particularly useful for:
+
+1. **Large-scale genomic analysis** with multiple concurrent queries
+2. **Batch processing** of DNA sequence searches
+3. **Future PostgreSQL 18 parallel GIN index operations**
+4. **High-throughput bioinformatics applications**
+
+### Technical Implementation
+
+- **Memory Context**: TopMemoryContext for proper cleanup
+- **Shared Memory**: DSA (Dynamic Shared Areas) with automatic pinning
+- **Error Handling**: Comprehensive PG_TRY/PG_CATCH blocks
+- **Lock Management**: Proper dshash_release_lock() calls for all operations
+- **Process Detection**: IsParallelWorker() for proper worker identification
 
 ## Limitations
 

@@ -39,6 +39,7 @@
 #include "storage/bufmgr.h"
 #include "access/gin_private.h"
 #include "nodes/pg_list.h"
+#include "access/parallel.h"
 #include "storage/dsm.h"
 #include "utils/dsa.h"
 #include "lib/dshash.h"
@@ -97,6 +98,7 @@ static double kmersearch_max_appearance_rate = 0.05;  /* Default max appearance 
 static int kmersearch_max_appearance_nrow = 0;  /* Default max appearance nrow (0 = undefined) */
 static int kmersearch_min_score = 1;  /* Default minimum score for GIN search */
 static double kmersearch_min_shared_ngram_key_rate = 0.9;  /* Default minimum shared n-gram key rate for =% operator */
+static bool kmersearch_preclude_highfreq_kmer = false;  /* Default to not exclude high-frequency k-mers */
 
 /* Cache configuration variables */
 static int kmersearch_rawscore_cache_max_entries = 50000;  /* Default max rawscore cache entries */
@@ -279,7 +281,7 @@ typedef struct HighfreqKmerCache
 static HighfreqKmerCache global_highfreq_cache = {0};
 
 /* Global testing variable for dshash usage (not exposed to users) */
-static bool kmersearch_use_dshash = false;
+static bool kmersearch_force_use_dshash = false;
 
 /* Parallel high-frequency k-mer cache structures */
 typedef struct ParallelHighfreqKmerCacheEntry
@@ -357,6 +359,11 @@ typedef struct KmerWorkerState
 
 /* Forward declarations */
 static bool kmersearch_is_kmer_highfreq(VarBit *kmer_key);
+static bool kmersearch_validate_guc_against_all_metadata(void);
+static bool kmersearch_is_global_highfreq_cache_loaded(void);
+static bool kmersearch_is_parallel_highfreq_cache_loaded(void);
+static bool kmersearch_lookup_in_global_cache(VarBit *kmer_key);
+static bool kmersearch_lookup_in_parallel_cache(VarBit *kmer_key);
 static int kmersearch_count_highfreq_kmers_in_query(VarBit **query_keys, int nkeys);
 static int kmersearch_get_adjusted_min_score(VarBit **query_keys, int nkeys);
 static int kmersearch_calculate_raw_score(VarBit *seq1, VarBit *seq2, text *query_text);
@@ -372,7 +379,6 @@ static void kmersearch_highfreq_kmers_cache_init(void);
 static bool kmersearch_highfreq_kmers_cache_load_internal(Oid table_oid, const char *column_name, int k_value);
 static void kmersearch_highfreq_kmers_cache_free_internal(void);
 static bool kmersearch_highfreq_kmers_cache_is_valid(Oid table_oid, const char *column_name, int k_value);
-static bool kmersearch_auto_load_cache_if_needed(void);
 
 /* Parallel high-frequency k-mer cache management functions */
 static void kmersearch_parallel_highfreq_kmers_cache_init(void);
@@ -384,6 +390,8 @@ static bool kmersearch_parallel_cache_attach(dsm_handle handle);
 static bool kmersearch_is_highfreq_kmer_parallel(VarBit *kmer);
 static Datum *kmersearch_filter_highfreq_kmers_from_keys_parallel(Datum *original_keys, int *nkeys, int k);
 static void kmersearch_parallel_cache_cleanup_on_exit(int code, Datum arg);
+static void kmersearch_parallel_cache_cleanup_internal(void);
+static void dshash_cache_cleanup_callback(int code, Datum arg);
 
 /* Helper functions for direct k-mer management (no hashing) */
 static uint64_t kmersearch_extract_kmer_as_uint64(VarBit *seq, int start_pos, int k);
@@ -396,9 +404,22 @@ static VarBit *kmersearch_create_ngram_key_with_occurrence(const char *kmer, int
 static bool kmersearch_will_exceed_degenerate_limit(const char *seq, int len);
 static bool kmersearch_will_exceed_degenerate_limit_dna4_bits(VarBit *seq, int start_pos, int k);
 static VarBit **kmersearch_expand_dna4_kmer_to_dna2_direct(VarBit *dna4_seq, int start_pos, int k, int *expansion_count);
-static VarBit *kmersearch_create_ngram_key_from_dna2_bits(VarBit *seq, int start_pos, int k, int occurrence);
 static VarBit *kmersearch_create_kmer_key_from_dna2_bits(VarBit *seq, int start_pos, int k);
+static VarBit *kmersearch_create_ngram_key_from_dna2_bits(VarBit *seq, int start_pos, int k, int occurrence_count);
+static VarBit *kmersearch_create_ngram_key_from_dna4_bits(VarBit *seq, int start_pos, int k, int occurrence_count);
 static Datum *kmersearch_extract_dna2_kmers_direct(VarBit *seq, int k, int *nkeys);
+static Datum *kmersearch_extract_dna2_kmers_kmer_only(VarBit *seq, int k, int *nkeys);
+static KmerData kmersearch_encode_kmer_only_data(VarBit *kmer, int k_size);
+
+/* High-frequency k-mer analysis functions - Phase 2 */
+static void kmersearch_collect_ngram_keys_for_highfreq_kmers(Oid table_oid, const char *column_name, int k_size, const char *highfreq_table_name);
+static void kmersearch_worker_collect_ngram_keys(KmerWorkerState *worker, Relation rel, const char *column_name, int k_size, const char *highfreq_table_name);
+static void kmersearch_create_worker_ngram_table(const char *table_name);
+static void kmersearch_merge_ngram_worker_results(KmerWorkerState *workers, int num_workers, const char *final_table_name);
+static void kmersearch_persist_collected_ngram_keys(Oid table_oid, const char *final_table_name);
+static bool kmersearch_is_kmer_high_frequency(VarBit *ngram_key, int k_size, const char *highfreq_table_name);
+static char *kmersearch_varbit_to_hex_string(VarBit *varbit);
+static void kmersearch_persist_highfreq_kmers_metadata(Oid table_oid, const char *column_name, int k_size);
 
 /* Rawscore cache management functions */
 static RawscoreCacheManager *create_rawscore_cache_manager(const char *name);
@@ -1128,6 +1149,28 @@ _PG_init(void)
                            kmersearch_rawscore_cache_max_entries_assign_hook,
                            NULL);
 
+    DefineCustomBoolVariable("kmersearch.preclude_highfreq_kmer",
+                            "Enable high-frequency k-mer exclusion during GIN index construction",
+                            "When enabled, high-frequency k-mers will be excluded from GIN index to improve performance",
+                            &kmersearch_preclude_highfreq_kmer,
+                            false,
+                            PGC_USERSET,
+                            0,
+                            NULL,
+                            NULL,
+                            NULL);
+
+    DefineCustomBoolVariable("kmersearch.force_use_dshash",
+                            "Force use of dshash-based parallel cache (for testing)",
+                            "When enabled, forces the use of parallel high-frequency k-mer cache even for main processes",
+                            &kmersearch_force_use_dshash,
+                            false,
+                            PGC_USERSET,
+                            0,
+                            NULL,
+                            NULL,
+                            NULL);
+
     DefineCustomIntVariable("kmersearch.query_pattern_cache_max_entries",
                            "Maximum number of entries in query pattern cache",
                            "Controls the maximum number of cached query pattern extraction results",
@@ -1698,61 +1741,6 @@ kmersearch_create_ngram_key(const char *kmer, int k, int occurrence)
     return result;
 }
 
-/*
- * Create n-gram key directly from DNA2 bit sequence
- */
-static VarBit *
-kmersearch_create_ngram_key_from_dna2_bits(VarBit *seq, int start_pos, int k, int occurrence)
-{
-    int kmer_bits = k * 2;
-    int occur_bits = kmersearch_occur_bitlen;
-    int total_bits = kmer_bits + occur_bits;
-    int total_bytes = (total_bits + 7) / 8;
-    int adj_occurrence = occurrence - 1;
-    VarBit *result;
-    bits8 *src_data, *dst_data;
-    int i;
-    
-    result = (VarBit *) palloc0(VARBITHDRSZ + total_bytes);
-    SET_VARSIZE(result, VARBITHDRSZ + total_bytes);
-    VARBITLEN(result) = total_bits;
-    
-    src_data = VARBITS(seq);
-    dst_data = VARBITS(result);
-    
-    /* Copy k-mer bits directly from source */
-    for (i = 0; i < k; i++)
-    {
-        int src_bit_pos = (start_pos + i) * 2;
-        int dst_bit_pos = i * 2;
-        int src_byte_pos = src_bit_pos / 8;
-        int src_bit_offset = src_bit_pos % 8;
-        int dst_byte_pos = dst_bit_pos / 8;
-        int dst_bit_offset = dst_bit_pos % 8;
-        
-        /* Extract 2 bits from source */
-        uint8 base_bits = (src_data[src_byte_pos] >> (6 - src_bit_offset)) & 0x3;
-        
-        /* Store 2 bits in destination */
-        dst_data[dst_byte_pos] |= (base_bits << (6 - dst_bit_offset));
-    }
-    
-    /* Encode occurrence count */
-    if (adj_occurrence >= (1 << occur_bits))
-        adj_occurrence = (1 << occur_bits) - 1;
-    
-    for (i = 0; i < occur_bits; i++)
-    {
-        int bit_pos = kmer_bits + i;
-        int byte_pos = bit_pos / 8;
-        int bit_offset = bit_pos % 8;
-        
-        if (adj_occurrence & (1 << (occur_bits - 1 - i)))
-            dst_data[byte_pos] |= (1 << (7 - bit_offset));
-    }
-    
-    return result;
-}
 
 /*
  * Create k-mer key from DNA2 bits (without occurrence count)
@@ -1800,6 +1788,111 @@ kmersearch_create_kmer_key_from_dna2_bits(VarBit *seq, int start_pos, int k)
     }
     
     return result;
+}
+
+/*
+ * Create n-gram key from DNA2 bits with occurrence count
+ */
+static VarBit *
+kmersearch_create_ngram_key_from_dna2_bits(VarBit *seq, int start_pos, int k, int occurrence_count)
+{
+    int kmer_bits = k * 2;
+    int occur_bits = kmersearch_occur_bitlen;
+    int total_bits = kmer_bits + occur_bits;
+    int total_bytes = (total_bits + 7) / 8;
+    VarBit *result;
+    bits8 *src_data, *dst_data;
+    int src_bytes = VARBITBYTES(seq);
+    int i;
+    
+    result = (VarBit *) palloc0(VARHDRSZ + sizeof(int32) + total_bytes);
+    SET_VARSIZE(result, VARHDRSZ + sizeof(int32) + total_bytes);
+    VARBITLEN(result) = total_bits;
+    
+    src_data = VARBITS(seq);
+    dst_data = VARBITS(result);
+    
+    /* Copy k-mer bits directly from source */
+    for (i = 0; i < k; i++)
+    {
+        int src_bit_pos = (start_pos + i) * 2;
+        int dst_bit_pos = i * 2;
+        int src_byte_pos = src_bit_pos / 8;
+        int src_bit_offset = src_bit_pos % 8;
+        int dst_byte_pos = dst_bit_pos / 8;
+        int dst_bit_offset = dst_bit_pos % 8;
+        uint8 base_bits;
+        
+        /* Boundary check to prevent buffer overflow */
+        if (src_byte_pos >= src_bytes) {
+            pfree(result);
+            return NULL;
+        }
+        
+        /* Extract 2 bits for this base */
+        base_bits = (src_data[src_byte_pos] >> (6 - src_bit_offset)) & 0x3;
+        
+        /* Handle case where bits span two bytes */
+        if (src_bit_offset == 7) {
+            base_bits = (src_data[src_byte_pos] & 0x1) << 1;
+            if (src_byte_pos + 1 < src_bytes) {
+                base_bits |= (src_data[src_byte_pos + 1] >> 7) & 0x1;
+            }
+        }
+        
+        /* Store in destination */
+        dst_data[dst_byte_pos] |= (base_bits << (6 - dst_bit_offset));
+        if (dst_bit_offset == 7 && dst_byte_pos + 1 < total_bytes) {
+            dst_data[dst_byte_pos + 1] |= (base_bits >> 1) & 0x1;
+        }
+    }
+    
+    /* Append occurrence count bits */
+    for (i = 0; i < occur_bits; i++)
+    {
+        int occur_bit = (occurrence_count >> (occur_bits - 1 - i)) & 1;
+        int dst_bit_pos = kmer_bits + i;
+        int dst_byte_pos = dst_bit_pos / 8;
+        int dst_bit_offset = dst_bit_pos % 8;
+        
+        if (dst_byte_pos < total_bytes) {
+            if (occur_bit) {
+                dst_data[dst_byte_pos] |= (1 << (7 - dst_bit_offset));
+            }
+        }
+    }
+    
+    return result;
+}
+
+/*
+ * Create n-gram key from DNA4 bits with occurrence count (by converting to DNA2 first)
+ */
+static VarBit *
+kmersearch_create_ngram_key_from_dna4_bits(VarBit *seq, int start_pos, int k, int occurrence_count)
+{
+    VarBit **expanded_kmers;
+    int expansion_count;
+    VarBit *ngram_key = NULL;
+    
+    /* Expand DNA4 k-mer to DNA2 k-mers and use the first one for n-gram key generation */
+    expanded_kmers = kmersearch_expand_dna4_kmer_to_dna2_direct(seq, start_pos, k, &expansion_count);
+    
+    if (expanded_kmers && expansion_count > 0)
+    {
+        /* Use the first expanded DNA2 k-mer to create n-gram key */
+        ngram_key = kmersearch_create_ngram_key_from_dna2_bits(expanded_kmers[0], 0, k, occurrence_count);
+        
+        /* Free expanded k-mers */
+        for (int i = 0; i < expansion_count; i++)
+        {
+            if (expanded_kmers[i])
+                pfree(expanded_kmers[i]);
+        }
+        pfree(expanded_kmers);
+    }
+    
+    return ngram_key;
 }
 
 /*
@@ -1881,8 +1974,8 @@ kmersearch_extract_dna2_kmers_direct_scalar(VarBit *seq, int k, int *nkeys)
         if (current_count > (1 << kmersearch_occur_bitlen))
             continue;
         
-        /* Create simple k-mer key (without occurrence count for matching) */
-        ngram_key = kmersearch_create_kmer_key_from_dna2_bits(seq, i, k);
+        /* Create n-gram key (k-mer + occurrence count) */
+        ngram_key = kmersearch_create_ngram_key_from_dna2_bits(seq, i, k, current_count);
         if (ngram_key == NULL)
             continue;  /* Skip if key creation failed */
             
@@ -1894,6 +1987,108 @@ kmersearch_extract_dna2_kmers_direct_scalar(VarBit *seq, int k, int *nkeys)
     
     *nkeys = key_count;
     return keys;
+}
+
+/*
+ * Extract k-mers only (without occurrence counts) from DNA2 bit sequence
+ * This function is used for frequency analysis phase
+ */
+static Datum *
+kmersearch_extract_dna2_kmers_kmer_only(VarBit *seq, int k, int *nkeys)
+{
+    int seq_bits = VARBITLEN(seq);
+    int seq_bases = seq_bits / 2;
+    int max_kmers = (seq_bases >= k) ? (seq_bases - k + 1) : 0;
+    Datum *keys;
+    int key_count = 0;
+    int i;
+    
+    *nkeys = 0;
+    if (max_kmers <= 0)
+        return NULL;
+    
+    keys = (Datum *) palloc(max_kmers * sizeof(Datum));
+    
+    /* Extract k-mers */
+    for (i = 0; i <= seq_bases - k; i++)
+    {
+        VarBit *kmer_key;
+        
+        /* Create k-mer key (without occurrence count) */
+        kmer_key = kmersearch_create_kmer_key_from_dna2_bits(seq, i, k);
+        if (kmer_key == NULL)
+            continue;  /* Skip if key creation failed */
+            
+        keys[key_count++] = PointerGetDatum(kmer_key);
+    }
+    
+    *nkeys = key_count;
+    return keys;
+}
+
+/*
+ * Encode k-mer-only VarBit into compact KmerData (ignoring occurrence count bits)
+ */
+static KmerData
+kmersearch_encode_kmer_only_data(VarBit *kmer, int k_size)
+{
+    KmerData result;
+    unsigned char *bits;
+    int i, bit_offset;
+    
+    memset(&result, 0, sizeof(KmerData));
+    bits = VARBITS(kmer);
+    
+    if (k_size <= 8) {
+        result.k8_data = 0;
+        for (i = 0; i < k_size; i++) {
+            int byte_pos, bit_in_byte, nucleotide;
+            bit_offset = i * 2;
+            byte_pos = bit_offset / 8;
+            bit_in_byte = bit_offset % 8;
+            nucleotide = (bits[byte_pos] >> (6 - bit_in_byte)) & 0x3;
+            result.k8_data |= (nucleotide << (2 * (k_size - 1 - i)));
+        }
+    } else if (k_size <= 16) {
+        result.k16_data = 0;
+        for (i = 0; i < k_size; i++) {
+            int byte_pos, bit_in_byte, nucleotide;
+            bit_offset = i * 2;
+            byte_pos = bit_offset / 8;
+            bit_in_byte = bit_offset % 8;
+            nucleotide = (bits[byte_pos] >> (6 - bit_in_byte)) & 0x3;
+            result.k16_data |= (nucleotide << (2 * (k_size - 1 - i)));
+        }
+    } else if (k_size <= 32) {
+        result.k32_data = 0;
+        for (i = 0; i < k_size; i++) {
+            int byte_pos, bit_in_byte, nucleotide;
+            bit_offset = i * 2;
+            byte_pos = bit_offset / 8;
+            bit_in_byte = bit_offset % 8;
+            nucleotide = (bits[byte_pos] >> (6 - bit_in_byte)) & 0x3;
+            result.k32_data |= ((uint64)nucleotide << (2 * (k_size - 1 - i)));
+        }
+    } else {
+        /* For k > 32, split across high and low 64-bit values */
+        result.k64_data.high = 0;
+        result.k64_data.low = 0;
+        for (i = 0; i < k_size; i++) {
+            int byte_pos, bit_in_byte, nucleotide;
+            bit_offset = i * 2;
+            byte_pos = bit_offset / 8;
+            bit_in_byte = bit_offset % 8;
+            nucleotide = (bits[byte_pos] >> (6 - bit_in_byte)) & 0x3;
+            
+            if (i < 32) {
+                result.k64_data.high |= ((uint64)nucleotide << (2 * (31 - i)));
+            } else {
+                result.k64_data.low |= ((uint64)nucleotide << (2 * (k_size - 1 - i)));
+            }
+        }
+    }
+    
+    return result;
 }
 
 /*
@@ -1981,10 +2176,10 @@ kmersearch_extract_dna4_kmers_with_expansion_direct_scalar(VarBit *seq, int k, i
             if (current_count > (1 << kmersearch_occur_bitlen))
                 continue;
             
-            /* Create simple k-mer key (copy the DNA2 k-mer directly) */
-            ngram_key = (VarBit *) palloc(VARSIZE(dna2_kmer));
-            memcpy(ngram_key, dna2_kmer, VARSIZE(dna2_kmer));
-            keys[key_count++] = PointerGetDatum(ngram_key);
+            /* Create n-gram key (k-mer + occurrence count) from expanded DNA2 k-mer */
+            ngram_key = kmersearch_create_ngram_key_from_dna2_bits(dna2_kmer, 0, k, current_count);
+            if (ngram_key)
+                keys[key_count++] = PointerGetDatum(ngram_key);
         }
         
         /* Free each expanded k-mer and then the array */
@@ -3114,23 +3309,27 @@ kmersearch_extract_value_dna2(PG_FUNCTION_ARGS)
     /* Use direct bit extraction instead of string conversion */
     keys = kmersearch_extract_dna2_kmers_direct((VarBit *)dna, k, nkeys);
     
-    /* Apply high-frequency k-mer filtering if cache is available */
-    if (keys && *nkeys > 0) {
-        if (MyBackendType == B_BG_WORKER || kmersearch_use_dshash) {
-            /* Use parallel cache for worker processes or when testing dshash */
+    /* Apply high-frequency k-mer filtering if enabled */
+    if (keys && *nkeys > 0 && kmersearch_preclude_highfreq_kmer) {
+        if (kmersearch_force_use_dshash || IsParallelWorker()) {
+            /* Use parallel cache for worker processes or when forcing dshash */
             if (parallel_highfreq_cache && parallel_highfreq_cache->is_initialized) {
                 keys = kmersearch_filter_highfreq_kmers_from_keys_parallel(keys, nkeys, k);
+            } else {
+                ereport(ERROR,
+                        (errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+                         errmsg("parallel high-frequency k-mer cache is not initialized"),
+                         errhint("Use kmersearch_parallel_highfreq_kmers_cache_load() to create the cache first.")));
             }
         } else {
             /* Use global cache for main process */
-            /* Try to auto-load cache if not already loaded */
-            if (!global_highfreq_cache.is_valid) {
-                kmersearch_auto_load_cache_if_needed();
-            }
-            
-            /* Use cached hash table for filtering if available */
             if (global_highfreq_cache.is_valid) {
                 keys = kmersearch_filter_highfreq_kmers_from_keys(keys, nkeys, global_highfreq_cache.highfreq_hash, k);
+            } else {
+                ereport(ERROR,
+                        (errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+                         errmsg("global high-frequency k-mer cache is not initialized"),
+                         errhint("Use kmersearch_highfreq_kmers_cache_load() to create the cache first.")));
             }
         }
     }
@@ -3161,23 +3360,27 @@ kmersearch_extract_value_dna4(PG_FUNCTION_ARGS)
     /* Use direct bit extraction with degenerate expansion */
     keys = kmersearch_extract_dna4_kmers_with_expansion_direct((VarBit *)dna, k, nkeys);
     
-    /* Apply high-frequency k-mer filtering if cache is available */
-    if (keys && *nkeys > 0) {
-        if (MyBackendType == B_BG_WORKER || kmersearch_use_dshash) {
-            /* Use parallel cache for worker processes or when testing dshash */
+    /* Apply high-frequency k-mer filtering if enabled */
+    if (keys && *nkeys > 0 && kmersearch_preclude_highfreq_kmer) {
+        if (kmersearch_force_use_dshash || IsParallelWorker()) {
+            /* Use parallel cache for worker processes or when forcing dshash */
             if (parallel_highfreq_cache && parallel_highfreq_cache->is_initialized) {
                 keys = kmersearch_filter_highfreq_kmers_from_keys_parallel(keys, nkeys, k);
+            } else {
+                ereport(ERROR,
+                        (errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+                         errmsg("parallel high-frequency k-mer cache is not initialized"),
+                         errhint("Use kmersearch_parallel_highfreq_kmers_cache_load() to create the cache first.")));
             }
         } else {
             /* Use global cache for main process */
-            /* Try to auto-load cache if not already loaded */
-            if (!global_highfreq_cache.is_valid) {
-                kmersearch_auto_load_cache_if_needed();
-            }
-            
-            /* Use cached hash table for filtering if available */
             if (global_highfreq_cache.is_valid) {
                 keys = kmersearch_filter_highfreq_kmers_from_keys(keys, nkeys, global_highfreq_cache.highfreq_hash, k);
+            } else {
+                ereport(ERROR,
+                        (errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+                         errmsg("global high-frequency k-mer cache is not initialized"),
+                         errhint("Use kmersearch_highfreq_kmers_cache_load() to create the cache first.")));
             }
         }
     }
@@ -3376,9 +3579,25 @@ kmersearch_consistent(PG_FUNCTION_ARGS)
     int i;
     VarBit **query_key_array;
     
-    /* Try to auto-load cache if not already loaded for search optimization */
-    if (!global_highfreq_cache.is_valid) {
-        kmersearch_auto_load_cache_if_needed();
+    /* Handle high-frequency k-mer cache only if enabled */
+    if (kmersearch_preclude_highfreq_kmer) {
+        if (kmersearch_force_use_dshash || IsParallelWorker()) {
+            /* Use parallel cache for worker processes or when forcing dshash */
+            if (!(parallel_highfreq_cache && parallel_highfreq_cache->is_initialized)) {
+                ereport(ERROR,
+                        (errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+                         errmsg("parallel high-frequency k-mer cache is not initialized"),
+                         errhint("Use kmersearch_parallel_highfreq_kmers_cache_load() to create the cache first.")));
+            }
+        } else {
+            /* Use global cache for main process */
+            if (!global_highfreq_cache.is_valid) {
+                ereport(ERROR,
+                        (errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+                         errmsg("global high-frequency k-mer cache is not initialized"),
+                         errhint("Use kmersearch_highfreq_kmers_cache_load() to create the cache first.")));
+            }
+        }
     }
     
     *recheck = true;  /* Always recheck for scoring */
@@ -4109,34 +4328,182 @@ kmersearch_find_or_add_kmer_occurrence(KmerOccurrence *occurrences, int *count, 
 }
 
 /*
- * Check if a k-mer is highly frequent for a given index
+ * Check if a k-mer is in the high-frequency list
+ * Uses cache hierarchy: global_cache -> parallel_cache -> table lookup
  */
 static bool
 kmersearch_is_kmer_highfreq(VarBit *kmer_key)
 {
-    HighfreqKmerHashEntry *entry;
-    bool found;
-    
     if (!kmer_key)
         return false;
     
-    /* Try to auto-load cache if not already loaded */
-    if (!global_highfreq_cache.is_valid) {
-        kmersearch_auto_load_cache_if_needed();
+    /* Step 1: Validate GUC settings against metadata table */
+    if (!kmersearch_validate_guc_against_all_metadata()) {
+        ereport(ERROR, 
+                (errcode(ERRCODE_CONFIGURATION_LIMIT_EXCEEDED),
+                 errmsg("Current GUC settings do not match kmersearch_highfreq_kmers_meta table"),
+                 errhint("Current cache may be invalid. Please reload cache or run kmersearch_analyze_table() again.")));
     }
     
-    /* If cache is still not valid, assume not high-frequency */
-    if (!global_highfreq_cache.is_valid || !global_highfreq_cache.highfreq_hash) {
+    /* Step 2: Try global_highfreq_cache first */
+    if (kmersearch_is_global_highfreq_cache_loaded()) {
+        return kmersearch_lookup_in_global_cache(kmer_key);
+    }
+    
+    /* Step 3: Try parallel_highfreq_cache if global cache not available */
+    if (kmersearch_is_parallel_highfreq_cache_loaded()) {
+        return kmersearch_lookup_in_parallel_cache(kmer_key);
+    }
+    
+    /* Step 4: Fall back to table lookup */
+    {
+        int ret;
+        StringInfoData query;
+        bool is_highfreq = false;
+        char *kmer_hex;
+        
+        /* Connect to SPI */
+        if (SPI_connect() != SPI_OK_CONNECT)
+            return false;
+        
+        /* Check if kmersearch_highfreq_kmers table exists */
+        ret = SPI_execute("SELECT 1 FROM information_schema.tables WHERE table_name = 'kmersearch_highfreq_kmers' LIMIT 1", true, 1);
+        if (ret != SPI_OK_SELECT || SPI_processed == 0) {
+            /* Table doesn't exist, always return false */
+            SPI_finish();
+            return false;
+        }
+        
+        /* Convert k-mer to hex string for SQL query */
+        kmer_hex = kmersearch_varbit_to_hex_string(kmer_key);
+        
+        /* Query kmersearch_highfreq_kmers table using new ngram_key column */
+        initStringInfo(&query);
+        appendStringInfo(&query,
+            "SELECT 1 FROM kmersearch_highfreq_kmers "
+            "WHERE substring(ngram_key, 1, %d) = '\\x%s'::varbit "
+            "LIMIT 1",
+            VARBITLEN(kmer_key), kmer_hex);
+        
+        /* Execute query */
+        ret = SPI_execute(query.data, true, 1);
+        if (ret == SPI_OK_SELECT && SPI_processed > 0) {
+            is_highfreq = true;
+        }
+        
+        /* Clean up */
+        pfree(kmer_hex);
+        pfree(query.data);
+        SPI_finish();
+        
+        return is_highfreq;
+    }
+}
+
+/*
+ * Validate GUC settings against all metadata table entries
+ */
+static bool
+kmersearch_validate_guc_against_all_metadata(void)
+{
+    int ret;
+    StringInfoData query;
+    bool valid = true;
+    
+    /* Connect to SPI */
+    if (SPI_connect() != SPI_OK_CONNECT)
+        return true;  /* Assume valid if we can't check */
+    
+    /* Check if metadata table exists */
+    ret = SPI_execute("SELECT 1 FROM information_schema.tables WHERE table_name = 'kmersearch_highfreq_kmers_meta' LIMIT 1", true, 1);
+    if (ret != SPI_OK_SELECT || SPI_processed == 0) {
+        /* Table doesn't exist, validation passes */
+        SPI_finish();
+        return true;
+    }
+    
+    /* Query metadata table and compare with current GUC values */
+    initStringInfo(&query);
+    appendStringInfo(&query,
+        "SELECT occur_bitlen, max_appearance_rate, max_appearance_nrow "
+        "FROM kmersearch_highfreq_kmers_meta "
+        "WHERE occur_bitlen != %d OR "
+        "      abs(max_appearance_rate - %f) > 0.0001 OR "
+        "      max_appearance_nrow != %d "
+        "LIMIT 1",
+        kmersearch_occur_bitlen,
+        kmersearch_max_appearance_rate,
+        kmersearch_max_appearance_nrow);
+    
+    /* Execute query */
+    ret = SPI_execute(query.data, true, 1);
+    if (ret == SPI_OK_SELECT && SPI_processed > 0) {
+        valid = false;  /* Found mismatching entry */
+    }
+    
+    /* Clean up */
+    pfree(query.data);
+    SPI_finish();
+    
+    return valid;
+}
+
+/*
+ * Check if global_highfreq_cache is loaded
+ */
+static bool
+kmersearch_is_global_highfreq_cache_loaded(void)
+{
+    return (global_highfreq_cache.is_valid && 
+            global_highfreq_cache.highfreq_count > 0);
+}
+
+/*
+ * Check if parallel_highfreq_cache is loaded
+ */
+static bool
+kmersearch_is_parallel_highfreq_cache_loaded(void)
+{
+    return (parallel_highfreq_cache != NULL && 
+            parallel_highfreq_cache->is_initialized &&
+            parallel_highfreq_cache->num_entries > 0);
+}
+
+/*
+ * Lookup k-mer in global_highfreq_cache
+ */
+static bool
+kmersearch_lookup_in_global_cache(VarBit *kmer_key)
+{
+    uint64 hash;
+    bool found;
+    
+    if (!global_highfreq_cache.is_valid || global_highfreq_cache.highfreq_count == 0)
         return false;
-    }
     
-    /* Check if this k-mer is in the high-frequency hash table */
-    entry = (HighfreqKmerHashEntry *) hash_search(global_highfreq_cache.highfreq_hash,
-                                                 (void *) &kmer_key,
-                                                 HASH_FIND,
-                                                 &found);
+    /* Calculate hash of k-mer */
+    hash = hash_any((unsigned char *)VARDATA(kmer_key), VARSIZE(kmer_key) - VARHDRSZ);
     
+    /* Search in hash table */
+    hash_search(global_highfreq_cache.highfreq_hash, &hash, HASH_FIND, &found);
     return found;
+}
+
+/*
+ * Lookup k-mer in parallel_highfreq_cache  
+ */
+static bool
+kmersearch_lookup_in_parallel_cache(VarBit *kmer_key)
+{
+    /* For now, we simplify this - parallel cache lookup would require 
+       more complex dshash setup that's not implemented yet */
+    if (!parallel_highfreq_cache || !parallel_highfreq_cache->is_initialized || 
+        parallel_highfreq_cache->num_entries == 0)
+        return false;
+    
+    /* TODO: Implement actual parallel cache lookup with dshash 
+       For now, always return false to fall back to table lookup */
+    return false;
 }
 
 /*
@@ -5139,10 +5506,13 @@ kmersearch_worker_analyze_blocks(KmerWorkerState *worker, Relation rel,
             continue;  /* Skip NULL values */
         }
         
+        /* Convert DNA2 to VarBit representation */
         sequence = DatumGetVarBitP(value);
         
-        /* Extract k-mers from the sequence */
-        kmers = (VarBit **)kmersearch_extract_dna2_kmers_direct(sequence, k_size, &nkeys);
+        /* Extract k-mers from the sequence (k-mer-only for phase 1) */
+        ereport(DEBUG1, (errmsg("Extracting k-mers from sequence, k_size=%d", k_size)));
+        kmers = (VarBit **)kmersearch_extract_dna2_kmers_kmer_only(sequence, k_size, &nkeys);
+        ereport(DEBUG1, (errmsg("Extracted %d k-mers", nkeys)));
         if (kmers == NULL || nkeys == 0) {
             continue;
         }
@@ -5155,8 +5525,8 @@ kmersearch_worker_analyze_blocks(KmerWorkerState *worker, Relation rel,
                 continue;
             }
             
-            /* Encode k-mer into compact format */
-            encoded_kmer = kmersearch_encode_kmer_data(kmers[j], k_size);
+            /* Encode k-mer into compact format (k-mer-only) */
+            encoded_kmer = kmersearch_encode_kmer_only_data(kmers[j], k_size);
             
             /* Add to buffer (will flush to temp table if full) */
             kmersearch_add_to_buffer(&worker->buffer, encoded_kmer, worker->temp_table_name);
@@ -5290,7 +5660,8 @@ kmersearch_analyze_table_parallel(Oid table_oid, const char *column_name, int k_
         kmersearch_worker_analyze_blocks(&workers[i], rel, column_name, k_size);
     }
     
-    /* Merge worker results using SQL aggregation */
+    /* Phase 1: Merge worker results using SQL aggregation for k-mer-only analysis */
+    ereport(NOTICE, (errmsg("Phase 1: Analyzing k-mer frequencies with %d parallel workers...", num_workers)));
     {
         char *final_table_name = psprintf("temp_kmer_final_%d", getpid());
         kmersearch_merge_worker_results_sql(workers, num_workers, final_table_name, k_size, threshold_rows);
@@ -5310,8 +5681,12 @@ kmersearch_analyze_table_parallel(Oid table_oid, const char *column_name, int k_
         }
         SPI_finish();
         
-        /* Persist highly frequent k-mers to permanent tables */
-        kmersearch_persist_highfreq_kmers_from_temp(table_oid, column_name, k_size, final_table_name);
+        /* Phase 2: Collect n-gram keys for high-frequency k-mers using parallel processing */
+        ereport(NOTICE, (errmsg("Phase 2: Collecting n-gram keys for high-frequency k-mers...")));
+        kmersearch_collect_ngram_keys_for_highfreq_kmers(table_oid, column_name, k_size, final_table_name);
+        
+        /* Insert metadata record */
+        kmersearch_persist_highfreq_kmers_metadata(table_oid, column_name, k_size);
         
         pfree(final_table_name);
     }
@@ -5341,11 +5716,342 @@ kmersearch_persist_highfreq_kmers_from_temp(Oid table_oid, const char *column_na
     initStringInfo(&query);
     
     /* Insert highly frequent k-mers into permanent table */
+    /* Note: Combining kmer_data and frequency_count into ngram_key */
     appendStringInfo(&query,
-        "INSERT INTO kmersearch_highfreq_kmers (index_oid, kmer_key, frequency_count, detection_reason) "
-        "SELECT %u, kmer_data::varbit, frequency_count, 'high_frequency' "
+        "INSERT INTO kmersearch_highfreq_kmers (index_oid, ngram_key, detection_reason) "
+        "SELECT %u, "
+        "  substring(kmer_data::varbit, 1, length(kmer_data::varbit)) || "
+        "  substring(frequency_count::bit(%d), 1, %d) AS ngram_key, "
+        "  'high_frequency' "
         "FROM %s",
-        table_oid, temp_table_name);
+        table_oid, kmersearch_occur_bitlen, kmersearch_occur_bitlen, temp_table_name);
+    
+    SPI_connect();
+    SPI_exec(query.data, 0);
+    
+    /* Insert metadata record */
+    pfree(query.data);
+    initStringInfo(&query);
+    appendStringInfo(&query,
+        "INSERT INTO kmersearch_highfreq_kmers_meta "
+        "(table_oid, column_name, k_value, occur_bitlen, max_appearance_rate, max_appearance_nrow) "
+        "VALUES (%u, '%s', %d, %d, %f, %d) "
+        "ON CONFLICT (table_oid, column_name, k_value) DO UPDATE SET "
+        "occur_bitlen = EXCLUDED.occur_bitlen, "
+        "max_appearance_rate = EXCLUDED.max_appearance_rate, "
+        "max_appearance_nrow = EXCLUDED.max_appearance_nrow, "
+        "analysis_timestamp = now()",
+        table_oid, column_name, k_size, kmersearch_occur_bitlen, 
+        kmersearch_max_appearance_rate, kmersearch_max_appearance_nrow);
+    
+    SPI_exec(query.data, 0);
+    SPI_finish();
+    
+    pfree(query.data);
+}
+
+/*
+ * Phase 2: Collect n-gram keys for high-frequency k-mers using parallel processing
+ */
+static void
+kmersearch_collect_ngram_keys_for_highfreq_kmers(Oid table_oid, const char *column_name, int k_size, const char *highfreq_table_name)
+{
+    Relation rel;
+    int num_workers;
+    KmerWorkerState *workers;
+    int i;
+    StringInfoData final_ngram_table;
+    
+    /* Open target relation */
+    rel = relation_open(table_oid, AccessShareLock);
+    
+    /* Determine number of parallel workers for Phase 2 */
+    num_workers = kmersearch_determine_parallel_workers(0, rel);
+    
+    /* Allocate worker state array */
+    workers = (KmerWorkerState *) palloc0(num_workers * sizeof(KmerWorkerState));
+    
+    initStringInfo(&final_ngram_table);
+    appendStringInfo(&final_ngram_table, "temp_ngram_keys_%u_%d", table_oid, (int)getpid());
+    
+    /* Initialize workers for Phase 2 n-gram collection */
+    for (i = 0; i < num_workers; i++) {
+        StringInfoData worker_table_name;
+        
+        initStringInfo(&worker_table_name);
+        appendStringInfo(&worker_table_name, "%s_worker_%d", final_ngram_table.data, i);
+        
+        workers[i].worker_id = i;
+        workers[i].temp_table_name = pstrdup(worker_table_name.data);
+        workers[i].rows_processed = 0;
+        workers[i].local_highfreq_count = 0;
+        
+        /* Create worker temp table for n-gram keys */
+        kmersearch_create_worker_ngram_table(workers[i].temp_table_name);
+        
+        /* Assign block ranges */
+        BlockNumber total_blocks = RelationGetNumberOfBlocks(rel);
+        workers[i].start_block = (i * total_blocks) / num_workers;
+        workers[i].end_block = ((i + 1) * total_blocks) / num_workers;
+        
+        pfree(worker_table_name.data);
+    }
+    
+    /* Execute parallel n-gram collection */
+    for (i = 0; i < num_workers; i++) {
+        kmersearch_worker_collect_ngram_keys(&workers[i], rel, column_name, k_size, highfreq_table_name);
+    }
+    
+    /* Merge all worker results into final n-gram table */
+    kmersearch_merge_ngram_worker_results(workers, num_workers, final_ngram_table.data);
+    
+    /* Insert collected n-gram keys into permanent table */
+    kmersearch_persist_collected_ngram_keys(table_oid, final_ngram_table.data);
+    
+    /* Clean up worker temp tables */
+    for (i = 0; i < num_workers; i++) {
+        StringInfoData drop_query;
+        initStringInfo(&drop_query);
+        appendStringInfo(&drop_query, "DROP TABLE IF EXISTS %s", workers[i].temp_table_name);
+        SPI_connect();
+        SPI_exec(drop_query.data, 0);
+        SPI_finish();
+        pfree(drop_query.data);
+        pfree(workers[i].temp_table_name);
+    }
+    
+    /* Drop final temp table */
+    {
+        StringInfoData drop_query;
+        initStringInfo(&drop_query);
+        appendStringInfo(&drop_query, "DROP TABLE IF EXISTS %s", final_ngram_table.data);
+        SPI_connect();
+        SPI_exec(drop_query.data, 0);
+        SPI_finish();
+        pfree(drop_query.data);
+    }
+    
+    /* Clean up */
+    pfree(workers);
+    pfree(final_ngram_table.data);
+    relation_close(rel, AccessShareLock);
+}
+
+/*
+ * Worker function for Phase 2: collect n-gram keys for high-frequency k-mers
+ */
+static void
+kmersearch_worker_collect_ngram_keys(KmerWorkerState *worker, Relation rel, const char *column_name, int k_size, const char *highfreq_table_name)
+{
+    StringInfoData query;
+    
+    /* For now, use a simplified SQL-based approach instead of low-level scanning */
+    initStringInfo(&query);
+    
+    /* Insert all n-gram keys for sequences where the k-mer part matches high-frequency k-mers */
+    appendStringInfo(&query,
+        "INSERT INTO %s (ngram_key) "
+        "SELECT DISTINCT ngram_key FROM ("
+        "  SELECT sequence, generate_series(1, length(sequence)/2 - %d + 1) as pos "
+        "  FROM %s "
+        "  WHERE ctid >= '(%u,1)'::tid AND ctid < '(%u,1)'::tid"
+        ") seq_pos "
+        "CROSS JOIN LATERAL ("
+        "  SELECT substring(sequence, (pos-1)*2+1, %d*2) || "
+        "         lpad(to_hex(row_number() OVER (PARTITION BY substring(sequence, (pos-1)*2+1, %d*2) ORDER BY pos)), %d, '0')::bit(%d) as ngram_key"
+        ") ngrams "
+        "WHERE substring(ngrams.ngram_key, 1, %d*2)::varbit IN ("
+        "  SELECT ('\\\\x' || lpad(to_hex(kmer_data), %d, '0'))::varbit FROM %s"
+        ")",
+        worker->temp_table_name,
+        k_size,
+        get_rel_name(RelationGetRelid(rel)),
+        worker->start_block,
+        worker->end_block,
+        k_size, k_size,
+        (kmersearch_occur_bitlen + 3) / 4, kmersearch_occur_bitlen,
+        k_size,
+        (k_size <= 8 ? 8 : k_size <= 16 ? 8 : k_size <= 32 ? 16 : 32) / 4,
+        highfreq_table_name);
+    
+    SPI_connect();
+    SPI_exec(query.data, 0);
+    SPI_finish();
+    
+    pfree(query.data);
+    worker->rows_processed = 1;  /* Mark as processed */
+}
+
+/*
+ * Create worker temp table for n-gram keys
+ */
+static void
+kmersearch_create_worker_ngram_table(const char *table_name)
+{
+    StringInfoData query;
+    
+    initStringInfo(&query);
+    appendStringInfo(&query, 
+        "CREATE TEMP TABLE %s ("
+        "ngram_key varbit"
+        ")", table_name);
+    
+    SPI_connect();
+    SPI_exec(query.data, 0);
+    SPI_finish();
+    
+    pfree(query.data);
+}
+
+/*
+ * Merge n-gram worker results
+ */
+static void
+kmersearch_merge_ngram_worker_results(KmerWorkerState *workers, int num_workers, const char *final_table_name)
+{
+    StringInfoData query;
+    int i;
+    
+    initStringInfo(&query);
+    
+    /* Create final table */
+    appendStringInfo(&query, 
+        "CREATE TEMP TABLE %s ("
+        "ngram_key varbit PRIMARY KEY"
+        ")", final_table_name);
+    
+    SPI_connect();
+    SPI_exec(query.data, 0);
+    
+    /* Build UNION query to combine all worker tables */
+    resetStringInfo(&query);
+    appendStringInfo(&query, "INSERT INTO %s (ngram_key) ", final_table_name);
+    appendStringInfoString(&query, "SELECT DISTINCT ngram_key FROM (");
+    
+    for (i = 0; i < num_workers; i++) {
+        if (i > 0) appendStringInfoString(&query, " UNION ALL ");
+        appendStringInfo(&query, "SELECT ngram_key FROM %s", workers[i].temp_table_name);
+    }
+    
+    appendStringInfoString(&query, ") AS combined");
+    
+    /* Execute merge query */
+    SPI_exec(query.data, 0);
+    SPI_finish();
+    
+    pfree(query.data);
+}
+
+/*
+ * Persist collected n-gram keys to permanent table
+ */
+static void
+kmersearch_persist_collected_ngram_keys(Oid table_oid, const char *final_table_name)
+{
+    StringInfoData query;
+    
+    initStringInfo(&query);
+    
+    /* Get index OID for the table */
+    appendStringInfo(&query,
+        "INSERT INTO kmersearch_highfreq_kmers (index_oid, ngram_key, detection_reason) "
+        "SELECT idx.indexrelid, ng.ngram_key, 'high_frequency' "
+        "FROM %s ng "
+        "CROSS JOIN pg_stat_user_indexes idx "
+        "WHERE idx.relid = %u AND idx.schemaname = 'public'",
+        final_table_name, table_oid);
+    
+    SPI_connect();
+    SPI_exec(query.data, 0);
+    SPI_finish();
+    
+    pfree(query.data);
+}
+
+/*
+ * Check if k-mer part of n-gram is in high-frequency list
+ */
+static bool
+kmersearch_is_kmer_high_frequency(VarBit *ngram_key, int k_size, const char *highfreq_table_name)
+{
+    StringInfoData query;
+    bool found = false;
+    KmerData kmer_only_data;
+    char *kmer_hex;
+    
+    /* Extract k-mer-only part and encode it */
+    kmer_only_data = kmersearch_encode_kmer_only_data(ngram_key, k_size);
+    
+    /* Convert to hex string for SQL comparison */
+    if (k_size <= 8) {
+        kmer_hex = psprintf("%08x", kmer_only_data.k8_data);
+    } else if (k_size <= 16) {
+        kmer_hex = psprintf("%08x", kmer_only_data.k16_data);
+    } else if (k_size <= 32) {
+        kmer_hex = psprintf("%016lx", kmer_only_data.k32_data);
+    } else {
+        kmer_hex = psprintf("%016lx%016lx", kmer_only_data.k64_data.high, kmer_only_data.k64_data.low);
+    }
+    
+    initStringInfo(&query);
+    appendStringInfo(&query, 
+        "SELECT 1 FROM %s WHERE kmer_data = %s LIMIT 1",
+        highfreq_table_name, kmer_hex);
+    
+    SPI_connect();
+    if (SPI_exec(query.data, 0) == SPI_OK_SELECT && SPI_processed > 0) {
+        found = true;
+    }
+    SPI_finish();
+    
+    pfree(query.data);
+    pfree(kmer_hex);
+    
+    return found;
+}
+
+/*
+ * Convert VarBit to hex string for SQL operations
+ */
+static char *
+kmersearch_varbit_to_hex_string(VarBit *varbit)
+{
+    int bitlen = VARBITLEN(varbit);
+    int bytelen = VARBITBYTES(varbit);
+    unsigned char *bits = VARBITS(varbit);
+    char *hex_string;
+    int i;
+    
+    hex_string = palloc(bytelen * 2 + 1);
+    
+    for (i = 0; i < bytelen; i++) {
+        sprintf(hex_string + i * 2, "%02x", bits[i]);
+    }
+    
+    hex_string[bytelen * 2] = '\0';
+    return hex_string;
+}
+
+/*
+ * Persist metadata for high-frequency k-mer analysis
+ */
+static void
+kmersearch_persist_highfreq_kmers_metadata(Oid table_oid, const char *column_name, int k_size)
+{
+    StringInfoData query;
+    
+    initStringInfo(&query);
+    appendStringInfo(&query,
+        "INSERT INTO kmersearch_highfreq_kmers_meta "
+        "(table_oid, column_name, k_value, occur_bitlen, max_appearance_rate, max_appearance_nrow) "
+        "VALUES (%u, '%s', %d, %d, %f, %d) "
+        "ON CONFLICT (table_oid, column_name, k_value) DO UPDATE SET "
+        "occur_bitlen = EXCLUDED.occur_bitlen, "
+        "max_appearance_rate = EXCLUDED.max_appearance_rate, "
+        "max_appearance_nrow = EXCLUDED.max_appearance_nrow, "
+        "analysis_timestamp = now()",
+        table_oid, column_name, k_size, kmersearch_occur_bitlen, 
+        kmersearch_max_appearance_rate, kmersearch_max_appearance_nrow);
     
     SPI_connect();
     SPI_exec(query.data, 0);
@@ -6121,13 +6827,21 @@ kmersearch_parallel_highfreq_kmers_cache_free(PG_FUNCTION_ARGS)
 {
     int32 freed_entries = 0;
     
-    /* Count entries before freeing */
+    ereport(LOG, (errmsg("kmersearch_parallel_highfreq_kmers_cache_free: Starting function call")));
+    
+    /* Get the actual number of entries from the cache */
     if (parallel_highfreq_cache != NULL && parallel_highfreq_cache->is_initialized) {
         freed_entries = parallel_highfreq_cache->num_entries;
+        ereport(LOG, (errmsg("kmersearch_parallel_highfreq_kmers_cache_free: Found %d entries to free", freed_entries)));
+    } else {
+        ereport(LOG, (errmsg("kmersearch_parallel_highfreq_kmers_cache_free: parallel_highfreq_cache is NULL or not initialized")));
+        freed_entries = 0;
     }
     
     /* Free parallel cache */
     kmersearch_parallel_highfreq_kmers_cache_free_internal();
+    
+    ereport(LOG, (errmsg("kmersearch_parallel_highfreq_kmers_cache_free: Function completed, returning %d", freed_entries)));
     
     PG_RETURN_INT32(freed_entries);
 }
@@ -6181,6 +6895,107 @@ kmersearch_remove_occurrence_bits(VarBit *key_with_occurrence, int k)
     return result;
 }
 
+/*
+ * Validate current GUC settings against metadata table values
+ * Returns true if validation passes, false otherwise
+ */
+static bool
+kmersearch_validate_guc_against_metadata(Oid table_oid, const char *column_name, int k_value)
+{
+    int ret;
+    StringInfoData query;
+    bool validation_passed = true;
+    
+    /* Connect to SPI */
+    if (SPI_connect() != SPI_OK_CONNECT)
+        ereport(ERROR, (errmsg("kmersearch_validate_guc_against_metadata: SPI_connect failed")));
+    
+    /* Build query to get metadata */
+    initStringInfo(&query);
+    appendStringInfo(&query,
+        "SELECT occur_bitlen, max_appearance_rate, max_appearance_nrow "
+        "FROM kmersearch_highfreq_kmers_meta "
+        "WHERE table_oid = %u AND column_name = '%s' AND k_value = %d",
+        table_oid, column_name, k_value);
+    
+    /* Execute query */
+    ret = SPI_execute(query.data, true, 1);
+    if (ret == SPI_OK_SELECT && SPI_processed > 0)
+    {
+        bool isnull;
+        Datum occur_bitlen_datum, max_appearance_rate_datum, max_appearance_nrow_datum;
+        int stored_occur_bitlen, stored_max_appearance_nrow;
+        float stored_max_appearance_rate;
+        
+        /* Get stored metadata values */
+        occur_bitlen_datum = SPI_getbinval(SPI_tuptable->vals[0], SPI_tuptable->tupdesc, 1, &isnull);
+        if (!isnull)
+        {
+            stored_occur_bitlen = DatumGetInt32(occur_bitlen_datum);
+            if (stored_occur_bitlen != kmersearch_occur_bitlen)
+            {
+                ereport(ERROR,
+                        (errcode(ERRCODE_CONFIG_FILE_ERROR),
+                         errmsg("GUC validation failed: kmersearch.occur_bitlen mismatch"),
+                         errdetail("Current setting: %d, Required by metadata: %d",
+                                 kmersearch_occur_bitlen, stored_occur_bitlen),
+                         errhint("Set kmersearch.occur_bitlen = %d before loading cache.",
+                                stored_occur_bitlen)));
+                validation_passed = false;
+            }
+        }
+        
+        max_appearance_rate_datum = SPI_getbinval(SPI_tuptable->vals[0], SPI_tuptable->tupdesc, 2, &isnull);
+        if (!isnull)
+        {
+            stored_max_appearance_rate = DatumGetFloat4(max_appearance_rate_datum);
+            if (fabs(stored_max_appearance_rate - kmersearch_max_appearance_rate) > 0.0001)
+            {
+                ereport(ERROR,
+                        (errcode(ERRCODE_CONFIG_FILE_ERROR),
+                         errmsg("GUC validation failed: kmersearch.max_appearance_rate mismatch"),
+                         errdetail("Current setting: %.4f, Required by metadata: %.4f",
+                                 kmersearch_max_appearance_rate, stored_max_appearance_rate),
+                         errhint("Set kmersearch.max_appearance_rate = %.4f before loading cache.",
+                                stored_max_appearance_rate)));
+                validation_passed = false;
+            }
+        }
+        
+        max_appearance_nrow_datum = SPI_getbinval(SPI_tuptable->vals[0], SPI_tuptable->tupdesc, 3, &isnull);
+        if (!isnull)
+        {
+            stored_max_appearance_nrow = DatumGetInt32(max_appearance_nrow_datum);
+            if (stored_max_appearance_nrow != kmersearch_max_appearance_nrow)
+            {
+                ereport(ERROR,
+                        (errcode(ERRCODE_CONFIG_FILE_ERROR),
+                         errmsg("GUC validation failed: kmersearch.max_appearance_nrow mismatch"),
+                         errdetail("Current setting: %d, Required by metadata: %d",
+                                 kmersearch_max_appearance_nrow, stored_max_appearance_nrow),
+                         errhint("Set kmersearch.max_appearance_nrow = %d before loading cache.",
+                                stored_max_appearance_nrow)));
+                validation_passed = false;
+            }
+        }
+    }
+    else
+    {
+        ereport(ERROR,
+                (errcode(ERRCODE_UNDEFINED_TABLE),
+                 errmsg("No metadata found for table_oid=%u, column_name='%s', k_value=%d",
+                       table_oid, column_name, k_value),
+                 errhint("Run kmersearch_analyze_table() first to create metadata.")));
+        validation_passed = false;
+    }
+    
+    /* Cleanup */
+    pfree(query.data);
+    SPI_finish();
+    
+    return validation_passed;
+}
+
 static VarBit **
 kmersearch_get_highfreq_kmers_from_table(Oid table_oid, const char *column_name, int k, int *nkeys)
 {
@@ -6201,7 +7016,7 @@ kmersearch_get_highfreq_kmers_from_table(Oid table_oid, const char *column_name,
     /* Build query to get highly frequent k-mers */
     initStringInfo(&query);
     appendStringInfo(&query,
-        "SELECT DISTINCT hkm.kmer_key FROM kmersearch_highfreq_kmers hkm "
+        "SELECT DISTINCT hkm.ngram_key FROM kmersearch_highfreq_kmers hkm "
         "WHERE hkm.index_oid IN ("
         "    SELECT indexrelid FROM pg_stat_user_indexes pui "
         "    JOIN pg_class pc ON pui.relid = pc.oid "
@@ -6213,7 +7028,7 @@ kmersearch_get_highfreq_kmers_from_table(Oid table_oid, const char *column_name,
         "        AND hkm_meta.k_value = %d"
         "    )"
         ") "
-        "ORDER BY hkm.kmer_key",
+        "ORDER BY hkm.ngram_key",
         table_oid, table_oid, column_name, k);
     
     /* Execute query */
@@ -6412,6 +7227,10 @@ kmersearch_highfreq_kmers_cache_load_internal(Oid table_oid, const char *column_
     if (!column_name || k_value <= 0)
         return false;
     
+    /* Validate current GUC settings against metadata table */
+    if (!kmersearch_validate_guc_against_metadata(table_oid, column_name, k_value))
+        return false;
+    
     /* Clear existing cache if valid */
     if (global_highfreq_cache.is_valid) {
         kmersearch_highfreq_kmers_cache_free_internal();
@@ -6488,79 +7307,130 @@ kmersearch_highfreq_kmers_cache_is_valid(Oid table_oid, const char *column_name,
             strcmp(global_highfreq_cache.current_column_name, column_name) == 0);
 }
 
-/*
- * Auto-load cache if high-frequency k-mer metadata is available
- * This function searches for available metadata and loads the cache automatically
- */
-static bool
-kmersearch_auto_load_cache_if_needed(void)
-{
-    int ret;
-    StringInfoData query;
-    bool cache_loaded = false;
-    
-    /* If cache is already valid, no need to reload */
-    if (global_highfreq_cache.is_valid)
-        return true;
-    
-    /* Connect to SPI */
-    if (SPI_connect() != SPI_OK_CONNECT)
-        return false;
-    
-    /* Query for available high-frequency k-mer metadata */
-    initStringInfo(&query);
-    appendStringInfo(&query,
-        "SELECT table_oid, column_name, k_value "
-        "FROM kmersearch_highfreq_kmers_meta "
-        "ORDER BY analysis_timestamp DESC "
-        "LIMIT 1");
-    
-    /* Execute query */
-    ret = SPI_execute(query.data, true, 0);
-    if (ret == SPI_OK_SELECT && SPI_processed > 0)
-    {
-        bool isnull;
-        Datum table_oid_datum, column_name_datum, k_value_datum;
-        Oid table_oid;
-        char *column_name;
-        int k_value;
-        
-        /* Extract values from first row */
-        table_oid_datum = SPI_getbinval(SPI_tuptable->vals[0], SPI_tuptable->tupdesc, 1, &isnull);
-        if (!isnull)
-        {
-            table_oid = DatumGetObjectId(table_oid_datum);
-            
-            column_name_datum = SPI_getbinval(SPI_tuptable->vals[0], SPI_tuptable->tupdesc, 2, &isnull);
-            if (!isnull)
-            {
-                column_name = NameStr(*DatumGetName(column_name_datum));
-                
-                k_value_datum = SPI_getbinval(SPI_tuptable->vals[0], SPI_tuptable->tupdesc, 3, &isnull);
-                if (!isnull)
-                {
-                    k_value = DatumGetInt32(k_value_datum);
-                    
-                    /* Try to load cache with found metadata */
-                    SPI_finish();
-                    cache_loaded = kmersearch_highfreq_kmers_cache_load_internal(table_oid, column_name, k_value);
-                    if (SPI_connect() != SPI_OK_CONNECT)
-                        return cache_loaded;
-                }
-            }
-        }
-    }
-    
-    /* Cleanup */
-    pfree(query.data);
-    SPI_finish();
-    
-    return cache_loaded;
-}
 
 /*
  * Parallel high-frequency k-mer cache internal functions
  */
+
+/*
+ * Internal cleanup function for parallel cache resources
+ */
+static void
+kmersearch_parallel_cache_cleanup_internal(void)
+{
+    ereport(LOG, (errmsg("kmersearch_parallel_cache_cleanup_internal: Starting cleanup")));
+    
+    /* Prevent double cleanup - check if already cleaned up */
+    if (parallel_cache_hash == NULL && parallel_cache_dsa == NULL && parallel_cache_segment == NULL) {
+        ereport(LOG, (errmsg("kmersearch_parallel_cache_cleanup_internal: Already cleaned up, skipping")));
+        return;
+    }
+    
+    /* Use TopMemoryContext for dshash operations */
+    MemoryContext oldcontext = MemoryContextSwitchTo(TopMemoryContext);
+    
+    /* Step 1: Handle dshash table cleanup based on process type */
+    if (parallel_cache_hash != NULL) {
+        ereport(LOG, (errmsg("kmersearch_parallel_cache_cleanup_internal: parallel_cache_hash=%p", parallel_cache_hash)));
+        ereport(LOG, (errmsg("kmersearch_parallel_cache_cleanup_internal: parallel_cache_dsa=%p", parallel_cache_dsa)));
+        ereport(LOG, (errmsg("kmersearch_parallel_cache_cleanup_internal: parallel_cache_segment=%p", parallel_cache_segment)));
+        
+        /* Check if DSA and DSM are still valid before operating on dshash */
+        if (parallel_cache_dsa != NULL && parallel_cache_segment != NULL) {
+            if (!IsParallelWorker()) {
+                /* Main process: destroy the hash table */
+                ereport(LOG, (errmsg("kmersearch_parallel_cache_cleanup_internal: Main process destroying dshash table")));
+                dshash_destroy(parallel_cache_hash);
+                ereport(LOG, (errmsg("kmersearch_parallel_cache_cleanup_internal: dshash_destroy completed successfully")));
+            } else {
+                /* Parallel worker: detach from hash table */
+                ereport(LOG, (errmsg("kmersearch_parallel_cache_cleanup_internal: Parallel worker detaching from dshash table")));
+                dshash_detach(parallel_cache_hash);
+            }
+        } else {
+            ereport(LOG, (errmsg("kmersearch_parallel_cache_cleanup_internal: DSA or DSM already invalid, just detaching")));
+            /* DSA/DSM already destroyed, just detach without destroy */
+            dshash_detach(parallel_cache_hash);
+        }
+        parallel_cache_hash = NULL;
+        ereport(LOG, (errmsg("kmersearch_parallel_cache_cleanup_internal: dshash table cleanup completed")));
+    } else {
+        ereport(LOG, (errmsg("kmersearch_parallel_cache_cleanup_internal: No dshash table to cleanup")));
+    }
+    
+    /* Switch back to original context before DSA/DSM operations */
+    MemoryContextSwitchTo(oldcontext);
+    
+    /* Step 2: Handle DSA area cleanup */
+    if (parallel_cache_dsa != NULL) {
+        if (!IsParallelWorker()) {
+            /* Main process: unpin and detach */
+            ereport(LOG, (errmsg("kmersearch_parallel_cache_cleanup_internal: Main process unpinning and detaching DSA area")));
+            PG_TRY();
+            {
+                /* Unpin DSA area */
+                dsa_unpin(parallel_cache_dsa);
+                /* Detach from DSA area */
+                dsa_detach(parallel_cache_dsa);
+                ereport(LOG, (errmsg("kmersearch_parallel_cache_cleanup_internal: DSA area unpinned and detached successfully")));
+            }
+            PG_CATCH();
+            {
+                ereport(LOG, (errmsg("kmersearch_parallel_cache_cleanup_internal: DSA area cleanup failed, but continuing")));
+                FlushErrorState();
+            }
+            PG_END_TRY();
+        } else {
+            /* Parallel worker: detach only */
+            ereport(LOG, (errmsg("kmersearch_parallel_cache_cleanup_internal: Parallel worker detaching from DSA area")));
+            dsa_detach(parallel_cache_dsa);
+            ereport(LOG, (errmsg("kmersearch_parallel_cache_cleanup_internal: DSA area detached successfully")));
+        }
+        parallel_cache_dsa = NULL;
+    } else {
+        ereport(LOG, (errmsg("kmersearch_parallel_cache_cleanup_internal: No DSA area to cleanup")));
+    }
+    
+    /* Step 3: Handle DSM segment properly */
+    if (parallel_cache_segment != NULL) {
+        if (!IsParallelWorker()) {
+            /* Main process: unpin and detach */
+            ereport(LOG, (errmsg("kmersearch_parallel_cache_cleanup_internal: Main process unpinning and detaching DSM segment")));
+            PG_TRY();
+            {
+                /* Get DSM handle before detaching */
+                dsm_handle handle = dsm_segment_handle(parallel_cache_segment);
+                /* Unpin mapping first */
+                dsm_unpin_mapping(parallel_cache_segment);
+                /* Detach from the DSM segment */
+                dsm_detach(parallel_cache_segment);
+                /* Unpin the DSM segment to allow cleanup */
+                dsm_unpin_segment(handle);
+                ereport(LOG, (errmsg("kmersearch_parallel_cache_cleanup_internal: DSM segment detached and unpinned successfully")));
+            }
+            PG_CATCH();
+            {
+                ereport(LOG, (errmsg("kmersearch_parallel_cache_cleanup_internal: DSM segment cleanup failed, but continuing")));
+                FlushErrorState();
+            }
+            PG_END_TRY();
+        } else {
+            /* Parallel worker: detach only */
+            ereport(LOG, (errmsg("kmersearch_parallel_cache_cleanup_internal: Parallel worker detaching from DSM segment")));
+            dsm_detach(parallel_cache_segment);
+            ereport(LOG, (errmsg("kmersearch_parallel_cache_cleanup_internal: DSM segment detached successfully")));
+        }
+        parallel_cache_segment = NULL;
+    } else {
+        ereport(LOG, (errmsg("kmersearch_parallel_cache_cleanup_internal: No DSM segment to handle")));
+    }
+    
+    /* Reset cache pointer and callback flag */
+    parallel_highfreq_cache = NULL;
+    parallel_cache_exit_callback_registered = false;
+    
+    ereport(LOG, (errmsg("kmersearch_parallel_cache_cleanup_internal: Cleanup completed successfully")));
+}
 
 /*
  * Exit callback for DSM cleanup
@@ -6570,30 +7440,7 @@ dshash_cache_cleanup_callback(int code, Datum arg)
 {
     ereport(LOG, (errmsg("dshash_cache_cleanup_callback: Starting cleanup on process exit")));
     
-    /* Clean up dshash table if it exists */
-    if (parallel_cache_hash != NULL) {
-        ereport(LOG, (errmsg("dshash_cache_cleanup_callback: Detaching from dshash table")));
-        dshash_detach(parallel_cache_hash);
-        parallel_cache_hash = NULL;
-    }
-    
-    /* Clean up DSA area if it exists */
-    if (parallel_cache_dsa != NULL) {
-        ereport(LOG, (errmsg("dshash_cache_cleanup_callback: Detaching from DSA area")));
-        dsa_detach(parallel_cache_dsa);
-        parallel_cache_dsa = NULL;
-    }
-    
-    /* Clean up DSM segment if it exists */
-    if (parallel_cache_segment != NULL) {
-        ereport(LOG, (errmsg("dshash_cache_cleanup_callback: Detaching from DSM segment")));
-        dsm_detach(parallel_cache_segment);
-        parallel_cache_segment = NULL;
-    }
-    
-    /* Reset cache pointer and callback flag */
-    parallel_highfreq_cache = NULL;
-    parallel_cache_exit_callback_registered = false;
+    kmersearch_parallel_cache_cleanup_internal();
     
     ereport(LOG, (errmsg("dshash_cache_cleanup_callback: Cleanup completed")));
 }
@@ -6625,6 +7472,10 @@ kmersearch_parallel_highfreq_kmers_cache_load_internal(Oid table_oid, const char
     int i;
     
     if (!column_name || k_value <= 0)
+        return false;
+    
+    /* Validate current GUC settings against metadata table */
+    if (!kmersearch_validate_guc_against_metadata(table_oid, column_name, k_value))
         return false;
     
     /* Check if cache is already loaded for this table */
@@ -6684,6 +7535,10 @@ kmersearch_parallel_highfreq_kmers_cache_load_internal(Oid table_oid, const char
                 (errcode(ERRCODE_OUT_OF_MEMORY),
                  errmsg("failed to create DSM segment for parallel cache")));
     }
+    
+    /* Pin the DSM segment to prevent automatic cleanup when query ends */
+    dsm_pin_segment(parallel_cache_segment);
+    dsm_pin_mapping(parallel_cache_segment);
     
     ereport(LOG, (errmsg("dshash_cache_load: DSM segment created successfully")));
     
@@ -6849,51 +7704,12 @@ kmersearch_parallel_highfreq_kmers_cache_load_internal(Oid table_oid, const char
 static void
 kmersearch_parallel_highfreq_kmers_cache_free_internal(void)
 {
-    ereport(LOG, (errmsg("parallel_cache_free: Starting cleanup")));
+    ereport(LOG, (errmsg("kmersearch_parallel_highfreq_kmers_cache_free_internal: Starting parallel cache free")));
     
-    /* Clean up dshash table if it exists */
-    if (parallel_cache_hash != NULL)
-    {
-        ereport(LOG, (errmsg("parallel_cache_free: Clearing dshash table elements")));
-        /* Use TopMemoryContext for dshash operations */
-        MemoryContext oldcontext = MemoryContextSwitchTo(TopMemoryContext);
-        
-        /* Delete all elements (like pg_track_optimizer.c) */
-        dshash_seq_status status;
-        dshash_seq_init(&status, parallel_cache_hash, true);
-        
-        while (dshash_seq_next(&status) != NULL)
-        {
-            dshash_delete_current(&status);
-        }
-        
-        dshash_seq_term(&status);
-        
-        /* Do not destroy the hash table - let process exit handle cleanup */
-        MemoryContextSwitchTo(oldcontext);
-        parallel_cache_hash = NULL;
-    }
+    /* Use the unified cleanup function for proper resource destruction */
+    kmersearch_parallel_cache_cleanup_internal();
     
-    /* Clean up DSA area if it exists */
-    if (parallel_cache_dsa != NULL)
-    {
-        ereport(LOG, (errmsg("parallel_cache_free: Detaching DSA area")));
-        dsa_detach(parallel_cache_dsa);
-        parallel_cache_dsa = NULL;
-    }
-    
-    /* Clean up DSM segment if it exists */
-    if (parallel_cache_segment != NULL)
-    {
-        ereport(LOG, (errmsg("parallel_cache_free: Detaching DSM segment")));
-        /* Detach from the DSM segment */
-        dsm_detach(parallel_cache_segment);
-        parallel_cache_segment = NULL;
-    }
-    
-    parallel_highfreq_cache = NULL;
-    parallel_cache_exit_callback_registered = false;
-    ereport(LOG, (errmsg("parallel_cache_free: Cleanup completed")));
+    ereport(LOG, (errmsg("kmersearch_parallel_highfreq_kmers_cache_free_internal: Parallel cache free completed")));
 }
 
 /*
@@ -8061,8 +8877,8 @@ kmersearch_extract_dna2_kmers_direct_avx2(VarBit *seq, int k, int *nkeys)
         if (current_count > (1 << kmersearch_occur_bitlen))
             continue;
         
-        /* Create simple k-mer key (without occurrence count for matching) */
-        ngram_key = kmersearch_create_kmer_key_from_dna2_bits(seq, i, k);
+        /* Create n-gram key (k-mer + occurrence count) */
+        ngram_key = kmersearch_create_ngram_key_from_dna2_bits(seq, i, k, current_count);
         if (ngram_key == NULL)
             continue;  /* Skip if key creation failed */
             
@@ -8213,10 +9029,10 @@ kmersearch_extract_dna4_kmers_with_expansion_direct_avx2(VarBit *seq, int k, int
             if (current_count > (1 << kmersearch_occur_bitlen))
                 continue;
             
-            /* Create simple k-mer key (copy the DNA2 k-mer directly) */
-            ngram_key = (VarBit *) palloc(VARSIZE(dna2_kmer));
-            memcpy(ngram_key, dna2_kmer, VARSIZE(dna2_kmer));
-            keys[key_count++] = PointerGetDatum(ngram_key);
+            /* Create n-gram key (k-mer + occurrence count) from expanded DNA2 k-mer */
+            ngram_key = kmersearch_create_ngram_key_from_dna2_bits(dna2_kmer, 0, k, current_count);
+            if (ngram_key)
+                keys[key_count++] = PointerGetDatum(ngram_key);
         }
         
         /* Free each expanded k-mer and then the array */
