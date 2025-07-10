@@ -1,4 +1,4 @@
-CREATE EXTENSION pg_kmersearch;
+CREATE EXTENSION IF NOT EXISTS pg_kmersearch;
 -- Test GUC configuration variables
 -- This test covers all configuration parameters
 -- Show default values

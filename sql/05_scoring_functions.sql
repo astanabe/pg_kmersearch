@@ -1,4 +1,4 @@
-CREATE EXTENSION pg_kmersearch;
+CREATE EXTENSION IF NOT EXISTS pg_kmersearch;
 
 -- Test scoring functions
 -- This test covers kmersearch_rawscore and kmersearch_correctedscore functions

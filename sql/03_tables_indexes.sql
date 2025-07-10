@@ -1,4 +1,4 @@
-CREATE EXTENSION pg_kmersearch;
+CREATE EXTENSION IF NOT EXISTS pg_kmersearch;
 
 -- Test table creation and GIN index functionality
 -- This test covers DDL operations and index creation

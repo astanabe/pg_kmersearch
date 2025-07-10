@@ -148,11 +148,10 @@ CREATE OPERATOR CLASS kmersearch_dna4_gin_ops
 -- System table for storing highly frequent k-mers
 CREATE TABLE kmersearch_highfreq_kmers (
     index_oid oid NOT NULL,
-    kmer_key varbit NOT NULL,
-    frequency_count integer NOT NULL,
+    ngram_key varbit NOT NULL,
     detection_reason text,
     created_at timestamp with time zone DEFAULT now(),
-    PRIMARY KEY (index_oid, kmer_key)
+    PRIMARY KEY (index_oid, ngram_key)
 );
 
 -- High-frequency k-mers metadata table
@@ -160,6 +159,7 @@ CREATE TABLE kmersearch_highfreq_kmers_meta (
     table_oid oid NOT NULL,
     column_name name NOT NULL,
     k_value integer NOT NULL,
+    occur_bitlen integer NOT NULL,
     max_appearance_rate real NOT NULL,
     max_appearance_nrow integer NOT NULL,
     analysis_timestamp timestamp with time zone DEFAULT now(),
@@ -174,6 +174,7 @@ CREATE TABLE kmersearch_gin_index_meta (
     highfreq_filtered boolean NOT NULL,
     highfreq_source_table name NOT NULL,
     k_value integer NOT NULL,
+    occur_bitlen integer NOT NULL,
     max_appearance_rate real NOT NULL,
     max_appearance_nrow integer NOT NULL,
     created_at timestamp with time zone DEFAULT now()
@@ -185,6 +186,7 @@ CREATE TABLE kmersearch_index_info (
     table_oid oid NOT NULL,
     column_name name NOT NULL,
     k_value integer NOT NULL,
+    occur_bitlen integer NOT NULL,
     total_rows bigint NOT NULL,
     highfreq_kmers_count integer NOT NULL,
     max_appearance_rate real NOT NULL,

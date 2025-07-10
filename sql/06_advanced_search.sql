@@ -1,4 +1,4 @@
-CREATE EXTENSION pg_kmersearch;
+CREATE EXTENSION IF NOT EXISTS pg_kmersearch;
 
 -- Test advanced search functionality and configuration
 -- This test covers different k-mer sizes and configuration options

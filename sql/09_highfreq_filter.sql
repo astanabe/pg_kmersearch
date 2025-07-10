@@ -1,4 +1,4 @@
-CREATE EXTENSION pg_kmersearch;
+CREATE EXTENSION IF NOT EXISTS pg_kmersearch;
 
 -- Test high-frequency k-mer cache management functionality
 -- This test covers manual cache loading and clearing
@@ -43,8 +43,8 @@ SELECT 'Testing kmersearch_analyze_table...' as test_phase;
 -- ) as analysis_result;
 
 -- Manually insert test data instead of using analyze_table
-INSERT INTO kmersearch_highfreq_kmers_meta (table_oid, column_name, k_value, max_appearance_rate, max_appearance_nrow)
-VALUES ((SELECT oid FROM pg_class WHERE relname = 'test_highfreq_dna2'), 'sequence', 8, 0.5, 5);
+INSERT INTO kmersearch_highfreq_kmers_meta (table_oid, column_name, k_value, occur_bitlen, max_appearance_rate, max_appearance_nrow)
+VALUES ((SELECT oid FROM pg_class WHERE relname = 'test_highfreq_dna2'), 'sequence', 8, 8, 0.5, 5);
 
 -- Check if analysis created metadata
 SELECT 'Checking analysis metadata...' as test_phase;
@@ -64,6 +64,11 @@ SELECT 'Testing cache loading with analysis data...' as test_phase;
 
 -- Test high-frequency k-mer cache loading
 SELECT 'Testing cache loading...' as test_phase;
+
+-- Set GUC variables to match metadata
+SET kmersearch.max_appearance_rate = 0.5;
+SET kmersearch.max_appearance_nrow = 5;
+
 SELECT kmersearch_highfreq_kmers_cache_load(test_highfreq_dna2.tableoid, 'sequence', 8) as cache_loaded
 FROM test_highfreq_dna2 LIMIT 1;
 
@@ -79,6 +84,72 @@ SELECT kmersearch_highfreq_kmers_cache_load(0, 'nonexistent', 8) as cache_loaded
 SELECT 'Testing cache clearing when no cache exists...' as test_phase;
 SELECT kmersearch_highfreq_kmers_cache_free() as freed_entries;
 
+-- Test GUC validation and cache hierarchy
+SELECT 'Testing GUC validation and cache hierarchy...' as test_phase;
+
+-- Reset GUC settings to match metadata for testing
+SET kmersearch.max_appearance_rate = 0.5;
+SET kmersearch.max_appearance_nrow = 5;
+SET kmersearch.occur_bitlen = 8;
+
+-- Insert some test high-frequency k-mer data for cache hierarchy testing
+INSERT INTO kmersearch_highfreq_kmers (index_oid, ngram_key, detection_reason)
+VALUES (
+  (SELECT indexrelid FROM pg_stat_user_indexes WHERE relname = 'test_highfreq_dna2' AND indexrelname = 'idx_test_highfreq_dna2_gin'),
+  '01010101'::bit(16),  -- Sample n-gram key  
+  'regression_test'
+);
+
+-- Test 1: GUC validation error handling
+SELECT 'Testing GUC validation errors...' as test_substep;
+
+-- Change GUC to cause mismatch and test cache loading (should fail)
+SET kmersearch.max_appearance_rate = 0.9;  -- Different from metadata (0.5)
+SELECT kmersearch_highfreq_kmers_cache_load(
+  (SELECT oid FROM pg_class WHERE relname = 'test_highfreq_dna2'),
+  'sequence', 8
+) as cache_load_with_mismatch;
+
+-- Reset to correct values
+SET kmersearch.max_appearance_rate = 0.5;
+
+-- Test 2: Cache hierarchy - Global cache
+SELECT 'Testing global cache hierarchy...' as test_substep;
+SELECT kmersearch_highfreq_kmers_cache_load(
+  (SELECT oid FROM pg_class WHERE relname = 'test_highfreq_dna2'),
+  'sequence', 8
+) as global_cache_loaded;
+
+-- Test query with global cache
+SELECT sequence =% 'ATCGATCG' as global_cache_query FROM test_highfreq_dna2 LIMIT 1;
+
+-- Test 3: Cache hierarchy - Parallel cache  
+SELECT 'Testing parallel cache hierarchy...' as test_substep;
+SELECT kmersearch_parallel_highfreq_kmers_cache_load(
+  (SELECT oid FROM pg_class WHERE relname = 'test_highfreq_dna2'),
+  'sequence', 8
+) as parallel_cache_loaded;
+
+-- Test 4: Cache hierarchy fallback
+SELECT 'Testing cache hierarchy fallback...' as test_substep;
+
+-- Clear global cache
+SELECT kmersearch_highfreq_kmers_cache_free() as global_freed;
+
+-- Test with only parallel cache
+SET kmersearch.force_use_dshash = true;
+SELECT sequence =% 'ATCGATCG' as parallel_only_query FROM test_highfreq_dna2 LIMIT 1;
+
+-- Clear parallel cache  
+SELECT kmersearch_parallel_highfreq_kmers_cache_free() as parallel_freed;
+
+-- Test with no cache (table lookup fallback)
+SET kmersearch.force_use_dshash = false;
+SELECT sequence =% 'ATCGATCG' as table_fallback_query FROM test_highfreq_dna2 LIMIT 1;
+
+-- Clean up test data
+DELETE FROM kmersearch_highfreq_kmers WHERE detection_reason = 'regression_test';
+
 -- Clean up analysis data
 SELECT 'Cleaning up analysis data...' as test_phase;
 DELETE FROM kmersearch_highfreq_kmers 
@@ -92,4 +163,4 @@ WHERE table_oid = (SELECT oid FROM pg_class WHERE relname = 'test_highfreq_dna2'
 -- Clean up
 DROP TABLE test_highfreq_dna2 CASCADE;
 
-DROP EXTENSION pg_kmersearch;
+DROP EXTENSION pg_kmersearch CASCADE;

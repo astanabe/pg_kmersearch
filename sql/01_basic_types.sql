@@ -1,4 +1,4 @@
-CREATE EXTENSION pg_kmersearch;
+CREATE EXTENSION IF NOT EXISTS pg_kmersearch;
 
 -- Test basic DNA2 and DNA4 type functionality
 -- This test covers input/output, basic operations

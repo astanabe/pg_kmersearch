@@ -40,7 +40,6 @@ VALUES ((SELECT oid FROM pg_class WHERE relname = 'test_cache_hierarchy'), 'test
 SET kmersearch.occur_bitlen = 8;
 SET kmersearch.max_appearance_rate = 0.4;
 SET kmersearch.max_appearance_nrow = 3;
-
 SELECT test_seq =% 'ATCGATCG' as matching_guc_query FROM test_cache_hierarchy LIMIT 1;
 
 -- Test 2.2: Mismatched GUC - occur_bitlen (should fail during cache load)

@@ -1,4 +1,4 @@
-CREATE EXTENSION pg_kmersearch;
+CREATE EXTENSION IF NOT EXISTS pg_kmersearch;
 -- Test k-mer search operators and functionality
 -- This test covers the =% operator and search functionality
 -- Clean up any existing tables

@@ -1,4 +1,4 @@
-CREATE EXTENSION pg_kmersearch;
+CREATE EXTENSION IF NOT EXISTS pg_kmersearch;
 -- Test length functions for DNA2 and DNA4 types
 -- This test covers bit_length, nuc_length, char_length, and length functions
 -- Test bit_length function with non-multiples to test padding
