@@ -88,7 +88,6 @@ static bool kmersearch_is_parallel_highfreq_cache_loaded(void);
 static bool kmersearch_lookup_in_global_cache(VarBit *kmer_key);
 static bool kmersearch_lookup_in_parallel_cache(VarBit *kmer_key);
 static int kmersearch_count_highfreq_kmer_in_query(VarBit **query_keys, int nkeys);
-static int kmersearch_get_adjusted_min_score(VarBit **query_keys, int nkeys);
 static int kmersearch_calculate_raw_score(VarBit *seq1, VarBit *seq2, text *query_text);
 
 /* High-frequency k-mer filtering functions */
@@ -158,7 +157,6 @@ static KmerMatchResult kmersearch_calculate_kmer_match_and_score_dna4(VarBit *se
 
 /* Actual min score cache functions */
 static ActualMinScoreCacheManager *create_actual_min_score_cache_manager(void);
-int calculate_actual_min_score(VarBit **query_keys, int nkeys, int query_total_kmers);
 static int get_cached_actual_min_score(VarBit **query_keys, int nkeys, const char *query_string, int query_total_kmers);
 static bool evaluate_optimized_match_condition(VarBit **query_keys, int nkeys, int shared_count, const char *query_string, int query_total_kmers);
 
@@ -2166,7 +2164,7 @@ kmersearch_is_highfreq_filtering_enabled(void)
  * Calculate adjusted minimum score based on highly frequent k-mers in query
  * Only applies adjustment when high-frequency filtering is actually enabled
  */
-static int
+int
 kmersearch_get_adjusted_min_score(VarBit **query_keys, int nkeys)
 {
     int highfreq_count;
@@ -2662,33 +2660,6 @@ kmersearch_evaluate_match_conditions(int shared_count, int query_total)
     return (score_condition && rate_condition);
 }
 
-/*
- * Calculate actual minimum score for optimized condition evaluation
- * This combines both absolute and relative thresholds into a single value
- * Now uses adjusted_min_score instead of kmersearch_min_score when high-frequency filtering is enabled
- */
-int
-calculate_actual_min_score(VarBit **query_keys, int nkeys, int query_total_kmers)
-{
-    int absolute_min;
-    int relative_min;
-    
-    /* Use adjusted minimum score that considers high-frequency k-mer filtering */
-    absolute_min = kmersearch_get_adjusted_min_score(query_keys, nkeys);
-    
-    if (query_total_kmers > 0) {
-        /* Calculate minimum score from relative threshold */
-        /* kmersearch_min_shared_ngram_key_rate <= shared_count / query_total_kmers */
-        /* shared_count >= kmersearch_min_shared_ngram_key_rate * query_total_kmers */
-        double relative_threshold = kmersearch_min_shared_ngram_key_rate * query_total_kmers;
-        relative_min = (int)ceil(relative_threshold);
-    } else {
-        relative_min = 0;
-    }
-    
-    /* Return the maximum of absolute and relative minimums */
-    return (absolute_min > relative_min) ? absolute_min : relative_min;
-}
 
 /*
  * Get cached actual min score using TopMemoryContext cache (global)

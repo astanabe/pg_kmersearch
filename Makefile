@@ -1,5 +1,5 @@
 MODULE_big = pg_kmersearch
-OBJS = pg_kmersearch.o kmersearch_gin.o kmersearch_datatype.o kmersearch_kmer.o
+OBJS = pg_kmersearch.o kmersearch_gin.o kmersearch_datatype.o kmersearch_kmer.o kmersearch_cache.o
 
 EXTENSION = pg_kmersearch
 DATA = pg_kmersearch--1.0.sql

@@ -487,6 +487,12 @@ Datum *kmersearch_extract_kmer_with_degenerate(const char *sequence, int seq_len
 VarBit *kmersearch_create_ngram_key2_with_occurrence(const char *kmer, int k, int occurrence);
 Datum *kmersearch_extract_kmers(const char *sequence, int seq_len, int k, int *nkeys);
 
+/* Cache management functions (implemented in kmersearch_cache.c) */
+int calculate_actual_min_score(VarBit **query_keys, int nkeys, int query_total_kmers);
+
+/* Internal functions that should be declared (implemented in pg_kmersearch.c) */
+int kmersearch_get_adjusted_min_score(VarBit **query_keys, int nkeys);
+
 /* GIN index support functions (implemented in kmersearch_gin.c) */
 Datum kmersearch_extract_value_dna2(PG_FUNCTION_ARGS);
 Datum kmersearch_extract_value_dna4(PG_FUNCTION_ARGS);
