@@ -243,3 +243,256 @@ kmersearch_create_kmer2_key_only(const char *kmer, int k)
     
     return result;
 }
+
+/*
+ * Create k-mer key from DNA2 bits without occurrence count
+ */
+VarBit *
+kmersearch_create_kmer2_key_from_dna2_bits(VarBit *seq, int start_pos, int k)
+{
+    int kmer_bits = k * 2;
+    int total_bytes = (kmer_bits + 7) / 8;
+    VarBit *result;
+    bits8 *src_data, *dst_data;
+    int src_bytes = VARBITBYTES(seq);
+    int i;
+    
+    result = (VarBit *) palloc0(VARHDRSZ + sizeof(int32) + total_bytes);
+    SET_VARSIZE(result, VARHDRSZ + sizeof(int32) + total_bytes);
+    VARBITLEN(result) = kmer_bits;
+    
+    src_data = VARBITS(seq);
+    dst_data = VARBITS(result);
+    
+    /* Copy k-mer bits directly from source */
+    for (i = 0; i < k; i++)
+    {
+        int src_bit_pos = (start_pos + i) * 2;
+        int dst_bit_pos = i * 2;
+        int src_byte_pos = src_bit_pos / 8;
+        int src_bit_offset = src_bit_pos % 8;
+        int dst_byte_pos = dst_bit_pos / 8;
+        int dst_bit_offset = dst_bit_pos % 8;
+        uint8 base_bits;
+        
+        /* Boundary check to prevent buffer overflow */
+        if (src_byte_pos >= src_bytes) {
+            /* Return NULL to indicate failed k-mer extraction */
+            pfree(result);
+            return NULL;
+        }
+        
+        /* Extract 2 bits from source */
+        base_bits = (src_data[src_byte_pos] >> (6 - src_bit_offset)) & 0x3;
+        
+        /* Store in destination */
+        dst_data[dst_byte_pos] |= (base_bits << (6 - dst_bit_offset));
+    }
+    
+    return result;
+}
+
+/*
+ * Create n-gram key from DNA2 bits with occurrence count
+ */
+VarBit *
+kmersearch_create_ngram_key2_from_dna2_bits(VarBit *seq, int start_pos, int k, int occurrence_count)
+{
+    int kmer_bits = k * 2;
+    int occur_bits = kmersearch_occur_bitlen;
+    int total_bits = kmer_bits + occur_bits;
+    int total_bytes = (total_bits + 7) / 8;
+    VarBit *result;
+    bits8 *src_data, *dst_data;
+    int src_bytes = VARBITBYTES(seq);
+    int i;
+    
+    result = (VarBit *) palloc0(VARHDRSZ + sizeof(int32) + total_bytes);
+    SET_VARSIZE(result, VARHDRSZ + sizeof(int32) + total_bytes);
+    VARBITLEN(result) = total_bits;
+    
+    src_data = VARBITS(seq);
+    dst_data = VARBITS(result);
+    
+    /* Copy k-mer bits directly from source */
+    for (i = 0; i < k; i++)
+    {
+        int src_bit_pos = (start_pos + i) * 2;
+        int dst_bit_pos = i * 2;
+        int src_byte_pos = src_bit_pos / 8;
+        int src_bit_offset = src_bit_pos % 8;
+        int dst_byte_pos = dst_bit_pos / 8;
+        int dst_bit_offset = dst_bit_pos % 8;
+        uint8 base_bits;
+        
+        /* Boundary check to prevent buffer overflow */
+        if (src_byte_pos >= src_bytes) {
+            pfree(result);
+            return NULL;
+        }
+        
+        /* Extract 2 bits for this base */
+        base_bits = (src_data[src_byte_pos] >> (6 - src_bit_offset)) & 0x3;
+        
+        /* Handle case where bits span two bytes */
+        if (src_bit_offset == 7) {
+            base_bits = (src_data[src_byte_pos] & 0x1) << 1;
+            if (src_byte_pos + 1 < src_bytes) {
+                base_bits |= (src_data[src_byte_pos + 1] >> 7) & 0x1;
+            }
+        }
+        
+        /* Store in destination */
+        dst_data[dst_byte_pos] |= (base_bits << (6 - dst_bit_offset));
+        if (dst_bit_offset == 7 && dst_byte_pos + 1 < total_bytes) {
+            dst_data[dst_byte_pos + 1] |= (base_bits >> 1) & 0x1;
+        }
+    }
+    
+    /* Append occurrence count bits */
+    for (i = 0; i < occur_bits; i++)
+    {
+        int occur_bit = (occurrence_count >> (occur_bits - 1 - i)) & 1;
+        int dst_bit_pos = kmer_bits + i;
+        int dst_byte_pos = dst_bit_pos / 8;
+        int dst_bit_offset = dst_bit_pos % 8;
+        
+        if (dst_byte_pos < total_bytes) {
+            if (occur_bit) {
+                dst_data[dst_byte_pos] |= (1 << (7 - dst_bit_offset));
+            }
+        }
+    }
+    
+    return result;
+}
+
+/*
+ * Create n-gram key from DNA4 bits with occurrence count (by converting to DNA2 first)
+ */
+VarBit *
+kmersearch_create_ngram_key2_from_dna4_bits(VarBit *seq, int start_pos, int k, int occurrence_count)
+{
+    VarBit **expanded_kmers;
+    int expansion_count;
+    VarBit *ngram_key = NULL;
+    
+    /* Expand DNA4 k-mer to DNA2 k-mers and use the first one for n-gram key generation */
+    expanded_kmers = kmersearch_expand_dna4_kmer2_to_dna2_direct(seq, start_pos, k, &expansion_count);
+    
+    if (expanded_kmers && expansion_count > 0)
+    {
+        /* Use the first expanded DNA2 k-mer to create n-gram key */
+        ngram_key = kmersearch_create_ngram_key2_from_dna2_bits(expanded_kmers[0], 0, k, occurrence_count);
+        
+        /* Free expanded k-mers */
+        for (int i = 0; i < expansion_count; i++)
+        {
+            if (expanded_kmers[i])
+                pfree(expanded_kmers[i]);
+        }
+        pfree(expanded_kmers);
+    }
+    
+    return ngram_key;
+}
+
+/*
+ * Create n-gram key from existing DNA2 k-mer with occurrence count
+ */
+VarBit *
+kmersearch_create_ngram_key2_with_occurrence_from_dna2(VarBit *dna2_kmer, int k, int occurrence)
+{
+    int kmer_bits = k * 2;
+    int occur_bits = kmersearch_occur_bitlen;
+    int total_bits = kmer_bits + occur_bits;
+    int total_bytes = (total_bits + 7) / 8;
+    int adj_occurrence = occurrence - 1;
+    VarBit *result;
+    bits8 *src_data, *dst_data;
+    int i;
+    
+    result = (VarBit *) palloc0(VARBITHDRSZ + total_bytes);
+    SET_VARSIZE(result, VARBITHDRSZ + total_bytes);
+    VARBITLEN(result) = total_bits;
+    
+    src_data = VARBITS(dna2_kmer);
+    dst_data = VARBITS(result);
+    
+    /* Copy k-mer bits directly */
+    {
+        int kmer_bytes = (kmer_bits + 7) / 8;
+    memcpy(dst_data, src_data, kmer_bytes);
+    }
+    
+    /* Encode occurrence count */
+    if (adj_occurrence >= (1 << occur_bits))
+        adj_occurrence = (1 << occur_bits) - 1;
+    
+    for (i = 0; i < occur_bits; i++)
+    {
+        int bit_pos = kmer_bits + i;
+        int byte_pos = bit_pos / 8;
+        int bit_offset = bit_pos % 8;
+        
+        if (adj_occurrence & (1 << (occur_bits - 1 - i)))
+            dst_data[byte_pos] |= (1 << (7 - bit_offset));
+    }
+    
+    return result;
+}
+
+/*
+ * Expand degenerate codes to all possible combinations
+ */
+void
+kmersearch_expand_degenerate_sequence(const char *seq, int len, char **results, int *count)
+{
+    int combinations = kmersearch_count_degenerate_combinations(seq, len);
+    if (combinations > 10)
+    {
+        *count = 0;
+        return;
+    }
+    
+    *count = combinations;
+    
+    /* Allocate results array */
+    for (int i = 0; i < combinations; i++)
+    {
+        results[i] = (char *) palloc(len + 1);
+        results[i][len] = '\0';
+    }
+    
+    /* Generate all combinations */
+    for (int combo = 0; combo < combinations; combo++)
+    {
+        int temp_combo = combo;
+        for (int pos = 0; pos < len; pos++)
+        {
+            char c = toupper(seq[pos]);
+            char bases[4];
+            int base_count = 0;
+            
+            /* Get possible bases for this character */
+            if (c == 'A') { bases[0] = 'A'; base_count = 1; }
+            else if (c == 'C') { bases[0] = 'C'; base_count = 1; }
+            else if (c == 'G') { bases[0] = 'G'; base_count = 1; }
+            else if (c == 'T' || c == 'U') { bases[0] = 'T'; base_count = 1; }
+            else if (c == 'M') { bases[0] = 'A'; bases[1] = 'C'; base_count = 2; }
+            else if (c == 'R') { bases[0] = 'A'; bases[1] = 'G'; base_count = 2; }
+            else if (c == 'W') { bases[0] = 'A'; bases[1] = 'T'; base_count = 2; }
+            else if (c == 'S') { bases[0] = 'C'; bases[1] = 'G'; base_count = 2; }
+            else if (c == 'Y') { bases[0] = 'C'; bases[1] = 'T'; base_count = 2; }
+            else if (c == 'K') { bases[0] = 'G'; bases[1] = 'T'; base_count = 2; }
+            else if (c == 'V') { bases[0] = 'A'; bases[1] = 'C'; bases[2] = 'G'; base_count = 3; }
+            else if (c == 'H') { bases[0] = 'A'; bases[1] = 'C'; bases[2] = 'T'; base_count = 3; }
+            else if (c == 'D') { bases[0] = 'A'; bases[1] = 'G'; bases[2] = 'T'; base_count = 3; }
+            else if (c == 'B') { bases[0] = 'C'; bases[1] = 'G'; bases[2] = 'T'; base_count = 3; }
+            else if (c == 'N') { bases[0] = 'A'; bases[1] = 'C'; bases[2] = 'G'; bases[3] = 'T'; base_count = 4; }
+            
+            results[combo][pos] = bases[temp_combo % base_count];
+            temp_combo /= base_count;
+        }
+    }
+}
