@@ -462,6 +462,9 @@ Datum *kmersearch_filter_highfreq_kmers_from_keys_parallel(Datum *keys, int *nke
 int calculate_actual_min_score(VarBit **query_keys, int nkeys, int original_nkeys);
 int kmersearch_count_degenerate_combinations(const char *kmer, int k);
 void kmersearch_set_bit_at(bits8 *data, int bit_pos, int value);
+bool kmersearch_will_exceed_degenerate_limit_dna4_bits(VarBit *seq, int start_pos, int k);
+VarBit *kmersearch_create_ngram_key2(const char *kmer, int k, int occurrence);
+VarBit *kmersearch_create_kmer2_key_only(const char *kmer, int k);
 
 /* GIN index support functions (implemented in kmersearch_gin.c) */
 Datum kmersearch_extract_value_dna2(PG_FUNCTION_ARGS);
