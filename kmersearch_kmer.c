@@ -846,3 +846,106 @@ kmersearch_varbit_to_hex_string(VarBit *varbit)
     hex_string[bytelen * 2] = '\0';
     return hex_string;
 }
+
+/* Note: kmersearch_extract_dna2_kmer2_direct kept in pg_kmersearch.c due to SIMD dependencies */
+
+/*
+ * Extract k-mers from DNA2 sequence without occurrence count (internal function)
+ */
+Datum *
+kmersearch_extract_dna2_kmer2_only(VarBit *seq, int k, int *nkeys)
+{
+    int seq_bits = VARBITLEN(seq);
+    int seq_bases = seq_bits / 2;
+    int max_kmers = (seq_bases >= k) ? (seq_bases - k + 1) : 0;
+    Datum *keys;
+    int key_count = 0;
+    int i;
+    
+    *nkeys = 0;
+    if (max_kmers <= 0)
+        return NULL;
+    
+    keys = (Datum *) palloc(max_kmers * sizeof(Datum));
+    
+    /* Extract k-mers */
+    for (i = 0; i <= seq_bases - k; i++)
+    {
+        VarBit *kmer_key;
+        
+        /* Create k-mer key (without occurrence count) */
+        kmer_key = kmersearch_create_kmer2_key_from_dna2_bits(seq, i, k);
+        if (kmer_key == NULL)
+            continue;  /* Skip if key creation failed */
+            
+        keys[key_count++] = PointerGetDatum(kmer_key);
+    }
+    
+    *nkeys = key_count;
+    return keys;
+}
+
+/*
+ * Encode k-mer-only VarBit into compact KmerData (ignoring occurrence count bits)
+ */
+KmerData
+kmersearch_encode_kmer2_only_data(VarBit *kmer, int k_size)
+{
+    KmerData result;
+    unsigned char *bits;
+    int i, bit_offset;
+    
+    memset(&result, 0, sizeof(KmerData));
+    bits = VARBITS(kmer);
+    
+    if (k_size <= 8) {
+        result.k8_data = 0;
+        for (i = 0; i < k_size; i++) {
+            int byte_pos, bit_in_byte, nucleotide;
+            bit_offset = i * 2;
+            byte_pos = bit_offset / 8;
+            bit_in_byte = bit_offset % 8;
+            nucleotide = (bits[byte_pos] >> (6 - bit_in_byte)) & 0x3;
+            result.k8_data |= (nucleotide << (2 * (k_size - 1 - i)));
+        }
+    } else if (k_size <= 16) {
+        result.k16_data = 0;
+        for (i = 0; i < k_size; i++) {
+            int byte_pos, bit_in_byte, nucleotide;
+            bit_offset = i * 2;
+            byte_pos = bit_offset / 8;
+            bit_in_byte = bit_offset % 8;
+            nucleotide = (bits[byte_pos] >> (6 - bit_in_byte)) & 0x3;
+            result.k16_data |= (nucleotide << (2 * (k_size - 1 - i)));
+        }
+    } else if (k_size <= 32) {
+        result.k32_data = 0;
+        for (i = 0; i < k_size; i++) {
+            int byte_pos, bit_in_byte, nucleotide;
+            bit_offset = i * 2;
+            byte_pos = bit_offset / 8;
+            bit_in_byte = bit_offset % 8;
+            nucleotide = (bits[byte_pos] >> (6 - bit_in_byte)) & 0x3;
+            result.k32_data |= ((uint64)nucleotide << (2 * (k_size - 1 - i)));
+        }
+    } else {
+        /* For k > 32, split across high and low 64-bit values */
+        result.k64_data.high = 0;
+        result.k64_data.low = 0;
+        for (i = 0; i < k_size; i++) {
+            int byte_pos, bit_in_byte, nucleotide;
+            bit_offset = i * 2;
+            byte_pos = bit_offset / 8;
+            bit_in_byte = bit_offset % 8;
+            nucleotide = (bits[byte_pos] >> (6 - bit_in_byte)) & 0x3;
+            
+            if (i < 32) {
+                result.k64_data.high |= ((uint64)nucleotide << (2 * (31 - i)));
+            } else {
+                result.k64_data.low |= ((uint64)nucleotide << (2 * (k_size - 1 - i)));
+            }
+        }
+    }
+    
+    return result;
+}

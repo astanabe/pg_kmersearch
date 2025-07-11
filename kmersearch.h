@@ -479,6 +479,8 @@ bool kmersearch_will_exceed_degenerate_limit(const char *seq, int len);
 VarBit *kmersearch_remove_occurrence_bits(VarBit *key_with_occurrence, int k);
 VarBit **kmersearch_extract_query_kmer_with_degenerate(const char *query, int k, int *nkeys);
 char *kmersearch_varbit_to_hex_string(VarBit *varbit);
+Datum *kmersearch_extract_dna2_kmer2_only(VarBit *seq, int k, int *nkeys);
+KmerData kmersearch_encode_kmer2_only_data(VarBit *kmer, int k_size);
 
 /* GIN index support functions (implemented in kmersearch_gin.c) */
 Datum kmersearch_extract_value_dna2(PG_FUNCTION_ARGS);

@@ -137,9 +137,9 @@ static VarBit *kmersearch_create_ngram_key2_with_occurrence(const char *kmer, in
 /* Note: kmersearch_will_exceed_degenerate_limit_dna4_bits declaration moved to kmersearch.h */
 /* Note: kmersearch_expand_dna4_kmer2_to_dna2_direct declaration moved to kmersearch.h */
 /* Note: k-mer bit manipulation function declarations moved to kmersearch.h */
-Datum *kmersearch_extract_dna2_kmer2_direct(VarBit *seq, int k, int *nkeys);
-static Datum *kmersearch_extract_dna2_kmer2_only(VarBit *seq, int k, int *nkeys);
-static KmerData kmersearch_encode_kmer2_only_data(VarBit *kmer, int k_size);
+/* Note: kmersearch_extract_dna2_kmer2_direct declaration moved to kmersearch.h */
+/* Note: kmersearch_extract_dna2_kmer2_only moved to kmersearch_kmer.c */
+/* Note: kmersearch_encode_kmer2_only_data moved to kmersearch_kmer.c */
 
 /* High-frequency k-mer analysis functions - Phase 2 */
 static void kmersearch_collect_ngram_key2_for_highfreq_kmer(Oid table_oid, const char *column_name, int k_size, const char *highfreq_table_name);
@@ -894,26 +894,7 @@ kmersearch_expand_dna4_kmer2_to_dna2_direct(VarBit *dna4_seq, int start_pos, int
 /*
  * Extract k-mers directly from DNA2 bit sequence (with SIMD dispatch)
  */
-Datum *
-kmersearch_extract_dna2_kmer2_direct(VarBit *seq, int k, int *nkeys)
-{
-#ifdef __x86_64__
-    if (simd_capability >= SIMD_AVX512) {
-        return kmersearch_extract_dna2_kmer2_direct_avx512(seq, k, nkeys);
-    }
-    if (simd_capability >= SIMD_AVX2) {
-        return kmersearch_extract_dna2_kmer2_direct_avx2(seq, k, nkeys);
-    }
-#elif defined(__aarch64__)
-    if (simd_capability >= SIMD_SVE) {
-        return kmersearch_extract_dna2_kmer2_direct_sve(seq, k, nkeys);
-    }
-    if (simd_capability >= SIMD_NEON) {
-        return kmersearch_extract_dna2_kmer2_direct_neon(seq, k, nkeys);
-    }
-#endif
-    return kmersearch_extract_dna2_kmer2_direct_scalar(seq, k, nkeys);
-}
+/* Note: kmersearch_extract_dna2_kmer2_direct moved to kmersearch_kmer.c */
 
 /*
  * Scalar version: Extract k-mers directly from DNA2 bit sequence
@@ -989,103 +970,12 @@ kmersearch_extract_dna2_kmer2_direct_scalar(VarBit *seq, int k, int *nkeys)
  * Extract k-mers only (without occurrence counts) from DNA2 bit sequence
  * This function is used for frequency analysis phase
  */
-static Datum *
-kmersearch_extract_dna2_kmer2_only(VarBit *seq, int k, int *nkeys)
-{
-    int seq_bits = VARBITLEN(seq);
-    int seq_bases = seq_bits / 2;
-    int max_kmers = (seq_bases >= k) ? (seq_bases - k + 1) : 0;
-    Datum *keys;
-    int key_count = 0;
-    int i;
-    
-    *nkeys = 0;
-    if (max_kmers <= 0)
-        return NULL;
-    
-    keys = (Datum *) palloc(max_kmers * sizeof(Datum));
-    
-    /* Extract k-mers */
-    for (i = 0; i <= seq_bases - k; i++)
-    {
-        VarBit *kmer_key;
-        
-        /* Create k-mer key (without occurrence count) */
-        kmer_key = kmersearch_create_kmer2_key_from_dna2_bits(seq, i, k);
-        if (kmer_key == NULL)
-            continue;  /* Skip if key creation failed */
-            
-        keys[key_count++] = PointerGetDatum(kmer_key);
-    }
-    
-    *nkeys = key_count;
-    return keys;
-}
+/* Note: kmersearch_extract_dna2_kmer2_only moved to kmersearch_kmer.c */
 
 /*
  * Encode k-mer-only VarBit into compact KmerData (ignoring occurrence count bits)
  */
-static KmerData
-kmersearch_encode_kmer2_only_data(VarBit *kmer, int k_size)
-{
-    KmerData result;
-    unsigned char *bits;
-    int i, bit_offset;
-    
-    memset(&result, 0, sizeof(KmerData));
-    bits = VARBITS(kmer);
-    
-    if (k_size <= 8) {
-        result.k8_data = 0;
-        for (i = 0; i < k_size; i++) {
-            int byte_pos, bit_in_byte, nucleotide;
-            bit_offset = i * 2;
-            byte_pos = bit_offset / 8;
-            bit_in_byte = bit_offset % 8;
-            nucleotide = (bits[byte_pos] >> (6 - bit_in_byte)) & 0x3;
-            result.k8_data |= (nucleotide << (2 * (k_size - 1 - i)));
-        }
-    } else if (k_size <= 16) {
-        result.k16_data = 0;
-        for (i = 0; i < k_size; i++) {
-            int byte_pos, bit_in_byte, nucleotide;
-            bit_offset = i * 2;
-            byte_pos = bit_offset / 8;
-            bit_in_byte = bit_offset % 8;
-            nucleotide = (bits[byte_pos] >> (6 - bit_in_byte)) & 0x3;
-            result.k16_data |= (nucleotide << (2 * (k_size - 1 - i)));
-        }
-    } else if (k_size <= 32) {
-        result.k32_data = 0;
-        for (i = 0; i < k_size; i++) {
-            int byte_pos, bit_in_byte, nucleotide;
-            bit_offset = i * 2;
-            byte_pos = bit_offset / 8;
-            bit_in_byte = bit_offset % 8;
-            nucleotide = (bits[byte_pos] >> (6 - bit_in_byte)) & 0x3;
-            result.k32_data |= ((uint64)nucleotide << (2 * (k_size - 1 - i)));
-        }
-    } else {
-        /* For k > 32, split across high and low 64-bit values */
-        result.k64_data.high = 0;
-        result.k64_data.low = 0;
-        for (i = 0; i < k_size; i++) {
-            int byte_pos, bit_in_byte, nucleotide;
-            bit_offset = i * 2;
-            byte_pos = bit_offset / 8;
-            bit_in_byte = bit_offset % 8;
-            nucleotide = (bits[byte_pos] >> (6 - bit_in_byte)) & 0x3;
-            
-            if (i < 32) {
-                result.k64_data.high |= ((uint64)nucleotide << (2 * (31 - i)));
-            } else {
-                result.k64_data.low |= ((uint64)nucleotide << (2 * (k_size - 1 - i)));
-            }
-        }
-    }
-    
-    return result;
-}
+/* Note: kmersearch_encode_kmer2_only_data moved to kmersearch_kmer.c */
 
 /*
  * Extract k-mers directly from DNA4 bit sequence with degenerate expansion (with SIMD dispatch)
