@@ -126,8 +126,8 @@ static void kmersearch_parallel_cache_cleanup_internal(void);
 static void dshash_cache_cleanup_callback(int code, Datum arg);
 
 /* Helper functions for direct k-mer management (no hashing) */
-static uint64_t kmersearch_extract_kmer_as_uint64(VarBit *seq, int start_pos, int k);
-static int kmersearch_find_or_add_kmer_occurrence(KmerOccurrence *occurrences, int *count, uint64_t kmer_value, int max_count);
+/* Note: kmersearch_extract_kmer_as_uint64 moved to kmersearch_kmer.c */
+/* Note: kmersearch_find_or_add_kmer_occurrence moved to kmersearch_kmer.c */
 static VarBit **kmersearch_extract_kmer_from_varbit(VarBit *seq, int k, int *nkeys);
 static VarBit **kmersearch_extract_kmer_from_query(const char *query, int k, int *nkeys);
 static Datum *kmersearch_extract_kmer_with_degenerate(const char *sequence, int seq_len, int k, int *nkeys);
@@ -2755,84 +2755,9 @@ kmersearch_correctedscore_dna4(PG_FUNCTION_ARGS)
     PG_RETURN_INT32(shared_count);
 }
 
-/*
- * Extract k-mer as single uint64_t value (for k <= 32)
- */
-static uint64_t
-kmersearch_extract_kmer_as_uint64(VarBit *seq, int start_pos, int k)
-{
-    uint64_t kmer_value = 0;
-    bits8 *src_data = VARBITS(seq);
-    int src_bytes = VARBITBYTES(seq);
-    int j;
-    
-    for (j = 0; j < k; j++)
-    {
-        int bit_pos = (start_pos + j) * 2;
-        int byte_pos = bit_pos / 8;
-        int bit_offset = bit_pos % 8;
-        uint8 base_bits;
-        
-        /* Boundary check to prevent buffer overflow */
-        if (byte_pos >= src_bytes) {
-            return 0;  /* Invalid k-mer */
-        }
-        
-        base_bits = (src_data[byte_pos] >> (6 - bit_offset)) & 0x3;
-        kmer_value = (kmer_value << 2) | base_bits;
-    }
-    
-    return kmer_value;
-}
+/* Note: kmersearch_extract_kmer_as_uint64 moved to kmersearch_kmer.c */
 
-/*
- * Find or add k-mer occurrence in sorted array (no hashing)
- */
-static int
-kmersearch_find_or_add_kmer_occurrence(KmerOccurrence *occurrences, int *count, uint64_t kmer_value, int max_count)
-{
-    int left = 0, right = *count - 1;
-    int insert_pos = *count;
-    
-    /* Binary search for existing k-mer */
-    while (left <= right)
-    {
-        int mid = (left + right) / 2;
-        if (occurrences[mid].kmer_value == kmer_value)
-        {
-            return ++occurrences[mid].count;  /* Found, increment and return */
-        }
-        else if (occurrences[mid].kmer_value < kmer_value)
-        {
-            left = mid + 1;
-        }
-        else
-        {
-            right = mid - 1;
-            insert_pos = mid;
-        }
-    }
-    
-    /* Not found, insert new entry if space available */
-    if (*count >= max_count)
-        return -1;  /* Array full */
-    
-    /* Shift elements to make room */
-    {
-        int i;
-        for (i = *count; i > insert_pos; i--)
-        {
-            occurrences[i] = occurrences[i-1];
-        }
-    }
-    
-    /* Insert new entry */
-    occurrences[insert_pos].kmer_value = kmer_value;
-    occurrences[insert_pos].count = 1;
-    (*count)++;
-    
-    return 1;
-}
+/* Note: kmersearch_find_or_add_kmer_occurrence moved to kmersearch_kmer.c */
 
 /*
  * Check if a k-mer is in the high-frequency list

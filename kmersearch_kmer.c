@@ -496,3 +496,82 @@ kmersearch_expand_degenerate_sequence(const char *seq, int len, char **results, 
         }
     }
 }
+
+/*
+ * Extract k-mer as single uint64_t value (for k <= 32)
+ */
+uint64_t
+kmersearch_extract_kmer_as_uint64(VarBit *seq, int start_pos, int k)
+{
+    uint64_t kmer_value = 0;
+    bits8 *src_data = VARBITS(seq);
+    int src_bytes = VARBITBYTES(seq);
+    int j;
+    
+    for (j = 0; j < k; j++)
+    {
+        int bit_pos = (start_pos + j) * 2;
+        int byte_pos = bit_pos / 8;
+        int bit_offset = bit_pos % 8;
+        uint8 base_bits;
+        
+        /* Boundary check to prevent buffer overflow */
+        if (byte_pos >= src_bytes) {
+            return 0;  /* Invalid k-mer */
+        }
+        
+        base_bits = (src_data[byte_pos] >> (6 - bit_offset)) & 0x3;
+        kmer_value = (kmer_value << 2) | base_bits;
+    }
+    
+    return kmer_value;
+}
+
+/*
+ * Find or add k-mer occurrence in sorted array (no hashing)
+ */
+int
+kmersearch_find_or_add_kmer_occurrence(KmerOccurrence *occurrences, int *count, uint64_t kmer_value, int max_count)
+{
+    int left = 0, right = *count - 1;
+    int insert_pos = *count;
+    
+    /* Binary search for existing k-mer */
+    while (left <= right)
+    {
+        int mid = (left + right) / 2;
+        if (occurrences[mid].kmer_value == kmer_value)
+        {
+            return ++occurrences[mid].count;  /* Found, increment and return */
+        }
+        else if (occurrences[mid].kmer_value < kmer_value)
+        {
+            left = mid + 1;
+        }
+        else
+        {
+            right = mid - 1;
+            insert_pos = mid;
+        }
+    }
+    
+    /* Not found, insert new entry if space available */
+    if (*count >= max_count)
+        return -1;  /* Array full */
+    
+    /* Shift elements to make room */
+    {
+        int i;
+        for (i = *count; i > insert_pos; i--)
+        {
+            occurrences[i] = occurrences[i-1];
+        }
+    }
+    
+    /* Insert new entry */
+    occurrences[insert_pos].kmer_value = kmer_value;
+    occurrences[insert_pos].count = 1;
+    (*count)++;
+    
+    return 1;
+}
