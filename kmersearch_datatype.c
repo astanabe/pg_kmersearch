@@ -26,28 +26,6 @@ PG_FUNCTION_INFO_V1(kmersearch_dna4_eq);
 PG_FUNCTION_INFO_V1(kmersearch_dna2_char_length);
 PG_FUNCTION_INFO_V1(kmersearch_dna4_char_length);
 
-/*
- * DNA4 to DNA2 expansion table
- * Each entry contains: [count, base1, base2, base3, base4]
- * For DNA4 degenerate codes that expand to multiple DNA2 bases
- */
-static const uint8 kmersearch_dna4_to_dna2_table[16][5] = {
-    {1, 0, 0, 0, 0},     /* 0000 - A */
-    {1, 1, 0, 0, 0},     /* 0001 - C */
-    {2, 0, 1, 0, 0},     /* 0010 - M (A,C) */
-    {1, 2, 0, 0, 0},     /* 0011 - G */
-    {2, 0, 2, 0, 0},     /* 0100 - R (A,G) */
-    {2, 1, 2, 0, 0},     /* 0101 - S (C,G) */
-    {3, 0, 1, 2, 0},     /* 0110 - V (A,C,G) */
-    {1, 3, 0, 0, 0},     /* 0111 - T */
-    {2, 0, 3, 0, 0},     /* 1000 - W (A,T) */
-    {2, 1, 3, 0, 0},     /* 1001 - Y (C,T) */
-    {3, 0, 1, 3, 0},     /* 1010 - H (A,C,T) */
-    {2, 2, 3, 0, 0},     /* 1011 - K (G,T) */
-    {3, 0, 2, 3, 0},     /* 1100 - D (A,G,T) */
-    {3, 1, 2, 3, 0},     /* 1101 - B (C,G,T) */
-    {4, 0, 1, 2, 3}      /* 1110 - N (A,C,G,T) */
-};
 
 /* Helper functions */
 static bool kmersearch_is_valid_dna2_char(char c)

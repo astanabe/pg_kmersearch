@@ -21,8 +21,6 @@ PG_FUNCTION_INFO_V1(kmersearch_compare_partial);
 /*
  * Forward declarations for static functions
  */
-/* Note: kmersearch_extract_kmers declaration moved to kmersearch.h */
-/* Note: kmersearch_create_ngram_key2_with_occurrence declaration moved to kmersearch.h */
 
 /*
  * Extract k-mers from DNA sequence and create n-gram keys
@@ -204,7 +202,6 @@ kmersearch_extract_value_dna4(PG_FUNCTION_ARGS)
     PG_RETURN_POINTER(keys);
 }
 
-/* Note: kmersearch_create_ngram_key2_with_occurrence moved to kmersearch_kmer.c */
 
 /*
  * GIN extract_query function

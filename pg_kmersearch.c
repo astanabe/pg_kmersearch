@@ -2,8 +2,6 @@
 
 PG_MODULE_MAGIC;
 
-/* Note: SIMD types moved to kmersearch.h */
-
 /* Global SIMD dispatch table */
 simd_dispatch_table_t simd_dispatch;
 simd_capability_t simd_capability = SIMD_NONE;
@@ -22,20 +20,14 @@ int kmersearch_rawscore_cache_max_entries = 50000;  /* Default max rawscore cach
 int kmersearch_query_pattern_cache_max_entries = 50000;  /* Default max query pattern cache entries */
 int kmersearch_actual_min_score_cache_max_entries = 50000;  /* Default max actual min score cache entries */
 
-/* Note: Structure definitions moved to kmersearch.h */
-
 /* Global cache managers */
 ActualMinScoreCacheManager *actual_min_score_cache_manager = NULL;
-
-/* Note: More structure definitions moved to kmersearch.h */
 
 /* Global query pattern cache manager for cross-query sharing */
 QueryPatternCacheManager *query_pattern_cache_manager = NULL;
 
 /* Global rawscore cache manager for cross-query sharing */
 RawscoreCacheManager *rawscore_cache_manager = NULL;
-
-/* Note: All structure definitions moved to kmersearch.h */
 
 /* Global high-frequency k-mer cache */
 HighfreqKmerCache global_highfreq_cache = {0};
@@ -64,7 +56,6 @@ static struct {
     int dna4_max_entries;
 } rawscore_cache_stats = {0};
 
-/* Note: KmerWorkerState moved to kmersearch.h */
 
 /* Macro for safe memory cleanup */
 #define CLEANUP_KMER_ARRAYS(seq_keys, seq_nkeys, query_keys, query_nkeys) \
@@ -104,7 +95,6 @@ static int kmersearch_calculate_raw_score(VarBit *seq1, VarBit *seq2, text *quer
 static VarBit **kmersearch_get_highfreq_kmer_from_table(Oid table_oid, const char *column_name, int k, int *nkeys);
 static HTAB *kmersearch_create_highfreq_hash_from_array(VarBit **kmers, int nkeys);
 Datum *kmersearch_filter_highfreq_kmers_from_keys(Datum *original_keys, int *nkeys, HTAB *highfreq_hash, int k);
-/* Note: kmersearch_remove_occurrence_bits moved to kmersearch_kmer.c */
 
 /* High-frequency k-mer cache management functions */
 static void kmersearch_highfreq_kmer_cache_init(void);
@@ -125,21 +115,6 @@ static void kmersearch_parallel_cache_cleanup_on_exit(int code, Datum arg);
 static void kmersearch_parallel_cache_cleanup_internal(void);
 static void dshash_cache_cleanup_callback(int code, Datum arg);
 
-/* Helper functions for direct k-mer management (no hashing) */
-/* Note: kmersearch_extract_kmer_as_uint64 moved to kmersearch_kmer.c */
-/* Note: kmersearch_find_or_add_kmer_occurrence moved to kmersearch_kmer.c */
-/* Note: kmersearch_extract_kmer_from_varbit moved to kmersearch_kmer.c */
-/* Note: kmersearch_extract_kmer_from_query moved to kmersearch_kmer.c */
-/* Note: kmersearch_extract_kmer_with_degenerate declaration moved to kmersearch.h */
-/* Note: kmersearch_count_degenerate_combinations declaration moved to kmersearch.h */
-/* Note: kmersearch_create_ngram_key2_with_occurrence moved to kmersearch_kmer.c */
-/* Note: kmersearch_will_exceed_degenerate_limit moved to kmersearch_kmer.c */
-/* Note: kmersearch_will_exceed_degenerate_limit_dna4_bits declaration moved to kmersearch.h */
-/* Note: kmersearch_expand_dna4_kmer2_to_dna2_direct declaration moved to kmersearch.h */
-/* Note: k-mer bit manipulation function declarations moved to kmersearch.h */
-/* Note: kmersearch_extract_dna2_kmer2_direct declaration moved to kmersearch.h */
-/* Note: kmersearch_extract_dna2_kmer2_only moved to kmersearch_kmer.c */
-/* Note: kmersearch_encode_kmer2_only_data moved to kmersearch_kmer.c */
 
 /* High-frequency k-mer analysis functions - Phase 2 */
 static void kmersearch_collect_ngram_key2_for_highfreq_kmer(Oid table_oid, const char *column_name, int k_size, const char *highfreq_table_name);
@@ -148,7 +123,6 @@ static void kmersearch_create_worker_ngram_table(const char *table_name);
 static void kmersearch_merge_ngram_worker_results(KmerWorkerState *workers, int num_workers, const char *final_table_name);
 static void kmersearch_persist_collected_ngram_key2(Oid table_oid, const char *final_table_name);
 static bool kmersearch_is_kmer_high_frequency(VarBit *ngram_key, int k_size, const char *highfreq_table_name);
-/* Note: kmersearch_varbit_to_hex_string moved to kmersearch_kmer.c */
 static void kmersearch_persist_highfreq_kmers_metadata(Oid table_oid, const char *column_name, int k_size);
 
 /* Rawscore cache management functions */
@@ -175,10 +149,7 @@ static VarBit **get_cached_query_kmer(const char *query_string, int k_size, int 
 static void free_query_pattern_cache_manager(QueryPatternCacheManager **manager);
 static void free_actual_min_score_cache_manager(ActualMinScoreCacheManager **manager);
 Datum *kmersearch_extract_dna4_kmer2_with_expansion_direct(VarBit *seq, int k, int *nkeys);
-/* Note: kmersearch_create_ngram_key2_with_occurrence_from_dna2 declaration moved to kmersearch.h */
-/* Note: kmersearch_extract_query_kmer_with_degenerate moved to kmersearch_kmer.c */
 static int kmersearch_count_matching_kmer_fast(VarBit **seq_keys, int seq_nkeys, VarBit **query_keys, int query_nkeys);
-/* Note: kmersearch_create_kmer2_key_only declaration moved to kmersearch.h */
 static bool kmersearch_kmer_based_match_dna2(VarBit *sequence, const char *query_string);
 static bool kmersearch_kmer_based_match_dna4(VarBit *sequence, const char *query_string);
 static bool kmersearch_evaluate_match_conditions(int shared_count, int query_total);
@@ -307,7 +278,6 @@ static const uint8 kmersearch_dna4_to_dna2_table[16][5] = {
     {4, 0, 1, 2, 3}      /* 1111 - N (A,C,G,T) */
 };
 
-/* Note: DNA2/DNA4 datatype functions moved to kmersearch_datatype.c */
 
 /* K-mer and GIN index functions */
 PG_FUNCTION_INFO_V1(kmersearch_dna2_match);
@@ -318,7 +288,6 @@ PG_FUNCTION_INFO_V1(kmersearch_analyze_table_frequency);
 PG_FUNCTION_INFO_V1(kmersearch_get_highfreq_kmer);
 PG_FUNCTION_INFO_V1(kmersearch_analyze_table);
 PG_FUNCTION_INFO_V1(kmersearch_drop_analysis);
-PG_FUNCTION_INFO_V1(kmersearch_reduce_index);
 PG_FUNCTION_INFO_V1(kmersearch_rawscore_cache_stats);
 PG_FUNCTION_INFO_V1(kmersearch_rawscore_cache_free);
 PG_FUNCTION_INFO_V1(kmersearch_query_pattern_cache_stats);
@@ -336,11 +305,8 @@ PG_FUNCTION_INFO_V1(kmersearch_rawscore_dna4);
 PG_FUNCTION_INFO_V1(kmersearch_correctedscore_dna2);
 PG_FUNCTION_INFO_V1(kmersearch_correctedscore_dna4);
 
-/* Note: DNA2/DNA4 equality functions moved to kmersearch_datatype.c */
 
-/* Note: DNA2/DNA4 helper functions moved to kmersearch_datatype.c */
 
-/* Note: DNA2/DNA4 datatype I/O functions moved to kmersearch_datatype.c */
 
 /* SIMD capability detection functions */
 static simd_capability_t detect_cpu_capabilities(void);
@@ -778,15 +744,10 @@ static void init_simd_dispatch_table(void)
     }
 }
 
-/* Note: kmersearch_get_bit_at moved to kmersearch_kmer.c */
 
-/* Note: kmersearch_set_bit_at moved to kmersearch_kmer.c */
 
-/* Note: DNA2/DNA4 to_string functions moved to kmersearch_datatype.c */
 
-/* Note: kmersearch_will_exceed_degenerate_limit moved to kmersearch_kmer.c */
 
-/* Note: kmersearch_will_exceed_degenerate_limit_dna4_bits moved to kmersearch_kmer.c */
 
 /*
  * Expand single DNA4 k-mer to multiple DNA2 k-mers using bit operations
@@ -878,18 +839,12 @@ kmersearch_expand_dna4_kmer2_to_dna2_direct(VarBit *dna4_seq, int start_pos, int
     return results;
 }
 
-/* Note: kmersearch_count_degenerate_combinations moved to kmersearch_kmer.c */
-
-/* Note: kmersearch_expand_degenerate_sequence moved to kmersearch_kmer.c */
-
-/* Note: kmersearch_create_ngram_key2 moved to kmersearch_kmer.c */
 
 
-/* Note: kmersearch_create_kmer2_key_from_dna2_bits moved to kmersearch_kmer.c */
 
-/* Note: kmersearch_create_ngram_key2_from_dna2_bits moved to kmersearch_kmer.c */
 
-/* Note: kmersearch_create_ngram_key2_from_dna4_bits moved to kmersearch_kmer.c */
+
+
 
 /*
  * Extract k-mers directly from DNA2 bit sequence (with SIMD dispatch)
@@ -989,12 +944,10 @@ kmersearch_extract_dna2_kmer2_direct_scalar(VarBit *seq, int k, int *nkeys)
  * Extract k-mers only (without occurrence counts) from DNA2 bit sequence
  * This function is used for frequency analysis phase
  */
-/* Note: kmersearch_extract_dna2_kmer2_only moved to kmersearch_kmer.c */
 
 /*
  * Encode k-mer-only VarBit into compact KmerData (ignoring occurrence count bits)
  */
-/* Note: kmersearch_encode_kmer2_only_data moved to kmersearch_kmer.c */
 
 /*
  * Extract k-mers directly from DNA4 bit sequence with degenerate expansion (with SIMD dispatch)
@@ -1106,9 +1059,7 @@ kmersearch_extract_dna4_kmer2_with_expansion_direct_scalar(VarBit *seq, int k, i
     return keys;
 }
 
-/* Note: kmersearch_create_ngram_key2_with_occurrence_from_dna2 moved to kmersearch_kmer.c */
 
-/* Note: kmersearch_extract_query_kmer_with_degenerate moved to kmersearch_kmer.c */
 
 /*
  * Cache management functions
@@ -2046,9 +1997,7 @@ kmersearch_dna4_match(PG_FUNCTION_ARGS)
 }
 
 
-/* Note: DNA2/DNA4 equality functions moved to kmersearch_datatype.c */
 
-/* Note: kmersearch_create_kmer2_key_only moved to kmersearch_kmer.c */
 
 /* A-3: Removed kmersearch_kmer_hash and kmersearch_kmer_compare functions - no longer needed */
 
@@ -2278,9 +2227,7 @@ kmersearch_calculate_raw_score(VarBit *seq1, VarBit *seq2, text *query_text)
 }
 
 
-/* Note: kmersearch_extract_kmer_from_varbit moved to kmersearch_kmer.c */
 
-/* Note: kmersearch_extract_kmer_from_query moved to kmersearch_kmer.c */
 
 /*
  * Raw score calculation function for DNA2
@@ -2457,9 +2404,7 @@ kmersearch_correctedscore_dna4(PG_FUNCTION_ARGS)
     PG_RETURN_INT32(shared_count);
 }
 
-/* Note: kmersearch_extract_kmer_as_uint64 moved to kmersearch_kmer.c */
 
-/* Note: kmersearch_find_or_add_kmer_occurrence moved to kmersearch_kmer.c */
 
 /*
  * Check if a k-mer is in the high-frequency list
@@ -2690,7 +2635,6 @@ kmersearch_dna4_nuc_length(PG_FUNCTION_ARGS)
     PG_RETURN_INT32(nuc_len);
 }
 
-/* Note: DNA2/DNA4 char_length functions moved to kmersearch_datatype.c */
 
 /* Parallel k-mer analysis functions declarations added elsewhere */
 
@@ -4137,7 +4081,6 @@ kmersearch_is_kmer_high_frequency(VarBit *ngram_key, int k_size, const char *hig
 /*
  * Convert VarBit to hex string for SQL operations
  */
-/* Note: kmersearch_varbit_to_hex_string moved to kmersearch_kmer.c */
 
 /*
  * Persist metadata for high-frequency k-mer analysis
@@ -4624,24 +4567,6 @@ kmersearch_delete_kmer_from_gin_index(Relation index_rel, VarBit *kmer_key)
     return true;  /* Assume success for now */
 }
 
-/*
- * Main function to reduce index size by removing highly frequent k-mers
- * Note: This is a placeholder implementation
- */
-Datum
-kmersearch_reduce_index(PG_FUNCTION_ARGS)
-{
-    Oid index_oid = PG_GETARG_OID(0);
-    
-    /* Validate index OID */
-    if (!OidIsValid(index_oid))
-        ereport(ERROR, (errmsg("invalid index OID")));
-    
-    /* Return placeholder message */
-    ereport(NOTICE, (errmsg("Index reduction not implemented yet for index OID %u", index_oid)));
-    
-    PG_RETURN_TEXT_P(cstring_to_text("Index reduction not implemented"));
-}
 
 /*
  * Rawscore cache statistics function
@@ -4694,24 +4619,6 @@ free_rawscore_cache_manager(RawscoreCacheManager **manager)
     }
 }
 
-/*
- * Helper functions to access and free static cache managers
- */
-static int
-free_dna2_rawscore_cache(void)
-{
-    /* This function needs to be called from within get_cached_rawscore_dna2 context */
-    /* We'll implement this through a global flag approach */
-    return 0;  /* Placeholder - will be implemented with global reset */
-}
-
-static int
-free_dna4_rawscore_cache(void)
-{
-    /* This function needs to be called from within get_cached_rawscore_dna4 context */
-    /* We'll implement this through a global flag approach */
-    return 0;  /* Placeholder - will be implemented with global reset */
-}
 
 /*
  * Rawscore cache free function
@@ -4973,7 +4880,6 @@ _PG_fini(void)
 /*
  * High-frequency k-mer filtering functions implementation
  */
-/* Note: kmersearch_remove_occurrence_bits moved to kmersearch_kmer.c */
 
 /*
  * Validate current GUC settings against metadata table values

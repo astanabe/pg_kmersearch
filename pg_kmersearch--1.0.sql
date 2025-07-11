@@ -307,11 +307,6 @@ CREATE FUNCTION kmersearch_drop_analysis(table_oid oid, column_name text, k inte
     AS 'MODULE_PATHNAME', 'kmersearch_drop_analysis'
     LANGUAGE C VOLATILE STRICT;
 
--- Index optimization function
-CREATE FUNCTION kmersearch_reduce_index(index_oid oid) 
-    RETURNS text
-    AS 'MODULE_PATHNAME', 'kmersearch_reduce_index'
-    LANGUAGE C VOLATILE STRICT;
 
 -- Rawscore cache statistics function
 CREATE FUNCTION kmersearch_rawscore_cache_stats()
