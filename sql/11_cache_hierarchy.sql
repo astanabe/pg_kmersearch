@@ -5,8 +5,8 @@ CREATE EXTENSION IF NOT EXISTS pg_kmersearch;
 
 -- Clean up any existing test data
 DROP TABLE IF EXISTS test_cache_hierarchy CASCADE;
-DELETE FROM kmersearch_highfreq_kmers WHERE detection_reason LIKE 'cache_hierarchy_%';
-DELETE FROM kmersearch_highfreq_kmers_meta WHERE column_name = 'test_seq';
+DELETE FROM kmersearch_highfreq_kmer WHERE detection_reason LIKE 'cache_hierarchy_%';
+DELETE FROM kmersearch_highfreq_kmer_meta WHERE column_name = 'test_seq';
 
 -- Create test table for cache hierarchy testing
 CREATE TABLE test_cache_hierarchy (
@@ -33,7 +33,7 @@ SELECT test_seq =% 'ATCGATCG' as no_metadata_query FROM test_cache_hierarchy LIM
 SELECT 'Phase 2: Testing GUC validation...' as test_phase;
 
 -- Insert metadata with specific GUC values
-INSERT INTO kmersearch_highfreq_kmers_meta (table_oid, column_name, k_value, occur_bitlen, max_appearance_rate, max_appearance_nrow)
+INSERT INTO kmersearch_highfreq_kmer_meta (table_oid, column_name, k_value, occur_bitlen, max_appearance_rate, max_appearance_nrow)
 VALUES ((SELECT oid FROM pg_class WHERE relname = 'test_cache_hierarchy'), 'test_seq', 6, 8, 0.4, 3);
 
 -- Test 2.1: Matching GUC settings (should work)
@@ -72,7 +72,7 @@ SET kmersearch.max_appearance_nrow = 3;
 SELECT 'Phase 3: Testing cache hierarchy...' as test_phase;
 
 -- Insert test high-frequency k-mer data
-INSERT INTO kmersearch_highfreq_kmers (index_oid, ngram_key, detection_reason)
+INSERT INTO kmersearch_highfreq_kmer (index_oid, ngram_key, detection_reason)
 VALUES (
   (SELECT indexrelid FROM pg_stat_user_indexes WHERE relname = 'test_cache_hierarchy' AND indexrelname = 'test_cache_hierarchy_gin_idx'),
   '01010101'::bit(16),  -- Sample n-gram key
@@ -117,7 +117,7 @@ SELECT test_seq =% 'ATCGATCG' as table_fallback_query FROM test_cache_hierarchy 
 SELECT 'Phase 4: Testing table lookup without high-frequency data...' as test_phase;
 
 -- Remove all high-frequency k-mer data
-DELETE FROM kmersearch_highfreq_kmers WHERE detection_reason = 'cache_hierarchy_test';
+DELETE FROM kmersearch_highfreq_kmer WHERE detection_reason = 'cache_hierarchy_test';
 
 -- Test query (should work but find no high-frequency k-mers)
 SELECT test_seq =% 'ATCGATCG' as no_highfreq_data_query FROM test_cache_hierarchy LIMIT 1;
@@ -126,7 +126,7 @@ SELECT test_seq =% 'ATCGATCG' as no_highfreq_data_query FROM test_cache_hierarch
 SELECT 'Phase 5: Testing non-existent table scenario...' as test_phase;
 
 -- Remove metadata to simulate non-existent table scenario
-DELETE FROM kmersearch_highfreq_kmers_meta WHERE column_name = 'test_seq';
+DELETE FROM kmersearch_highfreq_kmer_meta WHERE column_name = 'test_seq';
 
 -- Test query (should work with no validation)
 SELECT test_seq =% 'ATCGATCG' as no_table_query FROM test_cache_hierarchy LIMIT 1;
@@ -134,8 +134,8 @@ SELECT test_seq =% 'ATCGATCG' as no_table_query FROM test_cache_hierarchy LIMIT 
 -- Clean up test data
 SELECT 'Cleaning up test data...' as cleanup_phase;
 DROP TABLE test_cache_hierarchy CASCADE;
-DELETE FROM kmersearch_highfreq_kmers WHERE detection_reason LIKE 'cache_hierarchy_%';
-DELETE FROM kmersearch_highfreq_kmers_meta WHERE column_name = 'test_seq';
+DELETE FROM kmersearch_highfreq_kmer WHERE detection_reason LIKE 'cache_hierarchy_%';
+DELETE FROM kmersearch_highfreq_kmer_meta WHERE column_name = 'test_seq';
 
 SELECT 'Cache hierarchy test completed successfully!' as final_result;
 

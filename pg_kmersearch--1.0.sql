@@ -146,7 +146,7 @@ CREATE OPERATOR CLASS kmersearch_dna4_gin_ops
 
 
 -- System table for storing highly frequent k-mers
-CREATE TABLE kmersearch_highfreq_kmers (
+CREATE TABLE kmersearch_highfreq_kmer (
     index_oid oid NOT NULL,
     ngram_key varbit NOT NULL,
     detection_reason text,
@@ -155,7 +155,7 @@ CREATE TABLE kmersearch_highfreq_kmers (
 );
 
 -- High-frequency k-mers metadata table
-CREATE TABLE kmersearch_highfreq_kmers_meta (
+CREATE TABLE kmersearch_highfreq_kmer_meta (
     table_oid oid NOT NULL,
     column_name name NOT NULL,
     k_value integer NOT NULL,
@@ -188,7 +188,7 @@ CREATE TABLE kmersearch_index_info (
     k_value integer NOT NULL,
     occur_bitlen integer NOT NULL,
     total_rows bigint NOT NULL,
-    highfreq_kmers_count integer NOT NULL,
+    highfreq_kmer_count integer NOT NULL,
     max_appearance_rate real NOT NULL,
     max_appearance_nrow integer NOT NULL,
     created_at timestamp with time zone DEFAULT now()
@@ -200,9 +200,9 @@ CREATE FUNCTION kmersearch_analyze_table_frequency(table_oid oid, column_name te
     AS 'MODULE_PATHNAME', 'kmersearch_analyze_table_frequency'
     LANGUAGE C VOLATILE STRICT;
 
-CREATE FUNCTION kmersearch_get_highfreq_kmers(index_oid oid) 
+CREATE FUNCTION kmersearch_get_highfreq_kmer(index_oid oid) 
     RETURNS varbit[]
-    AS 'MODULE_PATHNAME', 'kmersearch_get_highfreq_kmers'
+    AS 'MODULE_PATHNAME', 'kmersearch_get_highfreq_kmer'
     LANGUAGE C STABLE STRICT;
 
 
@@ -369,23 +369,23 @@ CREATE FUNCTION kmersearch_actual_min_score_cache_free()
     LANGUAGE C VOLATILE;
 
 -- High-frequency k-mer cache management functions
-CREATE FUNCTION kmersearch_highfreq_kmers_cache_load(table_oid oid, column_name text, k_value integer)
+CREATE FUNCTION kmersearch_highfreq_kmers_cache_load(table_oid oid, column_name text, kmer_size integer)
     RETURNS boolean
-    AS 'MODULE_PATHNAME', 'kmersearch_highfreq_kmers_cache_load'
+    AS 'MODULE_PATHNAME', 'kmersearch_highfreq_kmer_cache_load'
     LANGUAGE C VOLATILE STRICT;
 
 CREATE FUNCTION kmersearch_highfreq_kmers_cache_free()
     RETURNS integer
-    AS 'MODULE_PATHNAME', 'kmersearch_highfreq_kmers_cache_free'
+    AS 'MODULE_PATHNAME', 'kmersearch_highfreq_kmer_cache_free'
     LANGUAGE C VOLATILE;
 
 -- Parallel high-frequency k-mer cache management functions
-CREATE FUNCTION kmersearch_parallel_highfreq_kmers_cache_load(table_oid oid, column_name text, k_value integer)
+CREATE FUNCTION kmersearch_parallel_highfreq_kmers_cache_load(table_oid oid, column_name text, kmer_size integer)
     RETURNS boolean
-    AS 'MODULE_PATHNAME', 'kmersearch_parallel_highfreq_kmers_cache_load'
+    AS 'MODULE_PATHNAME', 'kmersearch_parallel_highfreq_kmer_cache_load'
     LANGUAGE C VOLATILE STRICT;
 
 CREATE FUNCTION kmersearch_parallel_highfreq_kmers_cache_free()
     RETURNS integer
-    AS 'MODULE_PATHNAME', 'kmersearch_parallel_highfreq_kmers_cache_free'
+    AS 'MODULE_PATHNAME', 'kmersearch_parallel_highfreq_kmer_cache_free'
     LANGUAGE C VOLATILE;

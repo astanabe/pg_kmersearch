@@ -207,7 +207,7 @@ typedef struct QueryPatternCacheEntry
 {
     uint64      hash_key;                  /* Hash key for this entry */
     char        *query_string_copy;        /* Copy of query string */
-    int         k_size;                    /* K-mer size for this pattern */
+    int         kmer_size;                 /* K-mer size for this pattern */
     VarBit      **extracted_kmers;         /* Cached extracted k-mers */
     int         kmer_count;                /* Number of extracted k-mers */
     struct QueryPatternCacheEntry *next;   /* For LRU chain */
@@ -261,7 +261,7 @@ typedef struct KmerBuffer
     CompactKmerFreq *entries;            /* Buffer entries */
     int             count;               /* Current count */
     int             capacity;            /* Buffer capacity */
-    int             k_size;              /* K-mer size */
+    int             kmer_size;           /* K-mer size */
 } KmerBuffer;
 
 /*
@@ -280,7 +280,7 @@ typedef struct HighfreqKmerCache
 {
     Oid         current_table_oid;        /* Current table OID */
     char       *current_column_name;      /* Current column name */
-    int         current_k_value;          /* Current k-mer size */
+    int         current_kmer_size;        /* Current k-mer size */
     MemoryContext cache_context;          /* Memory context for cache data */
     HTAB       *highfreq_hash;           /* Hash table for fast lookup */
     VarBit    **highfreq_kmers;          /* Array of high-frequency k-mers */
@@ -296,7 +296,7 @@ typedef struct ParallelHighfreqKmerCacheEntry
     uint64      kmer_hash;               /* k-mer hash value (key) */
     int32       frequency_count;         /* frequency count */
     Oid         table_oid;               /* table OID */
-    int32       k_value;                 /* k value */
+    int32       kmer_size;               /* k-mer size */
 } ParallelHighfreqKmerCacheEntry;
 
 /*
@@ -310,7 +310,7 @@ typedef struct ParallelHighfreqKmerCache
     bool                is_initialized;  /* initialization flag */
     dsm_handle          dsm_handle;      /* DSM segment handle */
     Oid                 table_oid;       /* table OID */
-    int32               k_value;         /* k value */
+    int32               kmer_size;       /* k-mer size */
 } ParallelHighfreqKmerCache;
 
 /*
@@ -441,12 +441,12 @@ Datum kmersearch_query_pattern_cache_stats(PG_FUNCTION_ARGS);
 Datum kmersearch_query_pattern_cache_free(PG_FUNCTION_ARGS);
 
 /* High-frequency k-mer cache functions */
-Datum kmersearch_highfreq_kmers_cache_load(PG_FUNCTION_ARGS);
-Datum kmersearch_highfreq_kmers_cache_free(PG_FUNCTION_ARGS);
+Datum kmersearch_highfreq_kmer_cache_load(PG_FUNCTION_ARGS);
+Datum kmersearch_highfreq_kmer_cache_free(PG_FUNCTION_ARGS);
 
 /* Parallel cache functions */
-Datum kmersearch_parallel_highfreq_kmers_cache_load(PG_FUNCTION_ARGS);
-Datum kmersearch_parallel_highfreq_kmers_cache_free(PG_FUNCTION_ARGS);
+Datum kmersearch_parallel_highfreq_kmer_cache_load(PG_FUNCTION_ARGS);
+Datum kmersearch_parallel_highfreq_kmer_cache_free(PG_FUNCTION_ARGS);
 
 /* Analysis functions */
 Datum kmersearch_analyze_table(PG_FUNCTION_ARGS);
@@ -454,9 +454,9 @@ Datum kmersearch_drop_highfreq_analysis(PG_FUNCTION_ARGS);
 
 /* K-mer utility functions */
 void kmersearch_expand_degenerate_sequence(const char *kmer, int k, char **expanded, int *expand_count);
-VarBit *kmersearch_create_ngram_key(const char *kmer, int k, int occurrence);
-Datum *kmersearch_extract_dna2_kmers_direct(VarBit *dna, int k, int *nkeys);
-Datum *kmersearch_extract_dna4_kmers_with_expansion_direct(VarBit *dna, int k, int *nkeys);
+VarBit *kmersearch_create_ngram_key2(const char *kmer, int k, int occurrence);
+Datum *kmersearch_extract_dna2_kmer2_direct(VarBit *dna, int k, int *nkeys);
+Datum *kmersearch_extract_dna4_kmer2_with_expansion_direct(VarBit *dna, int k, int *nkeys);
 Datum *kmersearch_filter_highfreq_kmers_from_keys(Datum *keys, int *nkeys, HTAB *highfreq_hash, int k);
 Datum *kmersearch_filter_highfreq_kmers_from_keys_parallel(Datum *keys, int *nkeys, int k);
 int calculate_actual_min_score(VarBit **query_keys, int nkeys, int original_nkeys);

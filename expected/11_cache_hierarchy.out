@@ -4,8 +4,8 @@ CREATE EXTENSION IF NOT EXISTS pg_kmersearch;
 -- Clean up any existing test data
 DROP TABLE IF EXISTS test_cache_hierarchy CASCADE;
 NOTICE:  table "test_cache_hierarchy" does not exist, skipping
-DELETE FROM kmersearch_highfreq_kmers WHERE detection_reason LIKE 'cache_hierarchy_%';
-DELETE FROM kmersearch_highfreq_kmers_meta WHERE column_name = 'test_seq';
+DELETE FROM kmersearch_highfreq_kmer WHERE detection_reason LIKE 'cache_hierarchy_%';
+DELETE FROM kmersearch_highfreq_kmer_meta WHERE column_name = 'test_seq';
 -- Create test table for cache hierarchy testing
 CREATE TABLE test_cache_hierarchy (
     id SERIAL PRIMARY KEY,
@@ -41,15 +41,12 @@ SELECT 'Phase 2: Testing GUC validation...' as test_phase;
 (1 row)
 
 -- Insert metadata with specific GUC values
-INSERT INTO kmersearch_highfreq_kmers_meta (table_oid, column_name, k_value, occur_bitlen, max_appearance_rate, max_appearance_nrow)
+INSERT INTO kmersearch_highfreq_kmer_meta (table_oid, column_name, k_value, occur_bitlen, max_appearance_rate, max_appearance_nrow)
 VALUES ((SELECT oid FROM pg_class WHERE relname = 'test_cache_hierarchy'), 'test_seq', 6, 8, 0.4, 3);
 -- Test 2.1: Matching GUC settings (should work)
 SET kmersearch.occur_bitlen = 8;
-WARNING:  High-frequency k-mer cache has been cleared. You may need to manually execute kmersearch_highfreq_kmers_cache_load() to reload the cache if needed.
 SET kmersearch.max_appearance_rate = 0.4;
-WARNING:  High-frequency k-mer cache has been cleared. You may need to manually execute kmersearch_highfreq_kmers_cache_load() to reload the cache if needed.
 SET kmersearch.max_appearance_nrow = 3;
-WARNING:  High-frequency k-mer cache has been cleared. You may need to manually execute kmersearch_highfreq_kmers_cache_load() to reload the cache if needed.
 SELECT test_seq =% 'ATCGATCG' as matching_guc_query FROM test_cache_hierarchy LIMIT 1;
  matching_guc_query 
 --------------------
@@ -58,7 +55,6 @@ SELECT test_seq =% 'ATCGATCG' as matching_guc_query FROM test_cache_hierarchy LI
 
 -- Test 2.2: Mismatched GUC - occur_bitlen (should fail during cache load)
 SET kmersearch.occur_bitlen = 16;
-WARNING:  High-frequency k-mer cache has been cleared. You may need to manually execute kmersearch_highfreq_kmers_cache_load() to reload the cache if needed.
 SELECT kmersearch_highfreq_kmers_cache_load(
   (SELECT oid FROM pg_class WHERE relname = 'test_cache_hierarchy'),
   'test_seq', 6
@@ -68,9 +64,7 @@ DETAIL:  Current setting: 16, Required by metadata: 8
 HINT:  Set kmersearch.occur_bitlen = 8 before loading cache.
 -- Test 2.3: Mismatched GUC - max_appearance_rate (should fail during cache load)
 SET kmersearch.occur_bitlen = 8;  -- Reset
-WARNING:  High-frequency k-mer cache has been cleared. You may need to manually execute kmersearch_highfreq_kmers_cache_load() to reload the cache if needed.
 SET kmersearch.max_appearance_rate = 0.8;
-WARNING:  High-frequency k-mer cache has been cleared. You may need to manually execute kmersearch_highfreq_kmers_cache_load() to reload the cache if needed.
 SELECT kmersearch_highfreq_kmers_cache_load(
   (SELECT oid FROM pg_class WHERE relname = 'test_cache_hierarchy'),
   'test_seq', 6
@@ -80,9 +74,7 @@ DETAIL:  Current setting: 0.8000, Required by metadata: 0.4000
 HINT:  Set kmersearch.max_appearance_rate = 0.4000 before loading cache.
 -- Test 2.4: Mismatched GUC - max_appearance_nrow (should fail during cache load)
 SET kmersearch.max_appearance_rate = 0.4;  -- Reset
-WARNING:  High-frequency k-mer cache has been cleared. You may need to manually execute kmersearch_highfreq_kmers_cache_load() to reload the cache if needed.
 SET kmersearch.max_appearance_nrow = 10;
-WARNING:  High-frequency k-mer cache has been cleared. You may need to manually execute kmersearch_highfreq_kmers_cache_load() to reload the cache if needed.
 SELECT kmersearch_highfreq_kmers_cache_load(
   (SELECT oid FROM pg_class WHERE relname = 'test_cache_hierarchy'),
   'test_seq', 6
@@ -92,7 +84,6 @@ DETAIL:  Current setting: 10, Required by metadata: 3
 HINT:  Set kmersearch.max_appearance_nrow = 3 before loading cache.
 -- Reset to correct values for subsequent tests
 SET kmersearch.max_appearance_nrow = 3;
-WARNING:  High-frequency k-mer cache has been cleared. You may need to manually execute kmersearch_highfreq_kmers_cache_load() to reload the cache if needed.
 -- Test Phase 3: Cache hierarchy testing
 SELECT 'Phase 3: Testing cache hierarchy...' as test_phase;
              test_phase              
@@ -101,7 +92,7 @@ SELECT 'Phase 3: Testing cache hierarchy...' as test_phase;
 (1 row)
 
 -- Insert test high-frequency k-mer data
-INSERT INTO kmersearch_highfreq_kmers (index_oid, ngram_key, detection_reason)
+INSERT INTO kmersearch_highfreq_kmer (index_oid, ngram_key, detection_reason)
 VALUES (
   (SELECT indexrelid FROM pg_stat_user_indexes WHERE relname = 'test_cache_hierarchy' AND indexrelname = 'test_cache_hierarchy_gin_idx'),
   '01010101'::bit(16),  -- Sample n-gram key
@@ -191,7 +182,7 @@ SELECT 'Phase 4: Testing table lookup without high-frequency data...' as test_ph
 (1 row)
 
 -- Remove all high-frequency k-mer data
-DELETE FROM kmersearch_highfreq_kmers WHERE detection_reason = 'cache_hierarchy_test';
+DELETE FROM kmersearch_highfreq_kmer WHERE detection_reason = 'cache_hierarchy_test';
 -- Test query (should work but find no high-frequency k-mers)
 SELECT test_seq =% 'ATCGATCG' as no_highfreq_data_query FROM test_cache_hierarchy LIMIT 1;
  no_highfreq_data_query 
@@ -207,7 +198,7 @@ SELECT 'Phase 5: Testing non-existent table scenario...' as test_phase;
 (1 row)
 
 -- Remove metadata to simulate non-existent table scenario
-DELETE FROM kmersearch_highfreq_kmers_meta WHERE column_name = 'test_seq';
+DELETE FROM kmersearch_highfreq_kmer_meta WHERE column_name = 'test_seq';
 -- Test query (should work with no validation)
 SELECT test_seq =% 'ATCGATCG' as no_table_query FROM test_cache_hierarchy LIMIT 1;
  no_table_query 
@@ -223,8 +214,8 @@ SELECT 'Cleaning up test data...' as cleanup_phase;
 (1 row)
 
 DROP TABLE test_cache_hierarchy CASCADE;
-DELETE FROM kmersearch_highfreq_kmers WHERE detection_reason LIKE 'cache_hierarchy_%';
-DELETE FROM kmersearch_highfreq_kmers_meta WHERE column_name = 'test_seq';
+DELETE FROM kmersearch_highfreq_kmer WHERE detection_reason LIKE 'cache_hierarchy_%';
+DELETE FROM kmersearch_highfreq_kmer_meta WHERE column_name = 'test_seq';
 SELECT 'Cache hierarchy test completed successfully!' as final_result;
                  final_result                 
 ----------------------------------------------

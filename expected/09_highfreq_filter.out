@@ -32,7 +32,7 @@ SELECT 'Testing kmersearch_analyze_table...' as test_phase;
 (1 row)
 
 -- Analyze the table to identify high-frequency k-mers
--- This will create entries in kmersearch_highfreq_kmers and kmersearch_highfreq_kmers_meta tables
+-- This will create entries in kmersearch_highfreq_kmer and kmersearch_highfreq_kmer_meta tables
 -- Note: This function currently has server crash issues, so we'll skip it for now
 -- SELECT kmersearch_analyze_table(
 --     (SELECT oid FROM pg_class WHERE relname = 'test_highfreq_dna2'), 
@@ -41,7 +41,7 @@ SELECT 'Testing kmersearch_analyze_table...' as test_phase;
 --     5  -- max_appearance_nrow threshold
 -- ) as analysis_result;
 -- Manually insert test data instead of using analyze_table
-INSERT INTO kmersearch_highfreq_kmers_meta (table_oid, column_name, k_value, occur_bitlen, max_appearance_rate, max_appearance_nrow)
+INSERT INTO kmersearch_highfreq_kmer_meta (table_oid, column_name, k_value, occur_bitlen, max_appearance_rate, max_appearance_nrow)
 VALUES ((SELECT oid FROM pg_class WHERE relname = 'test_highfreq_dna2'), 'sequence', 8, 8, 0.5, 5);
 -- Check if analysis created metadata
 SELECT 'Checking analysis metadata...' as test_phase;
@@ -50,7 +50,7 @@ SELECT 'Checking analysis metadata...' as test_phase;
  Checking analysis metadata...
 (1 row)
 
-SELECT COUNT(*) as meta_count FROM kmersearch_highfreq_kmers_meta 
+SELECT COUNT(*) as meta_count FROM kmersearch_highfreq_kmer_meta 
 WHERE table_oid = (SELECT oid FROM pg_class WHERE relname = 'test_highfreq_dna2');
  meta_count 
 ------------
@@ -64,7 +64,7 @@ SELECT 'Checking high-frequency k-mers...' as test_phase;
  Checking high-frequency k-mers...
 (1 row)
 
-SELECT COUNT(*) as highfreq_kmer_count FROM kmersearch_highfreq_kmers 
+SELECT COUNT(*) as highfreq_kmer_count FROM kmersearch_highfreq_kmer
 WHERE index_oid IN (
     SELECT indexrelid FROM pg_stat_user_indexes 
     WHERE schemaname = 'public' AND relname = 'test_highfreq_dna2'
@@ -90,9 +90,7 @@ SELECT 'Testing cache loading...' as test_phase;
 
 -- Set GUC variables to match metadata
 SET kmersearch.max_appearance_rate = 0.5;
-WARNING:  High-frequency k-mer cache has been cleared. You may need to manually execute kmersearch_highfreq_kmers_cache_load() to reload the cache if needed.
 SET kmersearch.max_appearance_nrow = 5;
-WARNING:  High-frequency k-mer cache has been cleared. You may need to manually execute kmersearch_highfreq_kmers_cache_load() to reload the cache if needed.
 SELECT kmersearch_highfreq_kmers_cache_load(test_highfreq_dna2.tableoid, 'sequence', 8) as cache_loaded
 FROM test_highfreq_dna2 LIMIT 1;
  cache_loaded 
@@ -145,13 +143,10 @@ SELECT 'Testing GUC validation and cache hierarchy...' as test_phase;
 
 -- Reset GUC settings to match metadata for testing
 SET kmersearch.max_appearance_rate = 0.5;
-WARNING:  High-frequency k-mer cache has been cleared. You may need to manually execute kmersearch_highfreq_kmers_cache_load() to reload the cache if needed.
 SET kmersearch.max_appearance_nrow = 5;
-WARNING:  High-frequency k-mer cache has been cleared. You may need to manually execute kmersearch_highfreq_kmers_cache_load() to reload the cache if needed.
 SET kmersearch.occur_bitlen = 8;
-WARNING:  High-frequency k-mer cache has been cleared. You may need to manually execute kmersearch_highfreq_kmers_cache_load() to reload the cache if needed.
 -- Insert some test high-frequency k-mer data for cache hierarchy testing
-INSERT INTO kmersearch_highfreq_kmers (index_oid, ngram_key, detection_reason)
+INSERT INTO kmersearch_highfreq_kmer (index_oid, ngram_key, detection_reason)
 VALUES (
   (SELECT indexrelid FROM pg_stat_user_indexes WHERE relname = 'test_highfreq_dna2' AND indexrelname = 'idx_test_highfreq_dna2_gin'),
   '01010101'::bit(16),  -- Sample n-gram key  
@@ -166,7 +161,6 @@ SELECT 'Testing GUC validation errors...' as test_substep;
 
 -- Change GUC to cause mismatch and test cache loading (should fail)
 SET kmersearch.max_appearance_rate = 0.9;  -- Different from metadata (0.5)
-WARNING:  High-frequency k-mer cache has been cleared. You may need to manually execute kmersearch_highfreq_kmers_cache_load() to reload the cache if needed.
 SELECT kmersearch_highfreq_kmers_cache_load(
   (SELECT oid FROM pg_class WHERE relname = 'test_highfreq_dna2'),
   'sequence', 8
@@ -176,7 +170,6 @@ DETAIL:  Current setting: 0.9000, Required by metadata: 0.5000
 HINT:  Set kmersearch.max_appearance_rate = 0.5000 before loading cache.
 -- Reset to correct values
 SET kmersearch.max_appearance_rate = 0.5;
-WARNING:  High-frequency k-mer cache has been cleared. You may need to manually execute kmersearch_highfreq_kmers_cache_load() to reload the cache if needed.
 -- Test 2: Cache hierarchy - Global cache
 SELECT 'Testing global cache hierarchy...' as test_substep;
            test_substep            
@@ -254,7 +247,7 @@ SELECT sequence =% 'ATCGATCG' as table_fallback_query FROM test_highfreq_dna2 LI
 (1 row)
 
 -- Clean up test data
-DELETE FROM kmersearch_highfreq_kmers WHERE detection_reason = 'regression_test';
+DELETE FROM kmersearch_highfreq_kmer WHERE detection_reason = 'regression_test';
 -- Clean up analysis data
 SELECT 'Cleaning up analysis data...' as test_phase;
           test_phase          
@@ -262,12 +255,12 @@ SELECT 'Cleaning up analysis data...' as test_phase;
  Cleaning up analysis data...
 (1 row)
 
-DELETE FROM kmersearch_highfreq_kmers 
+DELETE FROM kmersearch_highfreq_kmer
 WHERE index_oid IN (
     SELECT indexrelid FROM pg_stat_user_indexes 
     WHERE schemaname = 'public' AND relname = 'test_highfreq_dna2'
 );
-DELETE FROM kmersearch_highfreq_kmers_meta 
+DELETE FROM kmersearch_highfreq_kmer_meta 
 WHERE table_oid = (SELECT oid FROM pg_class WHERE relname = 'test_highfreq_dna2');
 -- Clean up
 DROP TABLE test_highfreq_dna2 CASCADE;

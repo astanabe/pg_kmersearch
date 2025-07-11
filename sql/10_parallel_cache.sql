@@ -26,7 +26,7 @@ INSERT INTO test_dna_parallel (seq) VALUES
 CREATE INDEX test_dna_parallel_gin_idx ON test_dna_parallel USING gin (seq);
 
 -- Insert test metadata for cache loading
-INSERT INTO kmersearch_highfreq_kmers_meta (table_oid, column_name, k_value, occur_bitlen, max_appearance_rate, max_appearance_nrow)
+INSERT INTO kmersearch_highfreq_kmer_meta (table_oid, column_name, k_value, occur_bitlen, max_appearance_rate, max_appearance_nrow)
 VALUES ((SELECT oid FROM pg_class WHERE relname = 'test_dna_parallel'), 'seq', 8, 8, 0.05, 0);
 
 -- Load high-frequency k-mers into global cache (for comparison)

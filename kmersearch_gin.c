@@ -22,7 +22,7 @@ PG_FUNCTION_INFO_V1(kmersearch_compare_partial);
  * Forward declarations for static functions
  */
 static Datum *kmersearch_extract_kmers(const char *sequence, int seq_len, int k, int *nkeys);
-static VarBit *kmersearch_create_ngram_key_with_occurrence(const char *kmer, int k, int occurrence);
+static VarBit *kmersearch_create_ngram_key2_with_occurrence(const char *kmer, int k, int occurrence);
 
 /*
  * Extract k-mers from DNA sequence and create n-gram keys
@@ -83,7 +83,7 @@ kmersearch_extract_kmers(const char *sequence, int seq_len, int k, int *nkeys)
                     /* For now, assume each k-mer appears once per position */
                 }
                 
-                ngram_key = kmersearch_create_ngram_key(expanded[j], k, occurrence);
+                ngram_key = kmersearch_create_ngram_key2(expanded[j], k, occurrence);
                 keys[key_count++] = PointerGetDatum(ngram_key);
                 
                 pfree(expanded[j]);
@@ -93,7 +93,7 @@ kmersearch_extract_kmers(const char *sequence, int seq_len, int k, int *nkeys)
         {
             /* Simple case - no degenerate codes */
             int occurrence = 1;
-            VarBit *ngram_key = kmersearch_create_ngram_key(kmer, k, occurrence);
+            VarBit *ngram_key = kmersearch_create_ngram_key2(kmer, k, occurrence);
             keys[key_count++] = PointerGetDatum(ngram_key);
         }
     }
@@ -120,7 +120,7 @@ kmersearch_extract_value_dna2(PG_FUNCTION_ARGS)
         ereport(ERROR, (errmsg("k-mer length must be between 4 and 64")));
     
     /* Use direct bit extraction instead of string conversion */
-    keys = kmersearch_extract_dna2_kmers_direct((VarBit *)dna, k, nkeys);
+    keys = kmersearch_extract_dna2_kmer2_direct((VarBit *)dna, k, nkeys);
     
     /* Apply high-frequency k-mer filtering if enabled */
     if (keys && *nkeys > 0 && kmersearch_preclude_highfreq_kmer) {
@@ -171,7 +171,7 @@ kmersearch_extract_value_dna4(PG_FUNCTION_ARGS)
         ereport(ERROR, (errmsg("k-mer length must be between 4 and 64")));
     
     /* Use direct bit extraction with degenerate expansion */
-    keys = kmersearch_extract_dna4_kmers_with_expansion_direct((VarBit *)dna, k, nkeys);
+    keys = kmersearch_extract_dna4_kmer2_with_expansion_direct((VarBit *)dna, k, nkeys);
     
     /* Apply high-frequency k-mer filtering if enabled */
     if (keys && *nkeys > 0 && kmersearch_preclude_highfreq_kmer) {
@@ -208,7 +208,7 @@ kmersearch_extract_value_dna4(PG_FUNCTION_ARGS)
  * Create n-gram key with occurrence count
  */
 static VarBit *
-kmersearch_create_ngram_key_with_occurrence(const char *kmer, int k, int occurrence)
+kmersearch_create_ngram_key2_with_occurrence(const char *kmer, int k, int occurrence)
 {
     int kmer_bits = k * 2;
     int occur_bits = kmersearch_occur_bitlen;

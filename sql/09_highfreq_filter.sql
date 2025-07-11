@@ -33,7 +33,7 @@ CREATE INDEX idx_test_highfreq_dna2_gin ON test_highfreq_dna2 USING gin (sequenc
 SELECT 'Testing kmersearch_analyze_table...' as test_phase;
 
 -- Analyze the table to identify high-frequency k-mers
--- This will create entries in kmersearch_highfreq_kmers and kmersearch_highfreq_kmers_meta tables
+-- This will create entries in kmersearch_highfreq_kmer and kmersearch_highfreq_kmer_meta tables
 -- Note: This function currently has server crash issues, so we'll skip it for now
 -- SELECT kmersearch_analyze_table(
 --     (SELECT oid FROM pg_class WHERE relname = 'test_highfreq_dna2'), 
@@ -43,17 +43,17 @@ SELECT 'Testing kmersearch_analyze_table...' as test_phase;
 -- ) as analysis_result;
 
 -- Manually insert test data instead of using analyze_table
-INSERT INTO kmersearch_highfreq_kmers_meta (table_oid, column_name, k_value, occur_bitlen, max_appearance_rate, max_appearance_nrow)
+INSERT INTO kmersearch_highfreq_kmer_meta (table_oid, column_name, k_value, occur_bitlen, max_appearance_rate, max_appearance_nrow)
 VALUES ((SELECT oid FROM pg_class WHERE relname = 'test_highfreq_dna2'), 'sequence', 8, 8, 0.5, 5);
 
 -- Check if analysis created metadata
 SELECT 'Checking analysis metadata...' as test_phase;
-SELECT COUNT(*) as meta_count FROM kmersearch_highfreq_kmers_meta 
+SELECT COUNT(*) as meta_count FROM kmersearch_highfreq_kmer_meta 
 WHERE table_oid = (SELECT oid FROM pg_class WHERE relname = 'test_highfreq_dna2');
 
 -- Check if analysis created high-frequency k-mer data
 SELECT 'Checking high-frequency k-mers...' as test_phase;
-SELECT COUNT(*) as highfreq_kmer_count FROM kmersearch_highfreq_kmers 
+SELECT COUNT(*) as highfreq_kmer_count FROM kmersearch_highfreq_kmer
 WHERE index_oid IN (
     SELECT indexrelid FROM pg_stat_user_indexes 
     WHERE schemaname = 'public' AND relname = 'test_highfreq_dna2'
@@ -93,7 +93,7 @@ SET kmersearch.max_appearance_nrow = 5;
 SET kmersearch.occur_bitlen = 8;
 
 -- Insert some test high-frequency k-mer data for cache hierarchy testing
-INSERT INTO kmersearch_highfreq_kmers (index_oid, ngram_key, detection_reason)
+INSERT INTO kmersearch_highfreq_kmer (index_oid, ngram_key, detection_reason)
 VALUES (
   (SELECT indexrelid FROM pg_stat_user_indexes WHERE relname = 'test_highfreq_dna2' AND indexrelname = 'idx_test_highfreq_dna2_gin'),
   '01010101'::bit(16),  -- Sample n-gram key  
@@ -148,16 +148,16 @@ SET kmersearch.force_use_dshash = false;
 SELECT sequence =% 'ATCGATCG' as table_fallback_query FROM test_highfreq_dna2 LIMIT 1;
 
 -- Clean up test data
-DELETE FROM kmersearch_highfreq_kmers WHERE detection_reason = 'regression_test';
+DELETE FROM kmersearch_highfreq_kmer WHERE detection_reason = 'regression_test';
 
 -- Clean up analysis data
 SELECT 'Cleaning up analysis data...' as test_phase;
-DELETE FROM kmersearch_highfreq_kmers 
+DELETE FROM kmersearch_highfreq_kmer
 WHERE index_oid IN (
     SELECT indexrelid FROM pg_stat_user_indexes 
     WHERE schemaname = 'public' AND relname = 'test_highfreq_dna2'
 );
-DELETE FROM kmersearch_highfreq_kmers_meta 
+DELETE FROM kmersearch_highfreq_kmer_meta 
 WHERE table_oid = (SELECT oid FROM pg_class WHERE relname = 'test_highfreq_dna2');
 
 -- Clean up

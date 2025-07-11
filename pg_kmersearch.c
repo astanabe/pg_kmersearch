@@ -43,6 +43,8 @@ HighfreqKmerCache global_highfreq_cache = {0};
 /* Global testing variable for dshash usage (not exposed to users) */
 bool kmersearch_force_use_dshash = false;
 
+/* Removed module_initializing flag - warnings now only appear when cache is actually cleared */
+
 /* Global parallel cache state */
 ParallelHighfreqKmerCache *parallel_highfreq_cache = NULL;
 dsm_segment *parallel_cache_segment = NULL;
@@ -94,27 +96,27 @@ static bool kmersearch_is_global_highfreq_cache_loaded(void);
 static bool kmersearch_is_parallel_highfreq_cache_loaded(void);
 static bool kmersearch_lookup_in_global_cache(VarBit *kmer_key);
 static bool kmersearch_lookup_in_parallel_cache(VarBit *kmer_key);
-static int kmersearch_count_highfreq_kmers_in_query(VarBit **query_keys, int nkeys);
+static int kmersearch_count_highfreq_kmer_in_query(VarBit **query_keys, int nkeys);
 static int kmersearch_get_adjusted_min_score(VarBit **query_keys, int nkeys);
 static int kmersearch_calculate_raw_score(VarBit *seq1, VarBit *seq2, text *query_text);
 
 /* High-frequency k-mer filtering functions */
-static VarBit **kmersearch_get_highfreq_kmers_from_table(Oid table_oid, const char *column_name, int k, int *nkeys);
+static VarBit **kmersearch_get_highfreq_kmer_from_table(Oid table_oid, const char *column_name, int k, int *nkeys);
 static HTAB *kmersearch_create_highfreq_hash_from_array(VarBit **kmers, int nkeys);
 Datum *kmersearch_filter_highfreq_kmers_from_keys(Datum *original_keys, int *nkeys, HTAB *highfreq_hash, int k);
 static VarBit *kmersearch_remove_occurrence_bits(VarBit *key_with_occurrence, int k);
 
 /* High-frequency k-mer cache management functions */
-static void kmersearch_highfreq_kmers_cache_init(void);
-static bool kmersearch_highfreq_kmers_cache_load_internal(Oid table_oid, const char *column_name, int k_value);
-static void kmersearch_highfreq_kmers_cache_free_internal(void);
-static bool kmersearch_highfreq_kmers_cache_is_valid(Oid table_oid, const char *column_name, int k_value);
+static void kmersearch_highfreq_kmer_cache_init(void);
+static bool kmersearch_highfreq_kmer_cache_load_internal(Oid table_oid, const char *column_name, int k_value);
+static void kmersearch_highfreq_kmer_cache_free_internal(void);
+static bool kmersearch_highfreq_kmer_cache_is_valid(Oid table_oid, const char *column_name, int k_value);
 
 /* Parallel high-frequency k-mer cache management functions */
-static void kmersearch_parallel_highfreq_kmers_cache_init(void);
-static bool kmersearch_parallel_highfreq_kmers_cache_load_internal(Oid table_oid, const char *column_name, int k_value);
-static void kmersearch_parallel_highfreq_kmers_cache_free_internal(void);
-static bool kmersearch_parallel_highfreq_kmers_cache_is_valid(Oid table_oid, const char *column_name, int k_value);
+static void kmersearch_parallel_highfreq_kmer_cache_init(void);
+static bool kmersearch_parallel_highfreq_kmer_cache_load_internal(Oid table_oid, const char *column_name, int k_value);
+static void kmersearch_parallel_highfreq_kmer_cache_free_internal(void);
+static bool kmersearch_parallel_highfreq_kmer_cache_is_valid(Oid table_oid, const char *column_name, int k_value);
 static bool kmersearch_parallel_cache_lookup(uint64 kmer_hash);
 static bool kmersearch_parallel_cache_attach(dsm_handle handle);
 static bool kmersearch_is_highfreq_kmer_parallel(VarBit *kmer);
@@ -126,27 +128,27 @@ static void dshash_cache_cleanup_callback(int code, Datum arg);
 /* Helper functions for direct k-mer management (no hashing) */
 static uint64_t kmersearch_extract_kmer_as_uint64(VarBit *seq, int start_pos, int k);
 static int kmersearch_find_or_add_kmer_occurrence(KmerOccurrence *occurrences, int *count, uint64_t kmer_value, int max_count);
-static VarBit **kmersearch_extract_kmers_from_varbit(VarBit *seq, int k, int *nkeys);
-static VarBit **kmersearch_extract_kmers_from_query(const char *query, int k, int *nkeys);
-static Datum *kmersearch_extract_kmers_with_degenerate(const char *sequence, int seq_len, int k, int *nkeys);
+static VarBit **kmersearch_extract_kmer_from_varbit(VarBit *seq, int k, int *nkeys);
+static VarBit **kmersearch_extract_kmer_from_query(const char *query, int k, int *nkeys);
+static Datum *kmersearch_extract_kmer_with_degenerate(const char *sequence, int seq_len, int k, int *nkeys);
 int kmersearch_count_degenerate_combinations(const char *kmer, int k);
-static VarBit *kmersearch_create_ngram_key_with_occurrence(const char *kmer, int k, int occurrence);
+static VarBit *kmersearch_create_ngram_key2_with_occurrence(const char *kmer, int k, int occurrence);
 static bool kmersearch_will_exceed_degenerate_limit(const char *seq, int len);
 static bool kmersearch_will_exceed_degenerate_limit_dna4_bits(VarBit *seq, int start_pos, int k);
-static VarBit **kmersearch_expand_dna4_kmer_to_dna2_direct(VarBit *dna4_seq, int start_pos, int k, int *expansion_count);
-static VarBit *kmersearch_create_kmer_key_from_dna2_bits(VarBit *seq, int start_pos, int k);
-static VarBit *kmersearch_create_ngram_key_from_dna2_bits(VarBit *seq, int start_pos, int k, int occurrence_count);
-static VarBit *kmersearch_create_ngram_key_from_dna4_bits(VarBit *seq, int start_pos, int k, int occurrence_count);
-Datum *kmersearch_extract_dna2_kmers_direct(VarBit *seq, int k, int *nkeys);
-static Datum *kmersearch_extract_dna2_kmers_kmer_only(VarBit *seq, int k, int *nkeys);
-static KmerData kmersearch_encode_kmer_only_data(VarBit *kmer, int k_size);
+static VarBit **kmersearch_expand_dna4_kmer2_to_dna2_direct(VarBit *dna4_seq, int start_pos, int k, int *expansion_count);
+static VarBit *kmersearch_create_kmer2_key_from_dna2_bits(VarBit *seq, int start_pos, int k);
+static VarBit *kmersearch_create_ngram_key2_from_dna2_bits(VarBit *seq, int start_pos, int k, int occurrence_count);
+static VarBit *kmersearch_create_ngram_key2_from_dna4_bits(VarBit *seq, int start_pos, int k, int occurrence_count);
+Datum *kmersearch_extract_dna2_kmer2_direct(VarBit *seq, int k, int *nkeys);
+static Datum *kmersearch_extract_dna2_kmer2_only(VarBit *seq, int k, int *nkeys);
+static KmerData kmersearch_encode_kmer2_only_data(VarBit *kmer, int k_size);
 
 /* High-frequency k-mer analysis functions - Phase 2 */
-static void kmersearch_collect_ngram_keys_for_highfreq_kmers(Oid table_oid, const char *column_name, int k_size, const char *highfreq_table_name);
-static void kmersearch_worker_collect_ngram_keys(KmerWorkerState *worker, Relation rel, const char *column_name, int k_size, const char *highfreq_table_name);
+static void kmersearch_collect_ngram_key2_for_highfreq_kmer(Oid table_oid, const char *column_name, int k_size, const char *highfreq_table_name);
+static void kmersearch_worker_collect_ngram_key2(KmerWorkerState *worker, Relation rel, const char *column_name, int k_size, const char *highfreq_table_name);
 static void kmersearch_create_worker_ngram_table(const char *table_name);
 static void kmersearch_merge_ngram_worker_results(KmerWorkerState *workers, int num_workers, const char *final_table_name);
-static void kmersearch_persist_collected_ngram_keys(Oid table_oid, const char *final_table_name);
+static void kmersearch_persist_collected_ngram_key2(Oid table_oid, const char *final_table_name);
 static bool kmersearch_is_kmer_high_frequency(VarBit *ngram_key, int k_size, const char *highfreq_table_name);
 static char *kmersearch_varbit_to_hex_string(VarBit *varbit);
 static void kmersearch_persist_highfreq_kmers_metadata(Oid table_oid, const char *column_name, int k_size);
@@ -171,14 +173,14 @@ static QueryPatternCacheEntry *lookup_query_pattern_cache_entry(QueryPatternCach
 static void store_query_pattern_cache_entry(QueryPatternCacheManager *manager, uint64 hash_key, const char *query_string, int k_size, VarBit **kmers, int kmer_count);
 static void lru_touch_query_pattern_cache(QueryPatternCacheManager *manager, QueryPatternCacheEntry *entry);
 static void lru_evict_oldest_query_pattern_cache(QueryPatternCacheManager *manager);
-static VarBit **get_cached_query_kmers(const char *query_string, int k_size, int *nkeys);
+static VarBit **get_cached_query_kmer(const char *query_string, int k_size, int *nkeys);
 static void free_query_pattern_cache_manager(QueryPatternCacheManager **manager);
 static void free_actual_min_score_cache_manager(ActualMinScoreCacheManager **manager);
-Datum *kmersearch_extract_dna4_kmers_with_expansion_direct(VarBit *seq, int k, int *nkeys);
-static VarBit *kmersearch_create_ngram_key_with_occurrence_from_dna2(VarBit *dna2_kmer, int k, int occurrence);
-static VarBit **kmersearch_extract_query_kmers(const char *query, int k, int *nkeys);
-static int kmersearch_count_matching_kmers_fast(VarBit **seq_keys, int seq_nkeys, VarBit **query_keys, int query_nkeys);
-static VarBit *kmersearch_create_kmer_key_only(const char *kmer, int k);
+Datum *kmersearch_extract_dna4_kmer2_with_expansion_direct(VarBit *seq, int k, int *nkeys);
+static VarBit *kmersearch_create_ngram_key2_with_occurrence_from_dna2(VarBit *dna2_kmer, int k, int occurrence);
+static VarBit **kmersearch_extract_query_kmer(const char *query, int k, int *nkeys);
+static int kmersearch_count_matching_kmer_fast(VarBit **seq_keys, int seq_nkeys, VarBit **query_keys, int query_nkeys);
+static VarBit *kmersearch_create_kmer2_key_only(const char *kmer, int k);
 static bool kmersearch_kmer_based_match_dna2(VarBit *sequence, const char *query_string);
 static bool kmersearch_kmer_based_match_dna4(VarBit *sequence, const char *query_string);
 static bool kmersearch_evaluate_match_conditions(int shared_count, int query_total);
@@ -205,7 +207,7 @@ static bool kmersearch_get_index_info(Oid index_oid, Oid *table_oid, char **colu
 static void kmersearch_spi_connect_or_error(void);
 static void kmersearch_handle_spi_error(int spi_result, const char *operation);
 static bool kmersearch_delete_kmer_from_gin_index(Relation index_rel, VarBit *kmer_key);
-static List *kmersearch_get_highfreq_kmers_list(Oid index_oid);
+static List *kmersearch_get_highfreq_kmer_list(Oid index_oid);
 static int kmersearch_calculate_buffer_size(int k_size);
 static KmerData kmersearch_encode_kmer_data(VarBit *kmer, int k_size);
 static void kmersearch_init_buffer(KmerBuffer *buffer, int k_size);
@@ -315,7 +317,7 @@ PG_FUNCTION_INFO_V1(kmersearch_dna4_match);
 
 /* K-mer frequency analysis functions */
 PG_FUNCTION_INFO_V1(kmersearch_analyze_table_frequency);
-PG_FUNCTION_INFO_V1(kmersearch_get_highfreq_kmers);
+PG_FUNCTION_INFO_V1(kmersearch_get_highfreq_kmer);
 PG_FUNCTION_INFO_V1(kmersearch_analyze_table);
 PG_FUNCTION_INFO_V1(kmersearch_drop_analysis);
 PG_FUNCTION_INFO_V1(kmersearch_reduce_index);
@@ -325,10 +327,10 @@ PG_FUNCTION_INFO_V1(kmersearch_query_pattern_cache_stats);
 PG_FUNCTION_INFO_V1(kmersearch_query_pattern_cache_free);
 PG_FUNCTION_INFO_V1(kmersearch_actual_min_score_cache_stats);
 PG_FUNCTION_INFO_V1(kmersearch_actual_min_score_cache_free);
-PG_FUNCTION_INFO_V1(kmersearch_highfreq_kmers_cache_load);
-PG_FUNCTION_INFO_V1(kmersearch_highfreq_kmers_cache_free);
-PG_FUNCTION_INFO_V1(kmersearch_parallel_highfreq_kmers_cache_load);
-PG_FUNCTION_INFO_V1(kmersearch_parallel_highfreq_kmers_cache_free);
+PG_FUNCTION_INFO_V1(kmersearch_highfreq_kmer_cache_load);
+PG_FUNCTION_INFO_V1(kmersearch_highfreq_kmer_cache_free);
+PG_FUNCTION_INFO_V1(kmersearch_parallel_highfreq_kmer_cache_load);
+PG_FUNCTION_INFO_V1(kmersearch_parallel_highfreq_kmer_cache_free);
 
 /* Score calculation functions */
 PG_FUNCTION_INFO_V1(kmersearch_rawscore_dna2);
@@ -359,26 +361,26 @@ static void dna4_encode_avx2(const char* input, uint8_t* output, int len);
 static void dna4_decode_avx2(const uint8_t* input, char* output, int len);
 
 /* K-mer processing functions with SIMD optimization */
-static Datum *kmersearch_extract_dna2_kmers_direct_avx2(VarBit *seq, int k, int *nkeys);
-static Datum *kmersearch_extract_dna4_kmers_with_expansion_direct_avx2(VarBit *seq, int k, int *nkeys);
-static int kmersearch_count_matching_kmers_fast_avx2(VarBit **seq_keys, int seq_nkeys, VarBit **query_keys, int query_nkeys);
+static Datum *kmersearch_extract_dna2_kmer2_direct_avx2(VarBit *seq, int k, int *nkeys);
+static Datum *kmersearch_extract_dna4_kmer2_with_expansion_direct_avx2(VarBit *seq, int k, int *nkeys);
+static int kmersearch_count_matching_kmer_fast_avx2(VarBit **seq_keys, int seq_nkeys, VarBit **query_keys, int query_nkeys);
 
-static Datum *kmersearch_extract_dna2_kmers_direct_avx512(VarBit *seq, int k, int *nkeys);
-static Datum *kmersearch_extract_dna4_kmers_with_expansion_direct_avx512(VarBit *seq, int k, int *nkeys);
-static int kmersearch_count_matching_kmers_fast_avx512(VarBit **seq_keys, int seq_nkeys, VarBit **query_keys, int query_nkeys);
+static Datum *kmersearch_extract_dna2_kmer2_direct_avx512(VarBit *seq, int k, int *nkeys);
+static Datum *kmersearch_extract_dna4_kmer2_with_expansion_direct_avx512(VarBit *seq, int k, int *nkeys);
+static int kmersearch_count_matching_kmer_fast_avx512(VarBit **seq_keys, int seq_nkeys, VarBit **query_keys, int query_nkeys);
 
-static Datum *kmersearch_extract_dna2_kmers_direct_neon(VarBit *seq, int k, int *nkeys);
-static Datum *kmersearch_extract_dna4_kmers_with_expansion_direct_neon(VarBit *seq, int k, int *nkeys);
-static int kmersearch_count_matching_kmers_fast_neon(VarBit **seq_keys, int seq_nkeys, VarBit **query_keys, int query_nkeys);
+static Datum *kmersearch_extract_dna2_kmer2_direct_neon(VarBit *seq, int k, int *nkeys);
+static Datum *kmersearch_extract_dna4_kmer2_with_expansion_direct_neon(VarBit *seq, int k, int *nkeys);
+static int kmersearch_count_matching_kmer_fast_neon(VarBit **seq_keys, int seq_nkeys, VarBit **query_keys, int query_nkeys);
 
-static Datum *kmersearch_extract_dna2_kmers_direct_sve(VarBit *seq, int k, int *nkeys);
-static Datum *kmersearch_extract_dna4_kmers_with_expansion_direct_sve(VarBit *seq, int k, int *nkeys);
-static int kmersearch_count_matching_kmers_fast_sve(VarBit **seq_keys, int seq_nkeys, VarBit **query_keys, int query_nkeys);
+static Datum *kmersearch_extract_dna2_kmer2_direct_sve(VarBit *seq, int k, int *nkeys);
+static Datum *kmersearch_extract_dna4_kmer2_with_expansion_direct_sve(VarBit *seq, int k, int *nkeys);
+static int kmersearch_count_matching_kmer_fast_sve(VarBit **seq_keys, int seq_nkeys, VarBit **query_keys, int query_nkeys);
 
 /* Scalar versions */
-static Datum *kmersearch_extract_dna2_kmers_direct_scalar(VarBit *seq, int k, int *nkeys);
-static Datum *kmersearch_extract_dna4_kmers_with_expansion_direct_scalar(VarBit *seq, int k, int *nkeys);
-static int kmersearch_count_matching_kmers_fast_scalar(VarBit **seq_keys, int seq_nkeys, VarBit **query_keys, int query_nkeys);
+static Datum *kmersearch_extract_dna2_kmer2_direct_scalar(VarBit *seq, int k, int *nkeys);
+static Datum *kmersearch_extract_dna4_kmer2_with_expansion_direct_scalar(VarBit *seq, int k, int *nkeys);
+static int kmersearch_count_matching_kmer_fast_scalar(VarBit **seq_keys, int seq_nkeys, VarBit **query_keys, int query_nkeys);
 
 static void dna2_encode_avx512(const char* input, uint8_t* output, int len);
 static void dna2_decode_avx512(const uint8_t* input, char* output, int len);
@@ -408,10 +410,17 @@ static void dna4_decode_sve(const uint8_t* input, char* output, int len);
 static void 
 clear_highfreq_cache_with_warning(void)
 {
-    kmersearch_highfreq_kmers_cache_free_internal();
-    elog(WARNING, "High-frequency k-mer cache has been cleared. "
-                  "You may need to manually execute kmersearch_highfreq_kmers_cache_load() "
-                  "to reload the cache if needed.");
+    bool had_valid_cache = global_highfreq_cache.is_valid;
+    
+    kmersearch_highfreq_kmer_cache_free_internal();
+    
+    /* Only show warning if cache was actually valid and cleared */
+    if (had_valid_cache)
+    {
+        elog(WARNING, "High-frequency k-mer cache has been cleared. "
+                      "You may need to manually execute kmersearch_highfreq_kmer_cache_load() "
+                      "to reload the cache if needed.");
+    }
 }
 
 /* K-mer size change affects all caches */
@@ -433,7 +442,7 @@ kmersearch_kmer_size_assign_hook(int newval, void *extra)
     if (actual_min_score_cache_manager)
         free_actual_min_score_cache_manager(&actual_min_score_cache_manager);
     
-    /* Clear high-frequency k-mer cache with warning */
+    /* Clear high-frequency k-mer cache with conditional warning */
     clear_highfreq_cache_with_warning();
 }
 
@@ -447,7 +456,7 @@ kmersearch_max_appearance_rate_assign_hook(double newval, void *extra)
     if (actual_min_score_cache_manager)
         free_actual_min_score_cache_manager(&actual_min_score_cache_manager);
     
-    /* Clear high-frequency k-mer cache with warning */
+    /* Clear high-frequency k-mer cache with conditional warning */
     clear_highfreq_cache_with_warning();
 }
 
@@ -461,7 +470,7 @@ kmersearch_max_appearance_nrow_assign_hook(int newval, void *extra)
     if (actual_min_score_cache_manager)
         free_actual_min_score_cache_manager(&actual_min_score_cache_manager);
     
-    /* Clear high-frequency k-mer cache with warning */
+    /* Clear high-frequency k-mer cache with conditional warning */
     clear_highfreq_cache_with_warning();
 }
 
@@ -522,7 +531,7 @@ kmersearch_occur_bitlen_assign_hook(int newval, void *extra)
     if (rawscore_cache_manager)
         free_rawscore_cache_manager(&rawscore_cache_manager);
     
-    /* Clear high-frequency k-mer cache with warning */
+    /* Clear high-frequency k-mer cache with conditional warning */
     clear_highfreq_cache_with_warning();
 }
 
@@ -678,7 +687,7 @@ _PG_init(void)
                            NULL);
     
     /* Initialize high-frequency k-mer cache */
-    kmersearch_highfreq_kmers_cache_init();
+    kmersearch_highfreq_kmer_cache_init();
 }
 
 /*
@@ -919,7 +928,7 @@ kmersearch_will_exceed_degenerate_limit_dna4_bits(VarBit *seq, int start_pos, in
  * Expand single DNA4 k-mer to multiple DNA2 k-mers using bit operations
  */
 static VarBit **
-kmersearch_expand_dna4_kmer_to_dna2_direct(VarBit *dna4_seq, int start_pos, int k, int *expansion_count)
+kmersearch_expand_dna4_kmer2_to_dna2_direct(VarBit *dna4_seq, int start_pos, int k, int *expansion_count)
 {
     bits8 *data = VARBITS(dna4_seq);
     uint8 base_expansions[64][4];  /* Max k=64, max 4 expansions per base */
@@ -1111,7 +1120,7 @@ kmersearch_expand_degenerate_sequence(const char *seq, int len, char **results, 
  * Create n-gram key from k-mer string
  */
 VarBit *
-kmersearch_create_ngram_key(const char *kmer, int k, int occurrence)
+kmersearch_create_ngram_key2(const char *kmer, int k, int occurrence)
 {
     int kmer_bits = k * 2;  /* 2 bits per base */
     int occur_bits = kmersearch_occur_bitlen;
@@ -1161,7 +1170,7 @@ kmersearch_create_ngram_key(const char *kmer, int k, int occurrence)
  * Create k-mer key from DNA2 bits (without occurrence count)
  */
 static VarBit *
-kmersearch_create_kmer_key_from_dna2_bits(VarBit *seq, int start_pos, int k)
+kmersearch_create_kmer2_key_from_dna2_bits(VarBit *seq, int start_pos, int k)
 {
     int kmer_bits = k * 2;
     int total_bytes = (kmer_bits + 7) / 8;
@@ -1209,7 +1218,7 @@ kmersearch_create_kmer_key_from_dna2_bits(VarBit *seq, int start_pos, int k)
  * Create n-gram key from DNA2 bits with occurrence count
  */
 static VarBit *
-kmersearch_create_ngram_key_from_dna2_bits(VarBit *seq, int start_pos, int k, int occurrence_count)
+kmersearch_create_ngram_key2_from_dna2_bits(VarBit *seq, int start_pos, int k, int occurrence_count)
 {
     int kmer_bits = k * 2;
     int occur_bits = kmersearch_occur_bitlen;
@@ -1284,19 +1293,19 @@ kmersearch_create_ngram_key_from_dna2_bits(VarBit *seq, int start_pos, int k, in
  * Create n-gram key from DNA4 bits with occurrence count (by converting to DNA2 first)
  */
 static VarBit *
-kmersearch_create_ngram_key_from_dna4_bits(VarBit *seq, int start_pos, int k, int occurrence_count)
+kmersearch_create_ngram_key2_from_dna4_bits(VarBit *seq, int start_pos, int k, int occurrence_count)
 {
     VarBit **expanded_kmers;
     int expansion_count;
     VarBit *ngram_key = NULL;
     
     /* Expand DNA4 k-mer to DNA2 k-mers and use the first one for n-gram key generation */
-    expanded_kmers = kmersearch_expand_dna4_kmer_to_dna2_direct(seq, start_pos, k, &expansion_count);
+    expanded_kmers = kmersearch_expand_dna4_kmer2_to_dna2_direct(seq, start_pos, k, &expansion_count);
     
     if (expanded_kmers && expansion_count > 0)
     {
         /* Use the first expanded DNA2 k-mer to create n-gram key */
-        ngram_key = kmersearch_create_ngram_key_from_dna2_bits(expanded_kmers[0], 0, k, occurrence_count);
+        ngram_key = kmersearch_create_ngram_key2_from_dna2_bits(expanded_kmers[0], 0, k, occurrence_count);
         
         /* Free expanded k-mers */
         for (int i = 0; i < expansion_count; i++)
@@ -1314,31 +1323,31 @@ kmersearch_create_ngram_key_from_dna4_bits(VarBit *seq, int start_pos, int k, in
  * Extract k-mers directly from DNA2 bit sequence (with SIMD dispatch)
  */
 Datum *
-kmersearch_extract_dna2_kmers_direct(VarBit *seq, int k, int *nkeys)
+kmersearch_extract_dna2_kmer2_direct(VarBit *seq, int k, int *nkeys)
 {
 #ifdef __x86_64__
     if (simd_capability >= SIMD_AVX512) {
-        return kmersearch_extract_dna2_kmers_direct_avx512(seq, k, nkeys);
+        return kmersearch_extract_dna2_kmer2_direct_avx512(seq, k, nkeys);
     }
     if (simd_capability >= SIMD_AVX2) {
-        return kmersearch_extract_dna2_kmers_direct_avx2(seq, k, nkeys);
+        return kmersearch_extract_dna2_kmer2_direct_avx2(seq, k, nkeys);
     }
 #elif defined(__aarch64__)
     if (simd_capability >= SIMD_SVE) {
-        return kmersearch_extract_dna2_kmers_direct_sve(seq, k, nkeys);
+        return kmersearch_extract_dna2_kmer2_direct_sve(seq, k, nkeys);
     }
     if (simd_capability >= SIMD_NEON) {
-        return kmersearch_extract_dna2_kmers_direct_neon(seq, k, nkeys);
+        return kmersearch_extract_dna2_kmer2_direct_neon(seq, k, nkeys);
     }
 #endif
-    return kmersearch_extract_dna2_kmers_direct_scalar(seq, k, nkeys);
+    return kmersearch_extract_dna2_kmer2_direct_scalar(seq, k, nkeys);
 }
 
 /*
  * Scalar version: Extract k-mers directly from DNA2 bit sequence
  */
 static Datum *
-kmersearch_extract_dna2_kmers_direct_scalar(VarBit *seq, int k, int *nkeys)
+kmersearch_extract_dna2_kmer2_direct_scalar(VarBit *seq, int k, int *nkeys)
 {
     int seq_bits = VARBITLEN(seq);
     int seq_bases = seq_bits / 2;
@@ -1390,7 +1399,7 @@ kmersearch_extract_dna2_kmers_direct_scalar(VarBit *seq, int k, int *nkeys)
             continue;
         
         /* Create n-gram key (k-mer + occurrence count) */
-        ngram_key = kmersearch_create_ngram_key_from_dna2_bits(seq, i, k, current_count);
+        ngram_key = kmersearch_create_ngram_key2_from_dna2_bits(seq, i, k, current_count);
         if (ngram_key == NULL)
             continue;  /* Skip if key creation failed */
             
@@ -1409,7 +1418,7 @@ kmersearch_extract_dna2_kmers_direct_scalar(VarBit *seq, int k, int *nkeys)
  * This function is used for frequency analysis phase
  */
 static Datum *
-kmersearch_extract_dna2_kmers_kmer_only(VarBit *seq, int k, int *nkeys)
+kmersearch_extract_dna2_kmer2_only(VarBit *seq, int k, int *nkeys)
 {
     int seq_bits = VARBITLEN(seq);
     int seq_bases = seq_bits / 2;
@@ -1430,7 +1439,7 @@ kmersearch_extract_dna2_kmers_kmer_only(VarBit *seq, int k, int *nkeys)
         VarBit *kmer_key;
         
         /* Create k-mer key (without occurrence count) */
-        kmer_key = kmersearch_create_kmer_key_from_dna2_bits(seq, i, k);
+        kmer_key = kmersearch_create_kmer2_key_from_dna2_bits(seq, i, k);
         if (kmer_key == NULL)
             continue;  /* Skip if key creation failed */
             
@@ -1445,7 +1454,7 @@ kmersearch_extract_dna2_kmers_kmer_only(VarBit *seq, int k, int *nkeys)
  * Encode k-mer-only VarBit into compact KmerData (ignoring occurrence count bits)
  */
 static KmerData
-kmersearch_encode_kmer_only_data(VarBit *kmer, int k_size)
+kmersearch_encode_kmer2_only_data(VarBit *kmer, int k_size)
 {
     KmerData result;
     unsigned char *bits;
@@ -1510,31 +1519,31 @@ kmersearch_encode_kmer_only_data(VarBit *kmer, int k_size)
  * Extract k-mers directly from DNA4 bit sequence with degenerate expansion (with SIMD dispatch)
  */
 Datum *
-kmersearch_extract_dna4_kmers_with_expansion_direct(VarBit *seq, int k, int *nkeys)
+kmersearch_extract_dna4_kmer2_with_expansion_direct(VarBit *seq, int k, int *nkeys)
 {
 #ifdef __x86_64__
     if (simd_capability >= SIMD_AVX512) {
-        return kmersearch_extract_dna4_kmers_with_expansion_direct_avx512(seq, k, nkeys);
+        return kmersearch_extract_dna4_kmer2_with_expansion_direct_avx512(seq, k, nkeys);
     }
     if (simd_capability >= SIMD_AVX2) {
-        return kmersearch_extract_dna4_kmers_with_expansion_direct_avx2(seq, k, nkeys);
+        return kmersearch_extract_dna4_kmer2_with_expansion_direct_avx2(seq, k, nkeys);
     }
 #elif defined(__aarch64__)
     if (simd_capability >= SIMD_SVE) {
-        return kmersearch_extract_dna4_kmers_with_expansion_direct_sve(seq, k, nkeys);
+        return kmersearch_extract_dna4_kmer2_with_expansion_direct_sve(seq, k, nkeys);
     }
     if (simd_capability >= SIMD_NEON) {
-        return kmersearch_extract_dna4_kmers_with_expansion_direct_neon(seq, k, nkeys);
+        return kmersearch_extract_dna4_kmer2_with_expansion_direct_neon(seq, k, nkeys);
     }
 #endif
-    return kmersearch_extract_dna4_kmers_with_expansion_direct_scalar(seq, k, nkeys);
+    return kmersearch_extract_dna4_kmer2_with_expansion_direct_scalar(seq, k, nkeys);
 }
 
 /*
  * Scalar version: Extract k-mers directly from DNA4 bit sequence with degenerate expansion
  */
 static Datum *
-kmersearch_extract_dna4_kmers_with_expansion_direct_scalar(VarBit *seq, int k, int *nkeys)
+kmersearch_extract_dna4_kmer2_with_expansion_direct_scalar(VarBit *seq, int k, int *nkeys)
 {
     int seq_bits = VARBITLEN(seq);
     int seq_bases = seq_bits / 4;
@@ -1564,7 +1573,7 @@ kmersearch_extract_dna4_kmers_with_expansion_direct_scalar(VarBit *seq, int k, i
         int j;
         
         /* Expand DNA4 k-mer to DNA2 k-mers */
-        expanded_kmers = kmersearch_expand_dna4_kmer_to_dna2_direct(seq, i, k, &expansion_count);
+        expanded_kmers = kmersearch_expand_dna4_kmer2_to_dna2_direct(seq, i, k, &expansion_count);
         
         if (!expanded_kmers || expansion_count == 0)
             continue;
@@ -1592,7 +1601,7 @@ kmersearch_extract_dna4_kmers_with_expansion_direct_scalar(VarBit *seq, int k, i
                 continue;
             
             /* Create n-gram key (k-mer + occurrence count) from expanded DNA2 k-mer */
-            ngram_key = kmersearch_create_ngram_key_from_dna2_bits(dna2_kmer, 0, k, current_count);
+            ngram_key = kmersearch_create_ngram_key2_from_dna2_bits(dna2_kmer, 0, k, current_count);
             if (ngram_key)
                 keys[key_count++] = PointerGetDatum(ngram_key);
         }
@@ -1620,7 +1629,7 @@ kmersearch_extract_dna4_kmers_with_expansion_direct_scalar(VarBit *seq, int k, i
  * Create n-gram key with occurrence count from DNA2 k-mer
  */
 static VarBit *
-kmersearch_create_ngram_key_with_occurrence_from_dna2(VarBit *dna2_kmer, int k, int occurrence)
+kmersearch_create_ngram_key2_with_occurrence_from_dna2(VarBit *dna2_kmer, int k, int occurrence)
 {
     int kmer_bits = k * 2;
     int occur_bits = kmersearch_occur_bitlen;
@@ -1665,7 +1674,7 @@ kmersearch_create_ngram_key_with_occurrence_from_dna2(VarBit *dna2_kmer, int k, 
  * Extract k-mers from query string with degenerate code expansion
  */
 static VarBit **
-kmersearch_extract_query_kmers(const char *query, int k, int *nkeys)
+kmersearch_extract_query_kmer(const char *query, int k, int *nkeys)
 {
     int query_len = strlen(query);
     int max_kmers = (query_len >= k) ? (query_len - k + 1) : 0;
@@ -1715,7 +1724,7 @@ kmersearch_extract_query_kmers(const char *query, int k, int *nkeys)
             
             for (j = 0; j < expand_count; j++)
             {
-                VarBit *kmer_key = kmersearch_create_kmer_key_only(expanded[j], k);
+                VarBit *kmer_key = kmersearch_create_kmer2_key_only(expanded[j], k);
                 keys[key_count++] = kmer_key;
                 pfree(expanded[j]);
             }
@@ -1723,7 +1732,7 @@ kmersearch_extract_query_kmers(const char *query, int k, int *nkeys)
         else
         {
             /* Simple case - no degenerate codes */
-            VarBit *kmer_key = kmersearch_create_kmer_key_only(kmer, k);
+            VarBit *kmer_key = kmersearch_create_kmer2_key_only(kmer, k);
             keys[key_count++] = kmer_key;
         }
     }
@@ -2127,7 +2136,7 @@ get_cached_rawscore_dna2(VarBit *sequence, const char *query_string)
         cache_key = generate_cache_key(sequence, query_string);
         if (cache_key != 0)  /* Only proceed if cache key is valid */
         {
-            query_keys = kmersearch_extract_kmers_from_query(query_string, kmersearch_kmer_size, &result.query_nkeys);
+            query_keys = kmersearch_extract_kmer_from_query(query_string, kmersearch_kmer_size, &result.query_nkeys);
             if (query_keys != NULL)
         {
             store_rawscore_cache_entry(rawscore_cache_manager, cache_key, sequence, query_keys, query_string, result);
@@ -2192,7 +2201,7 @@ get_cached_rawscore_dna4(VarBit *sequence, const char *query_string)
         cache_key = generate_cache_key(sequence, query_string);
         if (cache_key != 0)  /* Only proceed if cache key is valid */
         {
-            query_keys = kmersearch_extract_kmers_from_query(query_string, kmersearch_kmer_size, &result.query_nkeys);
+            query_keys = kmersearch_extract_kmer_from_query(query_string, kmersearch_kmer_size, &result.query_nkeys);
             if (query_keys != NULL)
         {
             store_rawscore_cache_entry(rawscore_cache_manager, cache_key, sequence, query_keys, query_string, result);
@@ -2356,7 +2365,7 @@ lookup_query_pattern_cache_entry(QueryPatternCacheManager *manager, const char *
     
     entry = (QueryPatternCacheEntry *) hash_search(manager->hash_table, &hash_key, HASH_FIND, &found);
     
-    if (found && entry && strcmp(entry->query_string_copy, query_string) == 0 && entry->k_size == k_size)
+    if (found && entry && strcmp(entry->query_string_copy, query_string) == 0 && entry->kmer_size == k_size)
     {
         /* Cache hit - move to head of LRU */
         lru_touch_query_pattern_cache(manager, entry);
@@ -2391,7 +2400,7 @@ store_query_pattern_cache_entry(QueryPatternCacheManager *manager, uint64 hash_k
     {
         entry->hash_key = hash_key;
         entry->query_string_copy = pstrdup(query_string);
-        entry->k_size = k_size;
+        entry->kmer_size = k_size;
         entry->kmer_count = kmer_count;
         
         /* Copy k-mers */
@@ -2421,7 +2430,7 @@ store_query_pattern_cache_entry(QueryPatternCacheManager *manager, uint64 hash_k
  * Get cached query k-mers or extract and cache them
  */
 static VarBit **
-get_cached_query_kmers(const char *query_string, int k_size, int *nkeys)
+get_cached_query_kmer(const char *query_string, int k_size, int *nkeys)
 {
     QueryPatternCacheEntry *cache_entry;
     VarBit **result_kmers = NULL;
@@ -2461,7 +2470,7 @@ get_cached_query_kmers(const char *query_string, int k_size, int *nkeys)
     
     /* Cache miss - extract k-mers and store in cache */
     query_pattern_cache_manager->misses++;
-    extracted_kmers = kmersearch_extract_query_kmers(query_string, k_size, nkeys);
+    extracted_kmers = kmersearch_extract_query_kmer(query_string, k_size, nkeys);
     
     if (extracted_kmers != NULL && *nkeys > 0)
     {
@@ -2514,31 +2523,31 @@ free_actual_min_score_cache_manager(ActualMinScoreCacheManager **manager)
  * Fast k-mer matching using hash table - optimized O(n+m) implementation (with SIMD dispatch)
  */
 static int
-kmersearch_count_matching_kmers_fast(VarBit **seq_keys, int seq_nkeys, VarBit **query_keys, int query_nkeys)
+kmersearch_count_matching_kmer_fast(VarBit **seq_keys, int seq_nkeys, VarBit **query_keys, int query_nkeys)
 {
 #ifdef __x86_64__
     if (simd_capability >= SIMD_AVX512) {
-        return kmersearch_count_matching_kmers_fast_avx512(seq_keys, seq_nkeys, query_keys, query_nkeys);
+        return kmersearch_count_matching_kmer_fast_avx512(seq_keys, seq_nkeys, query_keys, query_nkeys);
     }
     if (simd_capability >= SIMD_AVX2) {
-        return kmersearch_count_matching_kmers_fast_avx2(seq_keys, seq_nkeys, query_keys, query_nkeys);
+        return kmersearch_count_matching_kmer_fast_avx2(seq_keys, seq_nkeys, query_keys, query_nkeys);
     }
 #elif defined(__aarch64__)
     if (simd_capability >= SIMD_SVE) {
-        return kmersearch_count_matching_kmers_fast_sve(seq_keys, seq_nkeys, query_keys, query_nkeys);
+        return kmersearch_count_matching_kmer_fast_sve(seq_keys, seq_nkeys, query_keys, query_nkeys);
     }
     if (simd_capability >= SIMD_NEON) {
-        return kmersearch_count_matching_kmers_fast_neon(seq_keys, seq_nkeys, query_keys, query_nkeys);
+        return kmersearch_count_matching_kmer_fast_neon(seq_keys, seq_nkeys, query_keys, query_nkeys);
     }
 #endif
-    return kmersearch_count_matching_kmers_fast_scalar(seq_keys, seq_nkeys, query_keys, query_nkeys);
+    return kmersearch_count_matching_kmer_fast_scalar(seq_keys, seq_nkeys, query_keys, query_nkeys);
 }
 
 /*
  * Scalar version: Fast k-mer matching using hash table - optimized O(n+m) implementation
  */
 static int
-kmersearch_count_matching_kmers_fast_scalar(VarBit **seq_keys, int seq_nkeys, VarBit **query_keys, int query_nkeys)
+kmersearch_count_matching_kmer_fast_scalar(VarBit **seq_keys, int seq_nkeys, VarBit **query_keys, int query_nkeys)
 {
     int match_count = 0;
     int i;
@@ -2575,7 +2584,7 @@ kmersearch_count_matching_kmers_fast_scalar(VarBit **seq_keys, int seq_nkeys, Va
     
     /* Safety check: ensure we have valid query keys */
     if (query_keys[0] == NULL) {
-        elog(LOG, "kmersearch_count_matching_kmers_fast: NULL query key detected");
+        elog(LOG, "kmersearch_count_matching_kmer_fast: NULL query key detected");
         return 0;
     }
     
@@ -2583,7 +2592,7 @@ kmersearch_count_matching_kmers_fast_scalar(VarBit **seq_keys, int seq_nkeys, Va
     hash_ctl.entrysize = sizeof(bool);
     hash_ctl.hash = tag_hash;
     
-    elog(LOG, "kmersearch_count_matching_kmers_fast: Creating hash with keysize=%zu, query_nkeys=%d", 
+    elog(LOG, "kmersearch_count_matching_kmer_fast: Creating hash with keysize=%zu, query_nkeys=%d", 
          (size_t)VARBITBYTES(query_keys[0]), query_nkeys);
     
     query_hash = hash_create("QueryKmerHash", query_nkeys * 2, &hash_ctl,
@@ -2593,7 +2602,7 @@ kmersearch_count_matching_kmers_fast_scalar(VarBit **seq_keys, int seq_nkeys, Va
     for (i = 0; i < query_nkeys; i++)
     {
         if (query_keys[i] == NULL) {
-            elog(LOG, "kmersearch_count_matching_kmers_fast: NULL query key at index %d", i);
+            elog(LOG, "kmersearch_count_matching_kmer_fast: NULL query key at index %d", i);
             continue;
         }
         hash_search(query_hash, VARBITS(query_keys[i]), HASH_ENTER, &found);
@@ -2603,12 +2612,12 @@ kmersearch_count_matching_kmers_fast_scalar(VarBit **seq_keys, int seq_nkeys, Va
     for (i = 0; i < seq_nkeys; i++)
     {
         if (seq_keys[i] == NULL) {
-            elog(LOG, "kmersearch_count_matching_kmers_fast: NULL seq key at index %d", i);
+            elog(LOG, "kmersearch_count_matching_kmer_fast: NULL seq key at index %d", i);
             continue;
         }
         
         if (VARBITBYTES(seq_keys[i]) != VARBITBYTES(query_keys[0])) {
-            elog(LOG, "kmersearch_count_matching_kmers_fast: Size mismatch seq[%d]=%zu vs query[0]=%zu", 
+            elog(LOG, "kmersearch_count_matching_kmer_fast: Size mismatch seq[%d]=%zu vs query[0]=%zu", 
                  i, (size_t)VARBITBYTES(seq_keys[i]), (size_t)VARBITBYTES(query_keys[0]));
             continue;
         }
@@ -2674,7 +2683,7 @@ kmersearch_dna4_match(PG_FUNCTION_ARGS)
  * Create k-mer key without occurrence count (for frequency analysis)
  */
 static VarBit *
-kmersearch_create_kmer_key_only(const char *kmer, int k)
+kmersearch_create_kmer2_key_only(const char *kmer, int k)
 {
     int kmer_bits = k * 2;  /* 2 bits per base */
     int total_bytes = (kmer_bits + 7) / 8;
@@ -2752,7 +2761,7 @@ kmersearch_analyze_table_frequency(PG_FUNCTION_ARGS)
      * 2. Extract k-mers from the specified column
      * 3. Count frequency of each k-mer
      * 4. Identify k-mers exceeding thresholds
-     * 5. Insert highly frequent k-mers into kmersearch_highfreq_kmers table
+     * 5. Insert highly frequent k-mers into kmersearch_highfreq_kmer table
      * 6. Insert index statistics into kmersearch_index_info table
      */
     
@@ -2763,7 +2772,7 @@ kmersearch_analyze_table_frequency(PG_FUNCTION_ARGS)
  * Get highly frequent k-mers for an index
  */
 Datum
-kmersearch_get_highfreq_kmers(PG_FUNCTION_ARGS)
+kmersearch_get_highfreq_kmer(PG_FUNCTION_ARGS)
 {
     Oid index_oid = PG_GETARG_OID(0);
     int ret;
@@ -2779,7 +2788,7 @@ kmersearch_get_highfreq_kmers(PG_FUNCTION_ARGS)
     /* Build query to get highly frequent k-mers */
     initStringInfo(&query);
     appendStringInfo(&query,
-        "SELECT kmer_key FROM kmersearch_highfreq_kmers WHERE index_oid = %u ORDER BY kmer_key",
+        "SELECT kmer_key FROM kmersearch_highfreq_kmer WHERE index_oid = %u ORDER BY kmer_key",
         index_oid);
     
     /* Execute query */
@@ -2831,7 +2840,7 @@ kmersearch_get_highfreq_kmers(PG_FUNCTION_ARGS)
  * Count highly frequent k-mers in query sequence
  */
 static int
-kmersearch_count_highfreq_kmers_in_query(VarBit **query_keys, int nkeys)
+kmersearch_count_highfreq_kmer_in_query(VarBit **query_keys, int nkeys)
 {
     int highfreq_count = 0;
     int i;
@@ -2880,7 +2889,7 @@ kmersearch_get_adjusted_min_score(VarBit **query_keys, int nkeys)
         return kmersearch_min_score;  /* No adjustment needed */
     }
     
-    highfreq_count = kmersearch_count_highfreq_kmers_in_query(query_keys, nkeys);
+    highfreq_count = kmersearch_count_highfreq_kmer_in_query(query_keys, nkeys);
     adjusted_score = kmersearch_min_score - highfreq_count;
     
     /* Ensure adjusted score is not negative */
@@ -2905,11 +2914,11 @@ kmersearch_calculate_raw_score(VarBit *seq1, VarBit *seq2, text *query_text)
     int i, j;
     
     /* Extract k-mers from both sequences */
-    seq1_keys = kmersearch_extract_kmers_from_varbit(seq1, k, &seq1_nkeys);
-    seq2_keys = kmersearch_extract_kmers_from_query(query_string, k, &seq2_nkeys);
+    seq1_keys = kmersearch_extract_kmer_from_varbit(seq1, k, &seq1_nkeys);
+    seq2_keys = kmersearch_extract_kmer_from_query(query_string, k, &seq2_nkeys);
     
     /* Count matching k-mers using optimized function */
-    score = kmersearch_count_matching_kmers_fast(seq1_keys, seq1_nkeys, seq2_keys, seq2_nkeys);
+    score = kmersearch_count_matching_kmer_fast(seq1_keys, seq1_nkeys, seq2_keys, seq2_nkeys);
     
     /* Cleanup */
     if (seq1_keys)
@@ -2934,7 +2943,7 @@ kmersearch_calculate_raw_score(VarBit *seq1, VarBit *seq2, text *query_text)
  * Extract k-mers from VarBit sequence
  */
 static VarBit **
-kmersearch_extract_kmers_from_varbit(VarBit *seq, int k, int *nkeys)
+kmersearch_extract_kmer_from_varbit(VarBit *seq, int k, int *nkeys)
 {
     int seq_bits = VARBITLEN(seq);
     int seq_bases = seq_bits / 2;  /* Assuming 2-bit encoding */
@@ -2990,7 +2999,7 @@ kmersearch_extract_kmers_from_varbit(VarBit *seq, int k, int *nkeys)
  * Extract k-mers from query string
  */
 static VarBit **
-kmersearch_extract_kmers_from_query(const char *query, int k, int *nkeys)
+kmersearch_extract_kmer_from_query(const char *query, int k, int *nkeys)
 {
     int query_len = strlen(query);
     int max_kmers = (query_len >= k) ? (query_len - k + 1) : 0;
@@ -3007,7 +3016,7 @@ kmersearch_extract_kmers_from_query(const char *query, int k, int *nkeys)
     /* Extract each k-mer from query string */
     for (i = 0; i <= query_len - k; i++)
     {
-        keys[key_count++] = kmersearch_create_kmer_key_only(query + i, k);
+        keys[key_count++] = kmersearch_create_kmer2_key_only(query + i, k);
     }
     
     *nkeys = key_count;
@@ -3083,7 +3092,7 @@ kmersearch_correctedscore_dna2(PG_FUNCTION_ARGS)
     int i, j;
     
     /* Extract k-mers from DNA2 sequence (no degenerate expansion) */
-    seq_datum_keys = kmersearch_extract_dna2_kmers_direct(sequence, k, &seq_nkeys);
+    seq_datum_keys = kmersearch_extract_dna2_kmer2_direct(sequence, k, &seq_nkeys);
     if (seq_datum_keys != NULL && seq_nkeys > 0) {
         seq_keys = (VarBit **) palloc(seq_nkeys * sizeof(VarBit *));
         for (i = 0; i < seq_nkeys; i++) {
@@ -3096,7 +3105,7 @@ kmersearch_correctedscore_dna2(PG_FUNCTION_ARGS)
     }
     
     /* Extract k-mers from query */
-    query_keys = kmersearch_extract_kmers_from_query(query_string, k, &query_nkeys);
+    query_keys = kmersearch_extract_kmer_from_query(query_string, k, &query_nkeys);
     elog(LOG, "correctedscore_dna2: query_keys=%p, query_nkeys=%d", query_keys, query_nkeys);
     if (query_keys && query_nkeys > 0) {
         elog(LOG, "correctedscore_dna2: First query k-mer bitlen=%d", VARBITLEN(query_keys[0]));
@@ -3104,8 +3113,8 @@ kmersearch_correctedscore_dna2(PG_FUNCTION_ARGS)
     
     /* Count shared k-mers using optimized function */
     if (seq_keys && query_keys && seq_nkeys > 0 && query_nkeys > 0) {
-        elog(LOG, "correctedscore_dna2: Calling kmersearch_count_matching_kmers_fast");
-        shared_count = kmersearch_count_matching_kmers_fast(seq_keys, seq_nkeys, query_keys, query_nkeys);
+        elog(LOG, "correctedscore_dna2: Calling kmersearch_count_matching_kmer_fast");
+        shared_count = kmersearch_count_matching_kmer_fast(seq_keys, seq_nkeys, query_keys, query_nkeys);
         elog(LOG, "correctedscore_dna2: shared_count=%d", shared_count);
     }
     
@@ -3144,7 +3153,7 @@ kmersearch_correctedscore_dna4(PG_FUNCTION_ARGS)
     int i, j;
     
     /* Extract k-mers from DNA4 sequence (with degenerate expansion) */
-    seq_datum_keys = kmersearch_extract_dna4_kmers_with_expansion_direct(sequence, k, &seq_nkeys);
+    seq_datum_keys = kmersearch_extract_dna4_kmer2_with_expansion_direct(sequence, k, &seq_nkeys);
     if (seq_datum_keys != NULL && seq_nkeys > 0) {
         seq_keys = (VarBit **) palloc(seq_nkeys * sizeof(VarBit *));
         for (i = 0; i < seq_nkeys; i++) {
@@ -3157,7 +3166,7 @@ kmersearch_correctedscore_dna4(PG_FUNCTION_ARGS)
     }
     
     /* Extract k-mers from query */
-    query_keys = kmersearch_extract_kmers_from_query(query_string, k, &query_nkeys);
+    query_keys = kmersearch_extract_kmer_from_query(query_string, k, &query_nkeys);
     elog(LOG, "correctedscore_dna4: query_keys=%p, query_nkeys=%d", query_keys, query_nkeys);
     if (query_keys && query_nkeys > 0) {
         elog(LOG, "correctedscore_dna4: First query k-mer bitlen=%d", VARBITLEN(query_keys[0]));
@@ -3165,8 +3174,8 @@ kmersearch_correctedscore_dna4(PG_FUNCTION_ARGS)
     
     /* Count shared k-mers using optimized function */
     if (seq_keys && query_keys && seq_nkeys > 0 && query_nkeys > 0) {
-        elog(LOG, "correctedscore_dna4: Calling kmersearch_count_matching_kmers_fast");
-        shared_count = kmersearch_count_matching_kmers_fast(seq_keys, seq_nkeys, query_keys, query_nkeys);
+        elog(LOG, "correctedscore_dna4: Calling kmersearch_count_matching_kmer_fast");
+        shared_count = kmersearch_count_matching_kmer_fast(seq_keys, seq_nkeys, query_keys, query_nkeys);
         elog(LOG, "correctedscore_dna4: shared_count=%d", shared_count);
     }
     
@@ -3282,7 +3291,7 @@ kmersearch_is_kmer_highfreq(VarBit *kmer_key)
     if (!kmersearch_validate_guc_against_all_metadata()) {
         ereport(ERROR, 
                 (errcode(ERRCODE_CONFIGURATION_LIMIT_EXCEEDED),
-                 errmsg("Current GUC settings do not match kmersearch_highfreq_kmers_meta table"),
+                 errmsg("Current GUC settings do not match kmersearch_highfreq_kmer_meta table"),
                  errhint("Current cache may be invalid. Please reload cache or run kmersearch_analyze_table() again.")));
     }
     
@@ -3307,8 +3316,8 @@ kmersearch_is_kmer_highfreq(VarBit *kmer_key)
         if (SPI_connect() != SPI_OK_CONNECT)
             return false;
         
-        /* Check if kmersearch_highfreq_kmers table exists */
-        ret = SPI_execute("SELECT 1 FROM information_schema.tables WHERE table_name = 'kmersearch_highfreq_kmers' LIMIT 1", true, 1);
+        /* Check if kmersearch_highfreq_kmer table exists */
+        ret = SPI_execute("SELECT 1 FROM information_schema.tables WHERE table_name = 'kmersearch_highfreq_kmer' LIMIT 1", true, 1);
         if (ret != SPI_OK_SELECT || SPI_processed == 0) {
             /* Table doesn't exist, always return false */
             SPI_finish();
@@ -3318,10 +3327,10 @@ kmersearch_is_kmer_highfreq(VarBit *kmer_key)
         /* Convert k-mer to hex string for SQL query */
         kmer_hex = kmersearch_varbit_to_hex_string(kmer_key);
         
-        /* Query kmersearch_highfreq_kmers table using new ngram_key column */
+        /* Query kmersearch_highfreq_kmer table using new ngram_key column */
         initStringInfo(&query);
         appendStringInfo(&query,
-            "SELECT 1 FROM kmersearch_highfreq_kmers "
+            "SELECT 1 FROM kmersearch_highfreq_kmer "
             "WHERE substring(ngram_key, 1, %d) = '\\x%s'::varbit "
             "LIMIT 1",
             VARBITLEN(kmer_key), kmer_hex);
@@ -3356,7 +3365,7 @@ kmersearch_validate_guc_against_all_metadata(void)
         return true;  /* Assume valid if we can't check */
     
     /* Check if metadata table exists */
-    ret = SPI_execute("SELECT 1 FROM information_schema.tables WHERE table_name = 'kmersearch_highfreq_kmers_meta' LIMIT 1", true, 1);
+    ret = SPI_execute("SELECT 1 FROM information_schema.tables WHERE table_name = 'kmersearch_highfreq_kmer_meta' LIMIT 1", true, 1);
     if (ret != SPI_OK_SELECT || SPI_processed == 0) {
         /* Table doesn't exist, validation passes */
         SPI_finish();
@@ -3367,7 +3376,7 @@ kmersearch_validate_guc_against_all_metadata(void)
     initStringInfo(&query);
     appendStringInfo(&query,
         "SELECT occur_bitlen, max_appearance_rate, max_appearance_nrow "
-        "FROM kmersearch_highfreq_kmers_meta "
+        "FROM kmersearch_highfreq_kmer_meta "
         "WHERE occur_bitlen != %d OR "
         "      abs(max_appearance_rate - %f) > 0.0001 OR "
         "      max_appearance_nrow != %d "
@@ -3659,13 +3668,13 @@ kmersearch_kmer_based_match_dna2(VarBit *sequence, const char *query_string)
     bool result;
     
     /* Extract k-mers from DNA2 sequence (no degenerate expansion) */
-    seq_keys = (VarBit **)kmersearch_extract_dna2_kmers_direct(sequence, k, &seq_nkeys);
+    seq_keys = (VarBit **)kmersearch_extract_dna2_kmer2_direct(sequence, k, &seq_nkeys);
     if (seq_keys == NULL || seq_nkeys == 0) {
         return false;
     }
     
     /* Extract k-mers from query (with degenerate expansion) */
-    query_keys = get_cached_query_kmers(query_string, k, &query_nkeys);
+    query_keys = get_cached_query_kmer(query_string, k, &query_nkeys);
     if (query_keys == NULL || query_nkeys == 0) {
         /* Free sequence keys */
         if (seq_keys) {
@@ -3680,7 +3689,7 @@ kmersearch_kmer_based_match_dna2(VarBit *sequence, const char *query_string)
     }
     
     /* Count shared keys */
-    shared_count = kmersearch_count_matching_kmers_fast(seq_keys, seq_nkeys, query_keys, query_nkeys);
+    shared_count = kmersearch_count_matching_kmer_fast(seq_keys, seq_nkeys, query_keys, query_nkeys);
     
     /* Evaluate match conditions using optimized method */
     result = evaluate_optimized_match_condition(query_keys, query_nkeys, shared_count, query_string, query_nkeys);
@@ -3721,13 +3730,13 @@ kmersearch_kmer_based_match_dna4(VarBit *sequence, const char *query_string)
     bool result;
     
     /* Extract k-mers from DNA4 sequence (with degenerate expansion) */
-    seq_keys = (VarBit **)kmersearch_extract_dna4_kmers_with_expansion_direct(sequence, k, &seq_nkeys);
+    seq_keys = (VarBit **)kmersearch_extract_dna4_kmer2_with_expansion_direct(sequence, k, &seq_nkeys);
     if (seq_keys == NULL || seq_nkeys == 0) {
         return false;
     }
     
     /* Extract k-mers from query (with degenerate expansion) */
-    query_keys = get_cached_query_kmers(query_string, k, &query_nkeys);
+    query_keys = get_cached_query_kmer(query_string, k, &query_nkeys);
     if (query_keys == NULL || query_nkeys == 0) {
         /* Free sequence keys */
         if (seq_keys) {
@@ -3742,7 +3751,7 @@ kmersearch_kmer_based_match_dna4(VarBit *sequence, const char *query_string)
     }
     
     /* Count shared keys */
-    shared_count = kmersearch_count_matching_kmers_fast(seq_keys, seq_nkeys, query_keys, query_nkeys);
+    shared_count = kmersearch_count_matching_kmer_fast(seq_keys, seq_nkeys, query_keys, query_nkeys);
     
     /* Evaluate match conditions using optimized method */
     result = evaluate_optimized_match_condition(query_keys, query_nkeys, shared_count, query_string, query_nkeys);
@@ -3807,7 +3816,7 @@ kmersearch_calculate_kmer_match_and_score_dna2(VarBit *sequence, const char *que
     
     /* Extract k-mers from DNA2 sequence (no degenerate expansion) */
     elog(LOG, "DNA2 Cache: Starting k-mer extraction from sequence");
-    seq_datum_keys = kmersearch_extract_dna2_kmers_direct(sequence, k, &result.seq_nkeys);
+    seq_datum_keys = kmersearch_extract_dna2_kmer2_direct(sequence, k, &result.seq_nkeys);
     elog(LOG, "DNA2 Cache: Extracted %d k-mers from sequence", result.seq_nkeys);
     
     if (seq_datum_keys != NULL && result.seq_nkeys > 0) {
@@ -3824,7 +3833,7 @@ kmersearch_calculate_kmer_match_and_score_dna2(VarBit *sequence, const char *que
     
     /* Extract k-mers from query (with degenerate expansion) */
     elog(LOG, "DNA2 Cache: Starting k-mer extraction from query '%s'", query_string);
-    query_keys = get_cached_query_kmers(query_string, k, &result.query_nkeys);
+    query_keys = get_cached_query_kmer(query_string, k, &result.query_nkeys);
     elog(LOG, "DNA2 Cache: Extracted %d k-mers from query", result.query_nkeys);
     
     if (query_keys == NULL || result.query_nkeys == 0) {
@@ -3834,7 +3843,7 @@ kmersearch_calculate_kmer_match_and_score_dna2(VarBit *sequence, const char *que
     
     /* Calculate shared k-mer count (this becomes the rawscore) */
     elog(LOG, "DNA2 Cache: Starting k-mer matching calculation");
-    result.shared_count = kmersearch_count_matching_kmers_fast(seq_keys, result.seq_nkeys, 
+    result.shared_count = kmersearch_count_matching_kmer_fast(seq_keys, result.seq_nkeys, 
                                                                query_keys, result.query_nkeys);
     elog(LOG, "DNA2 Cache: Completed k-mer matching, shared_count=%d", result.shared_count);
     
@@ -3893,7 +3902,7 @@ kmersearch_calculate_kmer_match_and_score_dna4(VarBit *sequence, const char *que
     }
     
     /* Extract k-mers from DNA4 sequence (with degenerate expansion) */
-    seq_datum_keys = kmersearch_extract_dna4_kmers_with_expansion_direct(sequence, k, &result.seq_nkeys);
+    seq_datum_keys = kmersearch_extract_dna4_kmer2_with_expansion_direct(sequence, k, &result.seq_nkeys);
     if (seq_datum_keys != NULL && result.seq_nkeys > 0) {
         seq_keys = (VarBit **) palloc(result.seq_nkeys * sizeof(VarBit *));
         for (i = 0; i < result.seq_nkeys; i++) {
@@ -3905,13 +3914,13 @@ kmersearch_calculate_kmer_match_and_score_dna4(VarBit *sequence, const char *que
     }
     
     /* Extract k-mers from query (with degenerate expansion) */
-    query_keys = get_cached_query_kmers(query_string, k, &result.query_nkeys);
+    query_keys = get_cached_query_kmer(query_string, k, &result.query_nkeys);
     if (query_keys == NULL || result.query_nkeys == 0) {
         goto cleanup;
     }
     
     /* Calculate shared k-mer count (this becomes the rawscore) */
-    result.shared_count = kmersearch_count_matching_kmers_fast(seq_keys, result.seq_nkeys, 
+    result.shared_count = kmersearch_count_matching_kmer_fast(seq_keys, result.seq_nkeys, 
                                                                query_keys, result.query_nkeys);
     
     /* Calculate sharing rate */
@@ -4177,7 +4186,7 @@ kmersearch_init_buffer(KmerBuffer *buffer, int k_size)
     buffer->capacity = kmersearch_calculate_buffer_size(k_size);
     buffer->entries = (CompactKmerFreq *) palloc0(buffer->capacity * sizeof(CompactKmerFreq));
     buffer->count = 0;
-    buffer->k_size = k_size;
+    buffer->kmer_size = k_size;
 }
 
 /*
@@ -4199,11 +4208,11 @@ kmersearch_aggregate_buffer_entries(KmerBuffer *buffer)
         for (j = 0; j < write_pos; j++) {
             bool same_kmer = false;
             
-            if (buffer->k_size <= 8) {
+            if (buffer->kmer_size <= 8) {
                 same_kmer = (buffer->entries[i].kmer_data.k8_data == buffer->entries[j].kmer_data.k8_data);
-            } else if (buffer->k_size <= 16) {
+            } else if (buffer->kmer_size <= 16) {
                 same_kmer = (buffer->entries[i].kmer_data.k16_data == buffer->entries[j].kmer_data.k16_data);
-            } else if (buffer->k_size <= 32) {
+            } else if (buffer->kmer_size <= 32) {
                 same_kmer = (buffer->entries[i].kmer_data.k32_data == buffer->entries[j].kmer_data.k32_data);
             } else {
                 same_kmer = (buffer->entries[i].kmer_data.k64_data.high == buffer->entries[j].kmer_data.k64_data.high &&
@@ -4253,15 +4262,15 @@ kmersearch_flush_buffer_to_table(KmerBuffer *buffer, const char *temp_table_name
     for (i = 0; i < buffer->count; i++) {
         if (i > 0) appendStringInfoString(&query, ", ");
         
-        if (buffer->k_size <= 8) {
+        if (buffer->kmer_size <= 8) {
             appendStringInfo(&query, "(%u, %d)", 
                            buffer->entries[i].kmer_data.k8_data,
                            buffer->entries[i].frequency_count);
-        } else if (buffer->k_size <= 16) {
+        } else if (buffer->kmer_size <= 16) {
             appendStringInfo(&query, "(%u, %d)", 
                            buffer->entries[i].kmer_data.k16_data,
                            buffer->entries[i].frequency_count);
-        } else if (buffer->k_size <= 32) {
+        } else if (buffer->kmer_size <= 32) {
             appendStringInfo(&query, "(%lu, %d)", 
                            buffer->entries[i].kmer_data.k32_data,
                            buffer->entries[i].frequency_count);
@@ -4440,7 +4449,7 @@ kmersearch_worker_analyze_blocks(KmerWorkerState *worker, Relation rel,
         
         /* Extract k-mers from the sequence (k-mer-only for phase 1) */
         ereport(DEBUG1, (errmsg("Extracting k-mers from sequence, k_size=%d", k_size)));
-        kmers = (VarBit **)kmersearch_extract_dna2_kmers_kmer_only(sequence, k_size, &nkeys);
+        kmers = (VarBit **)kmersearch_extract_dna2_kmer2_only(sequence, k_size, &nkeys);
         ereport(DEBUG1, (errmsg("Extracted %d k-mers", nkeys)));
         if (kmers == NULL || nkeys == 0) {
             continue;
@@ -4455,7 +4464,7 @@ kmersearch_worker_analyze_blocks(KmerWorkerState *worker, Relation rel,
             }
             
             /* Encode k-mer into compact format (k-mer-only) */
-            encoded_kmer = kmersearch_encode_kmer_only_data(kmers[j], k_size);
+            encoded_kmer = kmersearch_encode_kmer2_only_data(kmers[j], k_size);
             
             /* Add to buffer (will flush to temp table if full) */
             kmersearch_add_to_buffer(&worker->buffer, encoded_kmer, worker->temp_table_name);
@@ -4612,7 +4621,7 @@ kmersearch_analyze_table_parallel(Oid table_oid, const char *column_name, int k_
         
         /* Phase 2: Collect n-gram keys for high-frequency k-mers using parallel processing */
         ereport(NOTICE, (errmsg("Phase 2: Collecting n-gram keys for high-frequency k-mers...")));
-        kmersearch_collect_ngram_keys_for_highfreq_kmers(table_oid, column_name, k_size, final_table_name);
+        kmersearch_collect_ngram_key2_for_highfreq_kmer(table_oid, column_name, k_size, final_table_name);
         
         /* Insert metadata record */
         kmersearch_persist_highfreq_kmers_metadata(table_oid, column_name, k_size);
@@ -4647,7 +4656,7 @@ kmersearch_persist_highfreq_kmers_from_temp(Oid table_oid, const char *column_na
     /* Insert highly frequent k-mers into permanent table */
     /* Note: Combining kmer_data and frequency_count into ngram_key */
     appendStringInfo(&query,
-        "INSERT INTO kmersearch_highfreq_kmers (index_oid, ngram_key, detection_reason) "
+        "INSERT INTO kmersearch_highfreq_kmer (index_oid, ngram_key, detection_reason) "
         "SELECT %u, "
         "  substring(kmer_data::varbit, 1, length(kmer_data::varbit)) || "
         "  substring(frequency_count::bit(%d), 1, %d) AS ngram_key, "
@@ -4662,7 +4671,7 @@ kmersearch_persist_highfreq_kmers_from_temp(Oid table_oid, const char *column_na
     pfree(query.data);
     initStringInfo(&query);
     appendStringInfo(&query,
-        "INSERT INTO kmersearch_highfreq_kmers_meta "
+        "INSERT INTO kmersearch_highfreq_kmer_meta "
         "(table_oid, column_name, k_value, occur_bitlen, max_appearance_rate, max_appearance_nrow) "
         "VALUES (%u, '%s', %d, %d, %f, %d) "
         "ON CONFLICT (table_oid, column_name, k_value) DO UPDATE SET "
@@ -4683,7 +4692,7 @@ kmersearch_persist_highfreq_kmers_from_temp(Oid table_oid, const char *column_na
  * Phase 2: Collect n-gram keys for high-frequency k-mers using parallel processing
  */
 static void
-kmersearch_collect_ngram_keys_for_highfreq_kmers(Oid table_oid, const char *column_name, int k_size, const char *highfreq_table_name)
+kmersearch_collect_ngram_key2_for_highfreq_kmer(Oid table_oid, const char *column_name, int k_size, const char *highfreq_table_name)
 {
     Relation rel;
     int num_workers;
@@ -4730,14 +4739,14 @@ kmersearch_collect_ngram_keys_for_highfreq_kmers(Oid table_oid, const char *colu
     
     /* Execute parallel n-gram collection */
     for (i = 0; i < num_workers; i++) {
-        kmersearch_worker_collect_ngram_keys(&workers[i], rel, column_name, k_size, highfreq_table_name);
+        kmersearch_worker_collect_ngram_key2(&workers[i], rel, column_name, k_size, highfreq_table_name);
     }
     
     /* Merge all worker results into final n-gram table */
     kmersearch_merge_ngram_worker_results(workers, num_workers, final_ngram_table.data);
     
     /* Insert collected n-gram keys into permanent table */
-    kmersearch_persist_collected_ngram_keys(table_oid, final_ngram_table.data);
+    kmersearch_persist_collected_ngram_key2(table_oid, final_ngram_table.data);
     
     /* Clean up worker temp tables */
     for (i = 0; i < num_workers; i++) {
@@ -4772,7 +4781,7 @@ kmersearch_collect_ngram_keys_for_highfreq_kmers(Oid table_oid, const char *colu
  * Worker function for Phase 2: collect n-gram keys for high-frequency k-mers
  */
 static void
-kmersearch_worker_collect_ngram_keys(KmerWorkerState *worker, Relation rel, const char *column_name, int k_size, const char *highfreq_table_name)
+kmersearch_worker_collect_ngram_key2(KmerWorkerState *worker, Relation rel, const char *column_name, int k_size, const char *highfreq_table_name)
 {
     StringInfoData query;
     
@@ -4877,7 +4886,7 @@ kmersearch_merge_ngram_worker_results(KmerWorkerState *workers, int num_workers,
  * Persist collected n-gram keys to permanent table
  */
 static void
-kmersearch_persist_collected_ngram_keys(Oid table_oid, const char *final_table_name)
+kmersearch_persist_collected_ngram_key2(Oid table_oid, const char *final_table_name)
 {
     StringInfoData query;
     
@@ -4885,7 +4894,7 @@ kmersearch_persist_collected_ngram_keys(Oid table_oid, const char *final_table_n
     
     /* Get index OID for the table */
     appendStringInfo(&query,
-        "INSERT INTO kmersearch_highfreq_kmers (index_oid, ngram_key, detection_reason) "
+        "INSERT INTO kmersearch_highfreq_kmer (index_oid, ngram_key, detection_reason) "
         "SELECT idx.indexrelid, ng.ngram_key, 'high_frequency' "
         "FROM %s ng "
         "CROSS JOIN pg_stat_user_indexes idx "
@@ -4911,7 +4920,7 @@ kmersearch_is_kmer_high_frequency(VarBit *ngram_key, int k_size, const char *hig
     char *kmer_hex;
     
     /* Extract k-mer-only part and encode it */
-    kmer_only_data = kmersearch_encode_kmer_only_data(ngram_key, k_size);
+    kmer_only_data = kmersearch_encode_kmer2_only_data(ngram_key, k_size);
     
     /* Convert to hex string for SQL comparison */
     if (k_size <= 8) {
@@ -4973,7 +4982,7 @@ kmersearch_persist_highfreq_kmers_metadata(Oid table_oid, const char *column_nam
     
     initStringInfo(&query);
     appendStringInfo(&query,
-        "INSERT INTO kmersearch_highfreq_kmers_meta "
+        "INSERT INTO kmersearch_highfreq_kmer_meta "
         "(table_oid, column_name, k_value, occur_bitlen, max_appearance_rate, max_appearance_nrow) "
         "VALUES (%u, '%s', %d, %d, %f, %d) "
         "ON CONFLICT (table_oid, column_name, k_value) DO UPDATE SET "
@@ -5163,7 +5172,7 @@ kmersearch_filter_highfreq_kmers(Oid table_oid, const char *column_name, int k_s
     /* Build query to get excluded k-mers from index info table */
     initStringInfo(&query);
     appendStringInfo(&query,
-        "SELECT ek.kmer_key FROM kmersearch_highfreq_kmers ek "
+        "SELECT ek.kmer_key FROM kmersearch_highfreq_kmer ek "
         "JOIN kmersearch_index_info ii ON ek.index_oid = ii.index_oid "
         "WHERE ii.table_oid = %u AND ii.column_name = '%s' AND ii.k_value = %d",
         table_oid, column_name, k_size);
@@ -5377,7 +5386,7 @@ kmersearch_drop_analysis_internal(Oid table_oid, const char *column_name, int k_
  * Helper function to get highly frequent k-mers list for a given index
  */
 static List *
-kmersearch_get_highfreq_kmers_list(Oid index_oid)
+kmersearch_get_highfreq_kmer_list(Oid index_oid)
 {
     List *highfreq_kmers = NIL;
     int ret;
@@ -5389,7 +5398,7 @@ kmersearch_get_highfreq_kmers_list(Oid index_oid)
     /* Build query to get highly frequent k-mers */
     initStringInfo(&query);
     appendStringInfo(&query,
-        "SELECT ek.kmer_key FROM kmersearch_highfreq_kmers ek "
+        "SELECT ek.kmer_key FROM kmersearch_highfreq_kmer ek "
         "JOIN kmersearch_index_info ii ON ek.index_oid = ii.index_oid "
         "WHERE ii.index_oid = %u ORDER BY ek.kmer_key",
         index_oid);
@@ -5686,7 +5695,7 @@ kmersearch_actual_min_score_cache_stats(PG_FUNCTION_ARGS)
  * High-frequency k-mer cache load function
  */
 Datum
-kmersearch_highfreq_kmers_cache_load(PG_FUNCTION_ARGS)
+kmersearch_highfreq_kmer_cache_load(PG_FUNCTION_ARGS)
 {
     Oid table_oid = PG_GETARG_OID(0);
     text *column_name_text = PG_GETARG_TEXT_P(1);
@@ -5696,7 +5705,7 @@ kmersearch_highfreq_kmers_cache_load(PG_FUNCTION_ARGS)
     bool success;
     
     /* Call internal cache load function */
-    success = kmersearch_highfreq_kmers_cache_load_internal(table_oid, column_name, k_value);
+    success = kmersearch_highfreq_kmer_cache_load_internal(table_oid, column_name, k_value);
     
     pfree(column_name);
     
@@ -5707,7 +5716,7 @@ kmersearch_highfreq_kmers_cache_load(PG_FUNCTION_ARGS)
  * High-frequency k-mer cache free function
  */
 Datum
-kmersearch_highfreq_kmers_cache_free(PG_FUNCTION_ARGS)
+kmersearch_highfreq_kmer_cache_free(PG_FUNCTION_ARGS)
 {
     int freed_entries = 0;
     
@@ -5716,7 +5725,7 @@ kmersearch_highfreq_kmers_cache_free(PG_FUNCTION_ARGS)
         freed_entries = global_highfreq_cache.highfreq_count;
     
     /* Call internal cache free function */
-    kmersearch_highfreq_kmers_cache_free_internal();
+    kmersearch_highfreq_kmer_cache_free_internal();
     
     PG_RETURN_INT32(freed_entries);
 }
@@ -5725,7 +5734,7 @@ kmersearch_highfreq_kmers_cache_free(PG_FUNCTION_ARGS)
  * Parallel high-frequency k-mer cache load function
  */
 Datum
-kmersearch_parallel_highfreq_kmers_cache_load(PG_FUNCTION_ARGS)
+kmersearch_parallel_highfreq_kmer_cache_load(PG_FUNCTION_ARGS)
 {
     Oid table_oid = PG_GETARG_OID(0);
     text *column_name_text = PG_GETARG_TEXT_PP(1);
@@ -5735,11 +5744,11 @@ kmersearch_parallel_highfreq_kmers_cache_load(PG_FUNCTION_ARGS)
     
     /* Initialize parallel cache if not already done */
     if (parallel_highfreq_cache == NULL) {
-        kmersearch_parallel_highfreq_kmers_cache_init();
+        kmersearch_parallel_highfreq_kmer_cache_init();
     }
     
     /* Load cache data into DSM */
-    result = kmersearch_parallel_highfreq_kmers_cache_load_internal(table_oid, column_name, k_value);
+    result = kmersearch_parallel_highfreq_kmer_cache_load_internal(table_oid, column_name, k_value);
     
     /* Register cleanup function for process exit */
     if (result) {
@@ -5754,25 +5763,25 @@ kmersearch_parallel_highfreq_kmers_cache_load(PG_FUNCTION_ARGS)
  * Parallel high-frequency k-mer cache free function
  */
 Datum
-kmersearch_parallel_highfreq_kmers_cache_free(PG_FUNCTION_ARGS)
+kmersearch_parallel_highfreq_kmer_cache_free(PG_FUNCTION_ARGS)
 {
     int32 freed_entries = 0;
     
-    ereport(LOG, (errmsg("kmersearch_parallel_highfreq_kmers_cache_free: Starting function call")));
+    ereport(LOG, (errmsg("kmersearch_parallel_highfreq_kmer_cache_free: Starting function call")));
     
     /* Get the actual number of entries from the cache */
     if (parallel_highfreq_cache != NULL && parallel_highfreq_cache->is_initialized) {
         freed_entries = parallel_highfreq_cache->num_entries;
-        ereport(LOG, (errmsg("kmersearch_parallel_highfreq_kmers_cache_free: Found %d entries to free", freed_entries)));
+        ereport(LOG, (errmsg("kmersearch_parallel_highfreq_kmer_cache_free: Found %d entries to free", freed_entries)));
     } else {
-        ereport(LOG, (errmsg("kmersearch_parallel_highfreq_kmers_cache_free: parallel_highfreq_cache is NULL or not initialized")));
+        ereport(LOG, (errmsg("kmersearch_parallel_highfreq_kmer_cache_free: parallel_highfreq_cache is NULL or not initialized")));
         freed_entries = 0;
     }
     
     /* Free parallel cache */
-    kmersearch_parallel_highfreq_kmers_cache_free_internal();
+    kmersearch_parallel_highfreq_kmer_cache_free_internal();
     
-    ereport(LOG, (errmsg("kmersearch_parallel_highfreq_kmers_cache_free: Function completed, returning %d", freed_entries)));
+    ereport(LOG, (errmsg("kmersearch_parallel_highfreq_kmer_cache_free: Function completed, returning %d", freed_entries)));
     
     PG_RETURN_INT32(freed_entries);
 }
@@ -5791,7 +5800,7 @@ _PG_fini(void)
     free_actual_min_score_cache_manager(&actual_min_score_cache_manager);
     
     /* Free high-frequency k-mer cache on module unload */
-    kmersearch_highfreq_kmers_cache_free_internal();
+    kmersearch_highfreq_kmer_cache_free_internal();
 }
 
 /*
@@ -5845,7 +5854,7 @@ kmersearch_validate_guc_against_metadata(Oid table_oid, const char *column_name,
     initStringInfo(&query);
     appendStringInfo(&query,
         "SELECT occur_bitlen, max_appearance_rate, max_appearance_nrow "
-        "FROM kmersearch_highfreq_kmers_meta "
+        "FROM kmersearch_highfreq_kmer_meta "
         "WHERE table_oid = %u AND column_name = '%s' AND k_value = %d",
         table_oid, column_name, k_value);
     
@@ -5928,7 +5937,7 @@ kmersearch_validate_guc_against_metadata(Oid table_oid, const char *column_name,
 }
 
 static VarBit **
-kmersearch_get_highfreq_kmers_from_table(Oid table_oid, const char *column_name, int k, int *nkeys)
+kmersearch_get_highfreq_kmer_from_table(Oid table_oid, const char *column_name, int k, int *nkeys)
 {
     VarBit **result = NULL;
     int ret;
@@ -5942,18 +5951,18 @@ kmersearch_get_highfreq_kmers_from_table(Oid table_oid, const char *column_name,
     
     /* Connect to SPI */
     if (SPI_connect() != SPI_OK_CONNECT)
-        ereport(ERROR, (errmsg("kmersearch_get_highfreq_kmers_from_table: SPI_connect failed")));
+        ereport(ERROR, (errmsg("kmersearch_get_highfreq_kmer_from_table: SPI_connect failed")));
     
     /* Build query to get highly frequent k-mers */
     initStringInfo(&query);
     appendStringInfo(&query,
-        "SELECT DISTINCT hkm.ngram_key FROM kmersearch_highfreq_kmers hkm "
+        "SELECT DISTINCT hkm.ngram_key FROM kmersearch_highfreq_kmer hkm "
         "WHERE hkm.index_oid IN ("
         "    SELECT indexrelid FROM pg_stat_user_indexes pui "
         "    JOIN pg_class pc ON pui.relid = pc.oid "
         "    WHERE pc.oid = %u "
         "    AND EXISTS ("
-        "        SELECT 1 FROM kmersearch_highfreq_kmers_meta hkm_meta "
+        "        SELECT 1 FROM kmersearch_highfreq_kmer_meta hkm_meta "
         "        WHERE hkm_meta.table_oid = %u "
         "        AND hkm_meta.column_name = '%s' "
         "        AND hkm_meta.k_value = %d"
@@ -6121,7 +6130,7 @@ kmersearch_filter_highfreq_kmers_from_keys(Datum *original_keys, int *nkeys, HTA
  * High-frequency k-mer cache management functions implementation
  */
 static void
-kmersearch_highfreq_kmers_cache_init(void)
+kmersearch_highfreq_kmer_cache_init(void)
 {
     MemoryContext old_context;
     
@@ -6133,7 +6142,7 @@ kmersearch_highfreq_kmers_cache_init(void)
     global_highfreq_cache.is_valid = false;
     global_highfreq_cache.current_table_oid = InvalidOid;
     global_highfreq_cache.current_column_name = NULL;
-    global_highfreq_cache.current_k_value = 0;
+    global_highfreq_cache.current_kmer_size = 0;
     
     /* Create dedicated memory context for high-frequency k-mer cache */
     global_highfreq_cache.cache_context = AllocSetContextCreate(TopMemoryContext,
@@ -6148,7 +6157,7 @@ kmersearch_highfreq_kmers_cache_init(void)
 }
 
 static bool
-kmersearch_highfreq_kmers_cache_load_internal(Oid table_oid, const char *column_name, int k_value)
+kmersearch_highfreq_kmer_cache_load_internal(Oid table_oid, const char *column_name, int k_value)
 {
     MemoryContext old_context;
     VarBit **highfreq_kmers;
@@ -6163,11 +6172,11 @@ kmersearch_highfreq_kmers_cache_load_internal(Oid table_oid, const char *column_
     
     /* Clear existing cache if valid */
     if (global_highfreq_cache.is_valid) {
-        kmersearch_highfreq_kmers_cache_free_internal();
+        kmersearch_highfreq_kmer_cache_free_internal();
     }
     
     /* Get high-frequency k-mers list */
-    highfreq_kmers = kmersearch_get_highfreq_kmers_from_table(table_oid, column_name, k_value, &highfreq_count);
+    highfreq_kmers = kmersearch_get_highfreq_kmer_from_table(table_oid, column_name, k_value, &highfreq_count);
     
     if (!highfreq_kmers || highfreq_count <= 0) {
         /* No high-frequency k-mers found, cache remains invalid */
@@ -6180,7 +6189,7 @@ kmersearch_highfreq_kmers_cache_load_internal(Oid table_oid, const char *column_
     /* Store in cache */
     global_highfreq_cache.current_table_oid = table_oid;
     global_highfreq_cache.current_column_name = pstrdup(column_name);  /* Cache context copy */
-    global_highfreq_cache.current_k_value = k_value;
+    global_highfreq_cache.current_kmer_size = k_value;
     global_highfreq_cache.highfreq_kmers = highfreq_kmers;
     global_highfreq_cache.highfreq_count = highfreq_count;
     
@@ -6204,7 +6213,7 @@ kmersearch_highfreq_kmers_cache_load_internal(Oid table_oid, const char *column_
 }
 
 static void
-kmersearch_highfreq_kmers_cache_free_internal(void)
+kmersearch_highfreq_kmer_cache_free_internal(void)
 {
     if (!global_highfreq_cache.is_valid) {
         return;
@@ -6219,7 +6228,7 @@ kmersearch_highfreq_kmers_cache_free_internal(void)
     /* Reset cache state */
     global_highfreq_cache.is_valid = false;
     global_highfreq_cache.current_table_oid = InvalidOid;
-    global_highfreq_cache.current_k_value = 0;
+    global_highfreq_cache.current_kmer_size = 0;
     global_highfreq_cache.highfreq_count = 0;
     global_highfreq_cache.highfreq_hash = NULL;
     global_highfreq_cache.highfreq_kmers = NULL;
@@ -6227,11 +6236,11 @@ kmersearch_highfreq_kmers_cache_free_internal(void)
 }
 
 static bool
-kmersearch_highfreq_kmers_cache_is_valid(Oid table_oid, const char *column_name, int k_value)
+kmersearch_highfreq_kmer_cache_is_valid(Oid table_oid, const char *column_name, int k_value)
 {
     return (global_highfreq_cache.is_valid &&
             global_highfreq_cache.current_table_oid == table_oid &&
-            global_highfreq_cache.current_k_value == k_value &&
+            global_highfreq_cache.current_kmer_size == k_value &&
             global_highfreq_cache.current_column_name &&
             column_name &&
             strcmp(global_highfreq_cache.current_column_name, column_name) == 0);
@@ -6381,7 +6390,7 @@ dshash_cache_cleanup_callback(int code, Datum arg)
  * Initialize parallel high-frequency k-mer cache
  */
 static void
-kmersearch_parallel_highfreq_kmers_cache_init(void)
+kmersearch_parallel_highfreq_kmer_cache_init(void)
 {
     /* Initialize parallel cache state */
     parallel_highfreq_cache = NULL;
@@ -6393,7 +6402,7 @@ kmersearch_parallel_highfreq_kmers_cache_init(void)
  * Load data into parallel high-frequency k-mer cache
  */
 static bool
-kmersearch_parallel_highfreq_kmers_cache_load_internal(Oid table_oid, const char *column_name, int k_value)
+kmersearch_parallel_highfreq_kmer_cache_load_internal(Oid table_oid, const char *column_name, int k_value)
 {
     dshash_parameters params;
     Size segment_size;
@@ -6426,14 +6435,14 @@ kmersearch_parallel_highfreq_kmers_cache_load_internal(Oid table_oid, const char
         /* Verify cache data is still valid */
         if (parallel_highfreq_cache->is_initialized &&
             parallel_highfreq_cache->table_oid == table_oid &&
-            parallel_highfreq_cache->k_value == k_value) {
+            parallel_highfreq_cache->kmer_size == k_value) {
             ereport(LOG, (errmsg("dshash_cache_load: Cache already loaded for table %u, k=%d", 
                                 table_oid, k_value)));
             return true;
         } else {
             /* Cache exists but is for different table/k_value, clean it up */
             ereport(LOG, (errmsg("dshash_cache_load: Cache exists but for different table/k_value, cleaning up")));
-            kmersearch_parallel_highfreq_kmers_cache_free_internal();
+            kmersearch_parallel_highfreq_kmer_cache_free_internal();
         }
     }
     
@@ -6441,7 +6450,7 @@ kmersearch_parallel_highfreq_kmers_cache_load_internal(Oid table_oid, const char
     ereport(LOG, (errmsg("dshash_cache_load: Starting cache load for table %u, column %s, k=%d", 
                         table_oid, column_name, k_value)));
     
-    highfreq_kmers = kmersearch_get_highfreq_kmers_from_table(table_oid, column_name, k_value, &highfreq_count);
+    highfreq_kmers = kmersearch_get_highfreq_kmer_from_table(table_oid, column_name, k_value, &highfreq_count);
     
     if (!highfreq_kmers || highfreq_count <= 0) {
         /* No high-frequency k-mers found */
@@ -6485,7 +6494,7 @@ kmersearch_parallel_highfreq_kmers_cache_load_internal(Oid table_oid, const char
     /* Initialize parallel cache structure in DSM */
     parallel_highfreq_cache = (ParallelHighfreqKmerCache *) dsm_segment_address(parallel_cache_segment);
     parallel_highfreq_cache->table_oid = table_oid;
-    parallel_highfreq_cache->k_value = k_value;
+    parallel_highfreq_cache->kmer_size = k_value;
     parallel_highfreq_cache->num_entries = highfreq_count;
     parallel_highfreq_cache->segment_size = segment_size;
     parallel_highfreq_cache->dsm_handle = dsm_segment_handle(parallel_cache_segment);
@@ -6591,7 +6600,7 @@ kmersearch_parallel_highfreq_kmers_cache_load_internal(Oid table_oid, const char
                 entry->kmer_hash = kmer_hash;
                 entry->frequency_count = 1; /* Mark as high-frequency */
                 entry->table_oid = table_oid;
-                entry->k_value = k_value;
+                entry->kmer_size = k_value;
                 /* Must release lock after dshash_find_or_insert() */
                 dshash_release_lock(parallel_cache_hash, entry);
                 ereport(LOG, (errmsg("dshash_cache_load: Successfully inserted k-mer %d", i + 1)));
@@ -6643,21 +6652,21 @@ kmersearch_parallel_highfreq_kmers_cache_load_internal(Oid table_oid, const char
  * Free parallel high-frequency k-mer cache
  */
 static void
-kmersearch_parallel_highfreq_kmers_cache_free_internal(void)
+kmersearch_parallel_highfreq_kmer_cache_free_internal(void)
 {
-    ereport(LOG, (errmsg("kmersearch_parallel_highfreq_kmers_cache_free_internal: Starting parallel cache free")));
+    ereport(LOG, (errmsg("kmersearch_parallel_highfreq_kmer_cache_free_internal: Starting parallel cache free")));
     
     /* Use the unified cleanup function for proper resource destruction */
     kmersearch_parallel_cache_cleanup_internal();
     
-    ereport(LOG, (errmsg("kmersearch_parallel_highfreq_kmers_cache_free_internal: Parallel cache free completed")));
+    ereport(LOG, (errmsg("kmersearch_parallel_highfreq_kmer_cache_free_internal: Parallel cache free completed")));
 }
 
 /*
  * Check if parallel high-frequency k-mer cache is valid
  */
 static bool
-kmersearch_parallel_highfreq_kmers_cache_is_valid(Oid table_oid, const char *column_name, int k_value)
+kmersearch_parallel_highfreq_kmer_cache_is_valid(Oid table_oid, const char *column_name, int k_value)
 {
     /* Check if parallel cache exists and is valid */
     if (parallel_highfreq_cache == NULL || !parallel_highfreq_cache->is_initialized)
@@ -6665,7 +6674,7 @@ kmersearch_parallel_highfreq_kmers_cache_is_valid(Oid table_oid, const char *col
     
     /* Check if cache matches the requested parameters */
     if (parallel_highfreq_cache->table_oid != table_oid || 
-        parallel_highfreq_cache->k_value != k_value)
+        parallel_highfreq_cache->kmer_size != k_value)
         return false;
     
     return true;
@@ -6847,7 +6856,7 @@ kmersearch_parallel_cache_cleanup_on_exit(int code, Datum arg)
     /* Clean up parallel cache resources */
     if (parallel_cache_hash != NULL || parallel_cache_dsa != NULL || parallel_cache_segment != NULL) {
         ereport(LOG, (errmsg("parallel_cache_cleanup_on_exit: Cleaning up resources")));
-        kmersearch_parallel_highfreq_kmers_cache_free_internal();
+        kmersearch_parallel_highfreq_kmer_cache_free_internal();
     } else {
         ereport(LOG, (errmsg("parallel_cache_cleanup_on_exit: No resources to clean up")));
     }
@@ -7732,10 +7741,10 @@ static void dna4_decode_sve(const uint8_t* input, char* output, int len)
  */
 
 #ifdef __x86_64__
-/* AVX2 optimized version of kmersearch_extract_dna2_kmers_direct */
+/* AVX2 optimized version of kmersearch_extract_dna2_kmer2_direct */
 __attribute__((target("avx2")))
 static Datum *
-kmersearch_extract_dna2_kmers_direct_avx2(VarBit *seq, int k, int *nkeys)
+kmersearch_extract_dna2_kmer2_direct_avx2(VarBit *seq, int k, int *nkeys)
 {
     int seq_bits = VARBITLEN(seq);
     int seq_bases = seq_bits / 2;
@@ -7798,7 +7807,7 @@ kmersearch_extract_dna2_kmers_direct_avx2(VarBit *seq, int k, int *nkeys)
                 continue;
             
             /* Create simple k-mer key (without occurrence count for matching) */
-            ngram_key = kmersearch_create_kmer_key_from_dna2_bits(seq, pos, k);
+            ngram_key = kmersearch_create_kmer2_key_from_dna2_bits(seq, pos, k);
             if (ngram_key == NULL)
                 continue;  /* Skip if key creation failed */
                 
@@ -7838,7 +7847,7 @@ kmersearch_extract_dna2_kmers_direct_avx2(VarBit *seq, int k, int *nkeys)
             continue;
         
         /* Create n-gram key (k-mer + occurrence count) */
-        ngram_key = kmersearch_create_ngram_key_from_dna2_bits(seq, i, k, current_count);
+        ngram_key = kmersearch_create_ngram_key2_from_dna2_bits(seq, i, k, current_count);
         if (ngram_key == NULL)
             continue;  /* Skip if key creation failed */
             
@@ -7852,10 +7861,10 @@ kmersearch_extract_dna2_kmers_direct_avx2(VarBit *seq, int k, int *nkeys)
     return keys;
 }
 
-/* AVX2 optimized version of kmersearch_extract_dna4_kmers_with_expansion_direct */
+/* AVX2 optimized version of kmersearch_extract_dna4_kmer2_with_expansion_direct */
 __attribute__((target("avx2")))
 static Datum *
-kmersearch_extract_dna4_kmers_with_expansion_direct_avx2(VarBit *seq, int k, int *nkeys)
+kmersearch_extract_dna4_kmer2_with_expansion_direct_avx2(VarBit *seq, int k, int *nkeys)
 {
     int seq_bits = VARBITLEN(seq);
     int seq_bases = seq_bits / 4;
@@ -7893,7 +7902,7 @@ kmersearch_extract_dna4_kmers_with_expansion_direct_avx2(VarBit *seq, int k, int
             int exp_j;
             
             /* Expand DNA4 k-mer to DNA2 k-mers */
-            expanded_kmers = kmersearch_expand_dna4_kmer_to_dna2_direct(seq, pos, k, &expansion_count);
+            expanded_kmers = kmersearch_expand_dna4_kmer2_to_dna2_direct(seq, pos, k, &expansion_count);
             
             if (!expanded_kmers || expansion_count == 0)
                 continue;
@@ -7951,7 +7960,7 @@ kmersearch_extract_dna4_kmers_with_expansion_direct_avx2(VarBit *seq, int k, int
         int j;
         
         /* Expand DNA4 k-mer to DNA2 k-mers */
-        expanded_kmers = kmersearch_expand_dna4_kmer_to_dna2_direct(seq, i, k, &expansion_count);
+        expanded_kmers = kmersearch_expand_dna4_kmer2_to_dna2_direct(seq, i, k, &expansion_count);
         
         if (!expanded_kmers || expansion_count == 0)
             continue;
@@ -7992,7 +8001,7 @@ kmersearch_extract_dna4_kmers_with_expansion_direct_avx2(VarBit *seq, int k, int
                 continue;
             
             /* Create n-gram key (k-mer + occurrence count) from expanded DNA2 k-mer */
-            ngram_key = kmersearch_create_ngram_key_from_dna2_bits(dna2_kmer, 0, k, current_count);
+            ngram_key = kmersearch_create_ngram_key2_from_dna2_bits(dna2_kmer, 0, k, current_count);
             if (ngram_key)
                 keys[key_count++] = PointerGetDatum(ngram_key);
         }
@@ -8016,10 +8025,10 @@ kmersearch_extract_dna4_kmers_with_expansion_direct_avx2(VarBit *seq, int k, int
     return keys;
 }
 
-/* AVX2 optimized version of kmersearch_count_matching_kmers_fast */
+/* AVX2 optimized version of kmersearch_count_matching_kmer_fast */
 __attribute__((target("avx2")))
 static int
-kmersearch_count_matching_kmers_fast_avx2(VarBit **seq_keys, int seq_nkeys, VarBit **query_keys, int query_nkeys)
+kmersearch_count_matching_kmer_fast_avx2(VarBit **seq_keys, int seq_nkeys, VarBit **query_keys, int query_nkeys)
 {
     int match_count = 0;
     int i;
@@ -8081,7 +8090,7 @@ kmersearch_count_matching_kmers_fast_avx2(VarBit **seq_keys, int seq_nkeys, VarB
     
     /* Safety check: ensure we have valid query keys */
     if (query_keys[0] == NULL) {
-        elog(LOG, "kmersearch_count_matching_kmers_fast_avx2: NULL query key detected");
+        elog(LOG, "kmersearch_count_matching_kmer_fast_avx2: NULL query key detected");
         return 0;
     }
     
@@ -8089,7 +8098,7 @@ kmersearch_count_matching_kmers_fast_avx2(VarBit **seq_keys, int seq_nkeys, VarB
     hash_ctl.entrysize = sizeof(bool);
     hash_ctl.hash = tag_hash;
     
-    elog(LOG, "kmersearch_count_matching_kmers_fast_avx2: Creating hash with keysize=%zu, query_nkeys=%d", 
+    elog(LOG, "kmersearch_count_matching_kmer_fast_avx2: Creating hash with keysize=%zu, query_nkeys=%d", 
          (size_t)VARBITBYTES(query_keys[0]), query_nkeys);
     
     query_hash = hash_create("QueryKmerHashAVX2", query_nkeys * 2, &hash_ctl,
@@ -8099,7 +8108,7 @@ kmersearch_count_matching_kmers_fast_avx2(VarBit **seq_keys, int seq_nkeys, VarB
     for (i = 0; i < query_nkeys; i++)
     {
         if (query_keys[i] == NULL) {
-            elog(LOG, "kmersearch_count_matching_kmers_fast_avx2: NULL query key at index %d", i);
+            elog(LOG, "kmersearch_count_matching_kmer_fast_avx2: NULL query key at index %d", i);
             continue;
         }
         hash_search(query_hash, VARBITS(query_keys[i]), HASH_ENTER, &found);
@@ -8109,12 +8118,12 @@ kmersearch_count_matching_kmers_fast_avx2(VarBit **seq_keys, int seq_nkeys, VarB
     for (i = 0; i < seq_nkeys; i++)
     {
         if (seq_keys[i] == NULL) {
-            elog(LOG, "kmersearch_count_matching_kmers_fast_avx2: NULL seq key at index %d", i);
+            elog(LOG, "kmersearch_count_matching_kmer_fast_avx2: NULL seq key at index %d", i);
             continue;
         }
         
         if (VARBITBYTES(seq_keys[i]) != VARBITBYTES(query_keys[0])) {
-            elog(LOG, "kmersearch_count_matching_kmers_fast_avx2: Size mismatch seq[%d]=%zu vs query[0]=%zu", 
+            elog(LOG, "kmersearch_count_matching_kmer_fast_avx2: Size mismatch seq[%d]=%zu vs query[0]=%zu", 
                  i, (size_t)VARBITBYTES(seq_keys[i]), (size_t)VARBITBYTES(query_keys[0]));
             continue;
         }
@@ -8127,14 +8136,14 @@ kmersearch_count_matching_kmers_fast_avx2(VarBit **seq_keys, int seq_nkeys, VarB
     
     hash_destroy(query_hash);
     
-    elog(LOG, "kmersearch_count_matching_kmers_fast_avx2: Returning match_count=%d", match_count);
+    elog(LOG, "kmersearch_count_matching_kmer_fast_avx2: Returning match_count=%d", match_count);
     return match_count;
 }
 
-/* AVX512 optimized version of kmersearch_extract_dna2_kmers_direct */
+/* AVX512 optimized version of kmersearch_extract_dna2_kmer2_direct */
 __attribute__((target("avx512f,avx512bw")))
 static Datum *
-kmersearch_extract_dna2_kmers_direct_avx512(VarBit *seq, int k, int *nkeys)
+kmersearch_extract_dna2_kmer2_direct_avx512(VarBit *seq, int k, int *nkeys)
 {
     int seq_bits = VARBITLEN(seq);
     int seq_bases = seq_bits / 2;
@@ -8189,7 +8198,7 @@ kmersearch_extract_dna2_kmers_direct_avx512(VarBit *seq, int k, int *nkeys)
             if (current_count > (1 << kmersearch_occur_bitlen))
                 continue;
             
-            ngram_key = kmersearch_create_kmer_key_from_dna2_bits(seq, pos, k);
+            ngram_key = kmersearch_create_kmer2_key_from_dna2_bits(seq, pos, k);
             if (ngram_key == NULL)
                 continue;
                 
@@ -8223,7 +8232,7 @@ kmersearch_extract_dna2_kmers_direct_avx512(VarBit *seq, int k, int *nkeys)
         if (current_count > (1 << kmersearch_occur_bitlen))
             continue;
         
-        ngram_key = kmersearch_create_kmer_key_from_dna2_bits(seq, i, k);
+        ngram_key = kmersearch_create_kmer2_key_from_dna2_bits(seq, i, k);
         if (ngram_key == NULL)
             continue;
             
@@ -8236,10 +8245,10 @@ kmersearch_extract_dna2_kmers_direct_avx512(VarBit *seq, int k, int *nkeys)
     return keys;
 }
 
-/* AVX512 optimized version of kmersearch_extract_dna4_kmers_with_expansion_direct */
+/* AVX512 optimized version of kmersearch_extract_dna4_kmer2_with_expansion_direct */
 __attribute__((target("avx512f,avx512bw")))
 static Datum *
-kmersearch_extract_dna4_kmers_with_expansion_direct_avx512(VarBit *seq, int k, int *nkeys)
+kmersearch_extract_dna4_kmer2_with_expansion_direct_avx512(VarBit *seq, int k, int *nkeys)
 {
     int seq_bits = VARBITLEN(seq);
     int seq_bases = seq_bits / 4;
@@ -8273,7 +8282,7 @@ kmersearch_extract_dna4_kmers_with_expansion_direct_avx512(VarBit *seq, int k, i
             int expansion_count;
             int exp_j;
             
-            expanded_kmers = kmersearch_expand_dna4_kmer_to_dna2_direct(seq, pos, k, &expansion_count);
+            expanded_kmers = kmersearch_expand_dna4_kmer2_to_dna2_direct(seq, pos, k, &expansion_count);
             
             if (!expanded_kmers || expansion_count == 0)
                 continue;
@@ -8324,7 +8333,7 @@ kmersearch_extract_dna4_kmers_with_expansion_direct_avx512(VarBit *seq, int k, i
         int expansion_count;
         int j;
         
-        expanded_kmers = kmersearch_expand_dna4_kmer_to_dna2_direct(seq, i, k, &expansion_count);
+        expanded_kmers = kmersearch_expand_dna4_kmer2_to_dna2_direct(seq, i, k, &expansion_count);
         
         if (!expanded_kmers || expansion_count == 0)
             continue;
@@ -8382,10 +8391,10 @@ kmersearch_extract_dna4_kmers_with_expansion_direct_avx512(VarBit *seq, int k, i
     return keys;
 }
 
-/* AVX512 optimized version of kmersearch_count_matching_kmers_fast */
+/* AVX512 optimized version of kmersearch_count_matching_kmer_fast */
 __attribute__((target("avx512f,avx512bw")))
 static int
-kmersearch_count_matching_kmers_fast_avx512(VarBit **seq_keys, int seq_nkeys, VarBit **query_keys, int query_nkeys)
+kmersearch_count_matching_kmer_fast_avx512(VarBit **seq_keys, int seq_nkeys, VarBit **query_keys, int query_nkeys)
 {
     int match_count = 0;
     int i;
@@ -8443,7 +8452,7 @@ kmersearch_count_matching_kmers_fast_avx512(VarBit **seq_keys, int seq_nkeys, Va
     memset(&hash_ctl, 0, sizeof(hash_ctl));
     
     if (query_keys[0] == NULL) {
-        elog(LOG, "kmersearch_count_matching_kmers_fast_avx512: NULL query key detected");
+        elog(LOG, "kmersearch_count_matching_kmer_fast_avx512: NULL query key detected");
         return 0;
     }
     
@@ -8485,10 +8494,10 @@ kmersearch_count_matching_kmers_fast_avx512(VarBit **seq_keys, int seq_nkeys, Va
 #endif
 
 #ifdef __aarch64__
-/* NEON optimized version of kmersearch_extract_dna2_kmers_direct */
+/* NEON optimized version of kmersearch_extract_dna2_kmer2_direct */
 __attribute__((target("neon")))
 static Datum *
-kmersearch_extract_dna2_kmers_direct_neon(VarBit *seq, int k, int *nkeys)
+kmersearch_extract_dna2_kmer2_direct_neon(VarBit *seq, int k, int *nkeys)
 {
     int seq_bits = VARBITLEN(seq);
     int seq_bases = seq_bits / 2;
@@ -8540,7 +8549,7 @@ kmersearch_extract_dna2_kmers_direct_neon(VarBit *seq, int k, int *nkeys)
             if (current_count > (1 << kmersearch_occur_bitlen))
                 continue;
             
-            ngram_key = kmersearch_create_kmer_key_from_dna2_bits(seq, pos, k);
+            ngram_key = kmersearch_create_kmer2_key_from_dna2_bits(seq, pos, k);
             if (ngram_key == NULL)
                 continue;
                 
@@ -8574,7 +8583,7 @@ kmersearch_extract_dna2_kmers_direct_neon(VarBit *seq, int k, int *nkeys)
         if (current_count > (1 << kmersearch_occur_bitlen))
             continue;
         
-        ngram_key = kmersearch_create_kmer_key_from_dna2_bits(seq, i, k);
+        ngram_key = kmersearch_create_kmer2_key_from_dna2_bits(seq, i, k);
         if (ngram_key == NULL)
             continue;
             
@@ -8587,10 +8596,10 @@ kmersearch_extract_dna2_kmers_direct_neon(VarBit *seq, int k, int *nkeys)
     return keys;
 }
 
-/* NEON optimized version of kmersearch_extract_dna4_kmers_with_expansion_direct */
+/* NEON optimized version of kmersearch_extract_dna4_kmer2_with_expansion_direct */
 __attribute__((target("neon")))
 static Datum *
-kmersearch_extract_dna4_kmers_with_expansion_direct_neon(VarBit *seq, int k, int *nkeys)
+kmersearch_extract_dna4_kmer2_with_expansion_direct_neon(VarBit *seq, int k, int *nkeys)
 {
     int seq_bits = VARBITLEN(seq);
     int seq_bases = seq_bits / 4;
@@ -8621,7 +8630,7 @@ kmersearch_extract_dna4_kmers_with_expansion_direct_neon(VarBit *seq, int k, int
             int expansion_count;
             int exp_j;
             
-            expanded_kmers = kmersearch_expand_dna4_kmer_to_dna2_direct(seq, pos, k, &expansion_count);
+            expanded_kmers = kmersearch_expand_dna4_kmer2_to_dna2_direct(seq, pos, k, &expansion_count);
             
             if (!expanded_kmers || expansion_count == 0)
                 continue;
@@ -8672,7 +8681,7 @@ kmersearch_extract_dna4_kmers_with_expansion_direct_neon(VarBit *seq, int k, int
         int expansion_count;
         int j;
         
-        expanded_kmers = kmersearch_expand_dna4_kmer_to_dna2_direct(seq, i, k, &expansion_count);
+        expanded_kmers = kmersearch_expand_dna4_kmer2_to_dna2_direct(seq, i, k, &expansion_count);
         
         if (!expanded_kmers || expansion_count == 0)
             continue;
@@ -8730,10 +8739,10 @@ kmersearch_extract_dna4_kmers_with_expansion_direct_neon(VarBit *seq, int k, int
     return keys;
 }
 
-/* NEON optimized version of kmersearch_count_matching_kmers_fast */
+/* NEON optimized version of kmersearch_count_matching_kmer_fast */
 __attribute__((target("neon")))
 static int
-kmersearch_count_matching_kmers_fast_neon(VarBit **seq_keys, int seq_nkeys, VarBit **query_keys, int query_nkeys)
+kmersearch_count_matching_kmer_fast_neon(VarBit **seq_keys, int seq_nkeys, VarBit **query_keys, int query_nkeys)
 {
     int match_count = 0;
     int i;
@@ -8792,7 +8801,7 @@ kmersearch_count_matching_kmers_fast_neon(VarBit **seq_keys, int seq_nkeys, VarB
     memset(&hash_ctl, 0, sizeof(hash_ctl));
     
     if (query_keys[0] == NULL) {
-        elog(LOG, "kmersearch_count_matching_kmers_fast_neon: NULL query key detected");
+        elog(LOG, "kmersearch_count_matching_kmer_fast_neon: NULL query key detected");
         return 0;
     }
     
@@ -8834,10 +8843,10 @@ kmersearch_count_matching_kmers_fast_neon(VarBit **seq_keys, int seq_nkeys, VarB
 #endif
 
 #ifdef __aarch64__
-/* SVE optimized version of kmersearch_extract_dna2_kmers_direct */
+/* SVE optimized version of kmersearch_extract_dna2_kmer2_direct */
 __attribute__((target("sve")))
 static Datum *
-kmersearch_extract_dna2_kmers_direct_sve(VarBit *seq, int k, int *nkeys)
+kmersearch_extract_dna2_kmer2_direct_sve(VarBit *seq, int k, int *nkeys)
 {
     int seq_bits = VARBITLEN(seq);
     int seq_bases = seq_bits / 2;
@@ -8890,7 +8899,7 @@ kmersearch_extract_dna2_kmers_direct_sve(VarBit *seq, int k, int *nkeys)
             if (current_count > (1 << kmersearch_occur_bitlen))
                 continue;
             
-            ngram_key = kmersearch_create_kmer_key_from_dna2_bits(seq, pos, k);
+            ngram_key = kmersearch_create_kmer2_key_from_dna2_bits(seq, pos, k);
             if (ngram_key == NULL)
                 continue;
                 
@@ -8924,7 +8933,7 @@ kmersearch_extract_dna2_kmers_direct_sve(VarBit *seq, int k, int *nkeys)
         if (current_count > (1 << kmersearch_occur_bitlen))
             continue;
         
-        ngram_key = kmersearch_create_kmer_key_from_dna2_bits(seq, i, k);
+        ngram_key = kmersearch_create_kmer2_key_from_dna2_bits(seq, i, k);
         if (ngram_key == NULL)
             continue;
             
@@ -8937,10 +8946,10 @@ kmersearch_extract_dna2_kmers_direct_sve(VarBit *seq, int k, int *nkeys)
     return keys;
 }
 
-/* SVE optimized version of kmersearch_extract_dna4_kmers_with_expansion_direct */
+/* SVE optimized version of kmersearch_extract_dna4_kmer2_with_expansion_direct */
 __attribute__((target("sve")))
 static Datum *
-kmersearch_extract_dna4_kmers_with_expansion_direct_sve(VarBit *seq, int k, int *nkeys)
+kmersearch_extract_dna4_kmer2_with_expansion_direct_sve(VarBit *seq, int k, int *nkeys)
 {
     int seq_bits = VARBITLEN(seq);
     int seq_bases = seq_bits / 4;
@@ -8971,7 +8980,7 @@ kmersearch_extract_dna4_kmers_with_expansion_direct_sve(VarBit *seq, int k, int 
             int expansion_count;
             int exp_j;
             
-            expanded_kmers = kmersearch_expand_dna4_kmer_to_dna2_direct(seq, pos, k, &expansion_count);
+            expanded_kmers = kmersearch_expand_dna4_kmer2_to_dna2_direct(seq, pos, k, &expansion_count);
             
             if (!expanded_kmers || expansion_count == 0)
                 continue;
@@ -9022,7 +9031,7 @@ kmersearch_extract_dna4_kmers_with_expansion_direct_sve(VarBit *seq, int k, int 
         int expansion_count;
         int j;
         
-        expanded_kmers = kmersearch_expand_dna4_kmer_to_dna2_direct(seq, i, k, &expansion_count);
+        expanded_kmers = kmersearch_expand_dna4_kmer2_to_dna2_direct(seq, i, k, &expansion_count);
         
         if (!expanded_kmers || expansion_count == 0)
             continue;
@@ -9080,10 +9089,10 @@ kmersearch_extract_dna4_kmers_with_expansion_direct_sve(VarBit *seq, int k, int 
     return keys;
 }
 
-/* SVE optimized version of kmersearch_count_matching_kmers_fast */
+/* SVE optimized version of kmersearch_count_matching_kmer_fast */
 __attribute__((target("sve")))
 static int
-kmersearch_count_matching_kmers_fast_sve(VarBit **seq_keys, int seq_nkeys, VarBit **query_keys, int query_nkeys)
+kmersearch_count_matching_kmer_fast_sve(VarBit **seq_keys, int seq_nkeys, VarBit **query_keys, int query_nkeys)
 {
     int match_count = 0;
     int i;
@@ -9142,7 +9151,7 @@ kmersearch_count_matching_kmers_fast_sve(VarBit **seq_keys, int seq_nkeys, VarBi
     memset(&hash_ctl, 0, sizeof(hash_ctl));
     
     if (query_keys[0] == NULL) {
-        elog(LOG, "kmersearch_count_matching_kmers_fast_sve: NULL query key detected");
+        elog(LOG, "kmersearch_count_matching_kmer_fast_sve: NULL query key detected");
         return 0;
     }
     
