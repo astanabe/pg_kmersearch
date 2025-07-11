@@ -894,7 +894,26 @@ kmersearch_expand_dna4_kmer2_to_dna2_direct(VarBit *dna4_seq, int start_pos, int
 /*
  * Extract k-mers directly from DNA2 bit sequence (with SIMD dispatch)
  */
-/* Note: kmersearch_extract_dna2_kmer2_direct moved to kmersearch_kmer.c */
+Datum *
+kmersearch_extract_dna2_kmer2_direct(VarBit *seq, int k, int *nkeys)
+{
+#ifdef __x86_64__
+    if (simd_capability >= SIMD_AVX512) {
+        return kmersearch_extract_dna2_kmer2_direct_avx512(seq, k, nkeys);
+    }
+    if (simd_capability >= SIMD_AVX2) {
+        return kmersearch_extract_dna2_kmer2_direct_avx2(seq, k, nkeys);
+    }
+#elif defined(__aarch64__)
+    if (simd_capability >= SIMD_SVE) {
+        return kmersearch_extract_dna2_kmer2_direct_sve(seq, k, nkeys);
+    }
+    if (simd_capability >= SIMD_NEON) {
+        return kmersearch_extract_dna2_kmer2_direct_neon(seq, k, nkeys);
+    }
+#endif
+    return kmersearch_extract_dna2_kmer2_direct_scalar(seq, k, nkeys);
+}
 
 /*
  * Scalar version: Extract k-mers directly from DNA2 bit sequence
