@@ -104,7 +104,7 @@ static int kmersearch_calculate_raw_score(VarBit *seq1, VarBit *seq2, text *quer
 static VarBit **kmersearch_get_highfreq_kmer_from_table(Oid table_oid, const char *column_name, int k, int *nkeys);
 static HTAB *kmersearch_create_highfreq_hash_from_array(VarBit **kmers, int nkeys);
 Datum *kmersearch_filter_highfreq_kmers_from_keys(Datum *original_keys, int *nkeys, HTAB *highfreq_hash, int k);
-static VarBit *kmersearch_remove_occurrence_bits(VarBit *key_with_occurrence, int k);
+/* Note: kmersearch_remove_occurrence_bits moved to kmersearch_kmer.c */
 
 /* High-frequency k-mer cache management functions */
 static void kmersearch_highfreq_kmer_cache_init(void);
@@ -128,12 +128,12 @@ static void dshash_cache_cleanup_callback(int code, Datum arg);
 /* Helper functions for direct k-mer management (no hashing) */
 /* Note: kmersearch_extract_kmer_as_uint64 moved to kmersearch_kmer.c */
 /* Note: kmersearch_find_or_add_kmer_occurrence moved to kmersearch_kmer.c */
-static VarBit **kmersearch_extract_kmer_from_varbit(VarBit *seq, int k, int *nkeys);
-static VarBit **kmersearch_extract_kmer_from_query(const char *query, int k, int *nkeys);
+/* Note: kmersearch_extract_kmer_from_varbit moved to kmersearch_kmer.c */
+/* Note: kmersearch_extract_kmer_from_query moved to kmersearch_kmer.c */
 static Datum *kmersearch_extract_kmer_with_degenerate(const char *sequence, int seq_len, int k, int *nkeys);
 /* Note: kmersearch_count_degenerate_combinations declaration moved to kmersearch.h */
 static VarBit *kmersearch_create_ngram_key2_with_occurrence(const char *kmer, int k, int occurrence);
-static bool kmersearch_will_exceed_degenerate_limit(const char *seq, int len);
+/* Note: kmersearch_will_exceed_degenerate_limit moved to kmersearch_kmer.c */
 /* Note: kmersearch_will_exceed_degenerate_limit_dna4_bits declaration moved to kmersearch.h */
 /* Note: kmersearch_expand_dna4_kmer2_to_dna2_direct declaration moved to kmersearch.h */
 /* Note: k-mer bit manipulation function declarations moved to kmersearch.h */
@@ -778,71 +778,13 @@ static void init_simd_dispatch_table(void)
     }
 }
 
-/*
- * Helper function to get bit at position from bit array
- */
-static inline uint8
-kmersearch_get_bit_at(bits8 *data, int bit_pos)
-{
-    int byte_pos = bit_pos / 8;
-    int bit_offset = bit_pos % 8;
-    return (data[byte_pos] >> (7 - bit_offset)) & 1;
-}
+/* Note: kmersearch_get_bit_at moved to kmersearch_kmer.c */
 
 /* Note: kmersearch_set_bit_at moved to kmersearch_kmer.c */
 
 /* Note: DNA2/DNA4 to_string functions moved to kmersearch_datatype.c */
 
-/*
- * Fast check if degenerate combinations exceed limit (11+)
- * Returns true if combinations will exceed 10
- */
-static bool
-kmersearch_will_exceed_degenerate_limit(const char *seq, int len)
-{
-    int n_count = 0, vhdb_count = 0, mrwsyk_count = 0;
-    int i;
-    
-    for (i = 0; i < len; i++)
-    {
-        char c = toupper(seq[i]);
-        if (c == 'N')
-        {
-            n_count++;
-            /* Early exit: 2+ N's always exceed limit */
-            if (n_count >= 2)
-                return true;
-        }
-        else if (c == 'V' || c == 'H' || c == 'D' || c == 'B')
-        {
-            vhdb_count++;
-            /* Early exit: 3+ VHDB always exceed limit */
-            if (vhdb_count >= 3)
-                return true;
-            /* Early exit: N + VHDB exceed limit */
-            if (n_count >= 1 && vhdb_count >= 1)
-                return true;
-        }
-        else if (c == 'M' || c == 'R' || c == 'W' || c == 'S' || c == 'Y' || c == 'K')
-        {
-            mrwsyk_count++;
-            /* Early exit: 4+ MRWSYK always exceed limit */
-            if (mrwsyk_count >= 4)
-                return true;
-            /* Early exit: N + 2+ MRWSYK exceed limit */
-            if (n_count >= 1 && mrwsyk_count >= 2)
-                return true;
-            /* Early exit: 2+ VHDB + MRWSYK exceed limit */
-            if (vhdb_count >= 2 && mrwsyk_count >= 1)
-                return true;
-            /* Early exit: VHDB + 2+ MRWSYK exceed limit */
-            if (vhdb_count >= 1 && mrwsyk_count >= 2)
-                return true;
-        }
-    }
-    
-    return false;  /* Within limit */
-}
+/* Note: kmersearch_will_exceed_degenerate_limit moved to kmersearch_kmer.c */
 
 /* Note: kmersearch_will_exceed_degenerate_limit_dna4_bits moved to kmersearch_kmer.c */
 
@@ -2496,89 +2438,9 @@ kmersearch_calculate_raw_score(VarBit *seq1, VarBit *seq2, text *query_text)
 }
 
 
-/*
- * Extract k-mers from VarBit sequence
- */
-static VarBit **
-kmersearch_extract_kmer_from_varbit(VarBit *seq, int k, int *nkeys)
-{
-    int seq_bits = VARBITLEN(seq);
-    int seq_bases = seq_bits / 2;  /* Assuming 2-bit encoding */
-    int max_kmers = (seq_bases >= k) ? (seq_bases - k + 1) : 0;
-    VarBit **keys;
-    int key_count = 0;
-    int i, j;
-    bits8 *seq_data = VARBITS(seq);
-    
-    *nkeys = 0;
-    if (max_kmers <= 0)
-        return NULL;
-    
-    keys = (VarBit **) palloc(max_kmers * sizeof(VarBit *));
-    
-    /* Extract each k-mer */
-    for (i = 0; i <= seq_bases - k; i++)
-    {
-        int kmer_bits = k * 2;
-        int kmer_bytes = (kmer_bits + 7) / 8;
-        VarBit *kmer_key = (VarBit *) palloc0(VARHDRSZ + sizeof(int32) + kmer_bytes);
-        bits8 *kmer_data;
-        
-        SET_VARSIZE(kmer_key, VARHDRSZ + sizeof(int32) + kmer_bytes);
-        VARBITLEN(kmer_key) = kmer_bits;
-        kmer_data = VARBITS(kmer_key);
-        
-        /* Copy k-mer bits from sequence */
-        for (j = 0; j < k; j++)
-        {
-            int src_bit_pos = (i + j) * 2;
-            int dst_bit_pos = j * 2;
-            int src_byte_pos = src_bit_pos / 8;
-            int src_bit_offset = src_bit_pos % 8;
-            int dst_byte_pos = dst_bit_pos / 8;
-            int dst_bit_offset = dst_bit_pos % 8;
-            
-            /* Extract 2 bits from source */
-            uint8 base_bits = (seq_data[src_byte_pos] >> (6 - src_bit_offset)) & 0x3;
-            
-            /* Store 2 bits in destination */
-            kmer_data[dst_byte_pos] |= (base_bits << (6 - dst_bit_offset));
-        }
-        
-        keys[key_count++] = kmer_key;
-    }
-    
-    *nkeys = key_count;
-    return keys;
-}
+/* Note: kmersearch_extract_kmer_from_varbit moved to kmersearch_kmer.c */
 
-/*
- * Extract k-mers from query string
- */
-static VarBit **
-kmersearch_extract_kmer_from_query(const char *query, int k, int *nkeys)
-{
-    int query_len = strlen(query);
-    int max_kmers = (query_len >= k) ? (query_len - k + 1) : 0;
-    VarBit **keys;
-    int key_count = 0;
-    int i;
-    
-    *nkeys = 0;
-    if (max_kmers <= 0)
-        return NULL;
-    
-    keys = (VarBit **) palloc(max_kmers * sizeof(VarBit *));
-    
-    /* Extract each k-mer from query string */
-    for (i = 0; i <= query_len - k; i++)
-    {
-        keys[key_count++] = kmersearch_create_kmer2_key_only(query + i, k);
-    }
-    
-    *nkeys = key_count;
-    return keys;
-}
+/* Note: kmersearch_extract_kmer_from_query moved to kmersearch_kmer.c */
 
 /*
  * Raw score calculation function for DNA2
@@ -5288,34 +5150,7 @@ _PG_fini(void)
 /*
  * High-frequency k-mer filtering functions implementation
  */
-static VarBit *
-kmersearch_remove_occurrence_bits(VarBit *key_with_occurrence, int k)
-{
-    VarBit *result;
-    int kmer_bits;
-    int kmer_bytes;
-    int total_bits;
-    int occur_bits;
-    
-    if (!key_with_occurrence || k <= 0)
-        return NULL;
-    
-    occur_bits = kmersearch_occur_bitlen;
-    total_bits = VARBITLEN(key_with_occurrence);
-    kmer_bits = total_bits - occur_bits;
-    
-    if (kmer_bits <= 0)
-        return NULL;
-    
-    kmer_bytes = (kmer_bits + 7) / 8;
-    result = (VarBit *) palloc(VARHDRSZ + kmer_bytes);
-    SET_VARSIZE(result, VARHDRSZ + kmer_bytes);
-    VARBITLEN(result) = kmer_bits;
-    
-    memcpy(VARBITS(result), VARBITS(key_with_occurrence), kmer_bytes);
-    
-    return result;
-}
+/* Note: kmersearch_remove_occurrence_bits moved to kmersearch_kmer.c */
 
 /*
  * Validate current GUC settings against metadata table values

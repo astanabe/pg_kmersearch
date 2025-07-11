@@ -472,6 +472,11 @@ VarBit *kmersearch_create_ngram_key2_with_occurrence_from_dna2(VarBit *dna2_kmer
 VarBit **kmersearch_expand_dna4_kmer2_to_dna2_direct(VarBit *dna4_seq, int start_pos, int k, int *expansion_count);
 uint64_t kmersearch_extract_kmer_as_uint64(VarBit *seq, int start_pos, int k);
 int kmersearch_find_or_add_kmer_occurrence(KmerOccurrence *occurrences, int *count, uint64_t kmer_value, int max_count);
+VarBit **kmersearch_extract_kmer_from_varbit(VarBit *seq, int k, int *nkeys);
+VarBit **kmersearch_extract_kmer_from_query(const char *query, int k, int *nkeys);
+uint8 kmersearch_get_bit_at(bits8 *data, int bit_pos);
+bool kmersearch_will_exceed_degenerate_limit(const char *seq, int len);
+VarBit *kmersearch_remove_occurrence_bits(VarBit *key_with_occurrence, int k);
 
 /* GIN index support functions (implemented in kmersearch_gin.c) */
 Datum kmersearch_extract_value_dna2(PG_FUNCTION_ARGS);
