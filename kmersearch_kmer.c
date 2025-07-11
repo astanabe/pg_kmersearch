@@ -753,3 +753,96 @@ kmersearch_remove_occurrence_bits(VarBit *key_with_occurrence, int k)
     
     return result;
 }
+
+/*
+ * Extract k-mers from query string with degenerate code expansion
+ */
+VarBit **
+kmersearch_extract_query_kmer_with_degenerate(const char *query, int k, int *nkeys)
+{
+    int query_len = strlen(query);
+    int max_kmers = (query_len >= k) ? (query_len - k + 1) : 0;
+    VarBit **keys;
+    int key_count = 0;
+    int i;
+    bool has_degenerate;
+    int j;
+    
+    *nkeys = 0;
+    if (max_kmers <= 0)
+        return NULL;
+    
+    /* Allocate keys array with room for degenerate expansions */
+    keys = (VarBit **) palloc(max_kmers * 10 * sizeof(VarBit *));
+    
+    /* Extract k-mers from query */
+    for (i = 0; i <= query_len - k; i++)
+    {
+        char kmer[65];
+        strncpy(kmer, query + i, k);
+        kmer[k] = '\0';
+        
+        /* Check if this k-mer has degenerate codes */
+        if (kmersearch_will_exceed_degenerate_limit(kmer, k))
+            continue;  /* Skip k-mers with too many combinations */
+        
+        /* Check for degenerate codes */
+        has_degenerate = false;
+        for (j = 0; j < k; j++)
+        {
+            char c = toupper(kmer[j]);
+            if (c != 'A' && c != 'C' && c != 'G' && c != 'T' && c != 'U')
+            {
+                has_degenerate = true;
+                break;
+            }
+        }
+        
+        if (has_degenerate)
+        {
+            /* Expand degenerate codes */
+            char *expanded[10];
+            int expand_count;
+            
+            kmersearch_expand_degenerate_sequence(kmer, k, expanded, &expand_count);
+            
+            for (j = 0; j < expand_count; j++)
+            {
+                VarBit *kmer_key = kmersearch_create_kmer2_key_only(expanded[j], k);
+                keys[key_count++] = kmer_key;
+                pfree(expanded[j]);
+            }
+        }
+        else
+        {
+            /* Simple case - no degenerate codes */
+            VarBit *kmer_key = kmersearch_create_kmer2_key_only(kmer, k);
+            keys[key_count++] = kmer_key;
+        }
+    }
+    
+    *nkeys = key_count;
+    return keys;
+}
+
+/*
+ * Convert VarBit to hexadecimal string representation
+ */
+char *
+kmersearch_varbit_to_hex_string(VarBit *varbit)
+{
+    int bitlen = VARBITLEN(varbit);
+    int bytelen = VARBITBYTES(varbit);
+    unsigned char *bits = VARBITS(varbit);
+    char *hex_string;
+    int i;
+    
+    hex_string = palloc(bytelen * 2 + 1);
+    
+    for (i = 0; i < bytelen; i++) {
+        sprintf(hex_string + i * 2, "%02x", bits[i]);
+    }
+    
+    hex_string[bytelen * 2] = '\0';
+    return hex_string;
+}

@@ -148,7 +148,7 @@ static void kmersearch_create_worker_ngram_table(const char *table_name);
 static void kmersearch_merge_ngram_worker_results(KmerWorkerState *workers, int num_workers, const char *final_table_name);
 static void kmersearch_persist_collected_ngram_key2(Oid table_oid, const char *final_table_name);
 static bool kmersearch_is_kmer_high_frequency(VarBit *ngram_key, int k_size, const char *highfreq_table_name);
-static char *kmersearch_varbit_to_hex_string(VarBit *varbit);
+/* Note: kmersearch_varbit_to_hex_string moved to kmersearch_kmer.c */
 static void kmersearch_persist_highfreq_kmers_metadata(Oid table_oid, const char *column_name, int k_size);
 
 /* Rawscore cache management functions */
@@ -176,7 +176,7 @@ static void free_query_pattern_cache_manager(QueryPatternCacheManager **manager)
 static void free_actual_min_score_cache_manager(ActualMinScoreCacheManager **manager);
 Datum *kmersearch_extract_dna4_kmer2_with_expansion_direct(VarBit *seq, int k, int *nkeys);
 /* Note: kmersearch_create_ngram_key2_with_occurrence_from_dna2 declaration moved to kmersearch.h */
-static VarBit **kmersearch_extract_query_kmer(const char *query, int k, int *nkeys);
+/* Note: kmersearch_extract_query_kmer_with_degenerate moved to kmersearch_kmer.c */
 static int kmersearch_count_matching_kmer_fast(VarBit **seq_keys, int seq_nkeys, VarBit **query_keys, int query_nkeys);
 /* Note: kmersearch_create_kmer2_key_only declaration moved to kmersearch.h */
 static bool kmersearch_kmer_based_match_dna2(VarBit *sequence, const char *query_string);
@@ -1199,76 +1199,7 @@ kmersearch_extract_dna4_kmer2_with_expansion_direct_scalar(VarBit *seq, int k, i
 
 /* Note: kmersearch_create_ngram_key2_with_occurrence_from_dna2 moved to kmersearch_kmer.c */
 
-/*
- * Extract k-mers from query string with degenerate code expansion
- */
-static VarBit **
-kmersearch_extract_query_kmer(const char *query, int k, int *nkeys)
-{
-    int query_len = strlen(query);
-    int max_kmers = (query_len >= k) ? (query_len - k + 1) : 0;
-    VarBit **keys;
-    int key_count = 0;
-    int i;
-    bool has_degenerate;
-    int j;
-    
-    *nkeys = 0;
-    if (max_kmers <= 0)
-        return NULL;
-    
-    /* Allocate keys array with room for degenerate expansions */
-    keys = (VarBit **) palloc(max_kmers * 10 * sizeof(VarBit *));
-    
-    /* Extract k-mers from query */
-    for (i = 0; i <= query_len - k; i++)
-    {
-        char kmer[65];
-        strncpy(kmer, query + i, k);
-        kmer[k] = '\0';
-        
-        /* Check if this k-mer has degenerate codes */
-        if (kmersearch_will_exceed_degenerate_limit(kmer, k))
-            continue;  /* Skip k-mers with too many combinations */
-        
-        /* Check for degenerate codes */
-        has_degenerate = false;
-        for (j = 0; j < k; j++)
-        {
-            char c = toupper(kmer[j]);
-            if (c != 'A' && c != 'C' && c != 'G' && c != 'T' && c != 'U')
-            {
-                has_degenerate = true;
-                break;
-            }
-        }
-        
-        if (has_degenerate)
-        {
-            /* Expand degenerate codes */
-            char *expanded[10];
-            int expand_count;
-            
-            kmersearch_expand_degenerate_sequence(kmer, k, expanded, &expand_count);
-            
-            for (j = 0; j < expand_count; j++)
-            {
-                VarBit *kmer_key = kmersearch_create_kmer2_key_only(expanded[j], k);
-                keys[key_count++] = kmer_key;
-                pfree(expanded[j]);
-            }
-        }
-        else
-        {
-            /* Simple case - no degenerate codes */
-            VarBit *kmer_key = kmersearch_create_kmer2_key_only(kmer, k);
-            keys[key_count++] = kmer_key;
-        }
-    }
-    
-    *nkeys = key_count;
-    return keys;
-}
+/* Note: kmersearch_extract_query_kmer_with_degenerate moved to kmersearch_kmer.c */
 
 /*
  * Cache management functions
@@ -1999,7 +1930,7 @@ get_cached_query_kmer(const char *query_string, int k_size, int *nkeys)
     
     /* Cache miss - extract k-mers and store in cache */
     query_pattern_cache_manager->misses++;
-    extracted_kmers = kmersearch_extract_query_kmer(query_string, k_size, nkeys);
+    extracted_kmers = kmersearch_extract_query_kmer_with_degenerate(query_string, k_size, nkeys);
     
     if (extracted_kmers != NULL && *nkeys > 0)
     {
@@ -4297,24 +4228,7 @@ kmersearch_is_kmer_high_frequency(VarBit *ngram_key, int k_size, const char *hig
 /*
  * Convert VarBit to hex string for SQL operations
  */
-static char *
-kmersearch_varbit_to_hex_string(VarBit *varbit)
-{
-    int bitlen = VARBITLEN(varbit);
-    int bytelen = VARBITBYTES(varbit);
-    unsigned char *bits = VARBITS(varbit);
-    char *hex_string;
-    int i;
-    
-    hex_string = palloc(bytelen * 2 + 1);
-    
-    for (i = 0; i < bytelen; i++) {
-        sprintf(hex_string + i * 2, "%02x", bits[i]);
-    }
-    
-    hex_string[bytelen * 2] = '\0';
-    return hex_string;
-}
+/* Note: kmersearch_varbit_to_hex_string moved to kmersearch_kmer.c */
 
 /*
  * Persist metadata for high-frequency k-mer analysis
