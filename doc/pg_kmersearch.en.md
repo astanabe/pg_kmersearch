@@ -30,7 +30,7 @@ pg_kmersearch is a PostgreSQL extension that provides custom data types for effi
 - **High-frequency k-mer exclusion**: Automatically excludes overly common k-mers during index creation
 - **Score-based filtering**: Minimum score thresholds with automatic adjustment for excluded k-mers
 - **Score calculation functions**: `kmersearch_rawscore()` and `kmersearch_correctedscore()` for individual sequence scoring
-- **High-frequency k-mer management**: `kmersearch_analyze_table()` for high-frequency k-mer analysis and `kmersearch_highfreq_kmers_cache_load()` and `kmersearch_highfreq_kmers_cache_free()` for cache management
+- **High-frequency k-mer management**: `kmersearch_analyze_table()` for high-frequency k-mer analysis and `kmersearch_highfreq_kmer_cache_load()` and `kmersearch_highfreq_kmer_cache_free()` for cache management
 
 ## Installation
 
@@ -156,14 +156,14 @@ SET kmersearch.max_appearance_nrow = 1000;  -- Default: 0 (disabled)
 CREATE INDEX sequences_kmer_idx ON sequences USING gin (dna_seq);
 
 -- View excluded k-mers for an index
-SELECT kmer_key, frequency_count, exclusion_reason 
-FROM kmersearch_excluded_kmers 
+SELECT ngram_key, detection_reason 
+FROM kmersearch_highfreq_kmer 
 WHERE index_oid = 'sequences_kmer_idx'::regclass;
 
 -- View index statistics
-SELECT total_rows, excluded_kmers_count, max_appearance_rate 
-FROM kmersearch_index_info 
-WHERE index_oid = 'sequences_kmer_idx'::regclass;
+SELECT table_oid, column_name, kmer_size, occur_bitlen, max_appearance_rate, max_appearance_nrow 
+FROM kmersearch_highfreq_kmer_meta 
+WHERE table_oid = 'sequences'::regclass;
 ```
 
 ### Score-based Search Filtering
@@ -296,7 +296,7 @@ ORDER BY length(dna_seq) DESC;
 - **Degenerate expansion**: Automatic expansion up to 10 combinations
 - **Parallel index creation**: Supports max_parallel_maintenance_workers
 - **High-frequency exclusion**: Full table scan before index creation
-- **System tables**: Metadata storage for excluded k-mers and index statistics
+- **System tables**: Metadata storage for excluded k-mers and index statistics (`kmersearch_highfreq_kmer`, `kmersearch_highfreq_kmer_meta`)
 - **Cache system**: TopMemoryContext-based high-performance caching
 - Binary input/output support
 
@@ -340,6 +340,7 @@ SELECT * FROM kmersearch_query_pattern_cache_stats();
 -- Clear caches
 SELECT kmersearch_actual_min_score_cache_free();
 SELECT kmersearch_query_pattern_cache_free();
+SELECT kmersearch_highfreq_kmer_cache_free();
 
 -- Configure cache sizes
 SET kmersearch.actual_min_score_cache_max_entries = 25000;
@@ -365,7 +366,7 @@ High-frequency k-mer searches utilize caches in the following priority order:
    - DSM (Dynamic Shared Memory) sharing across multiple processes
    - Future PostgreSQL 18 parallel GIN index support
 
-3. **Table Reference Fallback** (`kmersearch_highfreq_kmers`)
+3. **Table Reference Fallback** (`kmersearch_highfreq_kmer`)
    - Direct system table access
    - Final fallback when caches are unavailable
 
@@ -405,13 +406,13 @@ SET kmersearch.occur_bitlen = 8;
 SET kmersearch.kmer_size = 8;
 
 -- Load global cache
-SELECT kmersearch_highfreq_kmers_cache_load(
+SELECT kmersearch_highfreq_kmer_cache_load(
     (SELECT oid FROM pg_class WHERE relname = 'sequences'),
     'dna_seq', 8
 );
 
 -- Load parallel cache (optional)
-SELECT kmersearch_parallel_highfreq_kmers_cache_load(
+SELECT kmersearch_parallel_highfreq_kmer_cache_load(
     (SELECT oid FROM pg_class WHERE relname = 'sequences'),
     'dna_seq', 8
 );
@@ -422,14 +423,14 @@ WHERE dna_seq =% 'ATCGATCG'
 ORDER BY kmersearch_rawscore(dna_seq, 'ATCGATCG') DESC;
 
 -- Free caches
-SELECT kmersearch_highfreq_kmers_cache_free();
-SELECT kmersearch_parallel_highfreq_kmers_cache_free();
+SELECT kmersearch_highfreq_kmer_cache_free();
+SELECT kmersearch_parallel_highfreq_kmer_cache_free();
 ```
 
 ### Parallel Cache Functions
 
-- **`kmersearch_parallel_highfreq_kmers_cache_load(table_oid, column_name, k_value)`**: Load high-frequency k-mers into shared dshash cache
-- **`kmersearch_parallel_highfreq_kmers_cache_free()`**: Free all entries from the parallel cache and destroy shared memory structures
+- **`kmersearch_parallel_highfreq_kmer_cache_load(table_oid, column_name, kmer_size)`**: Load high-frequency k-mers into shared dshash cache
+- **`kmersearch_parallel_highfreq_kmer_cache_free()`**: Free all entries from the parallel cache and destroy shared memory structures
 
 ### Usage Scenarios
 

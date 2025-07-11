@@ -30,7 +30,7 @@ pg_kmersearchは、PostgreSQL用のDNA配列データを効率的に格納・処
 - **高頻出k-mer除外**: インデックス作成時に過度に頻出するk-merを自動除外
 - **スコアベースフィルタリング**: 除外k-merに応じて自動調整される最小スコア閾値
 - **スコア計算関数**: 個別配列のスコア算出用の`kmersearch_rawscore()`と`kmersearch_correctedscore()`関数
-- **高頻出k-mer管理**: `kmersearch_analyze_table()`による高頻出k-mer解析と`kmersearch_highfreq_kmers_cache_load()`および`kmersearch_highfreq_kmers_cache_free()`によるキャッシュ管理
+- **高頻出k-mer管理**: `kmersearch_analyze_table()`による高頻出k-mer解析と`kmersearch_highfreq_kmer_cache_load()`および`kmersearch_highfreq_kmer_cache_free()`によるキャッシュ管理
 
 ## インストール
 
@@ -156,14 +156,14 @@ SET kmersearch.max_appearance_nrow = 1000;  -- デフォルト: 0（無効）
 CREATE INDEX sequences_kmer_idx ON sequences USING gin (dna_seq);
 
 -- インデックスの除外k-mer確認
-SELECT kmer_key, frequency_count, exclusion_reason 
-FROM kmersearch_excluded_kmers 
+SELECT ngram_key, detection_reason 
+FROM kmersearch_highfreq_kmer 
 WHERE index_oid = 'sequences_kmer_idx'::regclass;
 
 -- インデックス統計情報
-SELECT total_rows, excluded_kmers_count, max_appearance_rate 
-FROM kmersearch_index_info 
-WHERE index_oid = 'sequences_kmer_idx'::regclass;
+SELECT table_oid, column_name, kmer_size, occur_bitlen, max_appearance_rate, max_appearance_nrow 
+FROM kmersearch_highfreq_kmer_meta 
+WHERE table_oid = 'sequences'::regclass;
 ```
 
 ### スコアベース検索フィルタリング
@@ -296,7 +296,7 @@ ORDER BY length(dna_seq) DESC;
 - **縮重コード展開**: 最大10組み合わせまで自動展開
 - **並列インデックス作成**: max_parallel_maintenance_workersに対応
 - **高頻出除外**: インデックス作成前の全テーブルスキャン
-- **システムテーブル**: 除外k-merとインデックス統計のメタデータ格納
+- **システムテーブル**: 除外k-merとインデックス統計のメタデータ格納（`kmersearch_highfreq_kmer`, `kmersearch_highfreq_kmer_meta`）
 - **キャッシュシステム**: TopMemoryContext-based高速キャッシュ
 - バイナリ入出力サポート
 
@@ -340,6 +340,7 @@ SELECT * FROM kmersearch_query_pattern_cache_stats();
 -- キャッシュクリア
 SELECT kmersearch_actual_min_score_cache_free();
 SELECT kmersearch_query_pattern_cache_free();
+SELECT kmersearch_highfreq_kmer_cache_free();
 
 -- キャッシュサイズ設定
 SET kmersearch.actual_min_score_cache_max_entries = 25000;
@@ -365,7 +366,7 @@ pg_kmersearchは、PostgreSQL 16/18に最適化された多層キャッシュア
    - DSM（Dynamic Shared Memory）による複数プロセス間共有
    - 将来のPostgreSQL 18並列GINインデックス対応
 
-3. **テーブル参照フォールバック** (`kmersearch_highfreq_kmers`)
+3. **テーブル参照フォールバック** (`kmersearch_highfreq_kmer`)
    - システムテーブルへの直接アクセス
    - キャッシュ不在時の最終手段
 
@@ -405,13 +406,13 @@ SET kmersearch.occur_bitlen = 8;
 SET kmersearch.kmer_size = 8;
 
 -- グローバルキャッシュの読み込み
-SELECT kmersearch_highfreq_kmers_cache_load(
+SELECT kmersearch_highfreq_kmer_cache_load(
     (SELECT oid FROM pg_class WHERE relname = 'sequences'),
     'dna_seq', 8
 );
 
 -- 並列キャッシュの読み込み（オプション）
-SELECT kmersearch_parallel_highfreq_kmers_cache_load(
+SELECT kmersearch_parallel_highfreq_kmer_cache_load(
     (SELECT oid FROM pg_class WHERE relname = 'sequences'),
     'dna_seq', 8
 );
@@ -422,14 +423,14 @@ WHERE dna_seq =% 'ATCGATCG'
 ORDER BY kmersearch_rawscore(dna_seq, 'ATCGATCG') DESC;
 
 -- キャッシュの解放
-SELECT kmersearch_highfreq_kmers_cache_free();
-SELECT kmersearch_parallel_highfreq_kmers_cache_free();
+SELECT kmersearch_highfreq_kmer_cache_free();
+SELECT kmersearch_parallel_highfreq_kmer_cache_free();
 ```
 
 ### 並列キャッシュ関数
 
-- **`kmersearch_parallel_highfreq_kmers_cache_load(table_oid, column_name, k_value)`**: 高頻出k-merを共有dshashキャッシュに読み込み
-- **`kmersearch_parallel_highfreq_kmers_cache_free()`**: 並列キャッシュからすべてのエントリを解放し、共有メモリ構造を破棄
+- **`kmersearch_parallel_highfreq_kmer_cache_load(table_oid, column_name, kmer_size)`**: 高頻出k-merを共有dshashキャッシュに読み込み
+- **`kmersearch_parallel_highfreq_kmer_cache_free()`**: 並列キャッシュからすべてのエントリを解放し、共有メモリ構造を破棄
 
 ### 使用シナリオ
 
