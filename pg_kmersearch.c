@@ -130,9 +130,9 @@ static void dshash_cache_cleanup_callback(int code, Datum arg);
 /* Note: kmersearch_find_or_add_kmer_occurrence moved to kmersearch_kmer.c */
 /* Note: kmersearch_extract_kmer_from_varbit moved to kmersearch_kmer.c */
 /* Note: kmersearch_extract_kmer_from_query moved to kmersearch_kmer.c */
-static Datum *kmersearch_extract_kmer_with_degenerate(const char *sequence, int seq_len, int k, int *nkeys);
+/* Note: kmersearch_extract_kmer_with_degenerate declaration moved to kmersearch.h */
 /* Note: kmersearch_count_degenerate_combinations declaration moved to kmersearch.h */
-static VarBit *kmersearch_create_ngram_key2_with_occurrence(const char *kmer, int k, int occurrence);
+/* Note: kmersearch_create_ngram_key2_with_occurrence moved to kmersearch_kmer.c */
 /* Note: kmersearch_will_exceed_degenerate_limit moved to kmersearch_kmer.c */
 /* Note: kmersearch_will_exceed_degenerate_limit_dna4_bits declaration moved to kmersearch.h */
 /* Note: kmersearch_expand_dna4_kmer2_to_dna2_direct declaration moved to kmersearch.h */

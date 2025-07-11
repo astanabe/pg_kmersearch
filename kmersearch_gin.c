@@ -21,13 +21,13 @@ PG_FUNCTION_INFO_V1(kmersearch_compare_partial);
 /*
  * Forward declarations for static functions
  */
-static Datum *kmersearch_extract_kmers(const char *sequence, int seq_len, int k, int *nkeys);
-static VarBit *kmersearch_create_ngram_key2_with_occurrence(const char *kmer, int k, int occurrence);
+/* Note: kmersearch_extract_kmers declaration moved to kmersearch.h */
+/* Note: kmersearch_create_ngram_key2_with_occurrence declaration moved to kmersearch.h */
 
 /*
  * Extract k-mers from DNA sequence and create n-gram keys
  */
-static Datum *
+Datum *
 kmersearch_extract_kmers(const char *sequence, int seq_len, int k, int *nkeys)
 {
     Datum *keys;
@@ -204,60 +204,7 @@ kmersearch_extract_value_dna4(PG_FUNCTION_ARGS)
     PG_RETURN_POINTER(keys);
 }
 
-/*
- * Create n-gram key with occurrence count
- */
-static VarBit *
-kmersearch_create_ngram_key2_with_occurrence(const char *kmer, int k, int occurrence)
-{
-    int kmer_bits = k * 2;
-    int occur_bits = kmersearch_occur_bitlen;
-    int total_bits = kmer_bits + occur_bits;
-    int total_bytes = (total_bits + 7) / 8;
-    VarBit *result;
-    bits8 *data_ptr;
-    int i, bit_pos = 0;
-    
-    /* Adjust occurrence to 0-based (1-256 becomes 0-255) */
-    int adjusted_occurrence = occurrence - 1;
-    if (adjusted_occurrence < 0)
-        adjusted_occurrence = 0;
-    if (adjusted_occurrence >= (1 << occur_bits))
-        adjusted_occurrence = (1 << occur_bits) - 1;
-    
-    result = (VarBit *) palloc0(VARBITHDRSZ + total_bytes);
-    SET_VARSIZE(result, VARBITHDRSZ + total_bytes);
-    VARBITLEN(result) = total_bits;
-    data_ptr = VARBITS(result);
-    
-    /* Encode k-mer bits (2 bits per base) */
-    for (i = 0; i < k; i++)
-    {
-        uint8 base_code = 0;
-        char base = toupper(kmer[i]);
-        
-        switch (base)
-        {
-            case 'A': base_code = 0; break;  /* 00 */
-            case 'C': base_code = 1; break;  /* 01 */
-            case 'G': base_code = 2; break;  /* 10 */
-            case 'T': case 'U': base_code = 3; break;  /* 11 */
-            default: base_code = 0; break;   /* Default to A for invalid chars */
-        }
-        
-        /* Set 2 bits for this base */
-        kmersearch_set_bit_at(data_ptr, bit_pos++, (base_code >> 1) & 1);
-        kmersearch_set_bit_at(data_ptr, bit_pos++, base_code & 1);
-    }
-    
-    /* Encode occurrence count */
-    for (i = occur_bits - 1; i >= 0; i--)
-    {
-        kmersearch_set_bit_at(data_ptr, bit_pos++, (adjusted_occurrence >> i) & 1);
-    }
-    
-    return result;
-}
+/* Note: kmersearch_create_ngram_key2_with_occurrence moved to kmersearch_kmer.c */
 
 /*
  * GIN extract_query function

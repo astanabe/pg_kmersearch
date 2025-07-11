@@ -482,6 +482,11 @@ char *kmersearch_varbit_to_hex_string(VarBit *varbit);
 Datum *kmersearch_extract_dna2_kmer2_only(VarBit *seq, int k, int *nkeys);
 KmerData kmersearch_encode_kmer2_only_data(VarBit *kmer, int k_size);
 
+/* Functions for easy migration between files */
+Datum *kmersearch_extract_kmer_with_degenerate(const char *sequence, int seq_len, int k, int *nkeys);
+VarBit *kmersearch_create_ngram_key2_with_occurrence(const char *kmer, int k, int occurrence);
+Datum *kmersearch_extract_kmers(const char *sequence, int seq_len, int k, int *nkeys);
+
 /* GIN index support functions (implemented in kmersearch_gin.c) */
 Datum kmersearch_extract_value_dna2(PG_FUNCTION_ARGS);
 Datum kmersearch_extract_value_dna4(PG_FUNCTION_ARGS);
