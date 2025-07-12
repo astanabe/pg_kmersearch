@@ -125,6 +125,11 @@ CREATE FUNCTION kmersearch_consistent(internal, int2, text, int4, internal, inte
     AS 'MODULE_PATHNAME', 'kmersearch_consistent'
     LANGUAGE C IMMUTABLE STRICT;
 
+CREATE FUNCTION kmersearch_compare_partial(varbit, varbit)
+    RETURNS integer
+    AS 'MODULE_PATHNAME', 'kmersearch_compare_partial'
+    LANGUAGE C IMMUTABLE STRICT;
+
 -- GIN operator classes for DNA2 and DNA4
 CREATE OPERATOR CLASS kmersearch_dna2_gin_ops
     DEFAULT FOR TYPE DNA2 USING gin AS
@@ -133,6 +138,7 @@ CREATE OPERATOR CLASS kmersearch_dna2_gin_ops
         FUNCTION 2 kmersearch_extract_value_dna2(DNA2, internal),
         FUNCTION 3 kmersearch_extract_query(text, internal, int2, internal, internal),
         FUNCTION 4 kmersearch_consistent(internal, int2, text, int4, internal, internal),
+        FUNCTION 5 kmersearch_compare_partial(varbit, varbit),
         STORAGE varbit;
 
 CREATE OPERATOR CLASS kmersearch_dna4_gin_ops
@@ -142,6 +148,7 @@ CREATE OPERATOR CLASS kmersearch_dna4_gin_ops
         FUNCTION 2 kmersearch_extract_value_dna4(DNA4, internal),
         FUNCTION 3 kmersearch_extract_query(text, internal, int2, internal, internal),
         FUNCTION 4 kmersearch_consistent(internal, int2, text, int4, internal, internal),
+        FUNCTION 5 kmersearch_compare_partial(varbit, varbit),
         STORAGE varbit;
 
 
@@ -296,14 +303,30 @@ CREATE FUNCTION length(DNA4)
     AS 'MODULE_PATHNAME', 'kmersearch_dna4_char_length'
     LANGUAGE C IMMUTABLE STRICT;
 
+-- Complex types for function return values
+CREATE TYPE kmersearch_analysis_result AS (
+    total_rows bigint,
+    highfreq_kmers_count integer,
+    parallel_workers_used integer,
+    analysis_duration real,
+    max_appearance_rate_used real,
+    max_appearance_nrow_used integer
+);
+
+CREATE TYPE kmersearch_drop_result AS (
+    dropped_analyses integer,
+    dropped_highfreq_kmers integer,
+    freed_storage_bytes bigint
+);
+
 -- Parallel k-mer analysis functions
 CREATE FUNCTION kmersearch_analyze_table(table_oid oid, column_name text, k integer, parallel_workers integer DEFAULT 0) 
-    RETURNS text
+    RETURNS kmersearch_analysis_result
     AS 'MODULE_PATHNAME', 'kmersearch_analyze_table'
     LANGUAGE C VOLATILE STRICT;
 
 CREATE FUNCTION kmersearch_drop_analysis(table_oid oid, column_name text, k integer) 
-    RETURNS text
+    RETURNS kmersearch_drop_result
     AS 'MODULE_PATHNAME', 'kmersearch_drop_analysis'
     LANGUAGE C VOLATILE STRICT;
 
@@ -384,3 +407,74 @@ CREATE FUNCTION kmersearch_parallel_highfreq_kmers_cache_free()
     RETURNS integer
     AS 'MODULE_PATHNAME', 'kmersearch_parallel_highfreq_kmer_cache_free'
     LANGUAGE C VOLATILE;
+
+-- Performance optimization: Add indexes on system tables
+-- Note: varbit type doesn't have a default GIN operator class, so we use btree instead
+CREATE INDEX kmersearch_highfreq_kmer_idx 
+    ON kmersearch_highfreq_kmer(index_oid, ngram_key);
+
+CREATE INDEX kmersearch_highfreq_kmer_meta_idx 
+    ON kmersearch_highfreq_kmer_meta(table_oid, column_name);
+
+CREATE INDEX kmersearch_gin_index_meta_idx
+    ON kmersearch_gin_index_meta(table_oid, column_name);
+
+CREATE INDEX kmersearch_index_info_idx
+    ON kmersearch_index_info(table_oid, column_name);
+
+-- Management views for easier administration
+CREATE VIEW kmersearch_cache_summary AS
+SELECT 
+    'rawscore' as cache_type,
+    dna2_entries + dna4_entries as total_entries,
+    dna2_hits + dna4_hits as total_hits,
+    dna2_misses + dna4_misses as total_misses,
+    CASE WHEN (dna2_hits + dna4_hits + dna2_misses + dna4_misses) > 0 
+         THEN (dna2_hits + dna4_hits)::float / 
+              (dna2_hits + dna4_hits + dna2_misses + dna4_misses)::float 
+         ELSE 0 END as hit_rate
+FROM kmersearch_rawscore_cache_stats()
+UNION ALL
+SELECT 
+    'query_pattern' as cache_type,
+    current_entries as total_entries,
+    hits as total_hits,
+    misses as total_misses,
+    CASE WHEN (hits + misses) > 0 
+         THEN hits::float / (hits + misses)::float 
+         ELSE 0 END as hit_rate
+FROM kmersearch_query_pattern_cache_stats()
+UNION ALL
+SELECT 
+    'actual_min_score' as cache_type,
+    current_entries as total_entries,
+    hits as total_hits,
+    misses as total_misses,
+    CASE WHEN (hits + misses) > 0 
+         THEN hits::float / (hits + misses)::float 
+         ELSE 0 END as hit_rate
+FROM kmersearch_actual_min_score_cache_stats();
+
+-- View for high-frequency k-mer analysis status
+CREATE VIEW kmersearch_analysis_status AS
+SELECT 
+    m.table_oid,
+    pg_class.relname as table_name,
+    m.column_name,
+    m.k_value,
+    m.occur_bitlen,
+    m.max_appearance_rate,
+    m.max_appearance_nrow,
+    m.analysis_timestamp,
+    COUNT(DISTINCT h.ngram_key) as highfreq_kmer_count
+FROM kmersearch_highfreq_kmer_meta m
+LEFT JOIN pg_class ON pg_class.oid = m.table_oid
+LEFT JOIN kmersearch_highfreq_kmer h ON EXISTS (
+    SELECT 1 FROM kmersearch_gin_index_meta gim 
+    WHERE gim.table_oid = m.table_oid 
+    AND gim.column_name = m.column_name 
+    AND h.index_oid = gim.index_oid
+)
+GROUP BY m.table_oid, pg_class.relname, m.column_name, m.k_value, 
+         m.occur_bitlen, m.max_appearance_rate, m.max_appearance_nrow, 
+         m.analysis_timestamp;

@@ -426,8 +426,18 @@ calculate_actual_min_score(VarBit **query_keys, int nkeys, int query_total_kmers
     int absolute_min;
     int relative_min;
     
+    elog(LOG, "calculate_actual_min_score: Started with nkeys=%d, query_total_kmers=%d", nkeys, query_total_kmers);
+    
+    /* Validate input parameters */
+    if (query_keys == NULL) {
+        elog(LOG, "calculate_actual_min_score: query_keys is NULL, returning default min score");
+        return kmersearch_min_score;
+    }
+    
+    elog(LOG, "calculate_actual_min_score: About to call kmersearch_get_adjusted_min_score");
     /* Use adjusted minimum score that considers high-frequency k-mer filtering */
     absolute_min = kmersearch_get_adjusted_min_score(query_keys, nkeys);
+    elog(LOG, "calculate_actual_min_score: kmersearch_get_adjusted_min_score returned %d", absolute_min);
     
     if (query_total_kmers > 0) {
         /* Calculate minimum score from relative threshold */
@@ -454,10 +464,29 @@ get_cached_actual_min_score(VarBit **query_keys, int nkeys)
     bool found;
     MemoryContext old_context;
     int actual_min_score;
+    int i;
+    
+    elog(LOG, "get_cached_actual_min_score: Started with nkeys=%d", nkeys);
+    
+    /* Validate input parameters */
+    if (query_keys == NULL) {
+        elog(LOG, "get_cached_actual_min_score: query_keys is NULL, returning fallback score");
+        return calculate_actual_min_score(query_keys, nkeys, nkeys);
+    }
+    
+    /* Validate query_keys array elements */
+    for (i = 0; i < nkeys; i++) {
+        if (query_keys[i] == NULL) {
+            elog(LOG, "get_cached_actual_min_score: query_keys[%d] is NULL, returning fallback score", i);
+            return calculate_actual_min_score(query_keys, nkeys, nkeys);
+        }
+        elog(LOG, "get_cached_actual_min_score: query_keys[%d] pointer valid: %p", i, query_keys[i]);
+    }
     
     /* Create cache manager in TopMemoryContext if not exists */
     if (actual_min_score_cache_manager == NULL)
     {
+        elog(LOG, "get_cached_actual_min_score: Creating cache manager");
         old_context = MemoryContextSwitchTo(TopMemoryContext);
         
         PG_TRY();
@@ -467,29 +496,49 @@ get_cached_actual_min_score(VarBit **query_keys, int nkeys)
         PG_CATCH();
         {
             MemoryContextSwitchTo(old_context);
+            elog(LOG, "get_cached_actual_min_score: Cache creation failed, falling back to direct calculation");
             /* Fallback to direct calculation if cache creation fails */
             return calculate_actual_min_score(query_keys, nkeys, nkeys);
         }
         PG_END_TRY();
         
         MemoryContextSwitchTo(old_context);
+        elog(LOG, "get_cached_actual_min_score: Cache manager created successfully");
     }
     
-    /* Calculate hash value for query keys */
-    query_hash = hash_any_extended((unsigned char *)query_keys, nkeys * sizeof(VarBit *), 0);
+    elog(LOG, "get_cached_actual_min_score: About to calculate hash value");
+    
+    /* Calculate hash value for query keys content (not pointers) */
+    query_hash = 0;
+    for (i = 0; i < nkeys; i++) {
+        uint64 kmer_hash;
+        elog(LOG, "get_cached_actual_min_score: Hashing k-mer %d", i+1);
+        kmer_hash = hash_any_extended((unsigned char *)VARBITS(query_keys[i]), 
+                                      VARBITBYTES(query_keys[i]), query_hash);
+        query_hash = kmer_hash;
+        elog(LOG, "get_cached_actual_min_score: K-mer %d hash calculated: %lu", i+1, kmer_hash);
+    }
+    
+    elog(LOG, "get_cached_actual_min_score: Hash calculation completed, query_hash=%lu", query_hash);
     
     /* Look up in hash table */
+    elog(LOG, "get_cached_actual_min_score: About to search hash table");
     cache_entry = (ActualMinScoreCacheEntry *) hash_search(actual_min_score_cache_manager->cache_hash,
                                                           &query_hash, HASH_FIND, &found);
     
+    elog(LOG, "get_cached_actual_min_score: Hash search completed, found=%d", found ? 1 : 0);
+    
     if (found) {
+        elog(LOG, "get_cached_actual_min_score: Cache hit, returning cached score=%d", cache_entry->actual_min_score);
         actual_min_score_cache_manager->hits++;
         return cache_entry->actual_min_score;
     }
     
     /* Not found - calculate and cache */
+    elog(LOG, "get_cached_actual_min_score: Cache miss, calculating actual min score");
     actual_min_score_cache_manager->misses++;
     actual_min_score = calculate_actual_min_score(query_keys, nkeys, nkeys);
+    elog(LOG, "get_cached_actual_min_score: Calculated actual_min_score=%d", actual_min_score);
     
     /* Add to cache if not at capacity */
     if (actual_min_score_cache_manager->current_entries < actual_min_score_cache_manager->max_entries)
@@ -516,6 +565,7 @@ get_cached_actual_min_score(VarBit **query_keys, int nkeys)
         MemoryContextSwitchTo(old_context);
     }
     
+    elog(LOG, "get_cached_actual_min_score: Function completed successfully, returning actual_min_score=%d", actual_min_score);
     return actual_min_score;
 }
 
@@ -1230,52 +1280,133 @@ kmersearch_highfreq_kmer_cache_load_internal(Oid table_oid, const char *column_n
     MemoryContext old_context;
     VarBit **highfreq_kmers;
     int highfreq_count;
+    VarBit **cache_kmers;
+    int i;
     
-    if (!column_name || k_value <= 0)
+    ereport(DEBUG1, (errmsg("kmersearch_highfreq_kmer_cache_load_internal: Started with table_oid=%u, column_name=%s, k_value=%d",
+                           table_oid, column_name ? column_name : "NULL", k_value)));
+    
+    if (!column_name || k_value <= 0) {
+        ereport(DEBUG1, (errmsg("kmersearch_highfreq_kmer_cache_load_internal: Invalid parameters, returning false")));
         return false;
+    }
+    
+    ereport(DEBUG1, (errmsg("kmersearch_highfreq_kmer_cache_load_internal: Parameters validated successfully")));
+    
+    /* Initialize cache if not already done */
+    if (global_highfreq_cache.cache_context == NULL) {
+        ereport(DEBUG1, (errmsg("kmersearch_highfreq_kmer_cache_load_internal: Cache context is NULL, initializing")));
+        kmersearch_highfreq_kmer_cache_init();
+        ereport(DEBUG1, (errmsg("kmersearch_highfreq_kmer_cache_load_internal: Cache initialization completed")));
+    } else {
+        ereport(DEBUG1, (errmsg("kmersearch_highfreq_kmer_cache_load_internal: Cache context already exists")));
+    }
+    
+    ereport(DEBUG1, (errmsg("kmersearch_highfreq_kmer_cache_load_internal: About to validate GUC settings")));
     
     /* Validate current GUC settings against metadata table */
-    if (!kmersearch_validate_guc_against_metadata(table_oid, column_name, k_value))
+    if (!kmersearch_validate_guc_against_metadata(table_oid, column_name, k_value)) {
+        ereport(DEBUG1, (errmsg("kmersearch_highfreq_kmer_cache_load_internal: GUC validation failed, returning false")));
         return false;
+    }
+    
+    ereport(DEBUG1, (errmsg("kmersearch_highfreq_kmer_cache_load_internal: GUC validation passed")));
     
     /* Clear existing cache if valid */
     if (global_highfreq_cache.is_valid) {
+        ereport(DEBUG1, (errmsg("kmersearch_highfreq_kmer_cache_load_internal: Existing cache is valid, clearing")));
         kmersearch_highfreq_kmer_cache_free_internal();
+        ereport(DEBUG1, (errmsg("kmersearch_highfreq_kmer_cache_load_internal: Cache clearing completed")));
+    } else {
+        ereport(DEBUG1, (errmsg("kmersearch_highfreq_kmer_cache_load_internal: No existing valid cache to clear")));
     }
+    
+    /* Reinitialize cache context if it was freed */
+    if (global_highfreq_cache.cache_context == NULL) {
+        ereport(DEBUG1, (errmsg("kmersearch_highfreq_kmer_cache_load_internal: Cache context was freed, reinitializing")));
+        kmersearch_highfreq_kmer_cache_init();
+        ereport(DEBUG1, (errmsg("kmersearch_highfreq_kmer_cache_load_internal: Cache reinitialization completed")));
+    } else {
+        ereport(DEBUG1, (errmsg("kmersearch_highfreq_kmer_cache_load_internal: Cache context still exists")));
+    }
+    
+    ereport(DEBUG1, (errmsg("kmersearch_highfreq_kmer_cache_load_internal: About to get high-frequency k-mers from table")));
     
     /* Get high-frequency k-mers list */
     highfreq_kmers = kmersearch_get_highfreq_kmer_from_table(table_oid, column_name, k_value, &highfreq_count);
     
+    ereport(DEBUG1, (errmsg("kmersearch_highfreq_kmer_cache_load_internal: Retrieved %d high-frequency k-mers",
+                           highfreq_count)));
+    
     if (!highfreq_kmers || highfreq_count <= 0) {
-        /* No high-frequency k-mers found, cache remains invalid */
+        ereport(DEBUG1, (errmsg("kmersearch_highfreq_kmer_cache_load_internal: No high-frequency k-mers found, cache remains invalid")));
         return false;
     }
+    
+    ereport(DEBUG1, (errmsg("kmersearch_highfreq_kmer_cache_load_internal: About to switch to cache context")));
     
     /* Switch to cache context for cache storage */
     old_context = MemoryContextSwitchTo(global_highfreq_cache.cache_context);
     
+    ereport(DEBUG1, (errmsg("kmersearch_highfreq_kmer_cache_load_internal: Switched to cache context successfully")));
+    
     /* Store in cache */
+    ereport(DEBUG1, (errmsg("kmersearch_highfreq_kmer_cache_load_internal: About to store table_oid in cache")));
     global_highfreq_cache.current_table_oid = table_oid;
+    
+    ereport(DEBUG1, (errmsg("kmersearch_highfreq_kmer_cache_load_internal: About to store column_name in cache")));
     global_highfreq_cache.current_column_name = pstrdup(column_name);  /* Cache context copy */
+    
+    ereport(DEBUG1, (errmsg("kmersearch_highfreq_kmer_cache_load_internal: About to store k_value in cache")));
     global_highfreq_cache.current_kmer_size = k_value;
-    global_highfreq_cache.highfreq_kmers = highfreq_kmers;
+    
+    ereport(DEBUG1, (errmsg("kmersearch_highfreq_kmer_cache_load_internal: About to copy highfreq_kmers array to cache context")));
+    
+    /* Copy the k-mer array to cache context to prevent memory context issues */
+    cache_kmers = (VarBit **) palloc(highfreq_count * sizeof(VarBit *));
+    for (i = 0; i < highfreq_count; i++) {
+        if (highfreq_kmers[i]) {
+            /* Copy each k-mer to the cache context */
+            cache_kmers[i] = DatumGetVarBitPCopy(PointerGetDatum(highfreq_kmers[i]));
+            ereport(DEBUG1, (errmsg("kmersearch_highfreq_kmer_cache_load_internal: Copied k-mer %d to cache context", i+1)));
+        } else {
+            cache_kmers[i] = NULL;
+            ereport(DEBUG1, (errmsg("kmersearch_highfreq_kmer_cache_load_internal: K-mer %d is NULL, copied as NULL", i+1)));
+        }
+    }
+    
+    ereport(DEBUG1, (errmsg("kmersearch_highfreq_kmer_cache_load_internal: About to store copied highfreq_kmers array in cache")));
+    global_highfreq_cache.highfreq_kmers = cache_kmers;
+    
+    ereport(DEBUG1, (errmsg("kmersearch_highfreq_kmer_cache_load_internal: About to store highfreq_count in cache")));
     global_highfreq_cache.highfreq_count = highfreq_count;
     
+    ereport(DEBUG1, (errmsg("kmersearch_highfreq_kmer_cache_load_internal: About to create hash table from array")));
+    
     /* Create hash table in cache context */
-    global_highfreq_cache.highfreq_hash = kmersearch_create_highfreq_hash_from_array(highfreq_kmers, highfreq_count);
+    global_highfreq_cache.highfreq_hash = kmersearch_create_highfreq_hash_from_array(cache_kmers, highfreq_count);
+    
+    ereport(DEBUG1, (errmsg("kmersearch_highfreq_kmer_cache_load_internal: Hash table creation completed, checking result")));
     
     if (global_highfreq_cache.highfreq_hash) {
+        ereport(DEBUG1, (errmsg("kmersearch_highfreq_kmer_cache_load_internal: Hash table created successfully, setting cache as valid")));
         global_highfreq_cache.is_valid = true;
     } else {
+        ereport(DEBUG1, (errmsg("kmersearch_highfreq_kmer_cache_load_internal: Hash table creation failed, cleaning up")));
         /* Hash table creation failed, clean up by deleting the context */
         MemoryContextSwitchTo(old_context);
         MemoryContextDelete(global_highfreq_cache.cache_context);
         global_highfreq_cache.cache_context = NULL;
         global_highfreq_cache.is_valid = false;
+        ereport(DEBUG1, (errmsg("kmersearch_highfreq_kmer_cache_load_internal: Cleanup completed, returning false")));
         return false;
     }
     
+    ereport(DEBUG1, (errmsg("kmersearch_highfreq_kmer_cache_load_internal: About to switch back to old context")));
     MemoryContextSwitchTo(old_context);
+    
+    ereport(DEBUG1, (errmsg("kmersearch_highfreq_kmer_cache_load_internal: Function completed successfully, cache is_valid=%d",
+                           global_highfreq_cache.is_valid)));
     
     return global_highfreq_cache.is_valid;
 }
@@ -1388,11 +1519,18 @@ kmersearch_validate_guc_against_metadata(Oid table_oid, const char *column_name,
     StringInfoData query;
     bool validation_passed = true;
     
+    ereport(DEBUG1, (errmsg("kmersearch_validate_guc_against_metadata: Started with table_oid=%u, column_name=%s, k_value=%d",
+                           table_oid, column_name ? column_name : "NULL", k_value)));
+    
     /* Connect to SPI */
-    if (SPI_connect() != SPI_OK_CONNECT)
+    ereport(DEBUG1, (errmsg("kmersearch_validate_guc_against_metadata: About to connect to SPI")));
+    if (SPI_connect() != SPI_OK_CONNECT) {
         ereport(ERROR, (errmsg("kmersearch_validate_guc_against_metadata: SPI_connect failed")));
+    }
+    ereport(DEBUG1, (errmsg("kmersearch_validate_guc_against_metadata: SPI connected successfully")));
     
     /* Build query to get metadata */
+    ereport(DEBUG1, (errmsg("kmersearch_validate_guc_against_metadata: Building metadata query")));
     initStringInfo(&query);
     appendStringInfo(&query,
         "SELECT occur_bitlen, max_appearance_rate, max_appearance_nrow "
@@ -1400,8 +1538,13 @@ kmersearch_validate_guc_against_metadata(Oid table_oid, const char *column_name,
         "WHERE table_oid = %u AND column_name = '%s' AND k_value = %d",
         table_oid, column_name, k_value);
     
+    ereport(DEBUG1, (errmsg("kmersearch_validate_guc_against_metadata: Query built: %s", query.data)));
+    
     /* Execute query */
+    ereport(DEBUG1, (errmsg("kmersearch_validate_guc_against_metadata: About to execute query")));
     ret = SPI_execute(query.data, true, 1);
+    ereport(DEBUG1, (errmsg("kmersearch_validate_guc_against_metadata: Query executed, ret=%d, processed=%zu", ret, SPI_processed)));
+    
     if (ret == SPI_OK_SELECT && SPI_processed > 0)
     {
         bool isnull;
@@ -1409,11 +1552,16 @@ kmersearch_validate_guc_against_metadata(Oid table_oid, const char *column_name,
         int stored_occur_bitlen, stored_max_appearance_nrow;
         float stored_max_appearance_rate;
         
+        ereport(DEBUG1, (errmsg("kmersearch_validate_guc_against_metadata: Found metadata record, extracting values")));
+        
         /* Get stored metadata values */
+        ereport(DEBUG1, (errmsg("kmersearch_validate_guc_against_metadata: Getting occur_bitlen value")));
         occur_bitlen_datum = SPI_getbinval(SPI_tuptable->vals[0], SPI_tuptable->tupdesc, 1, &isnull);
         if (!isnull)
         {
             stored_occur_bitlen = DatumGetInt32(occur_bitlen_datum);
+            ereport(DEBUG1, (errmsg("kmersearch_validate_guc_against_metadata: stored_occur_bitlen=%d, current=%d",
+                                   stored_occur_bitlen, kmersearch_occur_bitlen)));
             if (stored_occur_bitlen != kmersearch_occur_bitlen)
             {
                 ereport(ERROR,
@@ -1427,10 +1575,13 @@ kmersearch_validate_guc_against_metadata(Oid table_oid, const char *column_name,
             }
         }
         
+        ereport(DEBUG1, (errmsg("kmersearch_validate_guc_against_metadata: Getting max_appearance_rate value")));
         max_appearance_rate_datum = SPI_getbinval(SPI_tuptable->vals[0], SPI_tuptable->tupdesc, 2, &isnull);
         if (!isnull)
         {
             stored_max_appearance_rate = DatumGetFloat4(max_appearance_rate_datum);
+            ereport(DEBUG1, (errmsg("kmersearch_validate_guc_against_metadata: stored_max_appearance_rate=%.4f, current=%.4f",
+                                   stored_max_appearance_rate, kmersearch_max_appearance_rate)));
             if (fabs(stored_max_appearance_rate - kmersearch_max_appearance_rate) > 0.0001)
             {
                 ereport(ERROR,
@@ -1444,10 +1595,13 @@ kmersearch_validate_guc_against_metadata(Oid table_oid, const char *column_name,
             }
         }
         
+        ereport(DEBUG1, (errmsg("kmersearch_validate_guc_against_metadata: Getting max_appearance_nrow value")));
         max_appearance_nrow_datum = SPI_getbinval(SPI_tuptable->vals[0], SPI_tuptable->tupdesc, 3, &isnull);
         if (!isnull)
         {
             stored_max_appearance_nrow = DatumGetInt32(max_appearance_nrow_datum);
+            ereport(DEBUG1, (errmsg("kmersearch_validate_guc_against_metadata: stored_max_appearance_nrow=%d, current=%d",
+                                   stored_max_appearance_nrow, kmersearch_max_appearance_nrow)));
             if (stored_max_appearance_nrow != kmersearch_max_appearance_nrow)
             {
                 ereport(ERROR,
@@ -1460,9 +1614,12 @@ kmersearch_validate_guc_against_metadata(Oid table_oid, const char *column_name,
                 validation_passed = false;
             }
         }
+        
+        ereport(DEBUG1, (errmsg("kmersearch_validate_guc_against_metadata: All metadata values validated successfully")));
     }
     else
     {
+        ereport(DEBUG1, (errmsg("kmersearch_validate_guc_against_metadata: No metadata found or query failed")));
         ereport(ERROR,
                 (errcode(ERRCODE_UNDEFINED_TABLE),
                  errmsg("No metadata found for table_oid=%u, column_name='%s', k_value=%d",
@@ -1472,8 +1629,11 @@ kmersearch_validate_guc_against_metadata(Oid table_oid, const char *column_name,
     }
     
     /* Cleanup */
+    ereport(DEBUG1, (errmsg("kmersearch_validate_guc_against_metadata: About to cleanup and finish SPI")));
     pfree(query.data);
     SPI_finish();
+    
+    ereport(DEBUG1, (errmsg("kmersearch_validate_guc_against_metadata: Function completed, validation_passed=%d", validation_passed)));
     
     return validation_passed;
 }
@@ -1486,16 +1646,25 @@ kmersearch_get_highfreq_kmer_from_table(Oid table_oid, const char *column_name, 
     StringInfoData query;
     int i;
     
-    if (!nkeys)
+    ereport(DEBUG1, (errmsg("kmersearch_get_highfreq_kmer_from_table: Started with table_oid=%u, column_name=%s, k=%d",
+                           table_oid, column_name ? column_name : "NULL", k)));
+    
+    if (!nkeys) {
+        ereport(DEBUG1, (errmsg("kmersearch_get_highfreq_kmer_from_table: nkeys is NULL, returning NULL")));
         return NULL;
+    }
     
     *nkeys = 0;
     
     /* Connect to SPI */
-    if (SPI_connect() != SPI_OK_CONNECT)
+    ereport(DEBUG1, (errmsg("kmersearch_get_highfreq_kmer_from_table: About to connect to SPI")));
+    if (SPI_connect() != SPI_OK_CONNECT) {
         ereport(ERROR, (errmsg("kmersearch_get_highfreq_kmer_from_table: SPI_connect failed")));
+    }
+    ereport(DEBUG1, (errmsg("kmersearch_get_highfreq_kmer_from_table: SPI connected successfully")));
     
     /* Build query to get highly frequent k-mers */
+    ereport(DEBUG1, (errmsg("kmersearch_get_highfreq_kmer_from_table: Building query to get high-frequency k-mers")));
     initStringInfo(&query);
     appendStringInfo(&query,
         "SELECT DISTINCT hkm.ngram_key FROM kmersearch_highfreq_kmer hkm "
@@ -1513,34 +1682,52 @@ kmersearch_get_highfreq_kmer_from_table(Oid table_oid, const char *column_name, 
         "ORDER BY hkm.ngram_key",
         table_oid, table_oid, column_name, k);
     
+    ereport(DEBUG1, (errmsg("kmersearch_get_highfreq_kmer_from_table: Query built: %s", query.data)));
+    
     /* Execute query */
+    ereport(DEBUG1, (errmsg("kmersearch_get_highfreq_kmer_from_table: About to execute query")));
     ret = SPI_execute(query.data, true, 0);
+    ereport(DEBUG1, (errmsg("kmersearch_get_highfreq_kmer_from_table: Query executed, ret=%d, processed=%zu", ret, SPI_processed)));
+    
     if (ret == SPI_OK_SELECT && SPI_processed > 0)
     {
         *nkeys = SPI_processed;
+        ereport(DEBUG1, (errmsg("kmersearch_get_highfreq_kmer_from_table: Found %d high-frequency k-mers, allocating result array", *nkeys)));
         result = (VarBit **) palloc(*nkeys * sizeof(VarBit *));
         
+        ereport(DEBUG1, (errmsg("kmersearch_get_highfreq_kmer_from_table: Starting to process k-mer results")));
         for (i = 0; i < *nkeys; i++)
         {
             bool isnull;
             Datum kmer_datum;
             
+            ereport(DEBUG1, (errmsg("kmersearch_get_highfreq_kmer_from_table: Processing k-mer %d/%d", i+1, *nkeys)));
             kmer_datum = SPI_getbinval(SPI_tuptable->vals[i], SPI_tuptable->tupdesc, 1, &isnull);
             if (!isnull)
             {
                 /* Copy the varbit value */
                 result[i] = DatumGetVarBitPCopy(kmer_datum);
+                ereport(DEBUG1, (errmsg("kmersearch_get_highfreq_kmer_from_table: Successfully copied k-mer %d", i+1)));
             }
             else
             {
                 result[i] = NULL;
+                ereport(DEBUG1, (errmsg("kmersearch_get_highfreq_kmer_from_table: K-mer %d is NULL", i+1)));
             }
         }
+        ereport(DEBUG1, (errmsg("kmersearch_get_highfreq_kmer_from_table: Finished processing all k-mers")));
+    }
+    else
+    {
+        ereport(DEBUG1, (errmsg("kmersearch_get_highfreq_kmer_from_table: No high-frequency k-mers found or query failed")));
     }
     
     /* Cleanup */
+    ereport(DEBUG1, (errmsg("kmersearch_get_highfreq_kmer_from_table: About to cleanup and finish SPI")));
     pfree(query.data);
     SPI_finish();
+    
+    ereport(DEBUG1, (errmsg("kmersearch_get_highfreq_kmer_from_table: Function completed, returning %d k-mers", *nkeys)));
     
     return result;
 }
@@ -1552,44 +1739,111 @@ kmersearch_create_highfreq_hash_from_array(VarBit **kmers, int nkeys)
     HASHCTL hash_ctl;
     int i;
     
-    if (!kmers || nkeys <= 0)
-        return NULL;
+    ereport(DEBUG1, (errmsg("kmersearch_create_highfreq_hash_from_array: Started with nkeys=%d", nkeys)));
     
-    /* Set up hash table */
+    if (!kmers || nkeys <= 0) {
+        ereport(DEBUG1, (errmsg("kmersearch_create_highfreq_hash_from_array: Invalid parameters, kmers=%p, nkeys=%d",
+                               kmers, nkeys)));
+        return NULL;
+    }
+    
+    ereport(DEBUG1, (errmsg("kmersearch_create_highfreq_hash_from_array: Parameters validated, setting up hash table")));
+    
+    /* Set up hash table using hash value as key */
     MemSet(&hash_ctl, 0, sizeof(hash_ctl));
-    hash_ctl.keysize = sizeof(VarBit *);
+    hash_ctl.keysize = sizeof(uint64);  /* Use hash value as key */
     hash_ctl.entrysize = sizeof(HighfreqKmerHashEntry);
     hash_ctl.hash = tag_hash;
     hash_ctl.hcxt = CurrentMemoryContext;
+    
+    ereport(DEBUG1, (errmsg("kmersearch_create_highfreq_hash_from_array: Hash control structure set up, about to create hash table")));
     
     hash_table = hash_create("HighfreqKmerHash",
                             nkeys,
                             &hash_ctl,
                             HASH_ELEM | HASH_FUNCTION | HASH_CONTEXT);
     
-    if (!hash_table)
+    if (!hash_table) {
+        ereport(DEBUG1, (errmsg("kmersearch_create_highfreq_hash_from_array: Hash table creation failed")));
         return NULL;
+    }
+    
+    ereport(DEBUG1, (errmsg("kmersearch_create_highfreq_hash_from_array: Hash table created successfully, adding %d k-mers", nkeys)));
     
     /* Add each k-mer to the hash table */
     for (i = 0; i < nkeys; i++)
     {
         HighfreqKmerHashEntry *entry;
         bool found;
+        uint64 hash_value;
+        unsigned char *bits_ptr;
+        int bytes_len;
         
-        if (!kmers[i])
+        ereport(DEBUG1, (errmsg("kmersearch_create_highfreq_hash_from_array: Processing k-mer %d/%d", i+1, nkeys)));
+        
+        /* Check if the k-mer pointer itself is valid before any access */
+        ereport(DEBUG1, (errmsg("kmersearch_create_highfreq_hash_from_array: Checking k-mer %d pointer: %p", i+1, kmers[i])));
+        
+        if (!kmers[i]) {
+            ereport(DEBUG1, (errmsg("kmersearch_create_highfreq_hash_from_array: K-mer %d is NULL, skipping", i+1)));
             continue;
+        }
+        
+        ereport(DEBUG1, (errmsg("kmersearch_create_highfreq_hash_from_array: K-mer %d pointer is valid", i+1)));
+        
+        ereport(DEBUG1, (errmsg("kmersearch_create_highfreq_hash_from_array: Calculating hash value for k-mer %d", i+1)));
+        
+        /* Validate VarBit data before hash calculation */
+        if (VARSIZE(kmers[i]) < VARHDRSZ) {
+            ereport(DEBUG1, (errmsg("kmersearch_create_highfreq_hash_from_array: K-mer %d has invalid size %u, skipping", i+1, VARSIZE(kmers[i]))));
+            continue;
+        }
+        
+        ereport(DEBUG1, (errmsg("kmersearch_create_highfreq_hash_from_array: K-mer %d size validation passed, size=%u", i+1, VARSIZE(kmers[i]))));
+        
+        /* Check VARBITS pointer */
+        bits_ptr = (unsigned char *) VARBITS(kmers[i]);
+        if (!bits_ptr) {
+            ereport(DEBUG1, (errmsg("kmersearch_create_highfreq_hash_from_array: K-mer %d VARBITS returned NULL, skipping", i+1)));
+            continue;
+        }
+        
+        ereport(DEBUG1, (errmsg("kmersearch_create_highfreq_hash_from_array: K-mer %d VARBITS pointer valid: %p", i+1, bits_ptr)));
+        
+        /* Check VARBITBYTES value */
+        bytes_len = VARBITBYTES(kmers[i]);
+        if (bytes_len <= 0 || bytes_len > 1000) {  /* Reasonable upper limit */
+            ereport(DEBUG1, (errmsg("kmersearch_create_highfreq_hash_from_array: K-mer %d has invalid bytes length %d, skipping", i+1, bytes_len)));
+            continue;
+        }
+        
+        ereport(DEBUG1, (errmsg("kmersearch_create_highfreq_hash_from_array: K-mer %d bytes length validation passed: %d", i+1, bytes_len)));
+        
+        /* Calculate hash value for this k-mer */
+        hash_value = DatumGetUInt64(hash_any(bits_ptr, bytes_len));
+        
+        ereport(DEBUG1, (errmsg("kmersearch_create_highfreq_hash_from_array: Hash value calculated for k-mer %d: %lu", i+1, hash_value)));
         
         entry = (HighfreqKmerHashEntry *) hash_search(hash_table,
-                                                     (void *) &kmers[i],
+                                                     (void *) &hash_value,
                                                      HASH_ENTER,
                                                      &found);
+        
+        ereport(DEBUG1, (errmsg("kmersearch_create_highfreq_hash_from_array: Hash search completed for k-mer %d, entry=%p, found=%d", i+1, entry, found)));
         
         if (entry && !found)
         {
             entry->kmer_key = kmers[i];
-            entry->hash_value = DatumGetUInt64(hash_any((unsigned char *) VARBITS(kmers[i]), VARBITBYTES(kmers[i])));
+            entry->hash_value = hash_value;
+            ereport(DEBUG1, (errmsg("kmersearch_create_highfreq_hash_from_array: Successfully added k-mer %d to hash table", i+1)));
+        } else if (found) {
+            ereport(DEBUG1, (errmsg("kmersearch_create_highfreq_hash_from_array: K-mer %d already exists in hash table", i+1)));
+        } else {
+            ereport(DEBUG1, (errmsg("kmersearch_create_highfreq_hash_from_array: Failed to add k-mer %d to hash table", i+1)));
         }
     }
+    
+    ereport(DEBUG1, (errmsg("kmersearch_create_highfreq_hash_from_array: Function completed successfully, hash table created")));
     
     return hash_table;
 }

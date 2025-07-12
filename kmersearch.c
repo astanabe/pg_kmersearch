@@ -1710,10 +1710,15 @@ evaluate_optimized_match_condition(VarBit **query_keys, int nkeys, int shared_co
 {
     int actual_min_score;
     
+    elog(LOG, "evaluate_optimized_match_condition: Started with nkeys=%d, shared_count=%d", nkeys, shared_count);
+    
     /* Get cached actual min score (with TopMemoryContext caching for performance) */
+    elog(LOG, "evaluate_optimized_match_condition: About to call get_cached_actual_min_score");
     actual_min_score = get_cached_actual_min_score(query_keys, nkeys);
+    elog(LOG, "evaluate_optimized_match_condition: get_cached_actual_min_score returned %d", actual_min_score);
     
     /* Use optimized condition check with cached actual_min_score */
+    elog(LOG, "evaluate_optimized_match_condition: About to return result");
     return (shared_count >= actual_min_score);
 }
 
@@ -3298,10 +3303,14 @@ kmersearch_filter_highfreq_kmers_from_keys(Datum *original_keys, int *nkeys, HTA
         }
         
         /* Check if this k-mer is in the high-frequency list */
-        hash_search(highfreq_hash,
-                   (void *) &kmer_only,
-                   HASH_FIND,
-                   &found);
+        {
+            uint64 hash_value = DatumGetUInt64(hash_any((unsigned char *) VARBITS(kmer_only), 
+                                                       VARBITBYTES(kmer_only)));
+            hash_search(highfreq_hash,
+                       (void *) &hash_value,
+                       HASH_FIND,
+                       &found);
+        }
         
         if (!found)
         {

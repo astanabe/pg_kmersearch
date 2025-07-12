@@ -33,16 +33,25 @@ SELECT 'Testing kmersearch_analyze_table...' as test_phase;
 
 -- Analyze the table to identify high-frequency k-mers
 -- This will create entries in kmersearch_highfreq_kmer and kmersearch_highfreq_kmer_meta tables
--- Note: This function currently has server crash issues, so we'll skip it for now
--- SELECT kmersearch_analyze_table(
---     (SELECT oid FROM pg_class WHERE relname = 'test_highfreq_dna2'), 
---     'sequence', 
---     8, 
---     5  -- max_appearance_nrow threshold
--- ) as analysis_result;
--- Manually insert test data instead of using analyze_table
-INSERT INTO kmersearch_highfreq_kmer_meta (table_oid, column_name, k_value, occur_bitlen, max_appearance_rate, max_appearance_nrow)
-VALUES ((SELECT oid FROM pg_class WHERE relname = 'test_highfreq_dna2'), 'sequence', 8, 8, 0.5, 5);
+WITH analysis_result AS (
+    SELECT kmersearch_analyze_table(
+        (SELECT oid FROM pg_class WHERE relname = 'test_highfreq_dna2'), 
+        'sequence', 
+        8, 
+        2  -- parallel_workers (default 0)
+    ) AS result
+)
+SELECT (result).* FROM analysis_result;
+NOTICE:  Performing k-mer frequency analysis for k=8
+NOTICE:  Max appearance rate: 0.050000, Max appearance nrow: 0
+NOTICE:  Phase 1: Analyzing k-mer frequencies with 2 parallel workers...
+NOTICE:  Phase 2: Collecting n-gram keys for high-frequency k-mers...
+ total_rows | highfreq_kmers_count | parallel_workers_used | analysis_duration | max_appearance_rate_used | max_appearance_nrow_used 
+------------+----------------------+-----------------------+-------------------+--------------------------+--------------------------
+         10 |                   93 |                     2 |                 0 |                     0.05 |                        0
+(1 row)
+
+-- No need to manually insert data since analyze_table should handle it
 -- Check if analysis created metadata
 SELECT 'Checking analysis metadata...' as test_phase;
           test_phase           
@@ -71,7 +80,7 @@ WHERE index_oid IN (
 );
  highfreq_kmer_count 
 ---------------------
-                   0
+                  93
 (1 row)
 
 -- Test high-frequency k-mer cache functions with analysis data
@@ -89,13 +98,13 @@ SELECT 'Testing cache loading...' as test_phase;
 (1 row)
 
 -- Set GUC variables to match metadata
-SET kmersearch.max_appearance_rate = 0.5;
-SET kmersearch.max_appearance_nrow = 5;
+SET kmersearch.max_appearance_rate = 0.05;
+SET kmersearch.max_appearance_nrow = 0;
 SELECT kmersearch_highfreq_kmers_cache_load(test_highfreq_dna2.tableoid, 'sequence', 8) as cache_loaded
 FROM test_highfreq_dna2 LIMIT 1;
  cache_loaded 
 --------------
- f
+ t
 (1 row)
 
 -- Test high-frequency k-mer cache clearing
@@ -108,7 +117,7 @@ SELECT 'Testing cache clearing...' as test_phase;
 SELECT kmersearch_highfreq_kmers_cache_free() as freed_entries;
  freed_entries 
 ---------------
-             0
+            93
 (1 row)
 
 -- Test cache loading with non-existent data
@@ -142,8 +151,8 @@ SELECT 'Testing GUC validation and cache hierarchy...' as test_phase;
 (1 row)
 
 -- Reset GUC settings to match metadata for testing
-SET kmersearch.max_appearance_rate = 0.5;
-SET kmersearch.max_appearance_nrow = 5;
+SET kmersearch.max_appearance_rate = 0.05;
+SET kmersearch.max_appearance_nrow = 0;
 SET kmersearch.occur_bitlen = 8;
 -- Insert some test high-frequency k-mer data for cache hierarchy testing
 INSERT INTO kmersearch_highfreq_kmer (index_oid, ngram_key, detection_reason)
@@ -160,16 +169,16 @@ SELECT 'Testing GUC validation errors...' as test_substep;
 (1 row)
 
 -- Change GUC to cause mismatch and test cache loading (should fail)
-SET kmersearch.max_appearance_rate = 0.9;  -- Different from metadata (0.5)
+SET kmersearch.max_appearance_rate = 0.9;  -- Different from metadata (0.05)
 SELECT kmersearch_highfreq_kmers_cache_load(
   (SELECT oid FROM pg_class WHERE relname = 'test_highfreq_dna2'),
   'sequence', 8
 ) as cache_load_with_mismatch;
 ERROR:  GUC validation failed: kmersearch.max_appearance_rate mismatch
-DETAIL:  Current setting: 0.9000, Required by metadata: 0.5000
-HINT:  Set kmersearch.max_appearance_rate = 0.5000 before loading cache.
+DETAIL:  Current setting: 0.9000, Required by metadata: 0.0500
+HINT:  Set kmersearch.max_appearance_rate = 0.0500 before loading cache.
 -- Reset to correct values
-SET kmersearch.max_appearance_rate = 0.5;
+SET kmersearch.max_appearance_rate = 0.05;
 -- Test 2: Cache hierarchy - Global cache
 SELECT 'Testing global cache hierarchy...' as test_substep;
            test_substep            
@@ -220,7 +229,7 @@ SELECT 'Testing cache hierarchy fallback...' as test_substep;
 SELECT kmersearch_highfreq_kmers_cache_free() as global_freed;
  global_freed 
 --------------
-            1
+           94
 (1 row)
 
 -- Test with only parallel cache
@@ -235,7 +244,7 @@ SELECT sequence =% 'ATCGATCG' as parallel_only_query FROM test_highfreq_dna2 LIM
 SELECT kmersearch_parallel_highfreq_kmers_cache_free() as parallel_freed;
  parallel_freed 
 ----------------
-              1
+             94
 (1 row)
 
 -- Test with no cache (table lookup fallback)
