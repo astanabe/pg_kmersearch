@@ -1153,3 +1153,21 @@ kmersearch_actual_min_score_cache_free(PG_FUNCTION_ARGS)
     
     PG_RETURN_INT32(freed_entries);
 }
+
+/*
+ * Internal function to free query pattern cache (without PostgreSQL function wrapper)
+ */
+void
+kmersearch_free_query_pattern_cache_internal(void)
+{
+    free_query_pattern_cache_manager(&query_pattern_cache_manager);
+}
+
+/*
+ * Internal function to free actual min score cache (without PostgreSQL function wrapper)
+ */
+void
+kmersearch_free_actual_min_score_cache_internal(void)
+{
+    free_actual_min_score_cache_manager(&actual_min_score_cache_manager);
+}

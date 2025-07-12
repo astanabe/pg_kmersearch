@@ -114,15 +114,7 @@ static bool kmersearch_is_kmer_high_frequency(VarBit *ngram_key, int k_size, con
 static void kmersearch_persist_highfreq_kmers_metadata(Oid table_oid, const char *column_name, int k_size);
 
 
-/* B-2: Query pattern cache functions */
-static void init_query_pattern_cache_manager(QueryPatternCacheManager **manager);
-static uint64 generate_query_pattern_cache_key(const char *query_string, int k_size);
-static QueryPatternCacheEntry *lookup_query_pattern_cache_entry(QueryPatternCacheManager *manager, const char *query_string, int k_size);
-static void store_query_pattern_cache_entry(QueryPatternCacheManager *manager, uint64 hash_key, const char *query_string, int k_size, VarBit **kmers, int kmer_count);
-static void lru_touch_query_pattern_cache(QueryPatternCacheManager *manager, QueryPatternCacheEntry *entry);
-static void lru_evict_oldest_query_pattern_cache(QueryPatternCacheManager *manager);
-static void free_query_pattern_cache_manager(QueryPatternCacheManager **manager);
-static void free_actual_min_score_cache_manager(ActualMinScoreCacheManager **manager);
+/* B-2: Other functions */
 Datum *kmersearch_extract_dna4_kmer2_with_expansion_direct(VarBit *seq, int k, int *nkeys);
 static int kmersearch_count_matching_kmer_fast(VarBit **seq_keys, int seq_nkeys, VarBit **query_keys, int query_nkeys);
 static bool kmersearch_kmer_based_match_dna2(VarBit *sequence, const char *query_string);
@@ -361,11 +353,11 @@ kmersearch_kmer_size_assign_hook(int newval, void *extra)
     
     /* Clear query pattern cache */
     if (query_pattern_cache_manager)
-        free_query_pattern_cache_manager(&query_pattern_cache_manager);
+        kmersearch_free_query_pattern_cache_internal();
     
     /* Clear actual min score cache */
     if (actual_min_score_cache_manager)
-        free_actual_min_score_cache_manager(&actual_min_score_cache_manager);
+        kmersearch_free_actual_min_score_cache_internal();
     
     /* Clear high-frequency k-mer cache with conditional warning */
     clear_highfreq_cache_with_warning();
@@ -379,7 +371,7 @@ kmersearch_max_appearance_rate_assign_hook(double newval, void *extra)
     (void) extra;   /* Suppress unused parameter warning */
     /* Clear actual min score cache */
     if (actual_min_score_cache_manager)
-        free_actual_min_score_cache_manager(&actual_min_score_cache_manager);
+        kmersearch_free_actual_min_score_cache_internal();
     
     /* Clear high-frequency k-mer cache with conditional warning */
     clear_highfreq_cache_with_warning();
@@ -393,7 +385,7 @@ kmersearch_max_appearance_nrow_assign_hook(int newval, void *extra)
     (void) extra;   /* Suppress unused parameter warning */
     /* Clear actual min score cache */
     if (actual_min_score_cache_manager)
-        free_actual_min_score_cache_manager(&actual_min_score_cache_manager);
+        kmersearch_free_actual_min_score_cache_internal();
     
     /* Clear high-frequency k-mer cache with conditional warning */
     clear_highfreq_cache_with_warning();
@@ -407,7 +399,7 @@ kmersearch_min_score_assign_hook(int newval, void *extra)
     (void) extra;   /* Suppress unused parameter warning */
     /* Clear actual min score cache */
     if (actual_min_score_cache_manager)
-        free_actual_min_score_cache_manager(&actual_min_score_cache_manager);
+        kmersearch_free_actual_min_score_cache_internal();
 }
 
 /* Min shared ngram key rate change affects actual min score cache */
@@ -418,7 +410,7 @@ kmersearch_min_shared_ngram_key_rate_assign_hook(double newval, void *extra)
     (void) extra;   /* Suppress unused parameter warning */
     /* Clear actual min score cache */
     if (actual_min_score_cache_manager)
-        free_actual_min_score_cache_manager(&actual_min_score_cache_manager);
+        kmersearch_free_actual_min_score_cache_internal();
 }
 
 
@@ -431,7 +423,7 @@ kmersearch_query_pattern_cache_max_entries_assign_hook(int newval, void *extra)
     
     /* Clear query pattern cache to recreate with new size limit */
     if (query_pattern_cache_manager)
-        free_query_pattern_cache_manager(&query_pattern_cache_manager);
+        kmersearch_free_query_pattern_cache_internal();
 }
 
 /* Occurrence bit length change affects rawscore and high-freq caches */
@@ -1030,49 +1022,6 @@ cleanup_query_conditions_manager(void)
 
 
 
-/*
- * B-2: Query pattern cache implementation
- */
-
-/*
- * Initialize query pattern cache manager
- */
-static void
-init_query_pattern_cache_manager(QueryPatternCacheManager **manager)
-{
-    if (*manager == NULL)
-    {
-        MemoryContext old_context = MemoryContextSwitchTo(TopMemoryContext);
-        HASHCTL hash_ctl;
-        
-        /* Allocate manager in TopMemoryContext */
-        *manager = (QueryPatternCacheManager *) palloc0(sizeof(QueryPatternCacheManager));
-        
-        /* Create query pattern cache context under TopMemoryContext */
-        (*manager)->query_pattern_cache_context = AllocSetContextCreate(TopMemoryContext,
-                                                                        "QueryPatternCache",
-                                                                        ALLOCSET_DEFAULT_SIZES);
-        
-        /* Initialize query pattern cache parameters */
-        (*manager)->max_entries = kmersearch_query_pattern_cache_max_entries;
-        (*manager)->current_entries = 0;
-        (*manager)->hits = 0;
-        (*manager)->misses = 0;
-        (*manager)->lru_head = NULL;
-        (*manager)->lru_tail = NULL;
-        
-        /* Create hash table */
-        MemSet(&hash_ctl, 0, sizeof(hash_ctl));
-        hash_ctl.keysize = sizeof(uint64);
-        hash_ctl.entrysize = sizeof(QueryPatternCacheEntry);
-        hash_ctl.hcxt = (*manager)->query_pattern_cache_context;
-        
-        (*manager)->hash_table = hash_create("QueryPatternCache", 256, &hash_ctl,
-                                           HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
-        
-        MemoryContextSwitchTo(old_context);
-    }
-}
 
 /*
  * Generate cache key for query pattern
@@ -1235,38 +1184,6 @@ store_query_pattern_cache_entry(QueryPatternCacheManager *manager, uint64 hash_k
 }
 
 
-/*
- * Free query pattern cache manager
- */
-static void
-free_query_pattern_cache_manager(QueryPatternCacheManager **manager)
-{
-    if (*manager)
-    {
-        /* Delete the query pattern cache context, which will free all allocated memory */
-        if ((*manager)->query_pattern_cache_context)
-            MemoryContextDelete((*manager)->query_pattern_cache_context);
-        
-        /* Free the manager itself (allocated in TopMemoryContext) */
-        pfree(*manager);
-        *manager = NULL;
-    }
-}
-
-/*
- * Free actual min score cache manager
- */
-static void
-free_actual_min_score_cache_manager(ActualMinScoreCacheManager **manager)
-{
-    if (*manager)
-    {
-        /* Delete the actual min score cache context, which will free all allocated memory */
-        if ((*manager)->cache_context)
-            MemoryContextDelete((*manager)->cache_context);
-        *manager = NULL;
-    }
-}
 
 /*
  * Fast k-mer matching using hash table - optimized O(n+m) implementation (with SIMD dispatch)
@@ -4006,10 +3923,10 @@ _PG_fini(void)
 {
     /* Free query pattern cache manager on module unload (uses TopMemoryContext - needs manual cleanup) */
     /* DNA2/DNA4 cache managers are now local and automatically freed with QueryContext */
-    free_query_pattern_cache_manager(&query_pattern_cache_manager);
+    kmersearch_free_query_pattern_cache_internal();
     
     /* Free actual min score cache manager on module unload */
-    free_actual_min_score_cache_manager(&actual_min_score_cache_manager);
+    kmersearch_free_actual_min_score_cache_internal();
     
     /* Free high-frequency k-mer cache on module unload */
     kmersearch_highfreq_kmer_cache_free_internal();

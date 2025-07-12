@@ -440,6 +440,10 @@ Datum kmersearch_rawscore_cache_free(PG_FUNCTION_ARGS);
 Datum kmersearch_query_pattern_cache_stats(PG_FUNCTION_ARGS);
 Datum kmersearch_query_pattern_cache_free(PG_FUNCTION_ARGS);
 
+/* Internal cache management functions */
+void kmersearch_free_query_pattern_cache_internal(void);
+void kmersearch_free_actual_min_score_cache_internal(void);
+
 /* High-frequency k-mer cache functions */
 Datum kmersearch_highfreq_kmer_cache_load(PG_FUNCTION_ARGS);
 Datum kmersearch_highfreq_kmer_cache_free(PG_FUNCTION_ARGS);
@@ -463,7 +467,6 @@ int calculate_actual_min_score(VarBit **query_keys, int nkeys, int original_nkey
 int kmersearch_count_degenerate_combinations(const char *kmer, int k);
 void kmersearch_set_bit_at(bits8 *data, int bit_pos, int value);
 bool kmersearch_will_exceed_degenerate_limit_dna4_bits(VarBit *seq, int start_pos, int k);
-VarBit *kmersearch_create_ngram_key2(const char *kmer, int k, int occurrence);
 VarBit *kmersearch_create_kmer2_key_only(const char *kmer, int k);
 VarBit *kmersearch_create_kmer2_key_from_dna2_bits(VarBit *seq, int start_pos, int k);
 VarBit *kmersearch_create_ngram_key2_from_dna2_bits(VarBit *seq, int start_pos, int k, int occurrence_count);
