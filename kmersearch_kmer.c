@@ -10,7 +10,7 @@
  * - Simple data conversion
  * - Basic helper functions
  * 
- * Note: Complex memory management functions remain in pg_kmersearch.c for stability
+ * Note: Complex memory management functions remain in kmersearch.c for stability
  */
 
 /* DNA4 to DNA2 expansion table */
@@ -847,7 +847,7 @@ kmersearch_varbit_to_hex_string(VarBit *varbit)
     return hex_string;
 }
 
-/* Note: kmersearch_extract_dna2_kmer2_direct kept in pg_kmersearch.c due to SIMD dependencies */
+/* Note: kmersearch_extract_dna2_kmer2_direct kept in kmersearch.c due to SIMD dependencies */
 
 /*
  * Extract k-mers from DNA2 sequence without occurrence count (internal function)

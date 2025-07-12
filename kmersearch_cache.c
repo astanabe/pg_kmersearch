@@ -75,7 +75,7 @@ static void rawscore_heap_evict_lowest_score(RawscoreCacheManager *manager);
 
 /* High-level cache functions */
 
-/* External global variables (defined in pg_kmersearch.c) */
+/* External global variables (defined in kmersearch.c) */
 extern ActualMinScoreCacheManager *actual_min_score_cache_manager;
 extern QueryPatternCacheManager *query_pattern_cache_manager;
 extern RawscoreCacheManager *rawscore_cache_manager;

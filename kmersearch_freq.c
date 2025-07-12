@@ -51,7 +51,7 @@ static bool kmersearch_parallel_cache_lookup(uint64 kmer_hash);
 static int kmersearch_varbit_cmp(VarBit *a, VarBit *b);
 static void kmersearch_spi_connect_or_error(void);
 
-/* External global variables (defined in pg_kmersearch.c) */
+/* External global variables (defined in kmersearch.c) */
 extern int kmersearch_occur_bitlen;
 extern int kmersearch_kmer_size;
 extern double kmersearch_max_appearance_rate;
