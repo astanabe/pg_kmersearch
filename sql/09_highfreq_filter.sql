@@ -13,18 +13,21 @@ CREATE TABLE test_highfreq_dna2 (
     sequence DNA2
 );
 
--- Insert test data with 10 sequences of 100 bp each
+-- Insert test data with sequences that contain high-frequency k-mers
+-- Many sequences contain repeated patterns to generate high-frequency 8-mers
 INSERT INTO test_highfreq_dna2 (name, sequence) VALUES
+    -- Sequences with repeated ATCGATCG pattern (creates high-freq k-mers)
     ('seq1', 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCG'),
-    ('seq2', 'GCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTA'),
-    ('seq3', 'TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT'),
-    ('seq4', 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'),
-    ('seq5', 'CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC'),
-    ('seq6', 'GGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGG'),
-    ('seq7', 'ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT'),
-    ('seq8', 'TGCATGCATGCATGCATGCATGCATGCATGCATGCATGCATGCATGCATGCATGCATGCATGCATGCATGCATGCATGCATGCATGCATGCATGCATGCA'),
-    ('seq9', 'CAGTTCAGTTCAGTTCAGTTCAGTTCAGTTCAGTTCAGTTCAGTTCAGTTCAGTTCAGTTCAGTTCAGTTCAGTTCAGTTCAGTTCAGTTCAGTTCAGT'),
-    ('seq10', 'GTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTAC');
+    ('seq2', 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCG'),
+    ('seq3', 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCG'),
+    ('seq4', 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCG'),
+    ('seq5', 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCG'),
+    -- Sequences with repeated AAAAAAAA pattern (creates high-freq k-mers)
+    ('seq6', 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'),
+    ('seq7', 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'),
+    ('seq8', 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'),
+    ('seq9', 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'),
+    ('seq10', 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA');
 
 -- Create GIN index for high-frequency k-mer analysis
 CREATE INDEX idx_test_highfreq_dna2_gin ON test_highfreq_dna2 USING gin (sequence);
@@ -34,6 +37,10 @@ SELECT 'Testing kmersearch_analyze_table...' as test_phase;
 
 -- Analyze the table to identify high-frequency k-mers
 -- This will create entries in kmersearch_highfreq_kmer and kmersearch_highfreq_kmer_meta tables
+-- Use higher threshold to ensure we detect the repeated patterns
+SET kmersearch.max_appearance_rate = 0.3;  -- 30% appearance rate
+SET kmersearch.max_appearance_nrow = 2;    -- k-mers in >2 rows are high-freq
+
 WITH analysis_result AS (
     SELECT kmersearch_analyze_table(
         (SELECT oid FROM pg_class WHERE relname = 'test_highfreq_dna2'), 
@@ -66,8 +73,8 @@ SELECT 'Testing cache loading with analysis data...' as test_phase;
 SELECT 'Testing cache loading...' as test_phase;
 
 -- Set GUC variables to match metadata
-SET kmersearch.max_appearance_rate = 0.05;
-SET kmersearch.max_appearance_nrow = 0;
+SET kmersearch.max_appearance_rate = 0.3;
+SET kmersearch.max_appearance_nrow = 2;
 
 SELECT kmersearch_highfreq_kmer_cache_load(test_highfreq_dna2.tableoid, 'sequence', 8) as cache_loaded
 FROM test_highfreq_dna2 LIMIT 1;
@@ -88,8 +95,8 @@ SELECT kmersearch_highfreq_kmers_cache_free() as freed_entries;
 SELECT 'Testing GUC validation and cache hierarchy...' as test_phase;
 
 -- Reset GUC settings to match metadata for testing
-SET kmersearch.max_appearance_rate = 0.05;
-SET kmersearch.max_appearance_nrow = 0;
+SET kmersearch.max_appearance_rate = 0.3;
+SET kmersearch.max_appearance_nrow = 2;
 SET kmersearch.occur_bitlen = 8;
 
 -- Insert some test high-frequency k-mer data for cache hierarchy testing
@@ -104,14 +111,14 @@ VALUES (
 SELECT 'Testing GUC validation errors...' as test_substep;
 
 -- Change GUC to cause mismatch and test cache loading (should fail)
-SET kmersearch.max_appearance_rate = 0.9;  -- Different from metadata (0.05)
+SET kmersearch.max_appearance_rate = 0.9;  -- Different from metadata (0.3)
 SELECT kmersearch_highfreq_kmer_cache_load(
   (SELECT oid FROM pg_class WHERE relname = 'test_highfreq_dna2'),
   'sequence', 8
 ) as cache_load_with_mismatch;
 
 -- Reset to correct values
-SET kmersearch.max_appearance_rate = 0.05;
+SET kmersearch.max_appearance_rate = 0.3;
 
 -- Test 2: Cache hierarchy - Global cache
 SELECT 'Testing global cache hierarchy...' as test_substep;

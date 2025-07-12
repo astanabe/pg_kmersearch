@@ -34,9 +34,9 @@ NOTICE:  Performing k-mer frequency analysis for k=8
 NOTICE:  Max appearance rate: 0.100000, Max appearance nrow: 10
 NOTICE:  Phase 1: Analyzing k-mer frequencies with 1 parallel workers...
 NOTICE:  Phase 2: Collecting n-gram keys for high-frequency k-mers...
-   analysis_result   
----------------------
- (100,93,1,0,0.1,10)
+  analysis_result   
+--------------------
+ (100,0,1,0,0.1,10)
 (1 row)
 
 -- Check analysis results

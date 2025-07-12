@@ -41,12 +41,20 @@ make installcheck
 
 **Claude Code Workflow:**
 When Claude Code needs to perform testing, it will:
-1. Execute non-sudo commands (make clean, make, make installcheck)
+1. Execute non-sudo commands (make clean, make)
 2. Present required sudo commands for manual execution:
    - `sudo systemctl stop postgresql`
    - `sudo make install` 
    - `sudo systemctl start postgresql`
 3. Wait for user confirmation before proceeding with testing
+
+**CRITICAL TESTING NOTE:**
+Running `make installcheck` after source code modifications without executing `sudo make install` first is meaningless and will not test the modified code. Always follow this exact sequence:
+1. `make clean && make` (Build)
+2. `sudo systemctl stop postgresql` (Stop PostgreSQL)
+3. `sudo make install` (Install)
+4. `sudo systemctl start postgresql` (Start PostgreSQL)
+5. `make installcheck` (Run tests)
 
 The test suite includes 12 test files covering:
 - Basic DNA2/DNA4 data types (01_basic_types.sql)
@@ -131,3 +139,6 @@ The codebase includes platform-specific SIMD optimizations with function dispatc
 ### Recent Code Improvements
 - **Unified ngram_key2 creation**: Removed duplicate `kmersearch_create_ngram_key2_with_occurrence()` function and consolidated implementation in `kmersearch_create_ngram_key2()` for better maintainability and consistency
 - **Enhanced error handling**: Improved negative occurrence value handling in ngram key creation functions
+- **Removed testing artifacts**: Eliminated dummy data generation code from parallel analysis functions to ensure production data integrity
+- **Fixed placeholder implementations**: Updated non-functional worker function with proper initialization and clear documentation of remaining work
+- **Consolidated cache management**: Eliminated duplicate LRU eviction function and unified cache operation interfaces

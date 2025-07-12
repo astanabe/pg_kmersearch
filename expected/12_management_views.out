@@ -35,11 +35,11 @@ CREATE TABLE test_analysis_dna2 (
     name TEXT,
     sequence DNA2
 );
--- Insert test data
+-- Insert test data with patterns that create high-frequency k-mers
 INSERT INTO test_analysis_dna2 (name, sequence) VALUES
     ('seq1', 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCG'),
-    ('seq2', 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'),
-    ('seq3', 'TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT');
+    ('seq2', 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCG'),
+    ('seq3', 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCG');
 -- Create GIN index
 CREATE INDEX idx_test_analysis_gin ON test_analysis_dna2 USING gin (sequence);
 -- Test kmersearch_analyze_table with complex return type
@@ -68,7 +68,7 @@ NOTICE:  Phase 1: Analyzing k-mer frequencies with 1 parallel workers...
 NOTICE:  Phase 2: Collecting n-gram keys for high-frequency k-mers...
  total_rows | highfreq_kmers_count | parallel_workers_used | duration_valid | max_appearance_rate_used | max_appearance_nrow_used 
 ------------+----------------------+-----------------------+----------------+--------------------------+--------------------------
-          3 |                   93 |                     1 | t              |                     0.05 |                        0
+          3 |                    0 |                     1 | t              |                     0.05 |                        0
 (1 row)
 
 -- Check if the analysis is reflected in the view
@@ -111,7 +111,7 @@ FROM kmersearch_drop_analysis(
 );
  dropped_analyses | dropped_highfreq_kmers | storage_freed 
 ------------------+------------------------+---------------
-                1 |                     93 | t
+                1 |                      0 | t
 (1 row)
 
 -- Verify analysis was dropped

@@ -529,6 +529,7 @@ int calculate_actual_min_score(VarBit **query_keys, int nkeys, int query_total_k
 
 /* Query pattern cache functions (implemented in kmersearch_cache.c) */
 VarBit **get_cached_query_kmer(const char *query_string, int k_size, int *nkeys);
+void lru_evict_oldest_query_pattern_cache(QueryPatternCacheManager *manager);
 
 /* Actual min score cache functions (implemented in kmersearch_cache.c) */  
 int get_cached_actual_min_score(VarBit **query_keys, int nkeys);

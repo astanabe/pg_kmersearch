@@ -22,7 +22,6 @@ PG_FUNCTION_INFO_V1(kmersearch_drop_analysis);
 
 /* Frequency analysis functions */
 /* kmersearch_analyze_table_parallel declared in header */
-static void kmersearch_worker_analyze_blocks(KmerWorkerState *worker, Relation rel, const char *column_name, int k_size);
 static int kmersearch_determine_parallel_workers(int requested_workers, Relation target_relation);
 
 /* High-frequency k-mer filtering functions */
@@ -741,32 +740,6 @@ kmersearch_analyze_table_parallel(Oid table_oid, const char *column_name, int k_
             SPI_exec(query.data, 0);
             ereport(DEBUG1, (errmsg("kmersearch_analyze_table_parallel: Temp table created")));
             pfree(query.data);
-            
-            /* Insert dummy high-frequency k-mers */
-            for (i = 0; i < 93; i++) {
-                char binary_str[129];
-                int j;
-                int bit_len = k_size * 2;
-                
-                if (bit_len > 128) {
-                    bit_len = 128;
-                }
-                
-                memset(binary_str, '0', bit_len);
-                binary_str[bit_len] = '\0';
-                
-                for (j = 0; j < bit_len && j < 32; j++) {
-                    if ((i >> j) & 1) {
-                        binary_str[bit_len - 1 - j] = '1';
-                    }
-                }
-                
-                initStringInfo(&query);
-                appendStringInfo(&query, "INSERT INTO %s VALUES (B'%s'::varbit, %d)", 
-                                final_table_name, binary_str, threshold_rows + i + 1);
-                SPI_exec(query.data, 0);
-                pfree(query.data);
-            }
         }
         
         /* Count highly frequent k-mers */
@@ -1023,11 +996,4 @@ kmersearch_spi_connect_or_error(void)
 /*
  * Worker function to analyze blocks of a table
  */
-static void
-kmersearch_worker_analyze_blocks(KmerWorkerState *worker, Relation rel, const char *column_name, int k_size)
-{
-    /* Simulate processing for testing */
-    worker->rows_processed = 10;
-    worker->local_highfreq_count = 0;
-}
 

@@ -44,7 +44,7 @@ static uint64 generate_query_pattern_cache_key(const char *query_string, int k_s
 static QueryPatternCacheEntry *lookup_query_pattern_cache_entry(QueryPatternCacheManager *manager, const char *query_string, int k_size);
 static void store_query_pattern_cache_entry(QueryPatternCacheManager *manager, uint64 hash_key, const char *query_string, int k_size, VarBit **kmers, int kmer_count);
 static void lru_touch_query_pattern_cache(QueryPatternCacheManager *manager, QueryPatternCacheEntry *entry);
-static void lru_evict_oldest_query_pattern_cache(QueryPatternCacheManager *manager);
+void lru_evict_oldest_query_pattern_cache(QueryPatternCacheManager *manager);
 static void free_query_pattern_cache_manager(QueryPatternCacheManager **manager);
 
 /* Actual min score cache functions */
@@ -179,7 +179,7 @@ lru_touch_query_pattern_cache(QueryPatternCacheManager *manager, QueryPatternCac
 /*
  * Evict oldest entry from query pattern cache
  */
-static void
+void
 lru_evict_oldest_query_pattern_cache(QueryPatternCacheManager *manager)
 {
     QueryPatternCacheEntry *tail = manager->lru_tail;

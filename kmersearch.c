@@ -88,7 +88,7 @@ static bool kmersearch_evaluate_match_conditions(int shared_count, int query_tot
 static bool evaluate_optimized_match_condition(VarBit **query_keys, int nkeys, int shared_count, const char *query_string, int query_total_kmers);
 
 /* New parallel analysis functions */
-static void kmersearch_worker_analyze_blocks(KmerWorkerState *worker, Relation rel, const char *column_name, int k_size);
+void kmersearch_worker_analyze_blocks(KmerWorkerState *worker, Relation rel, const char *column_name, int k_size);
 static void kmersearch_merge_worker_results_sql(KmerWorkerState *workers, int num_workers, const char *final_table_name, int k_size, int threshold_rows);
 static void kmersearch_persist_highfreq_kmers(Oid table_oid, const char *column_name, int k_size, void *unused_table, int threshold_rows);
 static void kmersearch_persist_highfreq_kmers_from_temp(Oid table_oid, const char *column_name, int k_size, const char *temp_table_name);
@@ -987,44 +987,6 @@ lru_touch_query_pattern_cache(QueryPatternCacheManager *manager, QueryPatternCac
     manager->lru_head = entry;
 }
 
-/*
- * Evict oldest entry from cache
- */
-static void
-lru_evict_oldest_query_pattern_cache(QueryPatternCacheManager *manager)
-{
-    QueryPatternCacheEntry *tail = manager->lru_tail;
-    bool found;
-    int i;
-    
-    if (!tail)
-        return;
-    
-    /* Remove from hash table */
-    hash_search(manager->hash_table, &tail->hash_key, HASH_REMOVE, &found);
-    
-    /* Remove from LRU chain */
-    if (tail->prev)
-        tail->prev->next = NULL;
-    else
-        manager->lru_head = NULL;
-    manager->lru_tail = tail->prev;
-    
-    /* Free allocated memory */
-    if (tail->query_string_copy)
-        pfree(tail->query_string_copy);
-    if (tail->extracted_kmers)
-    {
-        for (i = 0; i < tail->kmer_count; i++)
-        {
-            if (tail->extracted_kmers[i])
-                pfree(tail->extracted_kmers[i]);
-        }
-        pfree(tail->extracted_kmers);
-    }
-    
-    manager->current_entries--;
-}
 
 /*
  * Look up query pattern cache entry
@@ -2397,7 +2359,7 @@ kmersearch_determine_parallel_workers(int requested_workers, Relation target_rel
 /*
  * Worker function to analyze blocks and extract k-mer frequencies
  */
-static void
+void
 kmersearch_worker_analyze_blocks(KmerWorkerState *worker, Relation rel, 
                                 const char *column_name, int k_size)
 {
@@ -2406,6 +2368,7 @@ kmersearch_worker_analyze_blocks(KmerWorkerState *worker, Relation rel,
     TupleDesc tupdesc;
     int target_attno = -1;
     int i;
+    Datum *kmer_datums;
     
     /* Find the target column */
     tupdesc = RelationGetDescr(rel);
@@ -2452,30 +2415,33 @@ kmersearch_worker_analyze_blocks(KmerWorkerState *worker, Relation rel,
         
         /* Extract k-mers from the sequence (k-mer-only for phase 1) */
         ereport(DEBUG1, (errmsg("Extracting k-mers from sequence, k_size=%d", k_size)));
-        kmers = (VarBit **)kmersearch_extract_dna2_kmer2_only(sequence, k_size, &nkeys);
+        kmer_datums = kmersearch_extract_dna2_kmer2_only(sequence, k_size, &nkeys);
         ereport(DEBUG1, (errmsg("Extracted %d k-mers", nkeys)));
-        if (kmers == NULL || nkeys == 0) {
+        if (kmer_datums == NULL || nkeys == 0) {
             continue;
         }
         
         /* Process each k-mer in this row - encode and add to buffer */
         for (j = 0; j < nkeys; j++) {
             KmerData encoded_kmer;
+            VarBit *kmer;
             
-            if (kmers[j] == NULL) {
+            /* Convert Datum to VarBit */
+            kmer = DatumGetVarBitP(kmer_datums[j]);
+            if (kmer == NULL) {
                 continue;
             }
             
             /* Encode k-mer into compact format (k-mer-only) */
-            encoded_kmer = kmersearch_encode_kmer2_only_data(kmers[j], k_size);
+            encoded_kmer = kmersearch_encode_kmer2_only_data(kmer, k_size);
             
             /* Add to buffer (will flush to temp table if full) */
             kmersearch_add_to_buffer(&worker->buffer, encoded_kmer, worker->temp_table_name);
         }
         
         /* Cleanup k-mer array */
-        if (kmers) {
-            pfree(kmers);
+        if (kmer_datums) {
+            pfree(kmer_datums);
         }
     }
     
