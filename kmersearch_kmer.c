@@ -928,3 +928,65 @@ kmersearch_encode_kmer2_only_data(VarBit *kmer, int k_size)
     return result;
 }
 
+/*
+ * Encode VarBit k-mer into compact KmerData
+ */
+KmerData
+kmersearch_encode_kmer_data(VarBit *kmer, int k_size)
+{
+    KmerData result;
+    unsigned char *bits;
+    int i, bit_offset;
+    int byte_pos, bit_in_byte, nucleotide;
+    
+    memset(&result, 0, sizeof(KmerData));
+    bits = VARBITS(kmer);
+    
+    if (k_size <= 8) {
+        result.k8_data = 0;
+        for (i = 0; i < k_size; i++) {
+            bit_offset = i * 2;
+            byte_pos = bit_offset / 8;
+            bit_in_byte = bit_offset % 8;
+            nucleotide = (bits[byte_pos] >> (6 - bit_in_byte)) & 0x3;
+            result.k8_data |= (nucleotide << (2 * (k_size - 1 - i)));
+        }
+    } else if (k_size <= 16) {
+        result.k16_data = 0;
+        for (i = 0; i < k_size; i++) {
+            bit_offset = i * 2;
+            byte_pos = bit_offset / 8;
+            bit_in_byte = bit_offset % 8;
+            nucleotide = (bits[byte_pos] >> (6 - bit_in_byte)) & 0x3;
+            result.k16_data |= (nucleotide << (2 * (k_size - 1 - i)));
+        }
+    } else if (k_size <= 32) {
+        result.k32_data = 0;
+        for (i = 0; i < k_size; i++) {
+            bit_offset = i * 2;
+            byte_pos = bit_offset / 8;
+            bit_in_byte = bit_offset % 8;
+            nucleotide = (bits[byte_pos] >> (6 - bit_in_byte)) & 0x3;
+            result.k32_data |= ((uint64)nucleotide << (2 * (k_size - 1 - i)));
+        }
+    } else {
+        /* For k > 32, split across high and low 64-bit values */
+        result.k64_data.high = 0;
+        result.k64_data.low = 0;
+        for (i = 0; i < k_size; i++) {
+            bit_offset = i * 2;
+            byte_pos = bit_offset / 8;
+            bit_in_byte = bit_offset % 8;
+            nucleotide = (bits[byte_pos] >> (6 - bit_in_byte)) & 0x3;
+            
+            if (i < 32) {
+                result.k64_data.high |= ((uint64)nucleotide << (2 * (31 - i)));
+            } else {
+                result.k64_data.low |= ((uint64)nucleotide << (2 * (k_size - 1 - i)));
+            }
+        }
+    }
+    
+    return result;
+}
+

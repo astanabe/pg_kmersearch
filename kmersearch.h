@@ -480,6 +480,10 @@ void kmersearch_parallel_highfreq_kmer_cache_free_internal(void);
 void kmersearch_parallel_cache_cleanup_on_exit(int code, Datum arg);
 bool kmersearch_parallel_cache_lookup(uint64 kmer_hash);
 
+/* High-frequency k-mer filtering functions */
+Datum *kmersearch_filter_highfreq_kmers_from_keys(Datum *original_keys, int *nkeys, HTAB *highfreq_hash, int k);
+Datum *kmersearch_filter_highfreq_kmers_from_keys_parallel(Datum *original_keys, int *nkeys, int k);
+
 /* High-frequency k-mer cache functions */
 Datum kmersearch_highfreq_kmer_cache_load(PG_FUNCTION_ARGS);
 Datum kmersearch_highfreq_kmer_cache_free(PG_FUNCTION_ARGS);
@@ -519,6 +523,7 @@ VarBit **kmersearch_extract_query_kmer_with_degenerate(const char *query, int k,
 char *kmersearch_varbit_to_hex_string(VarBit *varbit);
 Datum *kmersearch_extract_dna2_kmer2_only(VarBit *seq, int k, int *nkeys);
 KmerData kmersearch_encode_kmer2_only_data(VarBit *kmer, int k_size);
+KmerData kmersearch_encode_kmer_data(VarBit *kmer, int k_size);
 
 /* Functions for easy migration between files */
 Datum *kmersearch_extract_kmer_with_degenerate(const char *sequence, int seq_len, int k, int *nkeys);

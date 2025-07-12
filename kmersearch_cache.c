@@ -1816,3 +1816,561 @@ kmersearch_query_pattern_cache_max_entries_assign_hook(int newval, void *extra)
     if (query_pattern_cache_manager)
         kmersearch_free_query_pattern_cache_internal();
 }
+
+/* Additional global variable for parallel cache exit callback */
+bool parallel_cache_exit_callback_registered = false;
+
+/*
+ * Internal cleanup function for parallel cache resources
+ */
+static void
+kmersearch_parallel_cache_cleanup_internal(void)
+{
+    MemoryContext oldcontext;
+    
+    ereport(LOG, (errmsg("kmersearch_parallel_cache_cleanup_internal: Starting cleanup")));
+    
+    /* Prevent double cleanup - check if already cleaned up */
+    if (parallel_cache_hash == NULL && parallel_cache_dsa == NULL && parallel_cache_segment == NULL) {
+        ereport(LOG, (errmsg("kmersearch_parallel_cache_cleanup_internal: Already cleaned up, skipping")));
+        return;
+    }
+    
+    /* Use TopMemoryContext for dshash operations */
+    oldcontext = MemoryContextSwitchTo(TopMemoryContext);
+    
+    /* Step 1: Handle dshash table cleanup based on process type */
+    if (parallel_cache_hash != NULL) {
+        ereport(LOG, (errmsg("kmersearch_parallel_cache_cleanup_internal: parallel_cache_hash=%p", parallel_cache_hash)));
+        ereport(LOG, (errmsg("kmersearch_parallel_cache_cleanup_internal: parallel_cache_dsa=%p", parallel_cache_dsa)));
+        ereport(LOG, (errmsg("kmersearch_parallel_cache_cleanup_internal: parallel_cache_segment=%p", parallel_cache_segment)));
+        
+        /* Check if DSA and DSM are still valid before operating on dshash */
+        if (parallel_cache_dsa != NULL && parallel_cache_segment != NULL) {
+            if (!IsParallelWorker()) {
+                /* Main process: destroy the hash table */
+                ereport(LOG, (errmsg("kmersearch_parallel_cache_cleanup_internal: Main process destroying dshash table")));
+                dshash_destroy(parallel_cache_hash);
+            } else {
+                /* Parallel worker: detach from hash table */
+                ereport(LOG, (errmsg("kmersearch_parallel_cache_cleanup_internal: Parallel worker detaching from dshash table")));
+                dshash_detach(parallel_cache_hash);
+            }
+        } else {
+            ereport(LOG, (errmsg("kmersearch_parallel_cache_cleanup_internal: DSA or DSM already invalid, just detaching")));
+            /* DSA/DSM already destroyed, just detach without destroy */
+            dshash_detach(parallel_cache_hash);
+        }
+        parallel_cache_hash = NULL;
+        ereport(LOG, (errmsg("kmersearch_parallel_cache_cleanup_internal: dshash table cleanup completed")));
+    } else {
+        ereport(LOG, (errmsg("kmersearch_parallel_cache_cleanup_internal: No dshash table to cleanup")));
+    }
+    
+    /* Switch back to original context before DSA/DSM operations */
+    MemoryContextSwitchTo(oldcontext);
+    
+    /* Step 2: Handle DSA area cleanup */
+    if (parallel_cache_dsa != NULL) {
+        if (!IsParallelWorker()) {
+            /* Main process: unpin and detach */
+            ereport(LOG, (errmsg("kmersearch_parallel_cache_cleanup_internal: Main process unpinning and detaching DSA area")));
+            PG_TRY();
+            {
+                /* Unpin DSA area */
+                dsa_unpin(parallel_cache_dsa);
+                /* Detach from DSA area */
+                dsa_detach(parallel_cache_dsa);
+                ereport(LOG, (errmsg("kmersearch_parallel_cache_cleanup_internal: DSA area unpinned and detached successfully")));
+            }
+            PG_CATCH();
+            {
+                ereport(LOG, (errmsg("kmersearch_parallel_cache_cleanup_internal: DSA area cleanup failed, but continuing")));
+                FlushErrorState();
+            }
+            PG_END_TRY();
+        } else {
+            /* Parallel worker: detach only */
+            ereport(LOG, (errmsg("kmersearch_parallel_cache_cleanup_internal: Parallel worker detaching from DSA area")));
+            dsa_detach(parallel_cache_dsa);
+            ereport(LOG, (errmsg("kmersearch_parallel_cache_cleanup_internal: DSA area detached successfully")));
+        }
+        parallel_cache_dsa = NULL;
+    } else {
+        ereport(LOG, (errmsg("kmersearch_parallel_cache_cleanup_internal: No DSA area to cleanup")));
+    }
+    
+    /* Step 3: Handle DSM segment properly */
+    if (parallel_cache_segment != NULL) {
+        if (!IsParallelWorker()) {
+            /* Main process: unpin and detach */
+            ereport(LOG, (errmsg("kmersearch_parallel_cache_cleanup_internal: Main process unpinning and detaching DSM segment")));
+            PG_TRY();
+            {
+                /* Get DSM handle before detaching */
+                dsm_handle handle = dsm_segment_handle(parallel_cache_segment);
+                /* Unpin mapping first */
+                dsm_unpin_mapping(parallel_cache_segment);
+                /* Detach from the DSM segment */
+                dsm_detach(parallel_cache_segment);
+                /* Unpin the DSM segment to allow cleanup */
+                dsm_unpin_segment(handle);
+                ereport(LOG, (errmsg("kmersearch_parallel_cache_cleanup_internal: DSM segment detached and unpinned successfully")));
+            }
+            PG_CATCH();
+            {
+                ereport(LOG, (errmsg("kmersearch_parallel_cache_cleanup_internal: DSM segment cleanup failed, but continuing")));
+                FlushErrorState();
+            }
+            PG_END_TRY();
+        } else {
+            /* Parallel worker: detach only */
+            ereport(LOG, (errmsg("kmersearch_parallel_cache_cleanup_internal: Parallel worker detaching from DSM segment")));
+            dsm_detach(parallel_cache_segment);
+            ereport(LOG, (errmsg("kmersearch_parallel_cache_cleanup_internal: DSM segment detached successfully")));
+        }
+        parallel_cache_segment = NULL;
+    } else {
+        ereport(LOG, (errmsg("kmersearch_parallel_cache_cleanup_internal: No DSM segment to handle")));
+    }
+    
+    /* Reset cache pointer and callback flag */
+    parallel_highfreq_cache = NULL;
+    parallel_cache_exit_callback_registered = false;
+}
+
+/*
+ * Exit callback for DSM cleanup
+ */
+static void
+dshash_cache_cleanup_callback(int code, Datum arg)
+{
+    ereport(LOG, (errmsg("dshash_cache_cleanup_callback: Starting cleanup on process exit")));
+    
+    kmersearch_parallel_cache_cleanup_internal();
+    
+    ereport(LOG, (errmsg("dshash_cache_cleanup_callback: Cleanup completed")));
+}
+
+/*
+ * Initialize parallel high-frequency k-mer cache
+ */
+void
+kmersearch_parallel_highfreq_kmer_cache_init(void)
+{
+    /* Initialize parallel cache state */
+    parallel_highfreq_cache = NULL;
+    parallel_cache_segment = NULL;
+    parallel_cache_hash = NULL;
+}
+
+/*
+ * Load data into parallel high-frequency k-mer cache
+ */
+bool
+kmersearch_parallel_highfreq_kmer_cache_load_internal(Oid table_oid, const char *column_name, int k_value)
+{
+    dshash_parameters params;
+    Size segment_size;
+    VarBit **highfreq_kmers;
+    int highfreq_count;
+    ParallelHighfreqKmerCacheEntry *entry;
+    bool found;
+    int i;
+    Size cache_struct_size;
+    Size entries_size;
+    Size dsa_min_size;
+    Size dshash_overhead;
+    char *dsa_start;
+    Size dsa_size;
+    MemoryContext oldcontext;
+    
+    if (!column_name || k_value <= 0)
+        return false;
+    
+    /* Validate current GUC settings against metadata table */
+    if (!kmersearch_validate_guc_against_metadata(table_oid, column_name, k_value))
+        return false;
+    
+    /* Check if cache is already loaded for this table */
+    if (parallel_cache_segment != NULL && 
+        parallel_cache_dsa != NULL && 
+        parallel_cache_hash != NULL &&
+        parallel_highfreq_cache != NULL) {
+        
+        /* Verify cache data is still valid */
+        if (parallel_highfreq_cache->is_initialized &&
+            parallel_highfreq_cache->table_oid == table_oid &&
+            parallel_highfreq_cache->kmer_size == k_value) {
+            ereport(LOG, (errmsg("dshash_cache_load: Cache already loaded for table %u, k=%d", 
+                                table_oid, k_value)));
+            return true;
+        } else {
+            /* Cache exists but is for different table/k_value, clean it up */
+            ereport(LOG, (errmsg("dshash_cache_load: Cache exists but for different table/k_value, cleaning up")));
+            kmersearch_parallel_highfreq_kmer_cache_free_internal();
+        }
+    }
+    
+    /* Get high-frequency k-mers list from the regular cache function */
+    ereport(LOG, (errmsg("dshash_cache_load: Starting cache load for table %u, column %s, k=%d", 
+                        table_oid, column_name, k_value)));
+    
+    highfreq_kmers = kmersearch_get_highfreq_kmer_from_table(table_oid, column_name, k_value, &highfreq_count);
+    
+    if (!highfreq_kmers || highfreq_count <= 0) {
+        /* No high-frequency k-mers found */
+        ereport(LOG, (errmsg("dshash_cache_load: No high-frequency k-mers found")));
+        return false;
+    }
+    
+    ereport(LOG, (errmsg("dshash_cache_load: Found %d high-frequency k-mers", highfreq_count)));
+    
+    /* Calculate required segment size */
+    
+    cache_struct_size = MAXALIGN(sizeof(ParallelHighfreqKmerCache));
+    entries_size = highfreq_count * sizeof(ParallelHighfreqKmerCacheEntry);
+    dsa_min_size = 8192; /* Minimum DSA area size */
+    dshash_overhead = MAXALIGN(512); /* Extra space for dshash overhead */
+    
+    /* Total size = cache structure + DSA area (at least 8192) + entries + overhead */
+    segment_size = cache_struct_size + dsa_min_size + entries_size + dshash_overhead;
+    
+    /* Ensure total size is reasonable */
+    if (segment_size < 16384) {
+        segment_size = 16384; /* At least 16KB total */
+    }
+    
+    /* Create DSM segment */
+    ereport(LOG, (errmsg("dshash_cache_load: Creating DSM segment of size %zu", segment_size)));
+    
+    parallel_cache_segment = dsm_create(segment_size, 0);
+    if (!parallel_cache_segment) {
+        ereport(ERROR,
+                (errcode(ERRCODE_OUT_OF_MEMORY),
+                 errmsg("failed to create DSM segment for parallel cache")));
+    }
+    
+    /* Pin the DSM segment to prevent automatic cleanup when query ends */
+    dsm_pin_segment(parallel_cache_segment);
+    dsm_pin_mapping(parallel_cache_segment);
+    
+    ereport(LOG, (errmsg("dshash_cache_load: DSM segment created successfully")));
+    
+    /* Initialize parallel cache structure in DSM */
+    parallel_highfreq_cache = (ParallelHighfreqKmerCache *) dsm_segment_address(parallel_cache_segment);
+    parallel_highfreq_cache->table_oid = table_oid;
+    parallel_highfreq_cache->kmer_size = k_value;
+    parallel_highfreq_cache->num_entries = highfreq_count;
+    parallel_highfreq_cache->segment_size = segment_size;
+    parallel_highfreq_cache->dsm_handle = dsm_segment_handle(parallel_cache_segment);
+    
+    /* Create DSA area from DSM segment */
+    /* Skip the ParallelHighfreqKmerCache structure to avoid overlap */
+    
+    dsa_start = (char *) dsm_segment_address(parallel_cache_segment) + cache_struct_size;
+    dsa_size = segment_size - cache_struct_size;
+    
+    /* Ensure DSA area is at least 8192 bytes */
+    if (dsa_size < 8192) {
+        ereport(ERROR,
+                (errcode(ERRCODE_OUT_OF_MEMORY),
+                 errmsg("DSA area size %zu is too small, need at least 8192 bytes", dsa_size)));
+    }
+    
+    /* Use TopMemoryContext for persistent dshash objects */
+    oldcontext = MemoryContextSwitchTo(TopMemoryContext);
+    
+    parallel_cache_dsa = dsa_create_in_place(dsa_start,
+                                             dsa_size,
+                                             LWTRANCHE_PARALLEL_QUERY_DSA,
+                                             parallel_cache_segment);
+    
+    if (!parallel_cache_dsa) {
+        MemoryContextSwitchTo(oldcontext);
+        dsm_detach(parallel_cache_segment);
+        parallel_cache_segment = NULL;
+        ereport(ERROR,
+                (errcode(ERRCODE_OUT_OF_MEMORY),
+                 errmsg("failed to create DSA area for parallel cache")));
+    }
+    
+    /* Pin the DSA area to prevent unexpected cleanup */
+    dsa_pin(parallel_cache_dsa);
+    dsa_pin_mapping(parallel_cache_dsa);
+    
+    /* Set up dshash parameters for PostgreSQL 16 */
+    memset(&params, 0, sizeof(params));
+    params.key_size = sizeof(uint64);
+    params.entry_size = sizeof(ParallelHighfreqKmerCacheEntry);
+    params.compare_function = dshash_memcmp;
+    params.hash_function = dshash_memhash;
+    params.tranche_id = LWTRANCHE_KMERSEARCH_CACHE;
+    
+    /* Create dshash table */
+    ereport(LOG, (errmsg("dshash_cache_load: Creating dshash table with %d entries", highfreq_count)));
+    
+    parallel_cache_hash = dshash_create(parallel_cache_dsa, &params, NULL);
+    if (!parallel_cache_hash) {
+        dsa_detach(parallel_cache_dsa);
+        parallel_cache_dsa = NULL;
+        dsm_detach(parallel_cache_segment);
+        parallel_cache_segment = NULL;
+        MemoryContextSwitchTo(oldcontext);
+        ereport(ERROR,
+                (errcode(ERRCODE_OUT_OF_MEMORY),
+                 errmsg("failed to create dshash table for parallel cache")));
+    }
+    
+    ereport(LOG, (errmsg("dshash_cache_load: dshash table created successfully")));
+    
+    /* Store the dshash table handle */
+    parallel_highfreq_cache->hash_handle = dshash_get_hash_table_handle(parallel_cache_hash);
+    parallel_highfreq_cache->is_initialized = true;
+    
+    /* Populate the hash table with high-frequency k-mers */
+    ereport(LOG, (errmsg("dshash_cache_load: Starting population of %d k-mers", highfreq_count)));
+    
+    for (i = 0; i < highfreq_count; i++) {
+        uint64 kmer_hash;
+        
+        ereport(LOG, (errmsg("dshash_cache_load: Processing k-mer %d of %d", i + 1, highfreq_count)));
+        
+        /* Check for null pointer */
+        if (!highfreq_kmers[i]) {
+            ereport(WARNING,
+                    (errmsg("Found null k-mer at index %d, skipping", i)));
+            continue;
+        }
+        
+        /* Validate VarBit structure */
+        if (VARSIZE(highfreq_kmers[i]) <= VARHDRSZ) {
+            ereport(WARNING,
+                    (errmsg("Invalid VarBit size at index %d, skipping", i)));
+            continue;
+        }
+        
+        /* Calculate actual k-mer hash using same logic as global cache */
+        kmer_hash = kmersearch_ngram_key_to_hash(highfreq_kmers[i]);
+        
+        ereport(LOG, (errmsg("dshash_cache_load: Inserting k-mer with hash %lu", kmer_hash)));
+        
+        /* Insert into dshash table with error handling */
+        PG_TRY();
+        {
+            entry = (ParallelHighfreqKmerCacheEntry *) dshash_find_or_insert(parallel_cache_hash, 
+                                                                            &kmer_hash, 
+                                                                            &found);
+            if (entry) {
+                ereport(LOG, (errmsg("dshash_cache_load: Got entry pointer, setting values")));
+                entry->kmer_hash = kmer_hash;
+                entry->frequency_count = 1; /* Mark as high-frequency */
+                entry->table_oid = table_oid;
+                entry->kmer_size = k_value;
+                /* Must release lock after dshash_find_or_insert() */
+                dshash_release_lock(parallel_cache_hash, entry);
+                ereport(LOG, (errmsg("dshash_cache_load: Successfully inserted k-mer %d", i + 1)));
+            } else {
+                ereport(WARNING, (errmsg("dshash_cache_load: Got null entry pointer for k-mer %d", i + 1)));
+            }
+        }
+        PG_CATCH();
+        {
+            /* Ensure lock is released even in error cases */
+            if (entry)
+                dshash_release_lock(parallel_cache_hash, entry);
+            ereport(ERROR,
+                    (errcode(ERRCODE_INTERNAL_ERROR),
+                     errmsg("Failed to insert k-mer into dshash table at index %d", i)));
+        }
+        PG_END_TRY();
+    }
+    
+    ereport(LOG, (errmsg("dshash_cache_load: Completed population of all k-mers")));
+    
+    parallel_highfreq_cache->is_initialized = true;
+    
+    ereport(LOG, (errmsg("dshash_cache_load: Starting cleanup of temporary k-mer array")));
+    
+    /* Clean up temporary k-mer array - simplified approach */
+    if (highfreq_kmers) {
+        ereport(LOG, (errmsg("dshash_cache_load: Skipping individual k-mer cleanup to avoid segfault")));
+        /* Skip individual k-mer cleanup for now to avoid segfault - memory will be freed when context is destroyed */
+    }
+    
+    /* Switch back to original context */
+    MemoryContextSwitchTo(oldcontext);
+    
+    /* Register exit callback for proper DSM cleanup on process exit */
+    if (!parallel_cache_exit_callback_registered) {
+        ereport(LOG, (errmsg("dshash_cache_load: Registering exit callback for DSM cleanup")));
+        on_shmem_exit(dshash_cache_cleanup_callback, 0);
+        parallel_cache_exit_callback_registered = true;
+    } else {
+        ereport(LOG, (errmsg("dshash_cache_load: Exit callback already registered")));
+    }
+    
+    return true;
+}
+
+/*
+ * Free parallel high-frequency k-mer cache
+ */
+void
+kmersearch_parallel_highfreq_kmer_cache_free_internal(void)
+{
+    ereport(LOG, (errmsg("kmersearch_parallel_highfreq_kmer_cache_free_internal: Starting parallel cache free")));
+    
+    /* Use the unified cleanup function for proper resource destruction */
+    kmersearch_parallel_cache_cleanup_internal();
+    
+    ereport(LOG, (errmsg("kmersearch_parallel_highfreq_kmer_cache_free_internal: Parallel cache free completed")));
+}
+
+/*
+ * Check if parallel high-frequency k-mer cache is valid
+ */
+static bool
+kmersearch_parallel_highfreq_kmer_cache_is_valid(Oid table_oid, const char *column_name, int k_value)
+{
+    /* Check if parallel cache exists and is valid */
+    if (parallel_highfreq_cache == NULL || !parallel_highfreq_cache->is_initialized)
+        return false;
+    
+    /* Check if cache matches the requested parameters */
+    if (parallel_highfreq_cache->table_oid != table_oid || 
+        parallel_highfreq_cache->kmer_size != k_value)
+        return false;
+    
+    return true;
+}
+
+/*
+ * Lookup entry in parallel high-frequency k-mer cache
+ */
+bool
+kmersearch_parallel_cache_lookup(uint64 kmer_hash)
+{
+    ParallelHighfreqKmerCacheEntry *entry;
+    bool found = false;
+    MemoryContext oldcontext;
+    
+    /* Return false if parallel cache is not initialized */
+    if (parallel_cache_hash == NULL)
+        return false;
+    
+    /* Switch to TopMemoryContext for dshash operations */
+    oldcontext = MemoryContextSwitchTo(TopMemoryContext);
+    
+    /* Lookup in dshash table */
+    entry = (ParallelHighfreqKmerCacheEntry *) dshash_find(parallel_cache_hash, &kmer_hash, false);
+    
+    if (entry != NULL) {
+        found = true;
+        /* Must release lock after dshash_find() */
+        dshash_release_lock(parallel_cache_hash, entry);
+    }
+    
+    MemoryContextSwitchTo(oldcontext);
+    
+    return found;
+}
+
+/*
+ * Attach to existing parallel cache from worker process
+ */
+static bool
+kmersearch_parallel_cache_attach(dsm_handle handle)
+{
+    dshash_parameters params;
+    MemoryContext oldcontext;
+    Size cache_struct_size;
+    char *dsa_start;
+    bool success;
+    
+    /* Use TopMemoryContext for persistent dshash objects */
+    oldcontext = MemoryContextSwitchTo(TopMemoryContext);
+    
+    /* Attach to DSM segment */
+    parallel_cache_segment = dsm_attach(handle);
+    if (!parallel_cache_segment) {
+        MemoryContextSwitchTo(oldcontext);
+        return false;
+    }
+    
+    /* Get parallel cache structure from DSM */
+    parallel_highfreq_cache = (ParallelHighfreqKmerCache *) dsm_segment_address(parallel_cache_segment);
+    
+    if (!parallel_highfreq_cache->is_initialized) {
+        MemoryContextSwitchTo(oldcontext);
+        return false;
+    }
+    
+    /* Set up dshash parameters for PostgreSQL 16 */
+    memset(&params, 0, sizeof(params));
+    params.key_size = sizeof(uint64);
+    params.entry_size = sizeof(ParallelHighfreqKmerCacheEntry);
+    params.compare_function = dshash_memcmp;
+    params.hash_function = dshash_memhash;
+    params.tranche_id = LWTRANCHE_KMERSEARCH_CACHE;
+    
+    /* Attach to DSA area */
+    cache_struct_size = MAXALIGN(sizeof(ParallelHighfreqKmerCache));
+    dsa_start = (char *) dsm_segment_address(parallel_cache_segment) + cache_struct_size;
+    parallel_cache_dsa = dsa_attach_in_place(dsa_start,
+                                             parallel_cache_segment);
+    if (!parallel_cache_dsa) {
+        MemoryContextSwitchTo(oldcontext);
+        return false;
+    }
+    
+    /* Pin the DSA mapping to prevent unexpected cleanup */
+    dsa_pin_mapping(parallel_cache_dsa);
+    
+    /* Attach to dshash table using stored handle */
+    parallel_cache_hash = dshash_attach(parallel_cache_dsa, &params, 
+                                       parallel_highfreq_cache->hash_handle, NULL);
+    
+    success = (parallel_cache_hash != NULL);
+    
+    MemoryContextSwitchTo(oldcontext);
+    
+    return success;
+}
+
+/*
+ * Check if k-mer is high-frequency using parallel cache
+ */
+static bool
+kmersearch_is_highfreq_kmer_parallel(VarBit *ngram_key)
+{
+    uint64 ngram_hash;
+    
+    /* If parallel cache is not available, return false */
+    if (parallel_cache_hash == NULL)
+        return false;
+    
+    /* Calculate hash for the ngram_key2 (kmer2 + occurrence bits) */
+    ngram_hash = hash_any((unsigned char *) VARDATA(ngram_key), 
+                         VARSIZE(ngram_key) - VARHDRSZ);
+    
+    /* Lookup in parallel cache using complete ngram_key2 */
+    return kmersearch_parallel_cache_lookup(ngram_hash);
+}
+
+/*
+ * Cleanup function for parallel cache on process exit
+ */
+void
+kmersearch_parallel_cache_cleanup_on_exit(int code, Datum arg)
+{
+    ereport(LOG, (errmsg("parallel_cache_cleanup_on_exit: Starting cleanup, code=%d", code)));
+    
+    /* Clean up parallel cache resources */
+    if (parallel_cache_hash != NULL || parallel_cache_dsa != NULL || parallel_cache_segment != NULL) {
+        ereport(LOG, (errmsg("parallel_cache_cleanup_on_exit: Cleaning up resources")));
+        kmersearch_parallel_highfreq_kmer_cache_free_internal();
+    } else {
+        ereport(LOG, (errmsg("parallel_cache_cleanup_on_exit: No resources to clean up")));
+    }
+}

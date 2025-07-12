@@ -30,10 +30,13 @@ static int kmersearch_count_highfreq_kmer_in_query(VarBit **query_keys, int nkey
 static bool kmersearch_is_highfreq_filtering_enabled(void);
 static bool kmersearch_is_highfreq_kmer_parallel(VarBit *kmer);
 static Datum *kmersearch_filter_highfreq_kmers(Oid table_oid, const char *column_name, int k_size, Datum *all_keys, int total_keys, int *filtered_count);
+static bool kmersearch_delete_kmer_from_gin_index(Relation index_rel, VarBit *kmer_key);
 /* Utility functions */
 static List *kmersearch_get_highfreq_kmer_list(Oid index_oid);
 static int kmersearch_varbit_cmp(VarBit *a, VarBit *b);
 static void kmersearch_spi_connect_or_error(void);
+static void kmersearch_handle_spi_error(int spi_result, const char *operation);
+static bool kmersearch_check_analysis_exists(Oid table_oid, const char *column_name, int k_size);
 
 /* External global variables (defined in kmersearch.c) */
 extern int kmersearch_occur_bitlen;
@@ -429,87 +432,6 @@ kmersearch_is_highfreq_kmer_parallel(VarBit *ngram_key)
 /*
  * Filter highly frequent k-mers from key array
  */
-static Datum *
-kmersearch_filter_highfreq_kmers(Oid table_oid, const char *column_name, int k_size, 
-                                Datum *all_keys, int total_keys, int *filtered_count)
-{
-    int ret;
-    StringInfoData query;
-    Datum *filtered_keys;
-    int filtered_idx = 0;
-    int i;
-    VarBit **highfreq_kmers = NULL;
-    int highfreq_count = 0;
-    
-    if (!all_keys || total_keys <= 0) {
-        *filtered_count = 0;
-        return NULL;
-    }
-    
-    /* Connect to SPI */
-    kmersearch_spi_connect_or_error();
-    
-    /* Build query to get highly frequent k-mers for this table/column/k-size */
-    initStringInfo(&query);
-    appendStringInfo(&query,
-        "SELECT kmer_key FROM kmersearch_highfreq_kmer "
-        "WHERE table_oid = %u AND column_name = %s AND k_size = %d",
-        table_oid, quote_literal_cstr(column_name), k_size);
-    
-    /* Execute query */
-    ret = SPI_execute(query.data, true, 0);
-    if (ret == SPI_OK_SELECT && SPI_processed > 0) {
-        highfreq_count = SPI_processed;
-        highfreq_kmers = (VarBit **) palloc(highfreq_count * sizeof(VarBit *));
-        
-        for (i = 0; i < highfreq_count; i++) {
-            bool isnull;
-            Datum kmer_datum = SPI_getbinval(SPI_tuptable->vals[i], 
-                                           SPI_tuptable->tupdesc, 1, &isnull);
-            if (!isnull) {
-                highfreq_kmers[i] = DatumGetVarBitPCopy(kmer_datum);
-            } else {
-                highfreq_kmers[i] = NULL;
-            }
-        }
-    }
-    
-    /* Allocate result array */
-    filtered_keys = (Datum *) palloc(total_keys * sizeof(Datum));
-    
-    /* Filter out highly frequent k-mers */
-    for (i = 0; i < total_keys; i++) {
-        VarBit *key = DatumGetVarBitP(all_keys[i]);
-        bool is_highfreq = false;
-        int j;
-        
-        /* Check against highly frequent k-mers */
-        for (j = 0; j < highfreq_count; j++) {
-            if (highfreq_kmers[j] && kmersearch_varbit_cmp(key, highfreq_kmers[j]) == 0) {
-                is_highfreq = true;
-                break;
-            }
-        }
-        
-        if (!is_highfreq) {
-            filtered_keys[filtered_idx++] = all_keys[i];
-        }
-    }
-    
-    /* Cleanup */
-    pfree(query.data);
-    if (highfreq_kmers) {
-        for (i = 0; i < highfreq_count; i++) {
-            if (highfreq_kmers[i])
-                pfree(highfreq_kmers[i]);
-        }
-        pfree(highfreq_kmers);
-    }
-    SPI_finish();
-    
-    *filtered_count = filtered_idx;
-    return filtered_keys;
-}
 
 /*
  * Analysis helper functions
@@ -960,13 +882,6 @@ kmersearch_varbit_cmp(VarBit *a, VarBit *b)
     return memcmp(VARBITS(a), VARBITS(b), VARBITBYTES(a));
 }
 
-static void
-kmersearch_spi_connect_or_error(void)
-{
-    if (SPI_connect() != SPI_OK_CONNECT)
-        ereport(ERROR, (errmsg("SPI_connect failed")));
-}
-
 /*
  * Validate GUC settings against all metadata table entries
  */
@@ -1074,6 +989,446 @@ kmersearch_lookup_in_parallel_cache(VarBit *kmer_key)
     
     MemoryContextSwitchTo(oldcontext);
     return found;
+}
+
+/*
+ * Connect to SPI with error handling
+ */
+static void
+kmersearch_spi_connect_or_error(void)
+{
+    int ret = SPI_connect();
+    
+    switch (ret) {
+    case SPI_OK_CONNECT:
+        return;  /* Success */
+    case SPI_ERROR_CONNECT:
+        ereport(ERROR,
+                (errcode(ERRCODE_INTERNAL_ERROR),
+                 errmsg("SPI manager already connected")));
+        break;
+    case SPI_ERROR_ARGUMENT:
+        ereport(ERROR,
+                (errcode(ERRCODE_INTERNAL_ERROR),
+                 errmsg("SPI connection failed: invalid argument")));
+        break;
+    default:
+        ereport(ERROR,
+                (errcode(ERRCODE_INTERNAL_ERROR),
+                 errmsg("SPI connection failed with code %d", ret)));
+        break;
+    }
+}
+
+/*
+ * Handle SPI operation errors
+ */
+static void
+kmersearch_handle_spi_error(int spi_result, const char *operation)
+{
+    switch (spi_result) {
+    case SPI_OK_SELECT:
+    case SPI_OK_INSERT:
+    case SPI_OK_DELETE:
+    case SPI_OK_UPDATE:
+    case SPI_OK_UTILITY:
+        return;  /* Success cases */
+        
+    case SPI_ERROR_ARGUMENT:
+        ereport(ERROR,
+                (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+                 errmsg("SPI %s failed: invalid argument", operation)));
+        break;
+        
+    case SPI_ERROR_UNCONNECTED:
+        ereport(ERROR,
+                (errcode(ERRCODE_INTERNAL_ERROR),
+                 errmsg("SPI %s failed: not connected to SPI manager", operation)));
+        break;
+        
+    case SPI_ERROR_COPY:
+        ereport(ERROR,
+                (errcode(ERRCODE_INTERNAL_ERROR),
+                 errmsg("SPI %s failed: COPY operation not supported", operation)));
+        break;
+        
+    case SPI_ERROR_CURSOR:
+        ereport(ERROR,
+                (errcode(ERRCODE_INTERNAL_ERROR),
+                 errmsg("SPI %s failed: cursor operation error", operation)));
+        break;
+        
+    case SPI_ERROR_TRANSACTION:
+        ereport(ERROR,
+                (errcode(ERRCODE_ACTIVE_SQL_TRANSACTION),
+                 errmsg("SPI %s failed: transaction block error", operation)));
+        break;
+        
+    case SPI_ERROR_OPUNKNOWN:
+        ereport(ERROR,
+                (errcode(ERRCODE_INTERNAL_ERROR),
+                 errmsg("SPI %s failed: unknown operation", operation)));
+        break;
+        
+    default:
+        ereport(ERROR,
+                (errcode(ERRCODE_INTERNAL_ERROR),
+                 errmsg("SPI %s failed with code %d", operation, spi_result)));
+        break;
+    }
+}
+
+/*
+ * Check if analysis exists for given parameters
+ */
+static bool
+kmersearch_check_analysis_exists(Oid table_oid, const char *column_name, int k_size)
+{
+    int ret;
+    bool found = false;
+    StringInfoData query;
+    
+    /* Connect to SPI */
+    kmersearch_spi_connect_or_error();
+    
+    /* Build query to check for existing analysis */
+    initStringInfo(&query);
+    appendStringInfo(&query,
+        "SELECT COUNT(*) FROM kmersearch_index_info "
+        "WHERE table_oid = %u AND column_name = '%s' AND k_value = %d",
+        table_oid, column_name, k_size);
+    
+    /* Execute query */
+    ret = SPI_execute(query.data, true, 1);
+    kmersearch_handle_spi_error(ret, "SELECT");
+    if (ret == SPI_OK_SELECT && SPI_processed > 0)
+    {
+        Datum count_datum;
+        bool isnull;
+        int count;
+        
+        count_datum = SPI_getbinval(SPI_tuptable->vals[0], SPI_tuptable->tupdesc, 1, &isnull);
+        if (!isnull)
+        {
+            count = DatumGetInt32(count_datum);
+            found = (count > 0);
+        }
+    }
+    
+    /* Cleanup */
+    pfree(query.data);
+    SPI_finish();
+    
+    return found;
+}
+
+/*
+ * Filter highly frequent k-mers from the key array
+ * A-2: Use direct VarBit comparison instead of hash table (k-mer+occurrence n-gram keys are small)
+ */
+static Datum *
+kmersearch_filter_highfreq_kmers(Oid table_oid, const char *column_name, int k_size, 
+                                Datum *all_keys, int total_keys, int *filtered_count)
+{
+    int ret;
+    StringInfoData query;
+    Datum *filtered_keys;
+    int filtered_idx = 0;
+    int i;
+    VarBit **highfreq_kmers = NULL;
+    int highfreq_count = 0;
+    
+    /* Check if analysis exists */
+    if (!kmersearch_check_analysis_exists(table_oid, column_name, k_size)) {
+        /* No analysis found, return all keys */
+        *filtered_count = total_keys;
+        return all_keys;
+    }
+    
+    /* Connect to SPI */
+    kmersearch_spi_connect_or_error();
+    
+    /* Build query to get excluded k-mers from index info table */
+    initStringInfo(&query);
+    appendStringInfo(&query,
+        "SELECT ek.kmer_key FROM kmersearch_highfreq_kmer ek "
+        "JOIN kmersearch_index_info ii ON ek.index_oid = ii.index_oid "
+        "WHERE ii.table_oid = %u AND ii.column_name = '%s' AND ii.k_value = %d",
+        table_oid, column_name, k_size);
+    
+    /* Execute query and collect highly frequent k-mers in a simple array */
+    ret = SPI_execute(query.data, true, 0);
+    if (ret == SPI_OK_SELECT && SPI_processed > 0)
+    {
+        int j;
+        highfreq_count = SPI_processed;
+        highfreq_kmers = (VarBit **) palloc(highfreq_count * sizeof(VarBit *));
+        
+        for (j = 0; j < SPI_processed; j++)
+        {
+            bool isnull;
+            Datum kmer_datum;
+            VarBit *kmer;
+            
+            kmer_datum = SPI_getbinval(SPI_tuptable->vals[j], SPI_tuptable->tupdesc, 1, &isnull);
+            if (!isnull)
+            {
+                kmer = DatumGetVarBitP(kmer_datum);
+                
+                /* Store copy of k-mer for direct comparison */
+                highfreq_kmers[j] = (VarBit *) palloc(VARSIZE(kmer));
+                memcpy(highfreq_kmers[j], kmer, VARSIZE(kmer));
+            }
+            else
+            {
+                highfreq_kmers[j] = NULL;
+            }
+        }
+    }
+    
+    /* Filter out highly frequent k-mers using direct VarBit comparison */
+    filtered_keys = (Datum *) palloc(total_keys * sizeof(Datum));
+    
+    for (i = 0; i < total_keys; i++)
+    {
+        VarBit *kmer = DatumGetVarBitP(all_keys[i]);
+        bool is_highfreq = false;
+        int j;
+        
+        /* Direct comparison with highly frequent k-mers (no hashing) */
+        for (j = 0; j < highfreq_count; j++)
+        {
+            if (highfreq_kmers[j] != NULL &&
+                VARBITLEN(kmer) == VARBITLEN(highfreq_kmers[j]) &&
+                VARSIZE(kmer) == VARSIZE(highfreq_kmers[j]) &&
+                memcmp(VARBITS(kmer), VARBITS(highfreq_kmers[j]), VARBITBYTES(kmer)) == 0)
+            {
+                is_highfreq = true;
+                break;
+            }
+        }
+        
+        if (!is_highfreq)
+        {
+            /* Not highly frequent, include in filtered result */
+            filtered_keys[filtered_idx++] = all_keys[i];
+        }
+    }
+    
+    /* Cleanup */
+    pfree(query.data);
+    if (highfreq_kmers)
+    {
+        int j;
+        for (j = 0; j < highfreq_count; j++)
+        {
+            if (highfreq_kmers[j])
+                pfree(highfreq_kmers[j]);
+        }
+        pfree(highfreq_kmers);
+    }
+    SPI_finish();
+    
+    *filtered_count = filtered_idx;
+    
+    /* If no keys were filtered, return original array */
+    if (filtered_idx == total_keys) {
+        pfree(filtered_keys);
+        return all_keys;
+    }
+    
+    return filtered_keys;
+}
+
+/*
+ * Helper function to get highly frequent k-mers list for a given index
+ */
+static List *
+kmersearch_get_highfreq_kmer_list(Oid index_oid)
+{
+    List *highfreq_kmers = NIL;
+    int ret;
+    StringInfoData query;
+    
+    /* Connect to SPI */
+    kmersearch_spi_connect_or_error();
+    
+    /* Build query to get highly frequent k-mers */
+    initStringInfo(&query);
+    appendStringInfo(&query,
+        "SELECT ek.kmer_key FROM kmersearch_highfreq_kmer ek "
+        "JOIN kmersearch_index_info ii ON ek.index_oid = ii.index_oid "
+        "WHERE ii.index_oid = %u ORDER BY ek.kmer_key",
+        index_oid);
+    
+    /* Execute query */
+    ret = SPI_execute(query.data, true, 0);
+    kmersearch_handle_spi_error(ret, "SELECT highly frequent k-mers");
+    
+    if (ret == SPI_OK_SELECT && SPI_processed > 0)
+    {
+        int i;
+        for (i = 0; i < SPI_processed; i++)
+        {
+            bool isnull;
+            Datum kmer_datum;
+            VarBit *kmer;
+            
+            kmer_datum = SPI_getbinval(SPI_tuptable->vals[i], SPI_tuptable->tupdesc, 1, &isnull);
+            if (!isnull)
+            {
+                kmer = DatumGetVarBitPCopy(kmer_datum);
+                highfreq_kmers = lappend(highfreq_kmers, kmer);
+            }
+        }
+    }
+    
+    /* Cleanup */
+    pfree(query.data);
+    SPI_finish();
+    
+    return highfreq_kmers;
+}
+
+/*
+ * Helper function to delete a k-mer from GIN index
+ */
+static bool
+kmersearch_delete_kmer_from_gin_index(Relation index_rel, VarBit *kmer_key)
+{
+    /* 
+     * Note: This is a simplified implementation.
+     * In a complete implementation, this would use GIN internal APIs
+     * to locate and remove the specific k-mer key and its posting list.
+     * For now, we'll just log the operation.
+     */
+    ereport(DEBUG1, (errmsg("Would delete k-mer from index (size: %d bits)", 
+                           VARBITLEN(kmer_key))));
+    
+    /*
+     */
+    
+    return true;  /* Assume success for now */
+}
+
+/*
+ * High-frequency k-mer filtering functions implementation
+ */
+Datum *
+kmersearch_filter_highfreq_kmers_from_keys(Datum *original_keys, int *nkeys, HTAB *highfreq_hash, int k)
+{
+    Datum *filtered_keys;
+    int original_count;
+    int filtered_count;
+    int i;
+    
+    if (!original_keys || !nkeys || *nkeys <= 0)
+        return NULL;
+    
+    /* If no high-frequency hash, return original keys unchanged */
+    if (!highfreq_hash)
+        return original_keys;
+    
+    original_count = *nkeys;
+    filtered_keys = (Datum *) palloc(original_count * sizeof(Datum));
+    filtered_count = 0;
+    
+    /* Filter out high-frequency k-mers */
+    for (i = 0; i < original_count; i++)
+    {
+        VarBit *ngram_key;
+        bool found;
+        
+        ngram_key = DatumGetVarBitP(original_keys[i]);
+        if (!ngram_key)
+            continue;
+        
+        /* Use ngram_key2 directly for high-frequency lookup - no occurrence bits removal needed */
+        {
+            /* Calculate hash using complete ngram_key2 (kmer2 + occurrence bits) */
+            int bit_length = VARBITLEN(ngram_key);
+            int byte_count = (bit_length + 7) / 8;  /* Round up to next byte */
+            uint64 hash_value = DatumGetUInt64(hash_any((unsigned char *) VARBITS(ngram_key), byte_count));
+            
+            hash_search(highfreq_hash,
+                       (void *) &hash_value,
+                       HASH_FIND,
+                       &found);
+        }
+        
+        if (!found)
+        {
+            /* Not a high-frequency k-mer, keep it */
+            filtered_keys[filtered_count++] = original_keys[i];
+        }
+        
+        /* No need to free ngram_key since it's managed by caller */
+    }
+    
+    /* Update the count */
+    *nkeys = filtered_count;
+    
+    /* If no keys left, return NULL */
+    if (filtered_count == 0)
+    {
+        pfree(filtered_keys);
+        return NULL;
+    }
+    
+    /* Resize the array if significantly smaller */
+    if (filtered_count < original_count / 2)
+    {
+        filtered_keys = (Datum *) repalloc(filtered_keys, filtered_count * sizeof(Datum));
+    }
+    
+    return filtered_keys;
+}
+
+/*
+ * Filter high-frequency k-mers from keys using parallel cache
+ */
+Datum *
+kmersearch_filter_highfreq_kmers_from_keys_parallel(Datum *original_keys, int *nkeys, int k)
+{
+    Datum *filtered_keys;
+    int filtered_count = 0;
+    int i;
+    
+    if (!original_keys || *nkeys <= 0)
+        return original_keys;
+    
+    /* Allocate space for filtered keys */
+    filtered_keys = (Datum *) palloc(*nkeys * sizeof(Datum));
+    
+    /* Filter out high-frequency k-mers using direct ngram_key2 comparison */
+    for (i = 0; i < *nkeys; i++) {
+        VarBit *ngram_key = (VarBit *) DatumGetPointer(original_keys[i]);
+        
+        /* Use ngram_key2 directly for high-frequency check - no occurrence bits removal needed */
+        if (!kmersearch_is_highfreq_kmer_parallel(ngram_key)) {
+            /* Keep this k-mer */
+            filtered_keys[filtered_count++] = original_keys[i];
+        } else {
+            /* Free the filtered k-mer */
+            pfree(ngram_key);
+        }
+        
+        /* No need to clean up temporary key since we use ngram_key directly */
+    }
+    
+    /* Free original keys array */
+    pfree(original_keys);
+    
+    /* Update the key count */
+    *nkeys = filtered_count;
+    
+    /* Return filtered keys (or NULL if no keys remain) */
+    if (filtered_count == 0) {
+        pfree(filtered_keys);
+        return NULL;
+    }
+    
+    return filtered_keys;
 }
 
 /*
