@@ -295,12 +295,12 @@ CREATE FUNCTION char_length(DNA4)
 -- length functions (same as nuc_length)
 CREATE FUNCTION length(DNA2) 
     RETURNS integer
-    AS 'MODULE_PATHNAME', 'kmersearch_dna2_char_length'
+    AS 'MODULE_PATHNAME', 'kmersearch_dna2_nuc_length'
     LANGUAGE C IMMUTABLE STRICT;
 
 CREATE FUNCTION length(DNA4) 
     RETURNS integer
-    AS 'MODULE_PATHNAME', 'kmersearch_dna4_char_length'
+    AS 'MODULE_PATHNAME', 'kmersearch_dna4_nuc_length'
     LANGUAGE C IMMUTABLE STRICT;
 
 -- Complex types for function return values

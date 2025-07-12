@@ -410,6 +410,10 @@ Datum kmersearch_dna2_eq(PG_FUNCTION_ARGS);
 Datum kmersearch_dna4_eq(PG_FUNCTION_ARGS);
 
 /* DNA datatype length functions */
+Datum kmersearch_dna2_bit_length(PG_FUNCTION_ARGS);
+Datum kmersearch_dna4_bit_length(PG_FUNCTION_ARGS);
+Datum kmersearch_dna2_nuc_length(PG_FUNCTION_ARGS);
+Datum kmersearch_dna4_nuc_length(PG_FUNCTION_ARGS);
 Datum kmersearch_dna2_char_length(PG_FUNCTION_ARGS);
 Datum kmersearch_dna4_char_length(PG_FUNCTION_ARGS);
 
