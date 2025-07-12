@@ -66,12 +66,12 @@ SELECT 'Phase 3: Testing search functionality...' AS test_phase;
 SET kmersearch.preclude_highfreq_kmer = true;
 
 -- Test with global cache only
-SET kmersearch.force_use_dshash = false;
+SET kmersearch.force_use_parallel_highfreq_kmer_cache = false;
 SELECT 'Testing with global cache:' AS cache_type;
 SELECT COUNT(*) AS results FROM test_parallel_enhanced WHERE seq =% 'ATCGATCG';
 
 -- Test with parallel cache (force dshash)
-SET kmersearch.force_use_dshash = true;
+SET kmersearch.force_use_parallel_highfreq_kmer_cache = true;
 SELECT 'Testing with parallel cache:' AS cache_type;
 SELECT COUNT(*) AS results FROM test_parallel_enhanced WHERE seq =% 'ATCGATCG';
 
@@ -98,7 +98,7 @@ SELECT 'Phase 6: Testing cache cleanup and fallback...' AS test_phase;
 SELECT kmersearch_parallel_highfreq_kmers_cache_free() AS parallel_cache_freed;
 
 -- Test fallback to table lookup
-SET kmersearch.force_use_dshash = false;
+SET kmersearch.force_use_parallel_highfreq_kmer_cache = false;
 SELECT 'Testing table lookup fallback:' AS test_description;
 SELECT COUNT(*) AS results FROM test_parallel_enhanced WHERE seq =% 'ATCGATCG';
 

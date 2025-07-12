@@ -26,7 +26,7 @@ PG_FUNCTION_INFO_V1(kmersearch_parallel_highfreq_kmer_cache_free);
 HighfreqKmerCache global_highfreq_cache = {0};
 
 /* Global testing variable for dshash usage (not exposed to users) */
-bool kmersearch_force_use_dshash = false;
+bool kmersearch_force_use_parallel_highfreq_kmer_cache = false;
 
 /* Global parallel cache state */
 ParallelHighfreqKmerCache *parallel_highfreq_cache = NULL;

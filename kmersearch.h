@@ -374,7 +374,7 @@ extern RawscoreCacheManager *rawscore_cache_manager;
 extern HighfreqKmerCache global_highfreq_cache;
 
 /* Global testing variable for dshash usage */
-extern bool kmersearch_force_use_dshash;
+extern bool kmersearch_force_use_parallel_highfreq_kmer_cache;
 
 /* Global parallel cache state */
 extern ParallelHighfreqKmerCache *parallel_highfreq_cache;
@@ -451,7 +451,7 @@ void kmersearch_free_actual_min_score_cache_internal(void);
 
 /* High-frequency k-mer cache global variables (defined in kmersearch_cache.c) */
 extern HighfreqKmerCache global_highfreq_cache;
-extern bool kmersearch_force_use_dshash;
+extern bool kmersearch_force_use_parallel_highfreq_kmer_cache;
 extern ParallelHighfreqKmerCache *parallel_highfreq_cache;
 extern dsm_segment *parallel_cache_segment;
 extern dsa_area *parallel_cache_dsa;

@@ -494,10 +494,10 @@ _PG_init(void)
                             NULL,
                             NULL);
 
-    DefineCustomBoolVariable("kmersearch.force_use_dshash",
+    DefineCustomBoolVariable("kmersearch.force_use_parallel_highfreq_kmer_cache",
                             "Force use of dshash-based parallel cache (for testing)",
                             "When enabled, forces the use of parallel high-frequency k-mer cache even for main processes",
-                            &kmersearch_force_use_dshash,
+                            &kmersearch_force_use_parallel_highfreq_kmer_cache,
                             false,
                             PGC_USERSET,
                             0,

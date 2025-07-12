@@ -141,7 +141,7 @@ pg_kmersearchは、PostgreSQLの`SET`コマンドで設定可能な複数の設�
 | `kmersearch.query_pattern_cache_max_entries` | 50000 | 1000-10000000 | クエリパターンキャッシュの最大エントリ数 |
 | `kmersearch.actual_min_score_cache_max_entries` | 50000 | 1000-10000000 | actual min scoreキャッシュの最大エントリ数 |
 | `kmersearch.preclude_highfreq_kmer` | false | true/false | GINインデックス構築時の高頻出k-mer除外の有効化 |
-| `kmersearch.force_use_dshash` | false | true/false | 高頻出k-mer検索での並列dshashキャッシュの強制使用 |
+| `kmersearch.force_use_parallel_highfreq_kmer_cache` | false | true/false | 高頻出k-mer検索での並列dshashキャッシュの強制使用 |
 
 ### 高頻出k-mer除外機能
 

@@ -137,14 +137,14 @@ SELECT 'Testing cache hierarchy fallback...' as test_substep;
 SELECT kmersearch_highfreq_kmers_cache_free() as global_freed;
 
 -- Test with only parallel cache
-SET kmersearch.force_use_dshash = true;
+SET kmersearch.force_use_parallel_highfreq_kmer_cache = true;
 SELECT sequence =% 'ATCGATCG' as parallel_only_query FROM test_highfreq_dna2 LIMIT 1;
 
 -- Clear parallel cache  
 SELECT kmersearch_parallel_highfreq_kmers_cache_free() as parallel_freed;
 
 -- Test with no cache (table lookup fallback)
-SET kmersearch.force_use_dshash = false;
+SET kmersearch.force_use_parallel_highfreq_kmer_cache = false;
 SELECT sequence =% 'ATCGATCG' as table_fallback_query FROM test_highfreq_dna2 LIMIT 1;
 
 -- Clean up test data

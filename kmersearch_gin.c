@@ -122,7 +122,7 @@ kmersearch_extract_value_dna2(PG_FUNCTION_ARGS)
     
     /* Apply high-frequency k-mer filtering using ngram_key2 direct comparison */
     if (keys && *nkeys > 0 && kmersearch_preclude_highfreq_kmer) {
-        if (kmersearch_force_use_dshash || IsParallelWorker()) {
+        if (kmersearch_force_use_parallel_highfreq_kmer_cache || IsParallelWorker()) {
             /* Use parallel cache for worker processes or when forcing dshash */
             if (parallel_highfreq_cache && parallel_highfreq_cache->is_initialized) {
                 keys = kmersearch_filter_highfreq_kmers_from_keys_parallel(keys, nkeys, k);
@@ -173,7 +173,7 @@ kmersearch_extract_value_dna4(PG_FUNCTION_ARGS)
     
     /* Apply high-frequency k-mer filtering using ngram_key2 direct comparison */
     if (keys && *nkeys > 0 && kmersearch_preclude_highfreq_kmer) {
-        if (kmersearch_force_use_dshash || IsParallelWorker()) {
+        if (kmersearch_force_use_parallel_highfreq_kmer_cache || IsParallelWorker()) {
             /* Use parallel cache for worker processes or when forcing dshash */
             if (parallel_highfreq_cache && parallel_highfreq_cache->is_initialized) {
                 keys = kmersearch_filter_highfreq_kmers_from_keys_parallel(keys, nkeys, k);
@@ -264,7 +264,7 @@ kmersearch_consistent(PG_FUNCTION_ARGS)
     
     /* Handle high-frequency k-mer cache only if enabled */
     if (kmersearch_preclude_highfreq_kmer) {
-        if (kmersearch_force_use_dshash || IsParallelWorker()) {
+        if (kmersearch_force_use_parallel_highfreq_kmer_cache || IsParallelWorker()) {
             /* Use parallel cache for worker processes or when forcing dshash */
             if (!(parallel_highfreq_cache && parallel_highfreq_cache->is_initialized)) {
                 ereport(ERROR,
