@@ -36,7 +36,6 @@ static List *kmersearch_get_highfreq_kmer_list(Oid index_oid);
 static bool kmersearch_validate_guc_against_all_metadata(void);
 static bool kmersearch_is_parallel_highfreq_cache_loaded(void);
 static bool kmersearch_lookup_in_parallel_cache(VarBit *kmer_key);
-static bool kmersearch_parallel_cache_lookup(uint64 kmer_hash);
 static int kmersearch_varbit_cmp(VarBit *a, VarBit *b);
 static void kmersearch_spi_connect_or_error(void);
 
@@ -994,11 +993,6 @@ kmersearch_lookup_in_parallel_cache(VarBit *kmer_key)
     return kmersearch_parallel_cache_lookup(kmer_hash);
 }
 
-static bool
-kmersearch_parallel_cache_lookup(uint64 kmer_hash)
-{
-    return false;
-}
 
 static int
 kmersearch_varbit_cmp(VarBit *a, VarBit *b)

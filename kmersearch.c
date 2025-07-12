@@ -64,7 +64,7 @@ static int kmersearch_calculate_raw_score(VarBit *seq1, VarBit *seq2, text *quer
 Datum *kmersearch_filter_highfreq_kmers_from_keys(Datum *original_keys, int *nkeys, HTAB *highfreq_hash, int k);
 /* Parallel high-frequency k-mer cache management functions */
 static bool kmersearch_parallel_highfreq_kmer_cache_is_valid(Oid table_oid, const char *column_name, int k_value);
-static bool kmersearch_parallel_cache_lookup(uint64 kmer_hash);
+bool kmersearch_parallel_cache_lookup(uint64 kmer_hash);
 static bool kmersearch_parallel_cache_attach(dsm_handle handle);
 Datum *kmersearch_filter_highfreq_kmers_from_keys_parallel(Datum *original_keys, int *nkeys, int k);
 static void kmersearch_parallel_cache_cleanup_internal(void);
@@ -3667,7 +3667,7 @@ kmersearch_parallel_highfreq_kmer_cache_is_valid(Oid table_oid, const char *colu
 /*
  * Lookup entry in parallel high-frequency k-mer cache
  */
-static bool
+bool
 kmersearch_parallel_cache_lookup(uint64 kmer_hash)
 {
     ParallelHighfreqKmerCacheEntry *entry;

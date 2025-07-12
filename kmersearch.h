@@ -474,6 +474,7 @@ void kmersearch_parallel_highfreq_kmer_cache_init(void);
 bool kmersearch_parallel_highfreq_kmer_cache_load_internal(Oid table_oid, const char *column_name, int k_value);
 void kmersearch_parallel_highfreq_kmer_cache_free_internal(void);
 void kmersearch_parallel_cache_cleanup_on_exit(int code, Datum arg);
+bool kmersearch_parallel_cache_lookup(uint64 kmer_hash);
 
 /* High-frequency k-mer cache functions */
 Datum kmersearch_highfreq_kmer_cache_load(PG_FUNCTION_ARGS);
