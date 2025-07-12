@@ -45,7 +45,7 @@ WHERE EXISTS (SELECT 1 FROM pg_stat_user_indexes WHERE relname = 'test_parallel_
 
 -- Test Phase 1: Load global cache
 SELECT 'Phase 1: Loading global cache...' AS test_phase;
-SELECT kmersearch_highfreq_kmers_cache_load(
+SELECT kmersearch_highfreq_kmer_cache_load(
     (SELECT oid FROM pg_class WHERE relname = 'test_parallel_enhanced')::oid,
     'seq'::text,
     8::integer
@@ -53,7 +53,7 @@ SELECT kmersearch_highfreq_kmers_cache_load(
 
 -- Test Phase 2: Load parallel cache
 SELECT 'Phase 2: Loading parallel cache...' AS test_phase;
-SELECT kmersearch_parallel_highfreq_kmers_cache_load(
+SELECT kmersearch_parallel_highfreq_kmer_cache_load(
     (SELECT oid FROM pg_class WHERE relname = 'test_parallel_enhanced')::oid,
     'seq'::text,
     8::integer
@@ -95,7 +95,7 @@ LIMIT 5;
 SELECT 'Phase 6: Testing cache cleanup and fallback...' AS test_phase;
 
 -- Free parallel cache
-SELECT kmersearch_parallel_highfreq_kmers_cache_free() AS parallel_cache_freed;
+SELECT kmersearch_parallel_highfreq_kmer_cache_free() AS parallel_cache_freed;
 
 -- Test fallback to table lookup
 SET kmersearch.force_use_parallel_highfreq_kmer_cache = false;

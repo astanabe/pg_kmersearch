@@ -100,7 +100,7 @@ SELECT 'Testing cache loading...' as test_phase;
 -- Set GUC variables to match metadata
 SET kmersearch.max_appearance_rate = 0.05;
 SET kmersearch.max_appearance_nrow = 0;
-SELECT kmersearch_highfreq_kmers_cache_load(test_highfreq_dna2.tableoid, 'sequence', 8) as cache_loaded
+SELECT kmersearch_highfreq_kmer_cache_load(test_highfreq_dna2.tableoid, 'sequence', 8) as cache_loaded
 FROM test_highfreq_dna2 LIMIT 1;
  cache_loaded 
 --------------
@@ -127,7 +127,7 @@ SELECT 'Testing cache loading with invalid parameters...' as test_phase;
  Testing cache loading with invalid parameters...
 (1 row)
 
-SELECT kmersearch_highfreq_kmers_cache_load(0, 'nonexistent', 8) as cache_loaded;
+SELECT kmersearch_highfreq_kmer_cache_load(0, 'nonexistent', 8) as cache_loaded;
 ERROR:  No metadata found for table_oid=0, column_name='nonexistent', k_value=8
 HINT:  Run kmersearch_analyze_table() first to create metadata.
 -- Test cache clearing when no cache exists
@@ -170,7 +170,7 @@ SELECT 'Testing GUC validation errors...' as test_substep;
 
 -- Change GUC to cause mismatch and test cache loading (should fail)
 SET kmersearch.max_appearance_rate = 0.9;  -- Different from metadata (0.05)
-SELECT kmersearch_highfreq_kmers_cache_load(
+SELECT kmersearch_highfreq_kmer_cache_load(
   (SELECT oid FROM pg_class WHERE relname = 'test_highfreq_dna2'),
   'sequence', 8
 ) as cache_load_with_mismatch;
@@ -186,7 +186,7 @@ SELECT 'Testing global cache hierarchy...' as test_substep;
  Testing global cache hierarchy...
 (1 row)
 
-SELECT kmersearch_highfreq_kmers_cache_load(
+SELECT kmersearch_highfreq_kmer_cache_load(
   (SELECT oid FROM pg_class WHERE relname = 'test_highfreq_dna2'),
   'sequence', 8
 ) as global_cache_loaded;
@@ -209,7 +209,7 @@ SELECT 'Testing parallel cache hierarchy...' as test_substep;
  Testing parallel cache hierarchy...
 (1 row)
 
-SELECT kmersearch_parallel_highfreq_kmers_cache_load(
+SELECT kmersearch_parallel_highfreq_kmer_cache_load(
   (SELECT oid FROM pg_class WHERE relname = 'test_highfreq_dna2'),
   'sequence', 8
 ) as parallel_cache_loaded;
@@ -241,7 +241,7 @@ SELECT sequence =% 'ATCGATCG' as parallel_only_query FROM test_highfreq_dna2 LIM
 (1 row)
 
 -- Clear parallel cache  
-SELECT kmersearch_parallel_highfreq_kmers_cache_free() as parallel_freed;
+SELECT kmersearch_parallel_highfreq_kmer_cache_free() as parallel_freed;
  parallel_freed 
 ----------------
              94

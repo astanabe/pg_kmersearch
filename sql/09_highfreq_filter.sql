@@ -69,7 +69,7 @@ SELECT 'Testing cache loading...' as test_phase;
 SET kmersearch.max_appearance_rate = 0.05;
 SET kmersearch.max_appearance_nrow = 0;
 
-SELECT kmersearch_highfreq_kmers_cache_load(test_highfreq_dna2.tableoid, 'sequence', 8) as cache_loaded
+SELECT kmersearch_highfreq_kmer_cache_load(test_highfreq_dna2.tableoid, 'sequence', 8) as cache_loaded
 FROM test_highfreq_dna2 LIMIT 1;
 
 -- Test high-frequency k-mer cache clearing
@@ -78,7 +78,7 @@ SELECT kmersearch_highfreq_kmers_cache_free() as freed_entries;
 
 -- Test cache loading with non-existent data
 SELECT 'Testing cache loading with invalid parameters...' as test_phase;
-SELECT kmersearch_highfreq_kmers_cache_load(0, 'nonexistent', 8) as cache_loaded;
+SELECT kmersearch_highfreq_kmer_cache_load(0, 'nonexistent', 8) as cache_loaded;
 
 -- Test cache clearing when no cache exists
 SELECT 'Testing cache clearing when no cache exists...' as test_phase;
@@ -105,7 +105,7 @@ SELECT 'Testing GUC validation errors...' as test_substep;
 
 -- Change GUC to cause mismatch and test cache loading (should fail)
 SET kmersearch.max_appearance_rate = 0.9;  -- Different from metadata (0.05)
-SELECT kmersearch_highfreq_kmers_cache_load(
+SELECT kmersearch_highfreq_kmer_cache_load(
   (SELECT oid FROM pg_class WHERE relname = 'test_highfreq_dna2'),
   'sequence', 8
 ) as cache_load_with_mismatch;
@@ -115,7 +115,7 @@ SET kmersearch.max_appearance_rate = 0.05;
 
 -- Test 2: Cache hierarchy - Global cache
 SELECT 'Testing global cache hierarchy...' as test_substep;
-SELECT kmersearch_highfreq_kmers_cache_load(
+SELECT kmersearch_highfreq_kmer_cache_load(
   (SELECT oid FROM pg_class WHERE relname = 'test_highfreq_dna2'),
   'sequence', 8
 ) as global_cache_loaded;
@@ -125,7 +125,7 @@ SELECT sequence =% 'ATCGATCG' as global_cache_query FROM test_highfreq_dna2 LIMI
 
 -- Test 3: Cache hierarchy - Parallel cache  
 SELECT 'Testing parallel cache hierarchy...' as test_substep;
-SELECT kmersearch_parallel_highfreq_kmers_cache_load(
+SELECT kmersearch_parallel_highfreq_kmer_cache_load(
   (SELECT oid FROM pg_class WHERE relname = 'test_highfreq_dna2'),
   'sequence', 8
 ) as parallel_cache_loaded;
@@ -141,7 +141,7 @@ SET kmersearch.force_use_parallel_highfreq_kmer_cache = true;
 SELECT sequence =% 'ATCGATCG' as parallel_only_query FROM test_highfreq_dna2 LIMIT 1;
 
 -- Clear parallel cache  
-SELECT kmersearch_parallel_highfreq_kmers_cache_free() as parallel_freed;
+SELECT kmersearch_parallel_highfreq_kmer_cache_free() as parallel_freed;
 
 -- Test with no cache (table lookup fallback)
 SET kmersearch.force_use_parallel_highfreq_kmer_cache = false;

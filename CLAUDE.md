@@ -12,9 +12,41 @@ make clean             # Clean build artifacts
 ```
 
 ### Testing
+
+**IMPORTANT NOTE FOR CLAUDE CODE USERS:**
+Claude Code cannot execute `sudo` commands. When testing is required, Claude will provide the necessary commands for manual execution. The user must run these commands with appropriate privileges.
+
 ```bash
+# IMPORTANT: Before running installcheck, you MUST rebuild and reinstall the extension
+# especially after SQL function name changes or other modifications
+sudo systemctl stop postgresql
+make clean
+make
+sudo make install
+sudo systemctl start postgresql
 make installcheck      # Run regression tests using REGRESS variable
 ```
+
+**Complete workflow for testing after modifications:**
+```bash
+# Drop existing extension and rebuild completely
+psql -d postgres -c "DROP EXTENSION IF EXISTS pg_kmersearch CASCADE;"
+sudo systemctl stop postgresql
+make clean
+make
+sudo make install
+sudo systemctl start postgresql
+make installcheck
+```
+
+**Claude Code Workflow:**
+When Claude Code needs to perform testing, it will:
+1. Execute non-sudo commands (make clean, make, make installcheck)
+2. Present required sudo commands for manual execution:
+   - `sudo systemctl stop postgresql`
+   - `sudo make install` 
+   - `sudo systemctl start postgresql`
+3. Wait for user confirmation before proceeding with testing
 
 The test suite includes 12 test files covering:
 - Basic DNA2/DNA4 data types (01_basic_types.sql)
