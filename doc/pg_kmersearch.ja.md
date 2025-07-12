@@ -702,11 +702,11 @@ pg_kmersearchは、検索性能を向上させるための3種類の高速キャ
 ### Rawscore Cache
 - **目的**: 計算済みrawscoreの高速取得
 - **仕組み**: 配列とクエリの組み合わせ結果をキャッシュ
-- **メモリ管理**: PortalContext-based実装
+- **メモリ管理**: TopMemoryContext-based実装
 
 ### Query Pattern Cache
 - **目的**: クエリパターンの再利用による高速化
-- **メモリ管理**: PortalContext-based実装
+- **メモリ管理**: TopMemoryContext-based実装
 
 ### キャッシュ統計・管理関数
 

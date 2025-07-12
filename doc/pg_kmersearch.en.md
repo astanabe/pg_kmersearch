@@ -702,11 +702,11 @@ pg_kmersearch provides three types of high-performance cache systems to improve 
 ### Rawscore Cache
 - **Purpose**: Fast retrieval of calculated rawscores
 - **Mechanism**: Caches sequence and query combination results
-- **Memory management**: PortalContext-based implementation
+- **Memory management**: TopMemoryContext-based implementation
 
 ### Query Pattern Cache
 - **Purpose**: Performance improvement through query pattern reuse
-- **Memory management**: PortalContext-based implementation
+- **Memory management**: TopMemoryContext-based implementation
 
 ### Cache Statistics and Management Functions
 
