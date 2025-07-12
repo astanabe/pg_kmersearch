@@ -723,36 +723,10 @@ kmersearch_will_exceed_degenerate_limit(const char *seq, int len)
 }
 
 /*
- * Remove occurrence bits from n-gram key to get just the k-mer part
+ * Removed: kmersearch_remove_occurrence_bits() function 
+ * This function was eliminated because the correct architecture uses ngram_key2
+ * directly without removing occurrence bits for high-frequency k-mer comparisons.
  */
-VarBit *
-kmersearch_remove_occurrence_bits(VarBit *key_with_occurrence, int k)
-{
-    VarBit *result;
-    int kmer_bits;
-    int kmer_bytes;
-    int total_bits;
-    int occur_bits;
-    
-    if (!key_with_occurrence || k <= 0)
-        return NULL;
-    
-    occur_bits = kmersearch_occur_bitlen;
-    total_bits = VARBITLEN(key_with_occurrence);
-    kmer_bits = total_bits - occur_bits;
-    
-    if (kmer_bits <= 0)
-        return NULL;
-    
-    kmer_bytes = (kmer_bits + 7) / 8;
-    result = (VarBit *) palloc(VARHDRSZ + kmer_bytes);
-    SET_VARSIZE(result, VARHDRSZ + kmer_bytes);
-    VARBITLEN(result) = kmer_bits;
-    
-    memcpy(VARBITS(result), VARBITS(key_with_occurrence), kmer_bytes);
-    
-    return result;
-}
 
 /*
  * Extract k-mers from query string with degenerate code expansion

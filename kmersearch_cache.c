@@ -1664,7 +1664,7 @@ kmersearch_get_highfreq_kmer_from_table(Oid table_oid, const char *column_name, 
     ereport(DEBUG1, (errmsg("kmersearch_get_highfreq_kmer_from_table: SPI connected successfully")));
     
     /* Build query to get highly frequent k-mers */
-    ereport(DEBUG1, (errmsg("kmersearch_get_highfreq_kmer_from_table: Building query to get high-frequency k-mers")));
+    ereport(DEBUG1, (errmsg("kmersearch_get_highfreq_kmer_from_table: Building query to get high-frequency ngram_key2")));
     initStringInfo(&query);
     appendStringInfo(&query,
         "SELECT DISTINCT hkm.ngram_key FROM kmersearch_highfreq_kmer hkm "
@@ -1791,7 +1791,7 @@ kmersearch_create_highfreq_hash_from_array(VarBit **kmers, int nkeys)
         
         ereport(DEBUG1, (errmsg("kmersearch_create_highfreq_hash_from_array: K-mer %d pointer is valid", i+1)));
         
-        ereport(DEBUG1, (errmsg("kmersearch_create_highfreq_hash_from_array: Calculating hash value for k-mer %d", i+1)));
+        ereport(DEBUG1, (errmsg("kmersearch_create_highfreq_hash_from_array: Calculating hash value for ngram_key2 %d", i+1)));
         
         /* Validate VarBit data before hash calculation */
         if (VARSIZE(kmers[i]) < VARHDRSZ) {
@@ -1810,16 +1810,20 @@ kmersearch_create_highfreq_hash_from_array(VarBit **kmers, int nkeys)
         
         ereport(DEBUG1, (errmsg("kmersearch_create_highfreq_hash_from_array: K-mer %d VARBITS pointer valid: %p", i+1, bits_ptr)));
         
-        /* Check VARBITBYTES value */
-        bytes_len = VARBITBYTES(kmers[i]);
+        /* Calculate bytes length manually for ngram_key2 (more reliable than VARBITBYTES) */
+        {
+            int bit_length = VARBITLEN(kmers[i]);
+            bytes_len = (bit_length + 7) / 8;  /* Round up to next byte */
+        }
+        
         if (bytes_len <= 0 || bytes_len > 1000) {  /* Reasonable upper limit */
             ereport(DEBUG1, (errmsg("kmersearch_create_highfreq_hash_from_array: K-mer %d has invalid bytes length %d, skipping", i+1, bytes_len)));
             continue;
         }
         
-        ereport(DEBUG1, (errmsg("kmersearch_create_highfreq_hash_from_array: K-mer %d bytes length validation passed: %d", i+1, bytes_len)));
+        ereport(DEBUG1, (errmsg("kmersearch_create_highfreq_hash_from_array: K-mer %d bytes length calculated: %d", i+1, bytes_len)));
         
-        /* Calculate hash value for this k-mer */
+        /* Calculate hash value for this ngram_key2 (kmer2 + occurrence bits) */
         hash_value = DatumGetUInt64(hash_any(bits_ptr, bytes_len));
         
         ereport(DEBUG1, (errmsg("kmersearch_create_highfreq_hash_from_array: Hash value calculated for k-mer %d: %lu", i+1, hash_value)));

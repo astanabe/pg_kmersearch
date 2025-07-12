@@ -3285,27 +3285,20 @@ kmersearch_filter_highfreq_kmers_from_keys(Datum *original_keys, int *nkeys, HTA
     /* Filter out high-frequency k-mers */
     for (i = 0; i < original_count; i++)
     {
-        VarBit *key_with_occurrence;
-        VarBit *kmer_only;
+        VarBit *ngram_key;
         bool found;
         
-        key_with_occurrence = DatumGetVarBitP(original_keys[i]);
-        if (!key_with_occurrence)
+        ngram_key = DatumGetVarBitP(original_keys[i]);
+        if (!ngram_key)
             continue;
         
-        /* Remove occurrence bits to get pure k-mer */
-        kmer_only = kmersearch_remove_occurrence_bits(key_with_occurrence, k);
-        if (!kmer_only)
+        /* Use ngram_key2 directly for high-frequency lookup - no occurrence bits removal needed */
         {
-            /* If we can't extract the k-mer, keep the original key */
-            filtered_keys[filtered_count++] = original_keys[i];
-            continue;
-        }
-        
-        /* Check if this k-mer is in the high-frequency list */
-        {
-            uint64 hash_value = DatumGetUInt64(hash_any((unsigned char *) VARBITS(kmer_only), 
-                                                       VARBITBYTES(kmer_only)));
+            /* Calculate hash using complete ngram_key2 (kmer2 + occurrence bits) */
+            int bit_length = VARBITLEN(ngram_key);
+            int byte_count = (bit_length + 7) / 8;  /* Round up to next byte */
+            uint64 hash_value = DatumGetUInt64(hash_any((unsigned char *) VARBITS(ngram_key), byte_count));
+            
             hash_search(highfreq_hash,
                        (void *) &hash_value,
                        HASH_FIND,
@@ -3318,8 +3311,7 @@ kmersearch_filter_highfreq_kmers_from_keys(Datum *original_keys, int *nkeys, HTA
             filtered_keys[filtered_count++] = original_keys[i];
         }
         
-        /* Clean up the temporary k-mer */
-        pfree(kmer_only);
+        /* No need to free ngram_key since it's managed by caller */
     }
     
     /* Update the count */
@@ -3877,20 +3869,20 @@ kmersearch_parallel_cache_attach(dsm_handle handle)
  * Check if k-mer is high-frequency using parallel cache
  */
 static bool
-kmersearch_is_highfreq_kmer_parallel(VarBit *kmer)
+kmersearch_is_highfreq_kmer_parallel(VarBit *ngram_key)
 {
-    uint64 kmer_hash;
+    uint64 ngram_hash;
     
     /* If parallel cache is not available, return false */
     if (parallel_cache_hash == NULL)
         return false;
     
-    /* Calculate hash for the k-mer */
-    kmer_hash = hash_any((unsigned char *) VARDATA(kmer), 
-                        VARSIZE(kmer) - VARHDRSZ);
+    /* Calculate hash for the ngram_key2 (kmer2 + occurrence bits) */
+    ngram_hash = hash_any((unsigned char *) VARDATA(ngram_key), 
+                         VARSIZE(ngram_key) - VARHDRSZ);
     
-    /* Lookup in parallel cache */
-    return kmersearch_parallel_cache_lookup(kmer_hash);
+    /* Lookup in parallel cache using complete ngram_key2 */
+    return kmersearch_parallel_cache_lookup(ngram_hash);
 }
 
 /*
@@ -3909,24 +3901,20 @@ kmersearch_filter_highfreq_kmers_from_keys_parallel(Datum *original_keys, int *n
     /* Allocate space for filtered keys */
     filtered_keys = (Datum *) palloc(*nkeys * sizeof(Datum));
     
-    /* Filter out high-frequency k-mers */
+    /* Filter out high-frequency k-mers using direct ngram_key2 comparison */
     for (i = 0; i < *nkeys; i++) {
-        VarBit *key = (VarBit *) DatumGetPointer(original_keys[i]);
-        VarBit *key_without_occurrence = kmersearch_remove_occurrence_bits(key, k);
+        VarBit *ngram_key = (VarBit *) DatumGetPointer(original_keys[i]);
         
-        /* Check if this k-mer is high-frequency using parallel cache */
-        if (!kmersearch_is_highfreq_kmer_parallel(key_without_occurrence)) {
+        /* Use ngram_key2 directly for high-frequency check - no occurrence bits removal needed */
+        if (!kmersearch_is_highfreq_kmer_parallel(ngram_key)) {
             /* Keep this k-mer */
             filtered_keys[filtered_count++] = original_keys[i];
         } else {
             /* Free the filtered k-mer */
-            pfree(key);
+            pfree(ngram_key);
         }
         
-        /* Clean up temporary key */
-        if (key_without_occurrence != key) {
-            pfree(key_without_occurrence);
-        }
+        /* No need to clean up temporary key since we use ngram_key directly */
     }
     
     /* Free original keys array */

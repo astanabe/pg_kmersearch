@@ -57,7 +57,7 @@ extern void kmersearch_collect_ngram_key2_for_highfreq_kmer(Oid table_oid, const
 extern void kmersearch_persist_highfreq_kmers_metadata(Oid table_oid, const char *column_name, int k_size);
 extern int kmersearch_min_score;
 extern bool kmersearch_preclude_highfreq_kmer;
-extern VarBit *kmersearch_remove_occurrence_bits(VarBit *kmer_key, int k_size);
+/* Removed: extern VarBit *kmersearch_remove_occurrence_bits() - function eliminated */
 extern HighfreqKmerCache global_highfreq_cache;
 
 /* External parallel cache variables (defined in kmersearch_cache.c) */
@@ -338,17 +338,12 @@ kmersearch_is_kmer_highfreq(VarBit *kmer_key)
         uint64 hash_value;
         bool found;
         
-        elog(LOG, "kmersearch_is_kmer_highfreq: Global cache available, removing occurrence bits");
-        elog(LOG, "kmersearch_is_kmer_highfreq: About to call kmersearch_remove_occurrence_bits with kmer_key=%p, k=%d", kmer_key, kmersearch_kmer_size);
-        /* Remove occurrence bits if present and search in cache */
-        search_key = kmersearch_remove_occurrence_bits(kmer_key, kmersearch_kmer_size);
-        elog(LOG, "kmersearch_is_kmer_highfreq: kmersearch_remove_occurrence_bits returned search_key=%p", search_key);
+        elog(LOG, "kmersearch_is_kmer_highfreq: Global cache available, using ngram_key2 directly");
+        /* Use ngram_key2 (kmer_key) directly for cache lookup - no occurrence bits removal needed */
+        search_key = kmer_key;
         
-        /* Validate search_key before using it */
-        if (search_key == NULL) {
-            elog(LOG, "kmersearch_is_kmer_highfreq: search_key is NULL, returning false");
-            return false;
-        }
+        /* search_key now points to kmer_key, so validation should already be done above */
+        elog(LOG, "kmersearch_is_kmer_highfreq: Using ngram_key2 directly as search_key");
         
         elog(LOG, "kmersearch_is_kmer_highfreq: Validating search_key structure");
         
@@ -366,9 +361,7 @@ kmersearch_is_kmer_highfreq(VarBit *kmer_key)
         /* Validate bit length */
         if (VARBITLEN(search_key) < 0) {
             elog(LOG, "kmersearch_is_kmer_highfreq: search_key has invalid bit length %d, returning false", VARBITLEN(search_key));
-            if (search_key != kmer_key) {
-                pfree(search_key);
-            }
+            /* No need to free search_key since it points to kmer_key */
             return false;
         }
         
@@ -389,9 +382,7 @@ kmersearch_is_kmer_highfreq(VarBit *kmer_key)
             /* Validate the calculated byte count */
             if (byte_count <= 0 || byte_count > VARSIZE(search_key) - VARHDRSZ) {
                 elog(LOG, "kmersearch_is_kmer_highfreq: Invalid byte_count=%d, VARSIZE=%d, returning false", byte_count, VARSIZE(search_key));
-                if (search_key != kmer_key) {
-                    pfree(search_key);
-                }
+                /* No need to free search_key since it points to kmer_key */
                 return false;
             }
             
@@ -402,9 +393,7 @@ kmersearch_is_kmer_highfreq(VarBit *kmer_key)
         found = (hash_search(global_highfreq_cache.highfreq_hash, 
                            (void *) &hash_value, HASH_FIND, NULL) != NULL);
         
-        if (search_key != kmer_key) {
-            pfree(search_key);
-        }
+        /* No need to free search_key since it points to kmer_key */
         
         return found;
     }
@@ -480,20 +469,20 @@ kmersearch_is_highfreq_filtering_enabled(void)
  * Check if k-mer is highly frequent using parallel cache
  */
 static bool
-kmersearch_is_highfreq_kmer_parallel(VarBit *kmer)
+kmersearch_is_highfreq_kmer_parallel(VarBit *ngram_key)
 {
-    uint64 kmer_hash;
+    uint64 ngram_hash;
     
     /* If parallel cache is not available, return false */
     if (parallel_cache_hash == NULL)
         return false;
     
-    /* Calculate hash for the k-mer */
-    kmer_hash = hash_any((unsigned char *) VARDATA(kmer), 
-                        VARSIZE(kmer) - VARHDRSZ);
+    /* Calculate hash for the ngram_key2 (kmer2 + occurrence bits) */
+    ngram_hash = hash_any((unsigned char *) VARDATA(ngram_key), 
+                         VARSIZE(ngram_key) - VARHDRSZ);
     
-    /* Look up in parallel cache */
-    return kmersearch_parallel_cache_lookup(kmer_hash);
+    /* Look up in parallel cache using complete ngram_key2 */
+    return kmersearch_parallel_cache_lookup(ngram_hash);
 }
 
 /*

@@ -505,7 +505,7 @@ VarBit **kmersearch_extract_kmer_from_varbit(VarBit *seq, int k, int *nkeys);
 VarBit **kmersearch_extract_kmer_from_query(const char *query, int k, int *nkeys);
 uint8 kmersearch_get_bit_at(bits8 *data, int bit_pos);
 bool kmersearch_will_exceed_degenerate_limit(const char *seq, int len);
-VarBit *kmersearch_remove_occurrence_bits(VarBit *key_with_occurrence, int k);
+/* Removed: VarBit *kmersearch_remove_occurrence_bits() - function eliminated */
 VarBit **kmersearch_extract_query_kmer_with_degenerate(const char *query, int k, int *nkeys);
 char *kmersearch_varbit_to_hex_string(VarBit *varbit);
 Datum *kmersearch_extract_dna2_kmer2_only(VarBit *seq, int k, int *nkeys);

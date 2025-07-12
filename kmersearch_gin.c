@@ -117,10 +117,10 @@ kmersearch_extract_value_dna2(PG_FUNCTION_ARGS)
     if (k < 4 || k > 64)
         ereport(ERROR, (errmsg("k-mer length must be between 4 and 64")));
     
-    /* Use direct bit extraction instead of string conversion */
+    /* Extract ngram_key2 (kmer2 + occurrence bits) directly from DNA2 */
     keys = kmersearch_extract_dna2_kmer2_direct((VarBit *)dna, k, nkeys);
     
-    /* Apply high-frequency k-mer filtering if enabled */
+    /* Apply high-frequency k-mer filtering using ngram_key2 direct comparison */
     if (keys && *nkeys > 0 && kmersearch_preclude_highfreq_kmer) {
         if (kmersearch_force_use_dshash || IsParallelWorker()) {
             /* Use parallel cache for worker processes or when forcing dshash */
@@ -168,10 +168,10 @@ kmersearch_extract_value_dna4(PG_FUNCTION_ARGS)
     if (k < 4 || k > 64)
         ereport(ERROR, (errmsg("k-mer length must be between 4 and 64")));
     
-    /* Use direct bit extraction with degenerate expansion */
+    /* Extract ngram_key2 (kmer2 + occurrence bits) from DNA4 with degenerate expansion */
     keys = kmersearch_extract_dna4_kmer2_with_expansion_direct((VarBit *)dna, k, nkeys);
     
-    /* Apply high-frequency k-mer filtering if enabled */
+    /* Apply high-frequency k-mer filtering using ngram_key2 direct comparison */
     if (keys && *nkeys > 0 && kmersearch_preclude_highfreq_kmer) {
         if (kmersearch_force_use_dshash || IsParallelWorker()) {
             /* Use parallel cache for worker processes or when forcing dshash */
