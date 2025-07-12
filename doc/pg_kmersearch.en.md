@@ -30,7 +30,7 @@ pg_kmersearch is a PostgreSQL extension that provides custom data types for effi
 - **High-frequency k-mer exclusion**: Automatically excludes overly common k-mers during index creation
 - **Score-based filtering**: Minimum score thresholds with automatic adjustment for excluded k-mers
 - **Score calculation functions**: `kmersearch_rawscore()` and `kmersearch_correctedscore()` for individual sequence scoring
-- **High-frequency k-mer management**: `kmersearch_analyze_table()` for high-frequency k-mer analysis and `kmersearch_highfreq_kmer_cache_load()` and `kmersearch_highfreq_kmer_cache_free()` for cache management
+- **High-frequency k-mer management**: `kmersearch_perform_highfreq_analysis()` for high-frequency k-mer analysis and `kmersearch_highfreq_kmer_cache_load()` and `kmersearch_highfreq_kmer_cache_free()` for cache management
 
 ## Installation
 
@@ -379,12 +379,12 @@ WHERE table_name = 'sequences';
 
 ### K-mer Frequency Analysis
 
-#### kmersearch_analyze_table()
+#### kmersearch_perform_highfreq_analysis()
 Performs parallel k-mer frequency analysis on a table:
 
 ```sql
 -- Basic analysis using table name and column name
-SELECT kmersearch_analyze_table(
+SELECT kmersearch_perform_highfreq_analysis(
     'sequences',                   -- table name
     'dna_seq'                     -- column name
 );
@@ -396,16 +396,16 @@ SELECT (result).total_rows,
        (result).analysis_duration,
        (result).max_appearance_rate_used
 FROM (
-    SELECT kmersearch_analyze_table('sequences', 'dna_seq') as result
+    SELECT kmersearch_perform_highfreq_analysis('sequences', 'dna_seq') as result
 ) t;
 ```
 
-#### kmersearch_drop_analysis()
+#### kmersearch_undo_highfreq_analysis()
 Removes analysis data and frees storage:
 
 ```sql
--- Drop analysis for specific table/column combination
-SELECT kmersearch_drop_analysis(
+-- Undo analysis for specific table/column combination
+SELECT kmersearch_undo_highfreq_analysis(
     'sequences',                   -- table name
     'dna_seq'                     -- column name
 );
@@ -415,7 +415,7 @@ SELECT (result).dropped_analyses,
        (result).dropped_highfreq_kmers,
        (result).freed_storage_bytes
 FROM (
-    SELECT kmersearch_drop_analysis('sequences', 'dna_seq') as result
+    SELECT kmersearch_undo_highfreq_analysis('sequences', 'dna_seq') as result
 ) t;
 ```
 
@@ -509,38 +509,6 @@ SELECT * FROM kmersearch_actual_min_score_cache_stats();
 SELECT kmersearch_actual_min_score_cache_free();
 ```
 
-### Legacy Analysis Functions
-
-#### kmersearch_analyze_table_frequency()
-Internal function for GIN index creation (called automatically):
-
-```sql
--- This function is typically called internally during index creation
--- Manual usage: analyze frequency for specific index
-SELECT kmersearch_analyze_table_frequency(
-    'sequences'::regclass::oid,    -- table OID
-    'dna_seq',                     -- column name  
-    8,                             -- k-mer size
-    'sequences_kmer_idx'::regclass::oid  -- index OID
-);
-```
-
-#### kmersearch_get_highfreq_kmer()
-Retrieves high-frequency k-mers for a specific index:
-
-```sql
--- Get array of high-frequency k-mers for an index
-SELECT kmersearch_get_highfreq_kmer('sequences_kmer_idx'::regclass::oid);
-
--- Count high-frequency k-mers
-SELECT array_length(
-    kmersearch_get_highfreq_kmer('sequences_kmer_idx'::regclass::oid), 
-    1
-) as highfreq_count;
-
--- Process individual k-mers
-SELECT unnest(kmersearch_get_highfreq_kmer('sequences_kmer_idx'::regclass::oid)) as kmer;
-```
 
 ## Complete Workflow Examples
 
@@ -554,7 +522,7 @@ SET kmersearch.max_appearance_nrow = 1000;
 SET kmersearch.occur_bitlen = 8;
 
 -- 2. Perform frequency analysis
-SELECT kmersearch_analyze_table(
+SELECT kmersearch_perform_highfreq_analysis(
     'sequences',                   -- table name
     'dna_seq'                     -- column name
 );
@@ -639,7 +607,7 @@ FROM (
 ```
 
 ### kmersearch_drop_result
-Returned by `kmersearch_drop_analysis()`:
+Returned by `kmersearch_undo_highfreq_analysis()`:
 
 ```sql
 -- Type definition equivalent:
@@ -654,7 +622,7 @@ SELECT (result).dropped_analyses,
        (result).dropped_highfreq_kmers,
        pg_size_pretty((result).freed_storage_bytes) as freed_storage
 FROM (
-    SELECT kmersearch_drop_analysis('sequences', 'dna_seq') as result
+    SELECT kmersearch_undo_highfreq_analysis('sequences', 'dna_seq') as result
 ) t;
 ```
 
@@ -769,7 +737,7 @@ Detailed error messages and hints are provided when settings mismatch.
 
 ```sql
 -- Execute high-frequency k-mer analysis (create metadata)
-SELECT kmersearch_analyze_table(
+SELECT kmersearch_perform_highfreq_analysis(
     'sequences',                   -- table name
     'dna_seq'                     -- column name
 );

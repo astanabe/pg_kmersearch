@@ -202,17 +202,6 @@ CREATE TABLE kmersearch_index_info (
     created_at timestamp with time zone DEFAULT now()
 );
 
--- K-mer frequency analysis functions
-CREATE FUNCTION kmersearch_analyze_table_frequency(table_oid oid, column_name text, k integer, index_oid oid) 
-    RETURNS integer
-    AS 'MODULE_PATHNAME', 'kmersearch_analyze_table_frequency'
-    LANGUAGE C VOLATILE STRICT;
-
-CREATE FUNCTION kmersearch_get_highfreq_kmer(index_oid oid) 
-    RETURNS varbit[]
-    AS 'MODULE_PATHNAME', 'kmersearch_get_highfreq_kmer'
-    LANGUAGE C STABLE STRICT;
-
 
 -- Score calculation functions
 CREATE FUNCTION kmersearch_rawscore_dna2(DNA2, text) 
@@ -321,14 +310,14 @@ CREATE TYPE kmersearch_drop_result AS (
 );
 
 -- Parallel k-mer analysis functions
-CREATE FUNCTION kmersearch_analyze_table(table_name text, column_name text) 
+CREATE FUNCTION kmersearch_perform_highfreq_analysis(table_name text, column_name text) 
     RETURNS kmersearch_analysis_result
-    AS 'MODULE_PATHNAME', 'kmersearch_analyze_table'
+    AS 'MODULE_PATHNAME', 'kmersearch_perform_highfreq_analysis'
     LANGUAGE C VOLATILE STRICT;
 
-CREATE FUNCTION kmersearch_drop_analysis(table_name text, column_name text) 
+CREATE FUNCTION kmersearch_undo_highfreq_analysis(table_name text, column_name text) 
     RETURNS kmersearch_drop_result
-    AS 'MODULE_PATHNAME', 'kmersearch_drop_analysis'
+    AS 'MODULE_PATHNAME', 'kmersearch_undo_highfreq_analysis'
     LANGUAGE C VOLATILE STRICT;
 
 

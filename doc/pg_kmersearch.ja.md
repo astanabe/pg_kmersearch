@@ -30,7 +30,7 @@ pg_kmersearchは、PostgreSQL用のDNA配列データを効率的に格納・処
 - **高頻出k-mer除外**: インデックス作成時に過度に頻出するk-merを自動除外
 - **スコアベースフィルタリング**: 除外k-merに応じて自動調整される最小スコア閾値
 - **スコア計算関数**: 個別配列のスコア算出用の`kmersearch_rawscore()`と`kmersearch_correctedscore()`関数
-- **高頻出k-mer管理**: `kmersearch_analyze_table()`による高頻出k-mer解析と`kmersearch_highfreq_kmer_cache_load()`および`kmersearch_highfreq_kmer_cache_free()`によるキャッシュ管理
+- **高頻出k-mer管理**: `kmersearch_perform_highfreq_analysis()`による高頻出k-mer解析と`kmersearch_undo_highfreq_analysis()`による解析データ削除、`kmersearch_highfreq_kmer_cache_load()`および`kmersearch_highfreq_kmer_cache_free()`によるキャッシュ管理
 
 ## インストール
 
@@ -379,12 +379,12 @@ WHERE table_name = 'sequences';
 
 ### k-mer頻度解析
 
-#### kmersearch_analyze_table()
+#### kmersearch_perform_highfreq_analysis()
 テーブルに対する並列k-mer頻度解析を実行：
 
 ```sql
 -- テーブル名とカラム名を使用した基本解析
-SELECT kmersearch_analyze_table(
+SELECT kmersearch_perform_highfreq_analysis(
     'sequences',                   -- テーブル名
     'dna_seq'                     -- カラム名
 );
@@ -396,16 +396,16 @@ SELECT (result).total_rows,
        (result).analysis_duration,
        (result).max_appearance_rate_used
 FROM (
-    SELECT kmersearch_analyze_table('sequences', 'dna_seq') as result
+    SELECT kmersearch_perform_highfreq_analysis('sequences', 'dna_seq') as result
 ) t;
 ```
 
-#### kmersearch_drop_analysis()
+#### kmersearch_undo_highfreq_analysis()
 解析データを削除してストレージを解放：
 
 ```sql
 -- 特定のテーブル/カラム組み合わせの解析を削除
-SELECT kmersearch_drop_analysis(
+SELECT kmersearch_undo_highfreq_analysis(
     'sequences',                   -- テーブル名
     'dna_seq'                     -- カラム名
 );
@@ -415,7 +415,7 @@ SELECT (result).dropped_analyses,
        (result).dropped_highfreq_kmers,
        (result).freed_storage_bytes
 FROM (
-    SELECT kmersearch_drop_analysis('sequences', 'dna_seq') as result
+    SELECT kmersearch_undo_highfreq_analysis('sequences', 'dna_seq') as result
 ) t;
 ```
 
@@ -509,38 +509,6 @@ SELECT * FROM kmersearch_actual_min_score_cache_stats();
 SELECT kmersearch_actual_min_score_cache_free();
 ```
 
-### レガシー解析関数
-
-#### kmersearch_analyze_table_frequency()
-GINインデックス作成用の内部関数（自動的に呼び出される）：
-
-```sql
--- この関数は通常インデックス作成時に内部的に呼び出される
--- 手動使用: 特定インデックス用の頻度解析
-SELECT kmersearch_analyze_table_frequency(
-    'sequences'::regclass::oid,    -- テーブルOID
-    'dna_seq',                     -- カラム名
-    8,                             -- k-merサイズ
-    'sequences_kmer_idx'::regclass::oid  -- インデックスOID
-);
-```
-
-#### kmersearch_get_highfreq_kmer()
-特定インデックスの高頻出k-merを取得：
-
-```sql
--- インデックスの高頻出k-mer配列を取得
-SELECT kmersearch_get_highfreq_kmer('sequences_kmer_idx'::regclass::oid);
-
--- 高頻出k-merの数をカウント
-SELECT array_length(
-    kmersearch_get_highfreq_kmer('sequences_kmer_idx'::regclass::oid), 
-    1
-) as highfreq_count;
-
--- 個別k-merを処理
-SELECT unnest(kmersearch_get_highfreq_kmer('sequences_kmer_idx'::regclass::oid)) as kmer;
-```
 
 ## 完全なワークフロー例
 
@@ -554,7 +522,7 @@ SET kmersearch.max_appearance_nrow = 1000;
 SET kmersearch.occur_bitlen = 8;
 
 -- 2. 頻度解析を実行
-SELECT kmersearch_analyze_table(
+SELECT kmersearch_perform_highfreq_analysis(
     'sequences',                   -- テーブル名
     'dna_seq'                     -- カラム名
 );
@@ -616,7 +584,7 @@ FROM cache_stats;
 pg_kmersearchは、関数の戻り値用にカスタム複合型を定義します：
 
 ### kmersearch_analysis_result
-`kmersearch_analyze_table()`によって返される：
+`kmersearch_perform_highfreq_analysis()`によって返される：
 
 ```sql
 -- 型定義相当:
@@ -634,12 +602,12 @@ SELECT (result).total_rows,
        (result).highfreq_kmers_count,
        ROUND((result).analysis_duration, 2) as duration_seconds
 FROM (
-    SELECT kmersearch_analyze_table('sequences', 'dna_seq') as result
+    SELECT kmersearch_perform_highfreq_analysis('sequences', 'dna_seq') as result
 ) t;
 ```
 
 ### kmersearch_drop_result
-`kmersearch_drop_analysis()`によって返される：
+`kmersearch_undo_highfreq_analysis()`によって返される：
 
 ```sql
 -- 型定義相当:
@@ -654,7 +622,7 @@ SELECT (result).dropped_analyses,
        (result).dropped_highfreq_kmers,
        pg_size_pretty((result).freed_storage_bytes) as freed_storage
 FROM (
-    SELECT kmersearch_drop_analysis('sequences', 'dna_seq') as result
+    SELECT kmersearch_undo_highfreq_analysis('sequences', 'dna_seq') as result
 ) t;
 ```
 
@@ -769,7 +737,7 @@ pg_kmersearchは、PostgreSQL 16/18に最適化された多層キャッシュア
 
 ```sql
 -- 高頻出k-mer解析の実行（メタデータ作成）
-SELECT kmersearch_analyze_table(
+SELECT kmersearch_perform_highfreq_analysis(
     'sequences',                   -- テーブル名
     'dna_seq'                     -- カラム名
 );

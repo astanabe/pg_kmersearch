@@ -504,15 +504,14 @@ Datum kmersearch_parallel_highfreq_kmer_cache_free(PG_FUNCTION_ARGS);
 /* kmersearch_is_highfreq_kmer_parallel now static in kmersearch_gin.c */
 
 /* Analysis functions */
-Datum kmersearch_analyze_table(PG_FUNCTION_ARGS);
-Datum kmersearch_drop_highfreq_analysis(PG_FUNCTION_ARGS);
+Datum kmersearch_perform_highfreq_analysis(PG_FUNCTION_ARGS);
+Datum kmersearch_undo_highfreq_analysis(PG_FUNCTION_ARGS);
 
 /* K-mer utility functions */
 void kmersearch_expand_degenerate_sequence(const char *kmer, int k, char **expanded, int *expand_count);
 VarBit *kmersearch_create_ngram_key2(const char *kmer, int k, int occurrence);
 Datum *kmersearch_extract_dna2_kmer2_direct(VarBit *dna, int k, int *nkeys);
 Datum *kmersearch_extract_dna4_kmer2_with_expansion_direct(VarBit *dna, int k, int *nkeys);
-int calculate_actual_min_score(VarBit **query_keys, int nkeys, int original_nkeys);
 int kmersearch_count_degenerate_combinations(const char *kmer, int k);
 void kmersearch_set_bit_at(bits8 *data, int bit_pos, int value);
 bool kmersearch_will_exceed_degenerate_limit_dna4_bits(VarBit *seq, int start_pos, int k);
@@ -557,6 +556,10 @@ KmerMatchResult get_cached_rawscore_dna4(VarBit *sequence, const char *query_str
 
 /* Internal functions that should be declared (implemented in kmersearch_freq.c) */
 int kmersearch_get_adjusted_min_score(VarBit **query_keys, int nkeys);
+
+/* Cache key validation functions (implemented in kmersearch_cache.c) */
+bool kmersearch_validate_cache_key_match(Oid table_oid, const char *column_name);
+bool kmersearch_validate_parallel_cache_key_match(Oid table_oid, const char *column_name);
 bool kmersearch_validate_guc_against_all_metadata(void);
 bool kmersearch_is_parallel_highfreq_cache_loaded(void);
 bool kmersearch_lookup_in_parallel_cache(VarBit *kmer_key);
@@ -571,14 +574,12 @@ Datum kmersearch_consistent(PG_FUNCTION_ARGS);
 Datum kmersearch_compare_partial(PG_FUNCTION_ARGS);
 
 /* Frequency analysis functions (implemented in kmersearch_freq.c) */
-Datum kmersearch_analyze_table_frequency(PG_FUNCTION_ARGS);
-Datum kmersearch_get_highfreq_kmer(PG_FUNCTION_ARGS);
-Datum kmersearch_analyze_table(PG_FUNCTION_ARGS);
-Datum kmersearch_drop_analysis(PG_FUNCTION_ARGS);
+Datum kmersearch_perform_highfreq_analysis(PG_FUNCTION_ARGS);
+Datum kmersearch_undo_highfreq_analysis(PG_FUNCTION_ARGS);
 
 /* Internal frequency analysis functions (implemented in kmersearch_freq.c) */
-DropAnalysisResult kmersearch_drop_analysis_internal(Oid table_oid, const char *column_name, int k_size);
-KmerAnalysisResult kmersearch_analyze_table_parallel(Oid table_oid, const char *column_name, int k_size, int parallel_workers);
+DropAnalysisResult kmersearch_undo_highfreq_analysis_internal(Oid table_oid, const char *column_name, int k_size);
+KmerAnalysisResult kmersearch_perform_highfreq_analysis_parallel(Oid table_oid, const char *column_name, int k_size, int parallel_workers);
 void kmersearch_validate_analysis_parameters(Oid table_oid, const char *column_name, int k_size);
 
 #endif   /* KMERSEARCH_H */

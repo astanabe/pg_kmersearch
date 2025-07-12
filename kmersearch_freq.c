@@ -11,17 +11,15 @@
 #include "kmersearch.h"
 
 /* PostgreSQL function info declarations for frequency functions */
-PG_FUNCTION_INFO_V1(kmersearch_analyze_table_frequency);
-PG_FUNCTION_INFO_V1(kmersearch_get_highfreq_kmer);
-PG_FUNCTION_INFO_V1(kmersearch_analyze_table);
-PG_FUNCTION_INFO_V1(kmersearch_drop_analysis);
+PG_FUNCTION_INFO_V1(kmersearch_perform_highfreq_analysis);
+PG_FUNCTION_INFO_V1(kmersearch_undo_highfreq_analysis);
 
 /*
  * Forward declarations for internal functions
  */
 
 /* Frequency analysis functions */
-/* kmersearch_analyze_table_parallel declared in header */
+/* kmersearch_perform_highfreq_analysis_parallel declared in header */
 static int kmersearch_determine_parallel_workers(int requested_workers, Relation target_relation);
 
 /* High-frequency k-mer filtering functions */
@@ -31,7 +29,6 @@ static bool kmersearch_is_highfreq_filtering_enabled(void);
 static Datum *kmersearch_filter_highfreq_kmers(Oid table_oid, const char *column_name, int k_size, Datum *all_keys, int total_keys, int *filtered_count);
 static bool kmersearch_delete_kmer_from_gin_index(Relation index_rel, VarBit *kmer_key);
 /* Utility functions */
-static List *kmersearch_get_highfreq_kmer_list(Oid index_oid);
 static int kmersearch_varbit_cmp(VarBit *a, VarBit *b);
 static void kmersearch_spi_connect_or_error(void);
 static void kmersearch_handle_spi_error(int spi_result, const char *operation);
@@ -60,57 +57,12 @@ extern dshash_table *parallel_cache_hash;
  * K-mer frequency analysis functions
  */
 
-/*
- * Analyze table frequency and determine highly frequent k-mers
- */
-Datum
-kmersearch_analyze_table_frequency(PG_FUNCTION_ARGS)
-{
-    Oid table_oid = PG_GETARG_OID(0);
-    text *column_name_text = PG_GETARG_TEXT_P(1);
-    int k = PG_GETARG_INT32(2);
-    Oid index_oid = PG_GETARG_OID(3);
-    
-    char *column_name = text_to_cstring(column_name_text);
-    int highfreq_count = 0;
-    
-    /* Check if high-frequency k-mer exclusion should be performed */
-    bool should_exclude = false;
-    
-    /* If max_appearance_rate is 0, treat as undefined (no exclusion) */
-    if (kmersearch_max_appearance_rate > 0.0)
-        should_exclude = true;
-    
-    /* If max_appearance_nrow is greater than 0, enable exclusion */
-    if (kmersearch_max_appearance_nrow > 0)
-        should_exclude = true;
-    
-    if (!should_exclude)
-    {
-        /* Skip frequency analysis - create empty highly frequent k-mer list */
-        ereport(NOTICE, (errmsg("High-frequency k-mer exclusion disabled, skipping table scan")));
-        
-        /* Insert index info with zero highly frequent k-mers */
-        /* Note: This would normally insert into kmersearch_index_info table */
-        /* For now, just return 0 indicating no exclusions */
-        
-        PG_RETURN_INT32(0);
-    }
-    
-    /* Perform frequency analysis if exclusion is enabled */
-    ereport(NOTICE, (errmsg("Performing k-mer frequency analysis for k=%d", k)));
-    ereport(NOTICE, (errmsg("Max appearance rate: %f, Max appearance nrow: %d", 
-                           kmersearch_max_appearance_rate, kmersearch_max_appearance_nrow)));
-    
-    
-    PG_RETURN_INT32(highfreq_count);
-}
 
 /*
  * Main table analysis function with parallel support
  */
 Datum
-kmersearch_analyze_table(PG_FUNCTION_ARGS)
+kmersearch_perform_highfreq_analysis(PG_FUNCTION_ARGS)
 {
     text *table_name_text = PG_GETARG_TEXT_P(0);
     text *column_name_text = PG_GETARG_TEXT_P(1);
@@ -144,7 +96,7 @@ kmersearch_analyze_table(PG_FUNCTION_ARGS)
                            kmersearch_max_appearance_rate, kmersearch_max_appearance_nrow)));
     
     /* Perform parallel analysis */
-    result = kmersearch_analyze_table_parallel(table_oid, column_name, k_size, parallel_workers);
+    result = kmersearch_perform_highfreq_analysis_parallel(table_oid, column_name, k_size, parallel_workers);
     
     /* Create result tuple */
     {
@@ -159,8 +111,8 @@ kmersearch_analyze_table(PG_FUNCTION_ARGS)
     }
     
     /* Fill result values */
-    ereport(DEBUG1, (errmsg("kmersearch_analyze_table: Converting result to return values")));
-    ereport(DEBUG1, (errmsg("kmersearch_analyze_table: result.max_appearance_rate_used = %f", result.max_appearance_rate_used)));
+    ereport(DEBUG1, (errmsg("kmersearch_perform_highfreq_analysis: Converting result to return values")));
+    ereport(DEBUG1, (errmsg("kmersearch_perform_highfreq_analysis: result.max_appearance_rate_used = %f", result.max_appearance_rate_used)));
     
     values[0] = Int64GetDatum(result.total_rows);
     values[1] = Int32GetDatum(result.highfreq_kmers_count);
@@ -169,12 +121,12 @@ kmersearch_analyze_table(PG_FUNCTION_ARGS)
     
     /* Extra validation for max_appearance_rate_used before conversion */
     if (result.max_appearance_rate_used < 0.0 || result.max_appearance_rate_used != result.max_appearance_rate_used) {
-        ereport(WARNING, (errmsg("kmersearch_analyze_table: Detected corrupted max_appearance_rate_used (%f) during conversion, fixing", result.max_appearance_rate_used)));
+        ereport(WARNING, (errmsg("kmersearch_perform_highfreq_analysis: Detected corrupted max_appearance_rate_used (%f) during conversion, fixing", result.max_appearance_rate_used)));
         result.max_appearance_rate_used = 0.5;
     }
     
     values[4] = Float4GetDatum((float4)result.max_appearance_rate_used);  /* real type = 4-byte float */
-    ereport(DEBUG1, (errmsg("kmersearch_analyze_table: Float4GetDatum conversion completed")));
+    ereport(DEBUG1, (errmsg("kmersearch_perform_highfreq_analysis: Float4GetDatum conversion completed")));
     
     values[5] = Int32GetDatum(result.max_appearance_nrow_used);
     
@@ -191,7 +143,7 @@ kmersearch_analyze_table(PG_FUNCTION_ARGS)
  * Drop analysis results function
  */
 Datum
-kmersearch_drop_analysis(PG_FUNCTION_ARGS)
+kmersearch_undo_highfreq_analysis(PG_FUNCTION_ARGS)
 {
     text *table_name_text = PG_GETARG_TEXT_P(0);
     text *column_name_text = PG_GETARG_TEXT_P(1);
@@ -215,7 +167,7 @@ kmersearch_drop_analysis(PG_FUNCTION_ARGS)
     k_size = kmersearch_kmer_size;
     
     /* Perform drop operation */
-    result = kmersearch_drop_analysis_internal(table_oid, column_name, k_size);
+    result = kmersearch_undo_highfreq_analysis_internal(table_oid, column_name, k_size);
     
     /* Create result tuple */
     {
@@ -243,72 +195,6 @@ kmersearch_drop_analysis(PG_FUNCTION_ARGS)
     }
 }
 
-/*
- * Get highly frequent k-mers for an index
- */
-Datum
-kmersearch_get_highfreq_kmer(PG_FUNCTION_ARGS)
-{
-    Oid index_oid = PG_GETARG_OID(0);
-    int ret;
-    StringInfoData query;
-    ArrayType *result_array = NULL;
-    Datum *datums = NULL;
-    int nkeys = 0;
-    int i;
-    
-    /* Connect to SPI */
-    kmersearch_spi_connect_or_error();
-    
-    /* Build query to get highly frequent k-mers */
-    initStringInfo(&query);
-    appendStringInfo(&query,
-        "SELECT kmer_key FROM kmersearch_highfreq_kmer WHERE index_oid = %u ORDER BY kmer_key",
-        index_oid);
-    
-    /* Execute query */
-    ret = SPI_execute(query.data, true, 0);
-    if (ret == SPI_OK_SELECT && SPI_processed > 0)
-    {
-        nkeys = SPI_processed;
-        datums = (Datum *) palloc(nkeys * sizeof(Datum));
-        
-        for (i = 0; i < nkeys; i++)
-        {
-            bool isnull;
-            Datum kmer_datum;
-            
-            kmer_datum = SPI_getbinval(SPI_tuptable->vals[i], SPI_tuptable->tupdesc, 1, &isnull);
-            if (!isnull)
-            {
-                /* Copy the varbit value */
-                VarBit *kmer = DatumGetVarBitPCopy(kmer_datum);
-                datums[i] = PointerGetDatum(kmer);
-            }
-            else
-            {
-                datums[i] = (Datum) 0;
-            }
-        }
-        
-        /* Create array result */
-        if (nkeys > 0)
-        {
-            result_array = construct_array(datums, nkeys, VARBITOID, -1, false, TYPALIGN_INT);
-        }
-    }
-    
-    /* Cleanup */
-    pfree(query.data);
-    if (datums)
-        pfree(datums);
-    SPI_finish();
-    
-    if (result_array)
-        PG_RETURN_ARRAYTYPE_P(result_array);
-    else
-        PG_RETURN_NULL();
-}
 
 /*
  * High-frequency k-mer filtering functions
@@ -378,7 +264,7 @@ kmersearch_is_highfreq_filtering_enabled(void)
  * Internal drop analysis implementation
  */
 DropAnalysisResult
-kmersearch_drop_analysis_internal(Oid table_oid, const char *column_name, int k_size)
+kmersearch_undo_highfreq_analysis_internal(Oid table_oid, const char *column_name, int k_size)
 {
     DropAnalysisResult result = {0};
     int ret;
@@ -465,7 +351,7 @@ kmersearch_drop_analysis_internal(Oid table_oid, const char *column_name, int k_
  * Parallel table analysis implementation
  */
 KmerAnalysisResult
-kmersearch_analyze_table_parallel(Oid table_oid, const char *column_name, int k_size, int parallel_workers)
+kmersearch_perform_highfreq_analysis_parallel(Oid table_oid, const char *column_name, int k_size, int parallel_workers)
 {
     KmerAnalysisResult result = {0};  /* Initialize all fields to zero */
     Relation rel;
@@ -475,7 +361,7 @@ kmersearch_analyze_table_parallel(Oid table_oid, const char *column_name, int k_
     int i;
     
     /* Initialize result structure */
-    ereport(DEBUG1, (errmsg("kmersearch_analyze_table_parallel: Initializing result structure")));
+    ereport(DEBUG1, (errmsg("kmersearch_perform_highfreq_analysis_parallel: Initializing result structure")));
     memset(&result, 0, sizeof(KmerAnalysisResult));
     
     /* Initialize max_appearance_rate_used early to prevent corruption */
@@ -1117,55 +1003,6 @@ kmersearch_filter_highfreq_kmers(Oid table_oid, const char *column_name, int k_s
     return filtered_keys;
 }
 
-/*
- * Helper function to get highly frequent k-mers list for a given index
- */
-static List *
-kmersearch_get_highfreq_kmer_list(Oid index_oid)
-{
-    List *highfreq_kmers = NIL;
-    int ret;
-    StringInfoData query;
-    
-    /* Connect to SPI */
-    kmersearch_spi_connect_or_error();
-    
-    /* Build query to get highly frequent k-mers */
-    initStringInfo(&query);
-    appendStringInfo(&query,
-        "SELECT ek.kmer_key FROM kmersearch_highfreq_kmer ek "
-        "JOIN kmersearch_index_info ii ON ek.index_oid = ii.index_oid "
-        "WHERE ii.index_oid = %u ORDER BY ek.kmer_key",
-        index_oid);
-    
-    /* Execute query */
-    ret = SPI_execute(query.data, true, 0);
-    kmersearch_handle_spi_error(ret, "SELECT highly frequent k-mers");
-    
-    if (ret == SPI_OK_SELECT && SPI_processed > 0)
-    {
-        int i;
-        for (i = 0; i < SPI_processed; i++)
-        {
-            bool isnull;
-            Datum kmer_datum;
-            VarBit *kmer;
-            
-            kmer_datum = SPI_getbinval(SPI_tuptable->vals[i], SPI_tuptable->tupdesc, 1, &isnull);
-            if (!isnull)
-            {
-                kmer = DatumGetVarBitPCopy(kmer_datum);
-                highfreq_kmers = lappend(highfreq_kmers, kmer);
-            }
-        }
-    }
-    
-    /* Cleanup */
-    pfree(query.data);
-    SPI_finish();
-    
-    return highfreq_kmers;
-}
 
 /*
  * Helper function to delete a k-mer from GIN index

@@ -2,6 +2,15 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Important Development Assumptions
+
+**Extension Version Management:**
+This extension development assumes **NEW INSTALLATIONS ONLY**. Version upgrades, migration scripts, and backward compatibility are NOT considered. When making changes:
+- Always assume users will perform fresh installations
+- No need to create ALTER EXTENSION scripts
+- No need to maintain compatibility with previous versions
+- Breaking changes to function signatures, data types, or SQL interfaces are acceptable
+
 ## Build and Development Commands
 
 ### Building the Extension
@@ -100,7 +109,7 @@ pg_kmersearch is a PostgreSQL extension that provides custom data types for effi
 - **High-frequency k-mer exclusion**: Automatically excludes overly common k-mers during index creation
 - **Score-based filtering**: Minimum score thresholds with automatic adjustment for excluded k-mers
 - **Score calculation functions**: `kmersearch_rawscore()` and `kmersearch_correctedscore()` for individual sequence scoring
-- **High-frequency k-mer management**: `kmersearch_analyze_table()` for high-frequency k-mer analysis and cache management functions
+- **High-frequency k-mer management**: `kmersearch_perform_highfreq_analysis()` for high-frequency k-mer analysis and `kmersearch_undo_highfreq_analysis()` for analysis data removal, plus cache management functions
 
 ## Configuration System
 
@@ -171,10 +180,10 @@ Shows high-frequency k-mer analysis status for all analyzed tables
 
 ### K-mer Frequency Analysis
 
-#### kmersearch_analyze_table()
+#### kmersearch_perform_highfreq_analysis()
 Performs parallel k-mer frequency analysis on a table
 
-#### kmersearch_drop_analysis()
+#### kmersearch_undo_highfreq_analysis()
 Removes analysis data and frees storage
 
 ### High-Frequency K-mer Cache Management
@@ -201,10 +210,11 @@ Removes analysis data and frees storage
 - `kmersearch_query_pattern_cache_free()`: Clear query pattern cache
 - `kmersearch_actual_min_score_cache_free()`: Clear actual min score cache
 
+
 ## Complex Type Definitions
 
 ### kmersearch_analysis_result
-Returned by `kmersearch_analyze_table()`:
+Returned by `kmersearch_perform_highfreq_analysis()`:
 - total_rows: bigint
 - highfreq_kmers_count: integer
 - parallel_workers_used: integer
@@ -213,7 +223,7 @@ Returned by `kmersearch_analyze_table()`:
 - max_appearance_nrow_used: integer
 
 ### kmersearch_drop_result
-Returned by `kmersearch_drop_analysis()`:
+Returned by `kmersearch_undo_highfreq_analysis()`:
 - dropped_analyses: integer
 - dropped_highfreq_kmers: integer
 - freed_storage_bytes: bigint
@@ -250,6 +260,79 @@ The following GUC variables are automatically validated during cache loading:
 
 Detailed error messages and hints are provided when settings mismatch.
 
+## Cache Management Features
+
+pg_kmersearch provides three types of high-performance cache systems to improve search performance:
+
+### Actual Min Score Cache
+- **Purpose**: Optimization of search condition evaluation for the `=%` operator
+- **Mechanism**: Pre-calculates and caches `actual_min_score = max(kmersearch_min_score, ceil(kmersearch_min_shared_ngram_key_rate × query_total_kmers))`
+- **Use cases**: 
+  - Matching condition evaluation in `=%` operator
+  - Value judgment for rawscore cache storage
+- **Memory management**: TopMemoryContext-based implementation
+
+### Rawscore Cache
+- **Purpose**: Fast retrieval of calculated rawscores
+- **Mechanism**: Caches sequence and query combination results
+- **Memory management**: TopMemoryContext-based implementation
+
+### Query Pattern Cache
+- **Purpose**: Performance improvement through query pattern reuse
+- **Memory management**: TopMemoryContext-based implementation
+
+## Technical Details
+
+### Architecture
+- Built on PostgreSQL's varbit (bit varying) type
+- Custom encoding/decoding functions
+- Memory-efficient storage format
+- GIN indexing support for k-mer search
+
+### Internal Implementation
+- **DNA2 type**: 2 bits per character encoding
+- **DNA4 type**: 4 bits per character encoding
+- **N-gram keys**: k-mer (2k bits) + occurrence count (8-16 bits)
+- **Degenerate expansion**: Automatic expansion up to 10 combinations
+- **Parallel index creation**: Supports max_parallel_maintenance_workers
+- **High-frequency exclusion**: Full table scan before index creation
+- **System tables**: Metadata storage for excluded k-mers and index statistics (`kmersearch_highfreq_kmer`, `kmersearch_highfreq_kmer_meta`)
+- **Cache system**: TopMemoryContext-based high-performance caching
+- Binary input/output support
+
+### K-mer Search Mechanism
+1. **Frequency analysis**: Full table scan to identify high-frequency k-mers
+2. **K-mer extraction**: Sliding window with specified k-length
+3. **High-frequency filtering**: Exclude k-mers exceeding appearance thresholds
+4. **N-gram key generation**: Binary encoding of k-mer + occurrence count
+5. **Degenerate processing**: Expansion of MRWSYKVHDBN to standard bases
+6. **Scoring**: Similarity calculation based on shared n-gram key count
+
+### Length Functions
+
+pg_kmersearch provides several length functions for DNA2 and DNA4 types that correctly handle padding and return accurate measurements:
+
+#### Available Length Functions
+- **`bit_length(DNA2/DNA4)`**: Returns the actual bit length (excluding padding)
+- **`nuc_length(DNA2/DNA4)`**: Returns the number of nucleotides
+- **`char_length(DNA2/DNA4)`**: Same as `nuc_length()` (character count)
+- **`length(DNA2/DNA4)`**: Same as `nuc_length()` (standard length function)
+
+#### Function Relationships
+- **DNA2**: `nuc_length() = bit_length() / 2` (2 bits per nucleotide)
+- **DNA4**: `nuc_length() = bit_length() / 4` (4 bits per nucleotide)
+- **Consistency**: `char_length() = length() = nuc_length()`
+
+### SIMD Implementation
+The codebase includes platform-specific SIMD optimizations with function dispatch tables for encoding/decoding operations. SIMD capability is detected at runtime and appropriate implementation is selected.
+
+### Parallel Cache Technical Implementation
+
+- **Memory Management**: DSM segment pinning prevents automatic cleanup
+- **Process Identification**: Differentiated resource management for main process and workers
+- **Error Handling**: Comprehensive PG_TRY/PG_CATCH for safe operations
+- **Lock Management**: Proper concurrent control with dshash_release_lock()
+
 ## Development Notes
 
 ### File Organization
@@ -262,9 +345,6 @@ Detailed error messages and hints are provided when settings mismatch.
 - N-gram keys combine k-mer data (2k bits) + occurrence count (8-16 bits)
 - Degenerate expansion limited to 10 combinations to prevent explosion
 - System tables `kmersearch_highfreq_kmer` and `kmersearch_highfreq_kmer_meta` store analysis metadata
-
-### SIMD Implementation
-The codebase includes platform-specific SIMD optimizations with function dispatch tables for encoding/decoding operations. SIMD capability is detected at runtime and appropriate implementation is selected.
 
 ### Recent Code Improvements
 - **Unified ngram_key2 creation**: Removed duplicate `kmersearch_create_ngram_key2_with_occurrence()` function and consolidated implementation in `kmersearch_create_ngram_key2()` for better maintainability and consistency
