@@ -1333,17 +1333,12 @@ kmersearch_rawscore_dna4(PG_FUNCTION_ARGS)
 }
 
 /*
- * Corrected score functions - currently equivalent to raw score
+ * Corrected score functions - return unfiltered similarity scores
  * 
- * These functions are designed to return corrected scores that account
- * for highly frequent k-mers that should be excluded from scoring.
- * Currently, since high-frequency k-mer exclusion is not implemented,
- * these functions simply call the corresponding raw score functions.
- * 
- * Future implementation will:
- * 1. Get index OID from execution context
- * 2. Count mutual high-frequency k-mers between sequence and query
- * 3. Add this count to raw score for correction
+ * These functions calculate similarity scores without applying high-frequency k-mer exclusion.
+ * Unlike rawscore functions which exclude high-frequency k-mers when analysis data is available,
+ * correctedscore functions count all shared k-mers between sequence and query without filtering.
+ * This provides the uncorrected baseline score for comparison with filtered rawscore results.
  */
 Datum
 kmersearch_correctedscore_dna2(PG_FUNCTION_ARGS)
