@@ -66,7 +66,7 @@ SELECT 'Phase 1: Loading global cache...' AS test_phase;
  Phase 1: Loading global cache...
 (1 row)
 
-SELECT kmersearch_highfreq_kmers_cache_load(
+SELECT kmersearch_highfreq_kmer_cache_load(
     (SELECT oid FROM pg_class WHERE relname = 'test_parallel_enhanced')::oid,
     'seq'::text,
     8::integer
@@ -83,7 +83,7 @@ SELECT 'Phase 2: Loading parallel cache...' AS test_phase;
  Phase 2: Loading parallel cache...
 (1 row)
 
-SELECT kmersearch_parallel_highfreq_kmers_cache_load(
+SELECT kmersearch_parallel_highfreq_kmer_cache_load(
     (SELECT oid FROM pg_class WHERE relname = 'test_parallel_enhanced')::oid,
     'seq'::text,
     8::integer
@@ -185,7 +185,7 @@ SELECT 'Phase 6: Testing cache cleanup and fallback...' AS test_phase;
 (1 row)
 
 -- Free parallel cache
-SELECT kmersearch_parallel_highfreq_kmers_cache_free() AS parallel_cache_freed;
+SELECT kmersearch_parallel_highfreq_kmer_cache_free() AS parallel_cache_freed;
  parallel_cache_freed 
 ----------------------
                     1

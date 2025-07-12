@@ -55,7 +55,7 @@ SELECT test_seq =% 'ATCGATCG' as matching_guc_query FROM test_cache_hierarchy LI
 
 -- Test 2.2: Mismatched GUC - occur_bitlen (should fail during cache load)
 SET kmersearch.occur_bitlen = 16;
-SELECT kmersearch_highfreq_kmers_cache_load(
+SELECT kmersearch_highfreq_kmer_cache_load(
   (SELECT oid FROM pg_class WHERE relname = 'test_cache_hierarchy'),
   'test_seq', 6
 ) as mismatched_occur_bitlen;
@@ -65,7 +65,7 @@ HINT:  Set kmersearch.occur_bitlen = 8 before loading cache.
 -- Test 2.3: Mismatched GUC - max_appearance_rate (should fail during cache load)
 SET kmersearch.occur_bitlen = 8;  -- Reset
 SET kmersearch.max_appearance_rate = 0.8;
-SELECT kmersearch_highfreq_kmers_cache_load(
+SELECT kmersearch_highfreq_kmer_cache_load(
   (SELECT oid FROM pg_class WHERE relname = 'test_cache_hierarchy'),
   'test_seq', 6
 ) as mismatched_rate;
@@ -75,7 +75,7 @@ HINT:  Set kmersearch.max_appearance_rate = 0.4000 before loading cache.
 -- Test 2.4: Mismatched GUC - max_appearance_nrow (should fail during cache load)
 SET kmersearch.max_appearance_rate = 0.4;  -- Reset
 SET kmersearch.max_appearance_nrow = 10;
-SELECT kmersearch_highfreq_kmers_cache_load(
+SELECT kmersearch_highfreq_kmer_cache_load(
   (SELECT oid FROM pg_class WHERE relname = 'test_cache_hierarchy'),
   'test_seq', 6
 ) as mismatched_nrow;
@@ -105,7 +105,7 @@ SELECT 'Testing global cache...' as test_substep;
  Testing global cache...
 (1 row)
 
-SELECT kmersearch_highfreq_kmers_cache_load(
+SELECT kmersearch_highfreq_kmer_cache_load(
   (SELECT oid FROM pg_class WHERE relname = 'test_cache_hierarchy'),
   'test_seq', 6
 ) as global_cache_load_result;
@@ -128,7 +128,7 @@ SELECT 'Testing parallel cache...' as test_substep;
  Testing parallel cache...
 (1 row)
 
-SELECT kmersearch_parallel_highfreq_kmers_cache_load(
+SELECT kmersearch_parallel_highfreq_kmer_cache_load(
   (SELECT oid FROM pg_class WHERE relname = 'test_cache_hierarchy'),
   'test_seq', 6
 ) as parallel_cache_load_result;
@@ -160,7 +160,7 @@ SELECT test_seq =% 'ATCGATCG' as parallel_only_query FROM test_cache_hierarchy L
 (1 row)
 
 -- Clear parallel cache too
-SELECT kmersearch_parallel_highfreq_kmers_cache_free() as parallel_cache_cleared;
+SELECT kmersearch_parallel_highfreq_kmer_cache_free() as parallel_cache_cleared;
  parallel_cache_cleared 
 ------------------------
                       1

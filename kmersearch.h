@@ -522,7 +522,6 @@ KmerData kmersearch_encode_kmer2_only_data(VarBit *kmer, int k_size);
 
 /* Functions for easy migration between files */
 Datum *kmersearch_extract_kmer_with_degenerate(const char *sequence, int seq_len, int k, int *nkeys);
-VarBit *kmersearch_create_ngram_key2_with_occurrence(const char *kmer, int k, int occurrence);
 Datum *kmersearch_extract_kmers(const char *sequence, int seq_len, int k, int *nkeys);
 
 /* Cache management functions (implemented in kmersearch_cache.c) */

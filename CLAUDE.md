@@ -127,3 +127,7 @@ All caches validate GUC parameters against stored metadata to ensure consistency
 
 ### SIMD Implementation
 The codebase includes platform-specific SIMD optimizations with function dispatch tables for encoding/decoding operations. SIMD capability is detected at runtime and appropriate implementation is selected.
+
+### Recent Code Improvements
+- **Unified ngram_key2 creation**: Removed duplicate `kmersearch_create_ngram_key2_with_occurrence()` function and consolidated implementation in `kmersearch_create_ngram_key2()` for better maintainability and consistency
+- **Enhanced error handling**: Improved negative occurrence value handling in ngram key creation functions
