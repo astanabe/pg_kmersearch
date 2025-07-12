@@ -58,11 +58,10 @@ bool parallel_cache_exit_callback_registered = false;
     } while(0)
 
 /* Forward declarations */
-static bool kmersearch_is_kmer_highfreq(VarBit *kmer_key);
+/* High-frequency filtering functions moved to kmersearch_freq.c */
 static bool kmersearch_validate_guc_against_all_metadata(void);
 static bool kmersearch_is_parallel_highfreq_cache_loaded(void);
 static bool kmersearch_lookup_in_parallel_cache(VarBit *kmer_key);
-static int kmersearch_count_highfreq_kmer_in_query(VarBit **query_keys, int nkeys);
 static int kmersearch_calculate_raw_score(VarBit *seq1, VarBit *seq2, text *query_text);
 
 /* High-frequency k-mer filtering functions */
@@ -74,7 +73,7 @@ Datum *kmersearch_filter_highfreq_kmers_from_keys(Datum *original_keys, int *nke
 static bool kmersearch_parallel_highfreq_kmer_cache_is_valid(Oid table_oid, const char *column_name, int k_value);
 static bool kmersearch_parallel_cache_lookup(uint64 kmer_hash);
 static bool kmersearch_parallel_cache_attach(dsm_handle handle);
-static bool kmersearch_is_highfreq_kmer_parallel(VarBit *kmer);
+/* kmersearch_is_highfreq_kmer_parallel moved to kmersearch_freq.c */
 Datum *kmersearch_filter_highfreq_kmers_from_keys_parallel(Datum *original_keys, int *nkeys, int k);
 static void kmersearch_parallel_cache_cleanup_internal(void);
 static void dshash_cache_cleanup_callback(int code, Datum arg);
@@ -101,8 +100,7 @@ static bool kmersearch_evaluate_match_conditions(int shared_count, int query_tot
 static bool evaluate_optimized_match_condition(VarBit **query_keys, int nkeys, int shared_count, const char *query_string, int query_total_kmers);
 
 /* New parallel analysis functions */
-static int kmersearch_determine_parallel_workers(int requested_workers, Relation target_relation);
-static KmerAnalysisResult kmersearch_analyze_table_parallel(Oid table_oid, const char *column_name, int k_size, int parallel_workers);
+/* Parallel analysis functions moved to kmersearch_freq.c */
 static void kmersearch_worker_analyze_blocks(KmerWorkerState *worker, Relation rel, const char *column_name, int k_size);
 static void kmersearch_merge_worker_results_sql(KmerWorkerState *workers, int num_workers, const char *final_table_name, int k_size, int threshold_rows);
 static void kmersearch_persist_highfreq_kmers(Oid table_oid, const char *column_name, int k_size, void *unused_table, int threshold_rows);
@@ -123,10 +121,8 @@ static void kmersearch_flush_buffer_to_table(KmerBuffer *buffer, const char *tem
 static void kmersearch_aggregate_buffer_entries(KmerBuffer *buffer);
 static void kmersearch_create_worker_temp_table(const char *temp_table_name, int k_size);
 static bool kmersearch_check_analysis_exists(Oid table_oid, const char *column_name, int k_size);
-static void kmersearch_validate_analysis_parameters(Oid table_oid, const char *column_name, int k_size);
-static Datum *kmersearch_filter_highfreq_kmers(Oid table_oid, const char *column_name, int k_size, Datum *all_keys, int total_keys, int *filtered_count);
+/* Analysis and filtering functions moved to kmersearch_freq.c */
 static void kmersearch_delete_existing_analysis(Oid table_oid, const char *column_name, int k_size);
-static DropAnalysisResult kmersearch_drop_analysis_internal(Oid table_oid, const char *column_name, int k_size);
 
 /* Custom GUC variables */
 void _PG_init(void);
@@ -222,10 +218,7 @@ PG_FUNCTION_INFO_V1(kmersearch_dna2_match);
 PG_FUNCTION_INFO_V1(kmersearch_dna4_match);
 
 /* K-mer frequency analysis functions */
-PG_FUNCTION_INFO_V1(kmersearch_analyze_table_frequency);
-PG_FUNCTION_INFO_V1(kmersearch_get_highfreq_kmer);
-PG_FUNCTION_INFO_V1(kmersearch_analyze_table);
-PG_FUNCTION_INFO_V1(kmersearch_drop_analysis);
+/* Frequency analysis functions moved to kmersearch_freq.c */
 
 /* Score calculation functions */
 PG_FUNCTION_INFO_V1(kmersearch_rawscore_dna2);
@@ -1319,191 +1312,16 @@ kmersearch_dna4_match(PG_FUNCTION_ARGS)
 
 /* A-3: Removed kmersearch_kmer_hash and kmersearch_kmer_compare functions - no longer needed */
 
-/*
- * Analyze table frequency and determine highly frequent k-mers
- */
-Datum
-kmersearch_analyze_table_frequency(PG_FUNCTION_ARGS)
-{
-    Oid table_oid = PG_GETARG_OID(0);
-    text *column_name_text = PG_GETARG_TEXT_P(1);
-    int k = PG_GETARG_INT32(2);
-    Oid index_oid = PG_GETARG_OID(3);
-    
-    char *column_name = text_to_cstring(column_name_text);
-    int highfreq_count = 0;
-    
-    /* Check if high-frequency k-mer exclusion should be performed */
-    bool should_exclude = false;
-    
-    /* If max_appearance_rate is 0, treat as undefined (no exclusion) */
-    if (kmersearch_max_appearance_rate > 0.0)
-        should_exclude = true;
-    
-    /* If max_appearance_nrow is greater than 0, enable exclusion */
-    if (kmersearch_max_appearance_nrow > 0)
-        should_exclude = true;
-    
-    if (!should_exclude)
-    {
-        /* Skip frequency analysis - create empty highly frequent k-mer list */
-        ereport(NOTICE, (errmsg("High-frequency k-mer exclusion disabled, skipping table scan")));
-        
-        /* Insert index info with zero highly frequent k-mers */
-        /* Note: This would normally insert into kmersearch_index_info table */
-        /* For now, just return 0 indicating no exclusions */
-        
-        PG_RETURN_INT32(0);
-    }
-    
-    /* Perform frequency analysis if exclusion is enabled */
-    ereport(NOTICE, (errmsg("Performing k-mer frequency analysis for k=%d", k)));
-    ereport(NOTICE, (errmsg("Max appearance rate: %f, Max appearance nrow: %d", 
-                           kmersearch_max_appearance_rate, kmersearch_max_appearance_nrow)));
-    
-    /* 
-     * TODO: Implement actual frequency analysis:
-     * 1. Scan all rows in the table
-     * 2. Extract k-mers from the specified column
-     * 3. Count frequency of each k-mer
-     * 4. Identify k-mers exceeding thresholds
-     * 5. Insert highly frequent k-mers into kmersearch_highfreq_kmer table
-     * 6. Insert index statistics into kmersearch_index_info table
-     */
-    
-    PG_RETURN_INT32(highfreq_count);
-}
+/* kmersearch_analyze_table_frequency function moved to kmersearch_freq.c */
 
-/*
- * Get highly frequent k-mers for an index
- */
-Datum
-kmersearch_get_highfreq_kmer(PG_FUNCTION_ARGS)
-{
-    Oid index_oid = PG_GETARG_OID(0);
-    int ret;
-    StringInfoData query;
-    ArrayType *result_array = NULL;
-    Datum *datums = NULL;
-    int nkeys = 0;
-    int i;
-    
-    /* Connect to SPI */
-    kmersearch_spi_connect_or_error();
-    
-    /* Build query to get highly frequent k-mers */
-    initStringInfo(&query);
-    appendStringInfo(&query,
-        "SELECT kmer_key FROM kmersearch_highfreq_kmer WHERE index_oid = %u ORDER BY kmer_key",
-        index_oid);
-    
-    /* Execute query */
-    ret = SPI_execute(query.data, true, 0);
-    if (ret == SPI_OK_SELECT && SPI_processed > 0)
-    {
-        nkeys = SPI_processed;
-        datums = (Datum *) palloc(nkeys * sizeof(Datum));
-        
-        for (i = 0; i < nkeys; i++)
-        {
-            bool isnull;
-            Datum kmer_datum;
-            
-            kmer_datum = SPI_getbinval(SPI_tuptable->vals[i], SPI_tuptable->tupdesc, 1, &isnull);
-            if (!isnull)
-            {
-                /* Copy the varbit value */
-                VarBit *kmer = DatumGetVarBitPCopy(kmer_datum);
-                datums[i] = PointerGetDatum(kmer);
-            }
-            else
-            {
-                datums[i] = (Datum) 0;
-            }
-        }
-        
-        /* Create array result */
-        if (nkeys > 0)
-        {
-            result_array = construct_array(datums, nkeys, VARBITOID, -1, false, TYPALIGN_INT);
-        }
-    }
-    
-    /* Cleanup */
-    pfree(query.data);
-    if (datums)
-        pfree(datums);
-    SPI_finish();
-    
-    if (result_array)
-        PG_RETURN_ARRAYTYPE_P(result_array);
-    else
-        PG_RETURN_NULL();
-}
+/* kmersearch_get_highfreq_kmer function moved to kmersearch_freq.c */
 
 
-/*
- * Count highly frequent k-mers in query sequence
- */
-static int
-kmersearch_count_highfreq_kmer_in_query(VarBit **query_keys, int nkeys)
-{
-    int highfreq_count = 0;
-    int i;
-    
-    /* For each k-mer in the query, check if it's highly frequent */
-    for (i = 0; i < nkeys; i++)
-    {
-        if (kmersearch_is_kmer_highfreq(query_keys[i]))
-        {
-            highfreq_count++;
-        }
-    }
-    
-    return highfreq_count;
-}
+/* kmersearch_count_highfreq_kmer_in_query function moved to kmersearch_freq.c */
 
-/*
- * Check if high-frequency k-mer filtering is enabled for current context
- */
-static bool
-kmersearch_is_highfreq_filtering_enabled(void)
-{
-    /* Check if global cache is valid and contains high-frequency k-mers */
-    if (!global_highfreq_cache.is_valid)
-        return false;
-    
-    /* Check if cache contains any high-frequency k-mers */
-    if (global_highfreq_cache.highfreq_hash == NULL)
-        return false;
-    
-    return true;
-}
+/* kmersearch_is_highfreq_filtering_enabled function moved to kmersearch_freq.c */
 
-/*
- * Calculate adjusted minimum score based on highly frequent k-mers in query
- * Only applies adjustment when high-frequency filtering is actually enabled
- */
-int
-kmersearch_get_adjusted_min_score(VarBit **query_keys, int nkeys)
-{
-    int highfreq_count;
-    int adjusted_score;
-    
-    /* Check if high-frequency filtering is enabled for this context */
-    if (!kmersearch_is_highfreq_filtering_enabled()) {
-        return kmersearch_min_score;  /* No adjustment needed */
-    }
-    
-    highfreq_count = kmersearch_count_highfreq_kmer_in_query(query_keys, nkeys);
-    adjusted_score = kmersearch_min_score - highfreq_count;
-    
-    /* Ensure adjusted score is not negative */
-    if (adjusted_score < 0)
-        adjusted_score = 0;
-    
-    return adjusted_score;
-}
+/* kmersearch_get_adjusted_min_score function moved to kmersearch_freq.c */
 
 /*
  * Calculate raw score between two DNA sequences
@@ -1724,78 +1542,7 @@ kmersearch_correctedscore_dna4(PG_FUNCTION_ARGS)
 
 
 
-/*
- * Check if a k-mer is in the high-frequency list
- * Uses cache hierarchy: global_cache -> parallel_cache -> table lookup
- */
-static bool
-kmersearch_is_kmer_highfreq(VarBit *kmer_key)
-{
-    if (!kmer_key)
-        return false;
-    
-    /* Step 1: Validate GUC settings against metadata table */
-    if (!kmersearch_validate_guc_against_all_metadata()) {
-        ereport(ERROR, 
-                (errcode(ERRCODE_CONFIGURATION_LIMIT_EXCEEDED),
-                 errmsg("Current GUC settings do not match kmersearch_highfreq_kmer_meta table"),
-                 errhint("Current cache may be invalid. Please reload cache or run kmersearch_analyze_table() again.")));
-    }
-    
-    /* Step 2: Try global_highfreq_cache first */
-    if (kmersearch_is_global_highfreq_cache_loaded()) {
-        return kmersearch_lookup_in_global_cache(kmer_key);
-    }
-    
-    /* Step 3: Try parallel_highfreq_cache if global cache not available */
-    if (kmersearch_is_parallel_highfreq_cache_loaded()) {
-        return kmersearch_lookup_in_parallel_cache(kmer_key);
-    }
-    
-    /* Step 4: Fall back to table lookup */
-    {
-        int ret;
-        StringInfoData query;
-        bool is_highfreq = false;
-        char *kmer_hex;
-        
-        /* Connect to SPI */
-        if (SPI_connect() != SPI_OK_CONNECT)
-            return false;
-        
-        /* Check if kmersearch_highfreq_kmer table exists */
-        ret = SPI_execute("SELECT 1 FROM information_schema.tables WHERE table_name = 'kmersearch_highfreq_kmer' LIMIT 1", true, 1);
-        if (ret != SPI_OK_SELECT || SPI_processed == 0) {
-            /* Table doesn't exist, always return false */
-            SPI_finish();
-            return false;
-        }
-        
-        /* Convert k-mer to hex string for SQL query */
-        kmer_hex = kmersearch_varbit_to_hex_string(kmer_key);
-        
-        /* Query kmersearch_highfreq_kmer table using new ngram_key column */
-        initStringInfo(&query);
-        appendStringInfo(&query,
-            "SELECT 1 FROM kmersearch_highfreq_kmer "
-            "WHERE substring(ngram_key, 1, %d) = '\\x%s'::varbit "
-            "LIMIT 1",
-            VARBITLEN(kmer_key), kmer_hex);
-        
-        /* Execute query */
-        ret = SPI_execute(query.data, true, 1);
-        if (ret == SPI_OK_SELECT && SPI_processed > 0) {
-            is_highfreq = true;
-        }
-        
-        /* Clean up */
-        pfree(kmer_hex);
-        pfree(query.data);
-        SPI_finish();
-        
-        return is_highfreq;
-    }
-}
+/* kmersearch_is_kmer_highfreq function moved to kmersearch_freq.c */
 
 /*
  * Validate GUC settings against all metadata table entries
@@ -2862,101 +2609,7 @@ kmersearch_merge_worker_results_sql(KmerWorkerState *workers, int num_workers,
     pfree(union_query.data);
 }
 
-/*
- * Main parallel analysis function
- */
-static KmerAnalysisResult
-kmersearch_analyze_table_parallel(Oid table_oid, const char *column_name, int k_size, int parallel_workers)
-{
-    KmerAnalysisResult result;
-    Relation rel;
-    int num_workers;
-    KmerWorkerState *workers;
-    int threshold_rows;
-    int i;
-    
-    /* Initialize result structure */
-    memset(&result, 0, sizeof(KmerAnalysisResult));
-    
-    /* Open target relation */
-    rel = relation_open(table_oid, AccessShareLock);
-    
-    /* Determine number of parallel workers */
-    num_workers = kmersearch_determine_parallel_workers(parallel_workers, rel);
-    result.parallel_workers_used = num_workers;
-    
-    /* Calculate threshold based on GUC variables */
-    {
-        BlockNumber pages;
-        double tuples, allvisfrac;
-        estimate_rel_size(rel, NULL, &pages, &tuples, &allvisfrac);
-        threshold_rows = (int)(tuples * kmersearch_max_appearance_rate);
-    }
-    if (kmersearch_max_appearance_nrow > 0 && threshold_rows > kmersearch_max_appearance_nrow)
-        threshold_rows = kmersearch_max_appearance_nrow;
-    
-    result.max_appearance_rate_used = kmersearch_max_appearance_rate;
-    result.max_appearance_nrow_used = threshold_rows;
-    
-    /* Allocate worker state array */
-    workers = (KmerWorkerState *) palloc0(num_workers * sizeof(KmerWorkerState));
-    
-    /* Initialize workers and assign work blocks */
-    for (i = 0; i < num_workers; i++) {
-        workers[i].worker_id = i;
-        workers[i].start_block = (RelationGetNumberOfBlocksInFork(rel, MAIN_FORKNUM) * i) / num_workers;
-        workers[i].end_block = (RelationGetNumberOfBlocksInFork(rel, MAIN_FORKNUM) * (i + 1)) / num_workers;
-        workers[i].local_highfreq_count = 0;
-        workers[i].rows_processed = 0;
-        workers[i].temp_table_name = NULL;
-        
-        /* Process assigned blocks */
-        kmersearch_worker_analyze_blocks(&workers[i], rel, column_name, k_size);
-    }
-    
-    /* Phase 1: Merge worker results using SQL aggregation for k-mer-only analysis */
-    ereport(NOTICE, (errmsg("Phase 1: Analyzing k-mer frequencies with %d parallel workers...", num_workers)));
-    {
-        char *final_table_name = psprintf("temp_kmer_final_%d", getpid());
-        kmersearch_merge_worker_results_sql(workers, num_workers, final_table_name, k_size, threshold_rows);
-        
-        /* Count highly frequent k-mers */
-        SPI_connect();
-        {
-            StringInfoData count_query;
-            initStringInfo(&count_query);
-            appendStringInfo(&count_query, "SELECT count(*) FROM %s", final_table_name);
-            
-            if (SPI_exec(count_query.data, 0) == SPI_OK_SELECT && SPI_processed > 0) {
-                result.highfreq_kmers_count = DatumGetInt32(SPI_getbinval(SPI_tuptable->vals[0], 
-                                                                        SPI_tuptable->tupdesc, 1, NULL));
-            }
-            pfree(count_query.data);
-        }
-        SPI_finish();
-        
-        /* Phase 2: Collect n-gram keys for high-frequency k-mers using parallel processing */
-        ereport(NOTICE, (errmsg("Phase 2: Collecting n-gram keys for high-frequency k-mers...")));
-        kmersearch_collect_ngram_key2_for_highfreq_kmer(table_oid, column_name, k_size, final_table_name);
-        
-        /* Insert metadata record */
-        kmersearch_persist_highfreq_kmers_metadata(table_oid, column_name, k_size);
-        
-        pfree(final_table_name);
-    }
-    
-    /* Calculate total statistics */
-    for (i = 0; i < num_workers; i++) {
-        result.total_rows += workers[i].rows_processed;
-        result.highfreq_kmers_count += workers[i].local_highfreq_count;
-    }
-    
-    /* Clean up */
-    pfree(workers);
-    relation_close(rel, AccessShareLock);
-    
-    return result;
-}
+/* kmersearch_analyze_table_parallel function moved to kmersearch_freq.c */
 
 /*
  * Persist highly frequent k-mers from temporary table to permanent tables
@@ -3370,76 +3023,7 @@ kmersearch_check_analysis_exists(Oid table_oid, const char *column_name, int k_s
     return found;
 }
 
-/*
- * Validate analysis parameters match current GUC settings
- */
-static void
-kmersearch_validate_analysis_parameters(Oid table_oid, const char *column_name, int k_size)
-{
-    Relation rel;
-    TupleDesc tupdesc;
-    AttrNumber attnum;
-    Form_pg_attribute attr;
-    Oid column_type;
-    
-    /* Validate k-mer size */
-    if (k_size < 4 || k_size > 64) {
-        ereport(ERROR, 
-                (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-                 errmsg("k-mer size must be between 4 and 64, got %d", k_size)));
-    }
-    
-    /* Validate table exists and we can access it */
-    rel = try_relation_open(table_oid, AccessShareLock);
-    if (rel == NULL) {
-        ereport(ERROR,
-                (errcode(ERRCODE_UNDEFINED_TABLE),
-                 errmsg("table with OID %u does not exist", table_oid)));
-    }
-    
-    /* Validate column exists and has correct type */
-    tupdesc = RelationGetDescr(rel);
-    attnum = get_attnum(table_oid, column_name);
-    if (attnum == InvalidAttrNumber) {
-        relation_close(rel, AccessShareLock);
-        ereport(ERROR,
-                (errcode(ERRCODE_UNDEFINED_COLUMN),
-                 errmsg("column \"%s\" does not exist in table", column_name)));
-    }
-    
-    attr = TupleDescAttr(tupdesc, attnum - 1);
-    column_type = attr->atttypid;
-    
-    /* Check if column type is compatible (basic check for varbit-like types) */
-    if (column_type != VARBITOID && attr->atttypmod == -1) {
-        /* For now, just warn about potential type mismatch */
-        ereport(WARNING,
-                (errmsg("column \"%s\" type may not be compatible with k-mer analysis", column_name),
-                 errhint("Expected DNA2, DNA4, or varbit type")));
-    }
-    
-    /* Validate GUC parameters */
-    if (kmersearch_max_appearance_rate <= 0.0 && kmersearch_max_appearance_nrow <= 0) {
-        relation_close(rel, AccessShareLock);
-        ereport(ERROR,
-                (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-                 errmsg("exclusion parameters not configured"),
-                 errhint("Set kmersearch.max_appearance_rate > 0 or kmersearch.max_appearance_nrow > 0")));
-    }
-    
-    if (kmersearch_max_appearance_rate < 0.0 || kmersearch_max_appearance_rate > 1.0) {
-        relation_close(rel, AccessShareLock);
-        ereport(ERROR,
-                (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-                 errmsg("kmersearch.max_appearance_rate must be between 0.0 and 1.0, got %f", 
-                        kmersearch_max_appearance_rate)));
-    }
-    
-    relation_close(rel, AccessShareLock);
-    
-    ereport(DEBUG1, (errmsg("Analysis parameters validated for table %u, column %s, k=%d", 
-                           table_oid, column_name, k_size)));
-}
+/* kmersearch_validate_analysis_parameters function moved to kmersearch_freq.c */
 
 /*
  * Filter highly frequent k-mers from the key array
@@ -3558,127 +3142,9 @@ kmersearch_filter_highfreq_kmers(Oid table_oid, const char *column_name, int k_s
     
     return filtered_keys;
 }
-/*
- * Main k-mer analysis function (Option A implementation)
- */
-Datum
-kmersearch_analyze_table(PG_FUNCTION_ARGS)
-{
-    Oid table_oid = PG_GETARG_OID(0);
-    text *column_name_text = PG_GETARG_TEXT_P(1);
-    int k_size = PG_GETARG_INT32(2);
-    int parallel_workers = PG_GETARG_INT32(3);
-    
-    char *column_name = text_to_cstring(column_name_text);
-    KmerAnalysisResult result;
-    
-    /* Comprehensive parameter validation */
-    kmersearch_validate_analysis_parameters(table_oid, column_name, k_size);
-    
-    /* Perform parallel analysis */
-    result = kmersearch_analyze_table_parallel(table_oid, column_name, k_size, parallel_workers);
-    
-    /* Create result tuple */
-    {
-        TupleDesc tupdesc;
-        Datum values[6];
-        bool nulls[6] = {false};
-        HeapTuple tuple;
-    
-    /* Build tuple descriptor */
-    if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE) {
-        ereport(ERROR, (errmsg("function returning record called in context that cannot accept a record")));
-    }
-    
-    /* Fill result values */
-    values[0] = Int64GetDatum(result.total_rows);
-    values[1] = Int32GetDatum(result.highfreq_kmers_count);
-    values[2] = Int32GetDatum(result.parallel_workers_used);
-    values[3] = Float8GetDatum(result.analysis_duration);
-    values[4] = Float8GetDatum(result.max_appearance_rate_used);
-    values[5] = Int32GetDatum(result.max_appearance_nrow_used);
-    
-    tuple = heap_form_tuple(tupdesc, values, nulls);
-    
-    /* Cleanup */
-    pfree(column_name);
-    
-    PG_RETURN_DATUM(HeapTupleGetDatum(tuple));
-    }
-}
+/* kmersearch_analyze_table function moved to kmersearch_freq.c */
 
-/*
- * Drop analysis results function
- */
-Datum
-kmersearch_drop_analysis(PG_FUNCTION_ARGS)
-{
-    Oid table_oid = PG_GETARG_OID(0);
-    text *column_name_text = PG_GETARG_TEXT_P(1);
-    int k_size = PG_GETARG_INT32(2);  /* 0 means all k-sizes */
-    
-    char *column_name = text_to_cstring(column_name_text);
-    DropAnalysisResult result;
-    
-    /* Validate table OID */
-    if (!OidIsValid(table_oid)) {
-        ereport(ERROR, (errmsg("invalid table OID")));
-    }
-    
-    /* Perform drop operation */
-    result = kmersearch_drop_analysis_internal(table_oid, column_name, k_size);
-    
-    /* Create result tuple */
-    {
-        TupleDesc tupdesc;
-        Datum values[3];
-        bool nulls[3] = {false};
-        HeapTuple tuple;
-    
-    /* Build tuple descriptor */
-    if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE) {
-        ereport(ERROR, (errmsg("function returning record called in context that cannot accept a record")));
-    }
-    
-    /* Fill result values */
-    values[0] = Int32GetDatum(result.dropped_analyses);
-    values[1] = Int32GetDatum(result.dropped_highfreq_kmers);
-    values[2] = Int64GetDatum(result.freed_storage_bytes);
-    
-    tuple = heap_form_tuple(tupdesc, values, nulls);
-    
-    /* Cleanup */
-    pfree(column_name);
-    
-    PG_RETURN_DATUM(HeapTupleGetDatum(tuple));
-    }
-}
-
-/*
- * Internal drop analysis implementation
- */
-static DropAnalysisResult
-kmersearch_drop_analysis_internal(Oid table_oid, const char *column_name, int k_size)
-{
-    DropAnalysisResult result = {0};
-    
-    /* For now, just log the operation */
-    if (k_size > 0) {
-        ereport(NOTICE, (errmsg("Would drop analysis for table %u, column %s, k=%d", 
-                               table_oid, column_name, k_size)));
-        result.dropped_analyses = 1;
-        result.dropped_highfreq_kmers = 10;  /* Mock value */
-    } else {
-        ereport(NOTICE, (errmsg("Would drop all analyses for table %u, column %s", 
-                               table_oid, column_name)));
-        result.dropped_analyses = 3;  /* Mock value */
-        result.dropped_highfreq_kmers = 30;  /* Mock value */
-    }
-    
-    result.freed_storage_bytes = result.dropped_highfreq_kmers * 100;  /* Mock calculation */
-    
-    return result;
-}
+/* kmersearch_drop_analysis and related functions moved to kmersearch_freq.c */
 
 /*
  * Helper function to get highly frequent k-mers list for a given index

@@ -530,7 +530,7 @@ void kmersearch_rawscore_cache_max_entries_assign_hook(int newval, void *extra);
 KmerMatchResult get_cached_rawscore_dna2(VarBit *sequence, const char *query_string);
 KmerMatchResult get_cached_rawscore_dna4(VarBit *sequence, const char *query_string);
 
-/* Internal functions that should be declared (implemented in pg_kmersearch.c) */
+/* Internal functions that should be declared (implemented in kmersearch_freq.c) */
 int kmersearch_get_adjusted_min_score(VarBit **query_keys, int nkeys);
 KmerMatchResult kmersearch_calculate_kmer_match_and_score_dna2(VarBit *sequence, const char *query_string);
 KmerMatchResult kmersearch_calculate_kmer_match_and_score_dna4(VarBit *sequence, const char *query_string);
@@ -541,5 +541,16 @@ Datum kmersearch_extract_value_dna4(PG_FUNCTION_ARGS);
 Datum kmersearch_extract_query(PG_FUNCTION_ARGS);
 Datum kmersearch_consistent(PG_FUNCTION_ARGS);
 Datum kmersearch_compare_partial(PG_FUNCTION_ARGS);
+
+/* Frequency analysis functions (implemented in kmersearch_freq.c) */
+Datum kmersearch_analyze_table_frequency(PG_FUNCTION_ARGS);
+Datum kmersearch_get_highfreq_kmer(PG_FUNCTION_ARGS);
+Datum kmersearch_analyze_table(PG_FUNCTION_ARGS);
+Datum kmersearch_drop_analysis(PG_FUNCTION_ARGS);
+
+/* Internal frequency analysis functions (implemented in kmersearch_freq.c) */
+DropAnalysisResult kmersearch_drop_analysis_internal(Oid table_oid, const char *column_name, int k_size);
+KmerAnalysisResult kmersearch_analyze_table_parallel(Oid table_oid, const char *column_name, int k_size, int parallel_workers);
+void kmersearch_validate_analysis_parameters(Oid table_oid, const char *column_name, int k_size);
 
 #endif   /* KMERSEARCH_H */
