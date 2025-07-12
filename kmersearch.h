@@ -490,8 +490,21 @@ Datum *kmersearch_extract_kmers(const char *sequence, int seq_len, int k, int *n
 /* Cache management functions (implemented in kmersearch_cache.c) */
 int calculate_actual_min_score(VarBit **query_keys, int nkeys, int query_total_kmers);
 
+/* Query pattern cache functions (implemented in kmersearch_cache.c) */
+VarBit **get_cached_query_kmer(const char *query_string, int k_size, int *nkeys);
+
+/* Actual min score cache functions (implemented in kmersearch_cache.c) */  
+int get_cached_actual_min_score(VarBit **query_keys, int nkeys);
+
+/* Rawscore cache functions (implemented in kmersearch_cache.c) */
+void kmersearch_rawscore_cache_max_entries_assign_hook(int newval, void *extra);
+KmerMatchResult get_cached_rawscore_dna2(VarBit *sequence, const char *query_string);
+KmerMatchResult get_cached_rawscore_dna4(VarBit *sequence, const char *query_string);
+
 /* Internal functions that should be declared (implemented in pg_kmersearch.c) */
 int kmersearch_get_adjusted_min_score(VarBit **query_keys, int nkeys);
+KmerMatchResult kmersearch_calculate_kmer_match_and_score_dna2(VarBit *sequence, const char *query_string);
+KmerMatchResult kmersearch_calculate_kmer_match_and_score_dna4(VarBit *sequence, const char *query_string);
 
 /* GIN index support functions (implemented in kmersearch_gin.c) */
 Datum kmersearch_extract_value_dna2(PG_FUNCTION_ARGS);

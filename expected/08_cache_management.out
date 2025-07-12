@@ -1,6 +1,8 @@
 CREATE EXTENSION IF NOT EXISTS pg_kmersearch;
 -- Test cache management functionality
 -- This test covers actual min score cache, rawscore cache, and query pattern cache
+-- Set k-mer size for consistent cache behavior
+SET kmersearch.kmer_size = 8;
 -- Clean up any existing tables
 DROP TABLE IF EXISTS test_cache_DNA2, test_cache_DNA4 CASCADE;
 NOTICE:  table "test_cache_dna2" does not exist, skipping
@@ -196,7 +198,7 @@ SELECT 'After query execution - actual min score cache:' as test_phase;
 SELECT * FROM kmersearch_actual_min_score_cache_stats();
  hits | misses | current_entries | max_entries 
 ------+--------+-----------------+-------------
-   59 |      3 |               3 |       50000
+   54 |      8 |               8 |       50000
 (1 row)
 
 SELECT 'After query execution - rawscore cache:' as test_phase;
@@ -233,7 +235,7 @@ SELECT 'Testing cache clear functions...' as test_phase;
 SELECT 'Clearing actual min score cache:' as action, kmersearch_actual_min_score_cache_free() as freed_entries;
               action              | freed_entries 
 ----------------------------------+---------------
- Clearing actual min score cache: |             3
+ Clearing actual min score cache: |             8
 (1 row)
 
 SELECT 'Clearing rawscore cache:' as action, kmersearch_rawscore_cache_free() as freed_entries;
@@ -317,7 +319,7 @@ SELECT 'With changed settings - actual min score cache:' as test_phase;
 SELECT * FROM kmersearch_actual_min_score_cache_stats();
  hits | misses | current_entries | max_entries 
 ------+--------+-----------------+-------------
-   17 |      1 |               1 |       50000
+   15 |      3 |               3 |       50000
 (1 row)
 
 -- Reset to defaults
@@ -374,7 +376,7 @@ SELECT 'Final cache state:' as test_phase;
 SELECT * FROM kmersearch_actual_min_score_cache_stats();
  hits | misses | current_entries | max_entries 
 ------+--------+-----------------+-------------
-   36 |      4 |               4 |        1000
+   37 |      3 |               3 |        1000
 (1 row)
 
 -- Clean up

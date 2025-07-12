@@ -10,7 +10,13 @@
 
 #include "kmersearch.h"
 
-/* PostgreSQL function info declarations for cache functions will be moved here later */
+/* PostgreSQL function info declarations for cache functions */
+PG_FUNCTION_INFO_V1(kmersearch_rawscore_cache_stats);
+PG_FUNCTION_INFO_V1(kmersearch_rawscore_cache_free);
+PG_FUNCTION_INFO_V1(kmersearch_query_pattern_cache_stats);
+PG_FUNCTION_INFO_V1(kmersearch_query_pattern_cache_free);
+PG_FUNCTION_INFO_V1(kmersearch_actual_min_score_cache_stats);
+PG_FUNCTION_INFO_V1(kmersearch_actual_min_score_cache_free);
 
 /*
  * Forward declarations for internal functions
@@ -23,13 +29,11 @@ static QueryPatternCacheEntry *lookup_query_pattern_cache_entry(QueryPatternCach
 static void store_query_pattern_cache_entry(QueryPatternCacheManager *manager, uint64 hash_key, const char *query_string, int k_size, VarBit **kmers, int kmer_count);
 static void lru_touch_query_pattern_cache(QueryPatternCacheManager *manager, QueryPatternCacheEntry *entry);
 static void lru_evict_oldest_query_pattern_cache(QueryPatternCacheManager *manager);
-static VarBit **get_cached_query_kmer(const char *query_string, int k_size, int *nkeys);
 static void free_query_pattern_cache_manager(QueryPatternCacheManager **manager);
 
 /* Actual min score cache functions */
 static void create_actual_min_score_cache_manager(ActualMinScoreCacheManager **manager);
 static void free_actual_min_score_cache_manager(ActualMinScoreCacheManager **manager);
-static int get_cached_actual_min_score(VarBit **query_keys, int nkeys);
 
 /* Rawscore cache functions */
 static RawscoreCacheManager *create_rawscore_cache_manager(const char *name);
@@ -48,8 +52,6 @@ static void rawscore_heap_remove(RawscoreCacheManager *manager, RawscoreCacheEnt
 static void rawscore_heap_evict_lowest_score(RawscoreCacheManager *manager);
 
 /* High-level cache functions */
-static KmerMatchResult get_cached_rawscore_dna2(VarBit *sequence, const char *query_string);
-static KmerMatchResult get_cached_rawscore_dna4(VarBit *sequence, const char *query_string);
 
 /* External global variables (defined in pg_kmersearch.c) */
 extern ActualMinScoreCacheManager *actual_min_score_cache_manager;
@@ -267,7 +269,7 @@ store_query_pattern_cache_entry(QueryPatternCacheManager *manager, uint64 hash_k
 /*
  * Get cached query k-mers or extract and cache them
  */
-static VarBit **
+VarBit **
 get_cached_query_kmer(const char *query_string, int k_size, int *nkeys)
 {
     QueryPatternCacheEntry *cache_entry;
@@ -422,7 +424,7 @@ calculate_actual_min_score(VarBit **query_keys, int nkeys, int query_total_kmers
 /*
  * Get cached actual min score using TopMemoryContext cache (global)
  */
-static int
+int
 get_cached_actual_min_score(VarBit **query_keys, int nkeys)
 {
     ActualMinScoreCacheEntry *cache_entry;
@@ -493,4 +495,661 @@ get_cached_actual_min_score(VarBit **query_keys, int nkeys)
     }
     
     return actual_min_score;
+}
+
+/* ================================
+ * RAWSCORE CACHE IMPLEMENTATION
+ * ================================ */
+
+/* Global rawscore cache statistics */
+static struct {
+    uint64 dna2_hits;
+    uint64 dna2_misses;
+    int dna2_current_entries;
+    int dna2_max_entries;
+    uint64 dna4_hits;
+    uint64 dna4_misses;
+    int dna4_current_entries;
+    int dna4_max_entries;
+} rawscore_cache_stats = {0};
+
+/*
+ * GUC hook function for rawscore cache max entries changes
+ */
+void
+kmersearch_rawscore_cache_max_entries_assign_hook(int newval, void *extra)
+{
+    (void) newval;  /* Suppress unused parameter warning */
+    (void) extra;   /* Suppress unused parameter warning */
+    
+    /* Clear rawscore cache to recreate with new size limit */
+    if (rawscore_cache_manager)
+        free_rawscore_cache_manager(&rawscore_cache_manager);
+}
+
+/*
+ * Generate cache key from sequence and query string
+ */
+static uint64
+generate_cache_key(VarBit *sequence, const char *query_string)
+{
+    uint64 seq_hash, query_hash, kmer_hash;
+    
+    /* Safety checks */
+    if (sequence == NULL || query_string == NULL) {
+        elog(WARNING, "generate_cache_key: NULL parameter detected");
+        return 0;
+    }
+    
+    /* Validate VarBit structure */
+    if (VARBITLEN(sequence) == 0 || VARBITBYTES(sequence) == 0) {
+        elog(WARNING, "generate_cache_key: Invalid VarBit structure");
+        return 0;
+    }
+    
+    /* Hash sequence data */
+    seq_hash = hash_any_extended(VARBITS(sequence), VARBITBYTES(sequence), 0);
+    
+    /* Hash query string with different seed */
+    query_hash = hash_any_extended((unsigned char*)query_string, strlen(query_string), 1);
+    
+    /* Hash k-mer size to ensure different cache entries for different k values */
+    kmer_hash = hash_any_extended((unsigned char*)&kmersearch_kmer_size, sizeof(int), 2);
+    
+    /* Combine hashes */
+    return seq_hash ^ (query_hash << 1) ^ (kmer_hash << 2);
+}
+
+/*
+ * Check if two sequences are exactly equal
+ */
+static bool
+sequences_equal(VarBit *a, VarBit *b)
+{
+    if (VARBITLEN(a) != VARBITLEN(b))
+        return false;
+    if (VARSIZE(a) != VARSIZE(b))
+        return false;
+    return memcmp(VARBITS(a), VARBITS(b), VARBITBYTES(a)) == 0;
+}
+
+/*
+ * Helper functions for min-heap operations
+ */
+static void
+rawscore_heap_swap(RawscoreCacheManager *manager, int i, int j)
+{
+    RawscoreCacheEntry *temp = manager->min_heap[i];
+    manager->min_heap[i] = manager->min_heap[j];
+    manager->min_heap[j] = temp;
+    
+    /* Update heap indices */
+    manager->min_heap[i]->heap_index = i;
+    manager->min_heap[j]->heap_index = j;
+}
+
+static void
+rawscore_heap_bubble_up(RawscoreCacheManager *manager, int index)
+{
+    int parent;
+    
+    while (index > 0)
+    {
+        parent = (index - 1) / 2;
+        if (manager->min_heap[index]->result.shared_count >= manager->min_heap[parent]->result.shared_count)
+            break;
+        
+        rawscore_heap_swap(manager, index, parent);
+        index = parent;
+    }
+}
+
+static void
+rawscore_heap_bubble_down(RawscoreCacheManager *manager, int index)
+{
+    int smallest = index;
+    int left = 2 * index + 1;
+    int right = 2 * index + 2;
+    
+    if (left < manager->heap_size && 
+        manager->min_heap[left]->result.shared_count < manager->min_heap[smallest]->result.shared_count)
+        smallest = left;
+    
+    if (right < manager->heap_size && 
+        manager->min_heap[right]->result.shared_count < manager->min_heap[smallest]->result.shared_count)
+        smallest = right;
+    
+    if (smallest != index)
+    {
+        rawscore_heap_swap(manager, index, smallest);
+        rawscore_heap_bubble_down(manager, smallest);
+    }
+}
+
+/*
+ * Insert entry into min-heap
+ */
+static void
+rawscore_heap_insert(RawscoreCacheManager *manager, RawscoreCacheEntry *entry)
+{
+    if (manager->heap_size >= manager->max_entries)
+        return;  /* Heap is full */
+    
+    /* Add to end of heap */
+    manager->min_heap[manager->heap_size] = entry;
+    entry->heap_index = manager->heap_size;
+    manager->heap_size++;
+    
+    /* Bubble up to maintain heap property */
+    rawscore_heap_bubble_up(manager, entry->heap_index);
+}
+
+/*
+ * Remove entry from min-heap
+ */
+static void
+rawscore_heap_remove(RawscoreCacheManager *manager, RawscoreCacheEntry *entry)
+{
+    int index = entry->heap_index;
+    
+    if (index < 0 || index >= manager->heap_size)
+        return;  /* Entry not in heap */
+    
+    /* Move last element to this position */
+    manager->heap_size--;
+    if (index != manager->heap_size)
+    {
+        manager->min_heap[index] = manager->min_heap[manager->heap_size];
+        manager->min_heap[index]->heap_index = index;
+        
+        /* Restore heap property */
+        rawscore_heap_bubble_up(manager, index);
+        rawscore_heap_bubble_down(manager, index);
+    }
+    
+    entry->heap_index = -1;
+}
+
+/*
+ * Evict entry with lowest rawscore
+ */
+static void
+rawscore_heap_evict_lowest_score(RawscoreCacheManager *manager)
+{
+    RawscoreCacheEntry *lowest;
+    bool found;
+    
+    if (manager->heap_size == 0)
+        return;
+    
+    /* Root of min-heap has lowest score */
+    lowest = manager->min_heap[0];
+    
+    /* Remove from heap */
+    rawscore_heap_remove(manager, lowest);
+    
+    /* Remove from hash table */
+    hash_search(manager->hash_table, &lowest->hash_key, HASH_REMOVE, &found);
+    
+    manager->current_entries--;
+}
+
+/*
+ * Create rawscore cache manager
+ */
+static RawscoreCacheManager *
+create_rawscore_cache_manager(const char *name)
+{
+    RawscoreCacheManager *manager;
+    HASHCTL hash_ctl;
+    Size heap_size;
+    
+    /* Allocate manager in current context (should be TopMemoryContext) */
+    manager = (RawscoreCacheManager *) palloc0(sizeof(RawscoreCacheManager));
+    
+    /* Create dedicated memory context for rawscore cache */
+    manager->cache_context = AllocSetContextCreate(CurrentMemoryContext,
+                                                   "RawscoreCache",
+                                                   ALLOCSET_DEFAULT_SIZES);
+    
+    /* Initialize rawscore cache parameters */
+    manager->max_entries = kmersearch_rawscore_cache_max_entries;
+    manager->current_entries = 0;
+    manager->hits = 0;
+    manager->misses = 0;
+    manager->heap_size = 0;
+    
+    /* Allocate min-heap array in dedicated context */
+    heap_size = (Size) manager->max_entries * sizeof(RawscoreCacheEntry *);
+    manager->min_heap = (RawscoreCacheEntry **) MemoryContextAllocZero(manager->cache_context, heap_size);
+    
+    /* Create hash table using dedicated context */
+    MemSet(&hash_ctl, 0, sizeof(hash_ctl));
+    hash_ctl.keysize = sizeof(uint64);
+    hash_ctl.entrysize = sizeof(RawscoreCacheEntry);
+    hash_ctl.hcxt = manager->cache_context;
+    
+    manager->hash_table = hash_create(name, 1024, &hash_ctl,
+                                     HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
+    
+    return manager;
+}
+
+/*
+ * Free rawscore cache manager
+ */
+static void
+free_rawscore_cache_manager(RawscoreCacheManager **manager)
+{
+    if (*manager)
+    {
+        /* Delete the dedicated cache context, which will free all allocated memory */
+        if ((*manager)->cache_context)
+            MemoryContextDelete((*manager)->cache_context);
+        
+        /* Free the manager itself (allocated in parent context) */
+        pfree(*manager);
+        *manager = NULL;
+    }
+}
+
+/*
+ * Lookup rawscore cache entry
+ */
+static RawscoreCacheEntry *
+lookup_rawscore_cache_entry(RawscoreCacheManager *manager, VarBit *sequence, const char *query_string)
+{
+    uint64 hash_key;
+    RawscoreCacheEntry *entry;
+    bool found;
+    
+    /* Safety checks */
+    if (manager == NULL || manager->hash_table == NULL || sequence == NULL || query_string == NULL) {
+        elog(LOG, "lookup_cache_entry: NULL parameter detected");
+        return NULL;
+    }
+    
+    elog(LOG, "lookup_cache_entry: Looking up cache for query '%s'", query_string);
+    hash_key = generate_cache_key(sequence, query_string);
+    elog(LOG, "lookup_cache_entry: Generated hash key %lu", hash_key);
+    
+    /* Check if hash key generation failed */
+    if (hash_key == 0) {
+        elog(LOG, "lookup_cache_entry: Invalid hash key, skipping lookup");
+        return NULL;
+    }
+    
+    entry = (RawscoreCacheEntry *) hash_search(manager->hash_table, &hash_key, HASH_FIND, &found);
+    elog(LOG, "lookup_cache_entry: Hash search completed, found=%d", found);
+    
+    if (found && entry != NULL && entry->sequence_copy != NULL && entry->query_string_copy != NULL &&
+        sequences_equal(entry->sequence_copy, sequence) &&
+        strcmp(entry->query_string_copy, query_string) == 0)
+    {
+        /* Cache hit - no need to update position in score-based cache */
+        elog(LOG, "lookup_cache_entry: Cache hit found");
+        manager->hits++;
+        return entry;
+    }
+    
+    elog(LOG, "lookup_cache_entry: Cache miss");
+    return NULL;  /* Cache miss */
+}
+
+/*
+ * Store rawscore entry in cache
+ */
+static void
+store_rawscore_cache_entry(RawscoreCacheManager *manager, uint64 hash_key, VarBit *sequence, 
+                          VarBit **query_keys, const char *query_string, KmerMatchResult result)
+{
+    RawscoreCacheEntry *entry;
+    MemoryContext old_context;
+    bool found;
+    int actual_min_score;
+    
+    /* Safety checks */
+    if (manager == NULL || manager->hash_table == NULL || sequence == NULL || query_string == NULL || hash_key == 0) {
+        elog(WARNING, "store_rawscore_cache_entry: Invalid parameters, skipping cache storage");
+        return;
+    }
+    
+    /* Check if this result is worth caching based on actual minimum score */
+    actual_min_score = get_cached_actual_min_score(query_keys, result.query_nkeys);
+    if (result.shared_count < actual_min_score)
+    {
+        /* Don't cache results that can never match the condition */
+        return;
+    }
+    
+    /* Check if we need to evict */
+    while (manager->current_entries >= manager->max_entries)
+        rawscore_heap_evict_lowest_score(manager);
+    
+    old_context = MemoryContextSwitchTo(manager->cache_context);
+    
+    /* Create new entry */
+    entry = (RawscoreCacheEntry *) hash_search(manager->hash_table, &hash_key, HASH_ENTER, &found);
+    
+    if (!found)
+    {
+        /* New entry */
+        entry->hash_key = hash_key;
+        entry->sequence_copy = (VarBit *) palloc(VARSIZE(sequence));
+        memcpy(entry->sequence_copy, sequence, VARSIZE(sequence));
+        entry->query_string_copy = pstrdup(query_string);
+        entry->result = result;
+        entry->heap_index = -1;
+        
+        /* Add to min-heap */
+        rawscore_heap_insert(manager, entry);
+        manager->current_entries++;
+    }
+    
+    MemoryContextSwitchTo(old_context);
+}
+
+/*
+ * Get cached rawscore result for DNA2
+ */
+KmerMatchResult
+get_cached_rawscore_dna2(VarBit *sequence, const char *query_string)
+{
+    KmerMatchResult result;
+    RawscoreCacheEntry *cache_entry;
+    uint64 cache_key;
+    VarBit **query_keys;
+    int i;
+    
+    /* Create global cache manager if not exists */
+    if (rawscore_cache_manager == NULL)
+    {
+        MemoryContext old_context = MemoryContextSwitchTo(TopMemoryContext);
+        rawscore_cache_manager = create_rawscore_cache_manager("GlobalRawscoreCache");
+        MemoryContextSwitchTo(old_context);
+        /* Update global statistics with max entries for both DNA2 and DNA4 */
+        rawscore_cache_stats.dna2_max_entries = rawscore_cache_manager->max_entries;
+        rawscore_cache_stats.dna4_max_entries = rawscore_cache_manager->max_entries;
+    }
+    
+    /* Try cache lookup first */
+    cache_entry = lookup_rawscore_cache_entry(rawscore_cache_manager, sequence, query_string);
+    if (cache_entry != NULL)
+    {
+        /* Cache hit - return cached result */
+        rawscore_cache_manager->hits++;
+        rawscore_cache_stats.dna2_hits++;
+        return cache_entry->result;
+    }
+    
+    /* Cache miss - calculate result */
+    rawscore_cache_manager->misses++;
+    rawscore_cache_stats.dna2_misses++;
+    result = kmersearch_calculate_kmer_match_and_score_dna2(sequence, query_string);
+    
+    /* Store result in cache if valid */
+    if (result.valid)
+    {
+        cache_key = generate_cache_key(sequence, query_string);
+        if (cache_key != 0)  /* Only proceed if cache key is valid */
+        {
+            query_keys = kmersearch_extract_kmer_from_query(query_string, kmersearch_kmer_size, &result.query_nkeys);
+            if (query_keys != NULL)
+        {
+            store_rawscore_cache_entry(rawscore_cache_manager, cache_key, sequence, query_keys, query_string, result);
+            /* Update global current entries count for both DNA2 and DNA4 since they share the same cache */
+            rawscore_cache_stats.dna2_current_entries = rawscore_cache_manager->current_entries;
+            rawscore_cache_stats.dna4_current_entries = rawscore_cache_manager->current_entries;
+            /* Free query_keys */
+            for (i = 0; i < result.query_nkeys; i++)
+            {
+                if (query_keys[i])
+                    pfree(query_keys[i]);
+            }
+            pfree(query_keys);
+            }
+        }
+    }
+    
+    return result;
+}
+
+/*
+ * Get cached rawscore result for DNA4
+ */
+KmerMatchResult
+get_cached_rawscore_dna4(VarBit *sequence, const char *query_string)
+{
+    KmerMatchResult result;
+    RawscoreCacheEntry *cache_entry;
+    uint64 cache_key;
+    VarBit **query_keys;
+    int i;
+    
+    /* Create global cache manager if not exists (shared with DNA2) */
+    if (rawscore_cache_manager == NULL)
+    {
+        MemoryContext old_context = MemoryContextSwitchTo(TopMemoryContext);
+        rawscore_cache_manager = create_rawscore_cache_manager("GlobalRawscoreCache");
+        MemoryContextSwitchTo(old_context);
+        /* Update global statistics with max entries for both DNA2 and DNA4 */
+        rawscore_cache_stats.dna2_max_entries = rawscore_cache_manager->max_entries;
+        rawscore_cache_stats.dna4_max_entries = rawscore_cache_manager->max_entries;
+    }
+    
+    /* Try cache lookup first */
+    cache_entry = lookup_rawscore_cache_entry(rawscore_cache_manager, sequence, query_string);
+    if (cache_entry != NULL)
+    {
+        /* Cache hit - return cached result */
+        rawscore_cache_manager->hits++;
+        rawscore_cache_stats.dna4_hits++;
+        return cache_entry->result;
+    }
+    
+    /* Cache miss - calculate result */
+    rawscore_cache_manager->misses++;
+    rawscore_cache_stats.dna4_misses++;
+    result = kmersearch_calculate_kmer_match_and_score_dna4(sequence, query_string);
+    
+    /* Store result in cache if valid */
+    if (result.valid)
+    {
+        cache_key = generate_cache_key(sequence, query_string);
+        if (cache_key != 0)  /* Only proceed if cache key is valid */
+        {
+            query_keys = kmersearch_extract_kmer_from_query(query_string, kmersearch_kmer_size, &result.query_nkeys);
+            if (query_keys != NULL)
+        {
+            store_rawscore_cache_entry(rawscore_cache_manager, cache_key, sequence, query_keys, query_string, result);
+            /* Update global current entries count for both DNA2 and DNA4 since they share the same cache */
+            rawscore_cache_stats.dna2_current_entries = rawscore_cache_manager->current_entries;
+            rawscore_cache_stats.dna4_current_entries = rawscore_cache_manager->current_entries;
+            /* Free query_keys */
+            for (i = 0; i < result.query_nkeys; i++)
+            {
+                if (query_keys[i])
+                    pfree(query_keys[i]);
+            }
+            pfree(query_keys);
+            }
+        }
+    }
+    
+    return result;
+}
+
+/*
+ * SQL interface function for rawscore cache statistics
+ */
+Datum
+kmersearch_rawscore_cache_stats(PG_FUNCTION_ARGS)
+{
+    TupleDesc tupdesc;
+    Datum values[8];
+    bool nulls[8] = {false};
+    HeapTuple tuple;
+    
+    /* Build tuple descriptor */
+    if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
+        ereport(ERROR,
+                (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+                 errmsg("function returning record called in context that cannot accept a set")));
+    
+    /* DNA2 cache statistics */
+    values[0] = Int64GetDatum(rawscore_cache_stats.dna2_hits);  /* hits */
+    values[1] = Int64GetDatum(rawscore_cache_stats.dna2_misses);  /* misses */
+    values[2] = Int32GetDatum(rawscore_cache_stats.dna2_current_entries);  /* current_entries */
+    values[3] = Int32GetDatum(rawscore_cache_stats.dna2_max_entries);  /* max_entries */
+    
+    /* DNA4 cache statistics */
+    values[4] = Int64GetDatum(rawscore_cache_stats.dna4_hits);  /* hits */
+    values[5] = Int64GetDatum(rawscore_cache_stats.dna4_misses);  /* misses */
+    values[6] = Int32GetDatum(rawscore_cache_stats.dna4_current_entries);  /* current_entries */
+    values[7] = Int32GetDatum(rawscore_cache_stats.dna4_max_entries);  /* max_entries */
+    
+    tuple = heap_form_tuple(tupdesc, values, nulls);
+    PG_RETURN_DATUM(HeapTupleGetDatum(tuple));
+}
+
+/*
+ * SQL interface function for freeing rawscore cache
+ */
+Datum
+kmersearch_rawscore_cache_free(PG_FUNCTION_ARGS)
+{
+    int freed_entries = 0;
+    
+    /* Count current entries before clearing */
+    if (rawscore_cache_manager)
+        freed_entries = rawscore_cache_manager->current_entries;
+    
+    /* Free the global rawscore cache manager completely */
+    if (rawscore_cache_manager)
+        free_rawscore_cache_manager(&rawscore_cache_manager);
+    
+    /* Reset all rawscore cache statistics */
+    rawscore_cache_stats.dna2_hits = 0;
+    rawscore_cache_stats.dna2_misses = 0;
+    rawscore_cache_stats.dna2_current_entries = 0;
+    rawscore_cache_stats.dna2_max_entries = 0;
+    rawscore_cache_stats.dna4_hits = 0;
+    rawscore_cache_stats.dna4_misses = 0;
+    rawscore_cache_stats.dna4_current_entries = 0;
+    rawscore_cache_stats.dna4_max_entries = 0;
+    
+    PG_RETURN_INT32(freed_entries);
+}
+
+/*
+ * Query pattern cache statistics function
+ */
+Datum
+kmersearch_query_pattern_cache_stats(PG_FUNCTION_ARGS)
+{
+    TupleDesc tupdesc;
+    Datum values[4];
+    bool nulls[4] = {false};
+    HeapTuple tuple;
+    
+    /* Build tuple descriptor */
+    if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
+        ereport(ERROR,
+                (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+                 errmsg("function returning record called in context that cannot accept a set")));
+    
+    /* Query pattern cache statistics */
+    if (query_pattern_cache_manager)
+    {
+        values[0] = Int64GetDatum(query_pattern_cache_manager->hits);
+        values[1] = Int64GetDatum(query_pattern_cache_manager->misses);
+        values[2] = Int32GetDatum(query_pattern_cache_manager->current_entries);
+        values[3] = Int32GetDatum(query_pattern_cache_manager->max_entries);
+    }
+    else
+    {
+        /* Cache manager not initialized */
+        values[0] = Int64GetDatum(0);  /* hits */
+        values[1] = Int64GetDatum(0);  /* misses */
+        values[2] = Int32GetDatum(0);  /* current_entries */
+        values[3] = Int32GetDatum(0);  /* max_entries */
+    }
+    
+    tuple = heap_form_tuple(tupdesc, values, nulls);
+    PG_RETURN_DATUM(HeapTupleGetDatum(tuple));
+}
+
+/*
+ * Query pattern cache free function
+ */
+Datum
+kmersearch_query_pattern_cache_free(PG_FUNCTION_ARGS)
+{
+    int freed_entries = 0;
+    
+    /* Count entries before freeing */
+    if (query_pattern_cache_manager)
+        freed_entries += query_pattern_cache_manager->current_entries;
+    
+    /* Free query pattern cache manager (uses TopMemoryContext - needs manual cleanup) */
+    /* DNA2/DNA4 cache managers are now local and automatically freed with QueryContext */
+    free_query_pattern_cache_manager(&query_pattern_cache_manager);
+    
+    PG_RETURN_INT32(freed_entries);
+}
+
+/*
+ * Actual min score cache statistics function
+ */
+Datum
+kmersearch_actual_min_score_cache_stats(PG_FUNCTION_ARGS)
+{
+    TupleDesc tupdesc;
+    Datum values[4];
+    bool nulls[4] = {false};
+    HeapTuple tuple;
+    
+    /* Build tuple descriptor */
+    if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
+        ereport(ERROR,
+                (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+                 errmsg("function returning record called in context that cannot accept a set")));
+    
+    /* Actual min score cache statistics */
+    if (actual_min_score_cache_manager)
+    {
+        values[0] = Int64GetDatum(actual_min_score_cache_manager->hits);
+        values[1] = Int64GetDatum(actual_min_score_cache_manager->misses);
+        values[2] = Int32GetDatum(actual_min_score_cache_manager->current_entries);
+        values[3] = Int32GetDatum(actual_min_score_cache_manager->max_entries);
+    }
+    else
+    {
+        /* Cache manager not initialized */
+        values[0] = Int64GetDatum(0);  /* hits */
+        values[1] = Int64GetDatum(0);  /* misses */
+        values[2] = Int32GetDatum(0);  /* current_entries */
+        values[3] = Int32GetDatum(0);  /* max_entries */
+    }
+    
+    tuple = heap_form_tuple(tupdesc, values, nulls);
+    PG_RETURN_DATUM(HeapTupleGetDatum(tuple));
+}
+
+/*
+ * Free actual min score cache
+ */
+Datum
+kmersearch_actual_min_score_cache_free(PG_FUNCTION_ARGS)
+{
+    int freed_entries = 0;
+    
+    /* Count entries before freeing */
+    if (actual_min_score_cache_manager)
+        freed_entries = actual_min_score_cache_manager->current_entries;
+    
+    /* Free actual min score cache manager (uses TopMemoryContext - needs manual cleanup) */
+    free_actual_min_score_cache_manager(&actual_min_score_cache_manager);
+    
+    PG_RETURN_INT32(freed_entries);
 }
