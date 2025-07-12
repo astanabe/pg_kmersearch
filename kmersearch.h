@@ -490,16 +490,18 @@ void kmersearch_parallel_cache_cleanup_on_exit(int code, Datum arg);
 bool kmersearch_parallel_cache_lookup(uint64 kmer_hash);
 
 /* High-frequency k-mer filtering functions */
-Datum *kmersearch_filter_highfreq_kmers_from_keys(Datum *original_keys, int *nkeys, HTAB *highfreq_hash, int k);
-Datum *kmersearch_filter_highfreq_kmers_from_keys_parallel(Datum *original_keys, int *nkeys, int k);
+Datum *kmersearch_filter_highfreq_ngram_key2(Datum *original_keys, int *nkeys, HTAB *highfreq_hash, int k);
+Datum *kmersearch_filter_highfreq_ngram_key2_parallel(Datum *original_keys, int *nkeys, int k);
 
 /* High-frequency k-mer cache functions */
 Datum kmersearch_highfreq_kmer_cache_load(PG_FUNCTION_ARGS);
 Datum kmersearch_highfreq_kmer_cache_free(PG_FUNCTION_ARGS);
+/* kmersearch_is_kmer_highfreq now static in kmersearch_freq.c */
 
 /* Parallel cache functions */
 Datum kmersearch_parallel_highfreq_kmer_cache_load(PG_FUNCTION_ARGS);
 Datum kmersearch_parallel_highfreq_kmer_cache_free(PG_FUNCTION_ARGS);
+/* kmersearch_is_highfreq_kmer_parallel now static in kmersearch_gin.c */
 
 /* Analysis functions */
 Datum kmersearch_analyze_table(PG_FUNCTION_ARGS);
@@ -510,8 +512,6 @@ void kmersearch_expand_degenerate_sequence(const char *kmer, int k, char **expan
 VarBit *kmersearch_create_ngram_key2(const char *kmer, int k, int occurrence);
 Datum *kmersearch_extract_dna2_kmer2_direct(VarBit *dna, int k, int *nkeys);
 Datum *kmersearch_extract_dna4_kmer2_with_expansion_direct(VarBit *dna, int k, int *nkeys);
-Datum *kmersearch_filter_highfreq_kmers_from_keys(Datum *keys, int *nkeys, HTAB *highfreq_hash, int k);
-Datum *kmersearch_filter_highfreq_kmers_from_keys_parallel(Datum *keys, int *nkeys, int k);
 int calculate_actual_min_score(VarBit **query_keys, int nkeys, int original_nkeys);
 int kmersearch_count_degenerate_combinations(const char *kmer, int k);
 void kmersearch_set_bit_at(bits8 *data, int bit_pos, int value);
@@ -536,6 +536,7 @@ KmerData kmersearch_encode_kmer_data(VarBit *kmer, int k_size);
 
 /* Functions for easy migration between files */
 Datum *kmersearch_extract_kmer_with_degenerate(const char *sequence, int seq_len, int k, int *nkeys);
+/* kmersearch_extract_kmers now in kmersearch_kmer.c */
 Datum *kmersearch_extract_kmers(const char *sequence, int seq_len, int k, int *nkeys);
 
 /* Cache management functions (implemented in kmersearch_cache.c) */

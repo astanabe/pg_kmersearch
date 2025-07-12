@@ -2443,25 +2443,6 @@ kmersearch_parallel_cache_attach(dsm_handle handle)
     return success;
 }
 
-/*
- * Check if k-mer is high-frequency using parallel cache
- */
-static bool
-kmersearch_is_highfreq_kmer_parallel(VarBit *ngram_key)
-{
-    uint64 ngram_hash;
-    
-    /* If parallel cache is not available, return false */
-    if (parallel_cache_hash == NULL)
-        return false;
-    
-    /* Calculate hash for the ngram_key2 (kmer2 + occurrence bits) */
-    ngram_hash = hash_any((unsigned char *) VARDATA(ngram_key), 
-                         VARSIZE(ngram_key) - VARHDRSZ);
-    
-    /* Lookup in parallel cache using complete ngram_key2 */
-    return kmersearch_parallel_cache_lookup(ngram_hash);
-}
 
 /*
  * Cleanup function for parallel cache on process exit
@@ -2479,3 +2460,72 @@ kmersearch_parallel_cache_cleanup_on_exit(int code, Datum arg)
         ereport(LOG, (errmsg("parallel_cache_cleanup_on_exit: No resources to clean up")));
     }
 }
+
+/*
+ * Functions moved from kmersearch_freq.c for better modular organization
+ */
+
+
+/*
+ * Check if parallel_highfreq_cache is loaded
+ */
+bool
+kmersearch_is_parallel_highfreq_cache_loaded(void)
+{
+    return (parallel_highfreq_cache != NULL && 
+            parallel_highfreq_cache->is_initialized &&
+            parallel_highfreq_cache->num_entries > 0);
+}
+
+/*
+ * Lookup k-mer in parallel_highfreq_cache  
+ */
+bool
+kmersearch_lookup_in_parallel_cache(VarBit *kmer_key)
+{
+    MemoryContext oldcontext;
+    uint64 kmer_hash;
+    ParallelHighfreqKmerCacheEntry *entry = NULL;
+    bool found = false;
+    
+    /* Basic validation checks */
+    if (!parallel_highfreq_cache || !parallel_highfreq_cache->is_initialized || 
+        parallel_highfreq_cache->num_entries == 0)
+        return false;
+    
+    if (!parallel_cache_hash)
+        return false;
+    
+    /* Switch to TopMemoryContext for dshash operations */
+    oldcontext = MemoryContextSwitchTo(TopMemoryContext);
+    
+    PG_TRY();
+    {
+        /* Calculate hash using same logic as global cache */
+        kmer_hash = kmersearch_ngram_key_to_hash(kmer_key);
+        
+        /* Lookup in dshash table */
+        entry = (ParallelHighfreqKmerCacheEntry *) dshash_find(parallel_cache_hash, &kmer_hash, false);
+        
+        if (entry != NULL) {
+            found = true;
+            /* Must release lock after dshash_find() */
+            dshash_release_lock(parallel_cache_hash, entry);
+        }
+    }
+    PG_CATCH();
+    {
+        /* Ensure lock is released even in error cases */
+        if (entry)
+            dshash_release_lock(parallel_cache_hash, entry);
+        MemoryContextSwitchTo(oldcontext);
+        PG_RE_THROW();
+    }
+    PG_END_TRY();
+    
+    MemoryContextSwitchTo(oldcontext);
+    return found;
+}
+
+
+

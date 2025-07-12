@@ -28,7 +28,6 @@ static int kmersearch_determine_parallel_workers(int requested_workers, Relation
 static bool kmersearch_is_kmer_highfreq(VarBit *kmer_key);
 static int kmersearch_count_highfreq_kmer_in_query(VarBit **query_keys, int nkeys);
 static bool kmersearch_is_highfreq_filtering_enabled(void);
-static bool kmersearch_is_highfreq_kmer_parallel(VarBit *kmer);
 static Datum *kmersearch_filter_highfreq_kmers(Oid table_oid, const char *column_name, int k_size, Datum *all_keys, int total_keys, int *filtered_count);
 static bool kmersearch_delete_kmer_from_gin_index(Relation index_rel, VarBit *kmer_key);
 /* Utility functions */
@@ -315,73 +314,6 @@ kmersearch_get_highfreq_kmer(PG_FUNCTION_ARGS)
  * High-frequency k-mer filtering functions
  */
 
-/*
- * Check if a k-mer is highly frequent
- */
-static bool
-kmersearch_is_kmer_highfreq(VarBit *kmer_key)
-{
-    if (!kmer_key) {
-        return false;
-    }
-    /* Step 1: Validate GUC settings against metadata table */
-    if (!kmersearch_validate_guc_against_all_metadata()) {
-        ereport(ERROR, 
-                (errcode(ERRCODE_CONFIGURATION_LIMIT_EXCEEDED),
-                 errmsg("Current GUC settings do not match kmersearch_highfreq_kmer_meta table"),
-                 errhint("Current cache may be invalid. Please reload cache or run kmersearch_analyze_table() again.")));
-    }
-    /* Step 2: Check in global cache first */
-    if (global_highfreq_cache.is_valid && global_highfreq_cache.highfreq_hash) {
-        VarBit *search_key;
-        uint64 hash_value;
-        bool found;
-        
-        /* Use ngram_key2 (kmer_key) directly for cache lookup - no occurrence bits removal needed */
-        search_key = kmer_key;
-        
-        /* Validate VarBit structure */
-        if (VARSIZE(search_key) < VARHDRSZ) {
-            ereport(DEBUG1, (errmsg("Invalid VarBit structure in high-frequency k-mer check")));
-            return false;
-        }
-        
-        /* Validate bit length */
-        if (VARBITLEN(search_key) < 0) {
-            ereport(DEBUG1, (errmsg("Invalid bit length in high-frequency k-mer check")));
-            return false;
-        }
-        
-        /* Calculate hash value for lookup */
-        {
-            int bit_length = VARBITLEN(search_key);
-            int byte_count = (bit_length + 7) / 8;  /* Round up to next byte */
-            
-            /* Validate the calculated byte count */
-            if (byte_count <= 0 || byte_count > VARSIZE(search_key) - VARHDRSZ) {
-                ereport(DEBUG1, (errmsg("Invalid byte count in high-frequency k-mer hash calculation")));
-                return false;
-            }
-            
-            hash_value = DatumGetUInt64(hash_any((unsigned char *) VARBITS(search_key), byte_count));
-        }
-        
-        found = (hash_search(global_highfreq_cache.highfreq_hash, 
-                           (void *) &hash_value, HASH_FIND, NULL) != NULL);
-        
-        /* No need to free search_key since it points to kmer_key */
-        
-        return found;
-    }
-    
-    /* Step 3: Check in parallel cache if available */
-    if (kmersearch_is_parallel_highfreq_cache_loaded()) {
-        return kmersearch_lookup_in_parallel_cache(kmer_key);
-    }
-    
-    /* No cache available */
-    return false;
-}
 
 /*
  * Count high-frequency k-mers in query
@@ -433,25 +365,6 @@ kmersearch_is_highfreq_filtering_enabled(void)
     return true;
 }
 
-/*
- * Check if k-mer is highly frequent using parallel cache
- */
-static bool
-kmersearch_is_highfreq_kmer_parallel(VarBit *ngram_key)
-{
-    uint64 ngram_hash;
-    
-    /* If parallel cache is not available, return false */
-    if (parallel_cache_hash == NULL)
-        return false;
-    
-    /* Calculate hash for the ngram_key2 (kmer2 + occurrence bits) */
-    ngram_hash = hash_any((unsigned char *) VARDATA(ngram_key), 
-                         VARSIZE(ngram_key) - VARHDRSZ);
-    
-    /* Look up in parallel cache using complete ngram_key2 */
-    return kmersearch_parallel_cache_lookup(ngram_hash);
-}
 
 /*
  * Filter highly frequent k-mers from key array
@@ -953,66 +866,7 @@ kmersearch_validate_guc_against_all_metadata(void)
     return valid;
 }
 
-/*
- * Check if parallel_highfreq_cache is loaded
- */
-bool
-kmersearch_is_parallel_highfreq_cache_loaded(void)
-{
-    return (parallel_highfreq_cache != NULL && 
-            parallel_highfreq_cache->is_initialized &&
-            parallel_highfreq_cache->num_entries > 0);
-}
 
-/*
- * Lookup k-mer in parallel_highfreq_cache  
- */
-bool
-kmersearch_lookup_in_parallel_cache(VarBit *kmer_key)
-{
-    MemoryContext oldcontext;
-    uint64 kmer_hash;
-    ParallelHighfreqKmerCacheEntry *entry = NULL;
-    bool found = false;
-    
-    /* Basic validation checks */
-    if (!parallel_highfreq_cache || !parallel_highfreq_cache->is_initialized || 
-        parallel_highfreq_cache->num_entries == 0)
-        return false;
-    
-    if (!parallel_cache_hash)
-        return false;
-    
-    /* Switch to TopMemoryContext for dshash operations */
-    oldcontext = MemoryContextSwitchTo(TopMemoryContext);
-    
-    PG_TRY();
-    {
-        /* Calculate hash using same logic as global cache */
-        kmer_hash = kmersearch_ngram_key_to_hash(kmer_key);
-        
-        /* Lookup in dshash table */
-        entry = (ParallelHighfreqKmerCacheEntry *) dshash_find(parallel_cache_hash, &kmer_hash, false);
-        
-        if (entry != NULL) {
-            found = true;
-            /* Must release lock after dshash_find() */
-            dshash_release_lock(parallel_cache_hash, entry);
-        }
-    }
-    PG_CATCH();
-    {
-        /* Ensure lock is released even in error cases */
-        if (entry)
-            dshash_release_lock(parallel_cache_hash, entry);
-        MemoryContextSwitchTo(oldcontext);
-        PG_RE_THROW();
-    }
-    PG_END_TRY();
-    
-    MemoryContextSwitchTo(oldcontext);
-    return found;
-}
 
 /*
  * Connect to SPI with error handling
@@ -1334,124 +1188,74 @@ kmersearch_delete_kmer_from_gin_index(Relation index_rel, VarBit *kmer_key)
     return true;  /* Assume success for now */
 }
 
-/*
- * High-frequency k-mer filtering functions implementation
- */
-Datum *
-kmersearch_filter_highfreq_kmers_from_keys(Datum *original_keys, int *nkeys, HTAB *highfreq_hash, int k)
-{
-    Datum *filtered_keys;
-    int original_count;
-    int filtered_count;
-    int i;
-    
-    if (!original_keys || !nkeys || *nkeys <= 0)
-        return NULL;
-    
-    /* If no high-frequency hash, return original keys unchanged */
-    if (!highfreq_hash)
-        return original_keys;
-    
-    original_count = *nkeys;
-    filtered_keys = (Datum *) palloc(original_count * sizeof(Datum));
-    filtered_count = 0;
-    
-    /* Filter out high-frequency k-mers */
-    for (i = 0; i < original_count; i++)
-    {
-        VarBit *ngram_key;
-        bool found;
-        
-        ngram_key = DatumGetVarBitP(original_keys[i]);
-        if (!ngram_key)
-            continue;
-        
-        /* Use ngram_key2 directly for high-frequency lookup - no occurrence bits removal needed */
-        {
-            /* Calculate hash using complete ngram_key2 (kmer2 + occurrence bits) */
-            int bit_length = VARBITLEN(ngram_key);
-            int byte_count = (bit_length + 7) / 8;  /* Round up to next byte */
-            uint64 hash_value = DatumGetUInt64(hash_any((unsigned char *) VARBITS(ngram_key), byte_count));
-            
-            hash_search(highfreq_hash,
-                       (void *) &hash_value,
-                       HASH_FIND,
-                       &found);
-        }
-        
-        if (!found)
-        {
-            /* Not a high-frequency k-mer, keep it */
-            filtered_keys[filtered_count++] = original_keys[i];
-        }
-        
-        /* No need to free ngram_key since it's managed by caller */
-    }
-    
-    /* Update the count */
-    *nkeys = filtered_count;
-    
-    /* If no keys left, return NULL */
-    if (filtered_count == 0)
-    {
-        pfree(filtered_keys);
-        return NULL;
-    }
-    
-    /* Resize the array if significantly smaller */
-    if (filtered_count < original_count / 2)
-    {
-        filtered_keys = (Datum *) repalloc(filtered_keys, filtered_count * sizeof(Datum));
-    }
-    
-    return filtered_keys;
-}
+
 
 /*
- * Filter high-frequency k-mers from keys using parallel cache
+ * Check if a k-mer is highly frequent
  */
-Datum *
-kmersearch_filter_highfreq_kmers_from_keys_parallel(Datum *original_keys, int *nkeys, int k)
+static bool
+kmersearch_is_kmer_highfreq(VarBit *kmer_key)
 {
-    Datum *filtered_keys;
-    int filtered_count = 0;
-    int i;
-    
-    if (!original_keys || *nkeys <= 0)
-        return original_keys;
-    
-    /* Allocate space for filtered keys */
-    filtered_keys = (Datum *) palloc(*nkeys * sizeof(Datum));
-    
-    /* Filter out high-frequency k-mers using direct ngram_key2 comparison */
-    for (i = 0; i < *nkeys; i++) {
-        VarBit *ngram_key = (VarBit *) DatumGetPointer(original_keys[i]);
+    if (!kmer_key) {
+        return false;
+    }
+    /* Step 1: Validate GUC settings against metadata table */
+    if (!kmersearch_validate_guc_against_all_metadata()) {
+        ereport(ERROR, 
+                (errcode(ERRCODE_CONFIGURATION_LIMIT_EXCEEDED),
+                 errmsg("Current GUC settings do not match kmersearch_highfreq_kmer_meta table"),
+                 errhint("Current cache may be invalid. Please reload cache or run kmersearch_analyze_table() again.")));
+    }
+    /* Step 2: Check in global cache first */
+    if (global_highfreq_cache.is_valid && global_highfreq_cache.highfreq_hash) {
+        VarBit *search_key;
+        uint64 hash_value;
+        bool found;
         
-        /* Use ngram_key2 directly for high-frequency check - no occurrence bits removal needed */
-        if (!kmersearch_is_highfreq_kmer_parallel(ngram_key)) {
-            /* Keep this k-mer */
-            filtered_keys[filtered_count++] = original_keys[i];
-        } else {
-            /* Free the filtered k-mer */
-            pfree(ngram_key);
+        /* Use ngram_key2 (kmer_key) directly for cache lookup - no occurrence bits removal needed */
+        search_key = kmer_key;
+        
+        /* Validate VarBit structure */
+        if (VARSIZE(search_key) < VARHDRSZ) {
+            ereport(DEBUG1, (errmsg("Invalid VarBit structure in high-frequency k-mer check")));
+            return false;
         }
         
-        /* No need to clean up temporary key since we use ngram_key directly */
+        /* Validate bit length */
+        if (VARBITLEN(search_key) < 0) {
+            ereport(DEBUG1, (errmsg("Invalid bit length in high-frequency k-mer check")));
+            return false;
+        }
+        
+        /* Calculate hash value for lookup */
+        {
+            int bit_length = VARBITLEN(search_key);
+            int byte_count = (bit_length + 7) / 8;  /* Round up to next byte */
+            
+            /* Validate the calculated byte count */
+            if (byte_count <= 0 || byte_count > VARSIZE(search_key) - VARHDRSZ) {
+                ereport(DEBUG1, (errmsg("Invalid byte count in high-frequency k-mer hash calculation")));
+                return false;
+            }
+            
+            hash_value = DatumGetUInt64(hash_any((unsigned char *) VARBITS(search_key), byte_count));
+        }
+        
+        found = (hash_search(global_highfreq_cache.highfreq_hash, 
+                           (void *) &hash_value, HASH_FIND, NULL) != NULL);
+        
+        /* No need to free search_key since it points to kmer_key */
+        
+        return found;
     }
     
-    /* Free original keys array */
-    pfree(original_keys);
-    
-    /* Update the key count */
-    *nkeys = filtered_count;
-    
-    /* Return filtered keys (or NULL if no keys remain) */
-    if (filtered_count == 0) {
-        pfree(filtered_keys);
-        return NULL;
+    /* Step 3: Check in parallel cache if available */
+    if (kmersearch_is_parallel_highfreq_cache_loaded()) {
+        return kmersearch_lookup_in_parallel_cache(kmer_key);
     }
     
-    return filtered_keys;
+    /* No cache available */
+    return false;
 }
 
 /*

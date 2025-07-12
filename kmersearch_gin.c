@@ -21,84 +21,8 @@ PG_FUNCTION_INFO_V1(kmersearch_compare_partial);
 /*
  * Forward declarations for static functions
  */
+static bool kmersearch_is_highfreq_kmer_parallel(VarBit *ngram_key);
 
-/*
- * Extract k-mers from DNA sequence and create n-gram keys
- */
-Datum *
-kmersearch_extract_kmers(const char *sequence, int seq_len, int k, int *nkeys)
-{
-    Datum *keys;
-    int max_keys = seq_len - k + 1;
-    int key_count = 0;
-    bool has_degenerate = false;
-    int i, j;
-    
-    if (max_keys <= 0)
-    {
-        *nkeys = 0;
-        return NULL;
-    }
-    
-    keys = (Datum *) palloc(sizeof(Datum) * max_keys * 10);  /* Extra space for degenerate expansion */
-    
-    for (i = 0; i <= seq_len - k; i++)
-    {
-        char kmer[65];  /* Max k=64 + null terminator */
-        strncpy(kmer, sequence + i, k);
-        kmer[k] = '\0';
-        
-        /* Check if this k-mer has degenerate codes */
-        has_degenerate = false;
-        for (j = 0; j < k; j++)
-        {
-            char c = toupper(kmer[j]);
-            if (c != 'A' && c != 'C' && c != 'G' && c != 'T')
-            {
-                has_degenerate = true;
-                break;
-            }
-        }
-        
-        if (has_degenerate)
-        {
-            /* Expand degenerate codes */
-            char *expanded[10];
-            int expand_count;
-            
-            kmersearch_expand_degenerate_sequence(kmer, k, expanded, &expand_count);
-            
-            for (j = 0; j < expand_count; j++)
-            {
-                /* Count occurrences of this expanded k-mer */
-                int occurrence = 1;
-                VarBit *ngram_key;
-                int prev;
-                
-                for (prev = 0; prev < key_count; prev++)
-                {
-                    /* This is simplified - in reality we'd need to compare the actual k-mer */
-                    /* For now, assume each k-mer appears once per position */
-                }
-                
-                ngram_key = kmersearch_create_ngram_key2(expanded[j], k, occurrence);
-                keys[key_count++] = PointerGetDatum(ngram_key);
-                
-                pfree(expanded[j]);
-            }
-        }
-        else
-        {
-            /* Simple case - no degenerate codes */
-            int occurrence = 1;
-            VarBit *ngram_key = kmersearch_create_ngram_key2(kmer, k, occurrence);
-            keys[key_count++] = PointerGetDatum(ngram_key);
-        }
-    }
-    
-    *nkeys = key_count;
-    return keys;
-}
 
 /*
  * GIN extract_value function for DNA2
@@ -125,7 +49,7 @@ kmersearch_extract_value_dna2(PG_FUNCTION_ARGS)
         if (kmersearch_force_use_parallel_highfreq_kmer_cache || IsParallelWorker()) {
             /* Use parallel cache for worker processes or when forcing dshash */
             if (parallel_highfreq_cache && parallel_highfreq_cache->is_initialized) {
-                keys = kmersearch_filter_highfreq_kmers_from_keys_parallel(keys, nkeys, k);
+                keys = kmersearch_filter_highfreq_ngram_key2_parallel(keys, nkeys, k);
             } else {
                 ereport(ERROR,
                         (errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
@@ -135,7 +59,7 @@ kmersearch_extract_value_dna2(PG_FUNCTION_ARGS)
         } else {
             /* Use global cache for main process */
             if (global_highfreq_cache.is_valid) {
-                keys = kmersearch_filter_highfreq_kmers_from_keys(keys, nkeys, global_highfreq_cache.highfreq_hash, k);
+                keys = kmersearch_filter_highfreq_ngram_key2(keys, nkeys, global_highfreq_cache.highfreq_hash, k);
             } else {
                 ereport(ERROR,
                         (errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
@@ -176,7 +100,7 @@ kmersearch_extract_value_dna4(PG_FUNCTION_ARGS)
         if (kmersearch_force_use_parallel_highfreq_kmer_cache || IsParallelWorker()) {
             /* Use parallel cache for worker processes or when forcing dshash */
             if (parallel_highfreq_cache && parallel_highfreq_cache->is_initialized) {
-                keys = kmersearch_filter_highfreq_kmers_from_keys_parallel(keys, nkeys, k);
+                keys = kmersearch_filter_highfreq_ngram_key2_parallel(keys, nkeys, k);
             } else {
                 ereport(ERROR,
                         (errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
@@ -186,7 +110,7 @@ kmersearch_extract_value_dna4(PG_FUNCTION_ARGS)
         } else {
             /* Use global cache for main process */
             if (global_highfreq_cache.is_valid) {
-                keys = kmersearch_filter_highfreq_kmers_from_keys(keys, nkeys, global_highfreq_cache.highfreq_hash, k);
+                keys = kmersearch_filter_highfreq_ngram_key2(keys, nkeys, global_highfreq_cache.highfreq_hash, k);
             } else {
                 ereport(ERROR,
                         (errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
@@ -331,4 +255,144 @@ kmersearch_compare_partial(PG_FUNCTION_ARGS)
     }
     
     PG_RETURN_INT32(result);
+}
+
+/*
+ * High-frequency k-mer filtering functions implementation
+ */
+Datum *
+kmersearch_filter_highfreq_ngram_key2(Datum *original_keys, int *nkeys, HTAB *highfreq_hash, int k)
+{
+    Datum *filtered_keys;
+    int original_count;
+    int filtered_count;
+    int i;
+    
+    if (!original_keys || !nkeys || *nkeys <= 0)
+        return NULL;
+    
+    /* If no high-frequency hash, return original keys unchanged */
+    if (!highfreq_hash)
+        return original_keys;
+    
+    original_count = *nkeys;
+    filtered_keys = (Datum *) palloc(original_count * sizeof(Datum));
+    filtered_count = 0;
+    
+    /* Filter out high-frequency k-mers */
+    for (i = 0; i < original_count; i++)
+    {
+        VarBit *ngram_key;
+        bool found;
+        
+        ngram_key = DatumGetVarBitP(original_keys[i]);
+        if (!ngram_key)
+            continue;
+        
+        /* Use ngram_key2 directly for high-frequency lookup - no occurrence bits removal needed */
+        {
+            /* Calculate hash using complete ngram_key2 (kmer2 + occurrence bits) */
+            int bit_length = VARBITLEN(ngram_key);
+            int byte_count = (bit_length + 7) / 8;  /* Round up to next byte */
+            uint64 hash_value = DatumGetUInt64(hash_any((unsigned char *) VARBITS(ngram_key), byte_count));
+            
+            hash_search(highfreq_hash,
+                       (void *) &hash_value,
+                       HASH_FIND,
+                       &found);
+        }
+        
+        if (!found)
+        {
+            /* Not a high-frequency k-mer, keep it */
+            filtered_keys[filtered_count++] = original_keys[i];
+        }
+        
+        /* No need to free ngram_key since it's managed by caller */
+    }
+    
+    /* Update the count */
+    *nkeys = filtered_count;
+    
+    /* If no keys left, return NULL */
+    if (filtered_count == 0)
+    {
+        pfree(filtered_keys);
+        return NULL;
+    }
+    
+    /* Resize the array if significantly smaller */
+    if (filtered_count < original_count / 2)
+    {
+        filtered_keys = (Datum *) repalloc(filtered_keys, filtered_count * sizeof(Datum));
+    }
+    
+    return filtered_keys;
+}
+
+/*
+ * Filter high-frequency k-mers from keys using parallel cache
+ */
+Datum *
+kmersearch_filter_highfreq_ngram_key2_parallel(Datum *original_keys, int *nkeys, int k)
+{
+    Datum *filtered_keys;
+    int filtered_count = 0;
+    int i;
+    
+    if (!original_keys || *nkeys <= 0)
+        return original_keys;
+    
+    /* Allocate space for filtered keys */
+    filtered_keys = (Datum *) palloc(*nkeys * sizeof(Datum));
+    
+    /* Filter out high-frequency k-mers using direct ngram_key2 comparison */
+    for (i = 0; i < *nkeys; i++) {
+        VarBit *ngram_key = (VarBit *) DatumGetPointer(original_keys[i]);
+        
+        /* Use ngram_key2 directly for high-frequency check - no occurrence bits removal needed */
+        if (!kmersearch_is_highfreq_kmer_parallel(ngram_key)) {
+            /* Keep this k-mer */
+            filtered_keys[filtered_count++] = original_keys[i];
+        } else {
+            /* Free the filtered k-mer */
+            pfree(ngram_key);
+        }
+        
+        /* No need to clean up temporary key since we use ngram_key directly */
+    }
+    
+    /* Free original keys array */
+    pfree(original_keys);
+    
+    /* Update the key count */
+    *nkeys = filtered_count;
+    
+    /* Return filtered keys (or NULL if no keys remain) */
+    if (filtered_count == 0) {
+        pfree(filtered_keys);
+        return NULL;
+    }
+    
+    return filtered_keys;
+}
+
+/*
+ * Check if k-mer is highly frequent using parallel cache
+ */
+static bool
+kmersearch_is_highfreq_kmer_parallel(VarBit *ngram_key)
+{
+    uint64 ngram_hash;
+    
+    /* If parallel cache is not available, return false */
+    if (parallel_cache_hash == NULL)
+        return false;
+    
+    /* Calculate hash for the ngram_key2 (kmer2 + occurrence bits) */
+    ngram_hash = hash_any((unsigned char *) VARDATA(ngram_key), 
+                         VARSIZE(ngram_key) - VARHDRSZ);
+    
+    /* Look up in parallel cache using complete ngram_key2 */
+    return kmersearch_parallel_cache_lookup(ngram_hash);
 }
