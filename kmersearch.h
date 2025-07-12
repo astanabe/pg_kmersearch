@@ -78,6 +78,11 @@
 #include <unistd.h>
 
 /*
+ * LWLock tranche for parallel cache
+ */
+#define LWTRANCHE_KMERSEARCH_CACHE    (LWTRANCHE_FIRST_USER_DEFINED + 100)
+
+/*
  * SIMD capability detection
  */
 typedef enum {

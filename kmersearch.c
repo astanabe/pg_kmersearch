@@ -1529,15 +1529,48 @@ kmersearch_is_parallel_highfreq_cache_loaded(void)
 static bool
 kmersearch_lookup_in_parallel_cache(VarBit *kmer_key)
 {
-    /* For now, we simplify this - parallel cache lookup would require 
-       more complex dshash setup that's not implemented yet */
+    MemoryContext oldcontext;
+    uint64 kmer_hash;
+    ParallelHighfreqKmerCacheEntry *entry = NULL;
+    bool found = false;
+    
+    /* Basic validation checks */
     if (!parallel_highfreq_cache || !parallel_highfreq_cache->is_initialized || 
         parallel_highfreq_cache->num_entries == 0)
         return false;
     
-    /* TODO: Implement actual parallel cache lookup with dshash 
-       For now, always return false to fall back to table lookup */
-    return false;
+    if (!parallel_cache_hash)
+        return false;
+    
+    /* Switch to TopMemoryContext for dshash operations */
+    oldcontext = MemoryContextSwitchTo(TopMemoryContext);
+    
+    PG_TRY();
+    {
+        /* Calculate hash using same logic as global cache */
+        kmer_hash = kmersearch_ngram_key_to_hash(kmer_key);
+        
+        /* Lookup in dshash table */
+        entry = (ParallelHighfreqKmerCacheEntry *) dshash_find(parallel_cache_hash, &kmer_hash, false);
+        
+        if (entry != NULL) {
+            found = true;
+            /* Must release lock after dshash_find() */
+            dshash_release_lock(parallel_cache_hash, entry);
+        }
+    }
+    PG_CATCH();
+    {
+        /* Ensure lock is released even in error cases */
+        if (entry)
+            dshash_release_lock(parallel_cache_hash, entry);
+        MemoryContextSwitchTo(oldcontext);
+        PG_RE_THROW();
+    }
+    PG_END_TRY();
+    
+    MemoryContextSwitchTo(oldcontext);
+    return found;
 }
 
 /*
@@ -3495,7 +3528,7 @@ kmersearch_parallel_highfreq_kmer_cache_load_internal(Oid table_oid, const char 
     params.entry_size = sizeof(ParallelHighfreqKmerCacheEntry);
     params.compare_function = dshash_memcmp;
     params.hash_function = dshash_memhash;
-    params.tranche_id = LWTRANCHE_PARALLEL_QUERY_DSA;
+    params.tranche_id = LWTRANCHE_KMERSEARCH_CACHE;
     
     /* Create dshash table */
     ereport(LOG, (errmsg("dshash_cache_load: Creating dshash table with %d entries", highfreq_count)));
@@ -3540,8 +3573,8 @@ kmersearch_parallel_highfreq_kmer_cache_load_internal(Oid table_oid, const char 
             continue;
         }
         
-        /* Use a simpler hash calculation to avoid potential issues */
-        kmer_hash = (uint64) i + 1; /* Simple sequential hash for testing */
+        /* Calculate actual k-mer hash using same logic as global cache */
+        kmer_hash = kmersearch_ngram_key_to_hash(highfreq_kmers[i]);
         
         ereport(LOG, (errmsg("dshash_cache_load: Inserting k-mer with hash %lu", kmer_hash)));
         
@@ -3566,7 +3599,9 @@ kmersearch_parallel_highfreq_kmer_cache_load_internal(Oid table_oid, const char 
         }
         PG_CATCH();
         {
-            /* Lock is automatically released by dshash on error */
+            /* Ensure lock is released even in error cases */
+            if (entry)
+                dshash_release_lock(parallel_cache_hash, entry);
             ereport(ERROR,
                     (errcode(ERRCODE_INTERNAL_ERROR),
                      errmsg("Failed to insert k-mer into dshash table at index %d", i)));
@@ -3701,7 +3736,7 @@ kmersearch_parallel_cache_attach(dsm_handle handle)
     params.entry_size = sizeof(ParallelHighfreqKmerCacheEntry);
     params.compare_function = dshash_memcmp;
     params.hash_function = dshash_memhash;
-    params.tranche_id = LWTRANCHE_PARALLEL_QUERY_DSA;
+    params.tranche_id = LWTRANCHE_KMERSEARCH_CACHE;
     
     /* Attach to DSA area */
     
