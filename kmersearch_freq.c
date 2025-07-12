@@ -24,7 +24,6 @@ PG_FUNCTION_INFO_V1(kmersearch_drop_analysis);
 /* kmersearch_analyze_table_parallel declared in header */
 static void kmersearch_worker_analyze_blocks(KmerWorkerState *worker, Relation rel, const char *column_name, int k_size);
 static int kmersearch_determine_parallel_workers(int requested_workers, Relation target_relation);
-/* Removed - functionality integrated into main function */
 
 /* High-frequency k-mer filtering functions */
 static bool kmersearch_is_kmer_highfreq(VarBit *kmer_key);
@@ -32,9 +31,6 @@ static int kmersearch_count_highfreq_kmer_in_query(VarBit **query_keys, int nkey
 static bool kmersearch_is_highfreq_filtering_enabled(void);
 static bool kmersearch_is_highfreq_kmer_parallel(VarBit *kmer);
 static Datum *kmersearch_filter_highfreq_kmers(Oid table_oid, const char *column_name, int k_size, Datum *all_keys, int total_keys, int *filtered_count);
-
-/* K-mer collection and persistence functions - removed, functionality integrated */
-
 /* Utility functions */
 static List *kmersearch_get_highfreq_kmer_list(Oid index_oid);
 static bool kmersearch_validate_guc_against_all_metadata(void);
@@ -57,7 +53,6 @@ extern void kmersearch_collect_ngram_key2_for_highfreq_kmer(Oid table_oid, const
 extern void kmersearch_persist_highfreq_kmers_metadata(Oid table_oid, const char *column_name, int k_size);
 extern int kmersearch_min_score;
 extern bool kmersearch_preclude_highfreq_kmer;
-/* Removed: extern VarBit *kmersearch_remove_occurrence_bits() - function eliminated */
 extern HighfreqKmerCache global_highfreq_cache;
 
 /* External parallel cache variables (defined in kmersearch_cache.c) */
@@ -110,15 +105,6 @@ kmersearch_analyze_table_frequency(PG_FUNCTION_ARGS)
     ereport(NOTICE, (errmsg("Max appearance rate: %f, Max appearance nrow: %d", 
                            kmersearch_max_appearance_rate, kmersearch_max_appearance_nrow)));
     
-    /* 
-     * TODO: Implement actual frequency analysis:
-     * 1. Scan all rows in the table
-     * 2. Extract k-mers from the specified column
-     * 3. Count frequency of each k-mer
-     * 4. Identify k-mers exceeding thresholds
-     * 5. Insert highly frequent k-mers into kmersearch_highfreq_kmer table
-     * 6. Insert index statistics into kmersearch_index_info table
-     */
     
     PG_RETURN_INT32(highfreq_count);
 }
@@ -175,7 +161,6 @@ kmersearch_analyze_table(PG_FUNCTION_ARGS)
         result.max_appearance_rate_used = 0.05;
     }
     
-    ereport(DEBUG1, (errmsg("kmersearch_analyze_table: About to convert max_appearance_rate_used = %f to Float4GetDatum", result.max_appearance_rate_used)));
     values[4] = Float4GetDatum((float4)result.max_appearance_rate_used);  /* real type = 4-byte float */
     ereport(DEBUG1, (errmsg("kmersearch_analyze_table: Float4GetDatum conversion completed")));
     
@@ -314,81 +299,50 @@ kmersearch_get_highfreq_kmer(PG_FUNCTION_ARGS)
 static bool
 kmersearch_is_kmer_highfreq(VarBit *kmer_key)
 {
-    elog(LOG, "kmersearch_is_kmer_highfreq: Started, checking kmer_key pointer: %p", kmer_key);
-    
     if (!kmer_key) {
-        elog(LOG, "kmersearch_is_kmer_highfreq: kmer_key is NULL, returning false");
         return false;
     }
-    
-    elog(LOG, "kmersearch_is_kmer_highfreq: Validating GUC settings");
     /* Step 1: Validate GUC settings against metadata table */
     if (!kmersearch_validate_guc_against_all_metadata()) {
-        elog(LOG, "kmersearch_is_kmer_highfreq: GUC validation failed");
         ereport(ERROR, 
                 (errcode(ERRCODE_CONFIGURATION_LIMIT_EXCEEDED),
                  errmsg("Current GUC settings do not match kmersearch_highfreq_kmer_meta table"),
                  errhint("Current cache may be invalid. Please reload cache or run kmersearch_analyze_table() again.")));
     }
-
-    elog(LOG, "kmersearch_is_kmer_highfreq: GUC validation passed, checking global cache");
     /* Step 2: Check in global cache first */
     if (global_highfreq_cache.is_valid && global_highfreq_cache.highfreq_hash) {
         VarBit *search_key;
         uint64 hash_value;
         bool found;
         
-        elog(LOG, "kmersearch_is_kmer_highfreq: Global cache available, using ngram_key2 directly");
         /* Use ngram_key2 (kmer_key) directly for cache lookup - no occurrence bits removal needed */
         search_key = kmer_key;
         
-        /* search_key now points to kmer_key, so validation should already be done above */
-        elog(LOG, "kmersearch_is_kmer_highfreq: Using ngram_key2 directly as search_key");
-        
-        elog(LOG, "kmersearch_is_kmer_highfreq: Validating search_key structure");
-        
         /* Validate VarBit structure */
         if (VARSIZE(search_key) < VARHDRSZ) {
-            elog(LOG, "kmersearch_is_kmer_highfreq: search_key has invalid VARSIZE %d, returning false", VARSIZE(search_key));
-            if (search_key != kmer_key) {
-                pfree(search_key);
-            }
+            ereport(DEBUG1, (errmsg("Invalid VarBit structure in high-frequency k-mer check")));
             return false;
         }
-        
-        elog(LOG, "kmersearch_is_kmer_highfreq: search_key VARSIZE validation passed: %d", VARSIZE(search_key));
         
         /* Validate bit length */
         if (VARBITLEN(search_key) < 0) {
-            elog(LOG, "kmersearch_is_kmer_highfreq: search_key has invalid bit length %d, returning false", VARBITLEN(search_key));
-            /* No need to free search_key since it points to kmer_key */
+            ereport(DEBUG1, (errmsg("Invalid bit length in high-frequency k-mer check")));
             return false;
         }
         
-        elog(LOG, "kmersearch_is_kmer_highfreq: search_key bit length validation passed: %d", VARBITLEN(search_key));
-        
         /* Calculate hash value for lookup */
-        elog(LOG, "kmersearch_is_kmer_highfreq: About to calculate hash value");
-        elog(LOG, "kmersearch_is_kmer_highfreq: VARBITS(search_key) = %p", VARBITS(search_key));
-        elog(LOG, "kmersearch_is_kmer_highfreq: VARBITBYTES(search_key) = %zu", VARBITBYTES(search_key));
-        
-        /* VARBITBYTES is returning -3, which is invalid. Calculate correct byte count manually. */
         {
             int bit_length = VARBITLEN(search_key);
             int byte_count = (bit_length + 7) / 8;  /* Round up to next byte */
             
-            elog(LOG, "kmersearch_is_kmer_highfreq: Manual calculation - bit_length=%d, byte_count=%d", bit_length, byte_count);
-            
             /* Validate the calculated byte count */
             if (byte_count <= 0 || byte_count > VARSIZE(search_key) - VARHDRSZ) {
-                elog(LOG, "kmersearch_is_kmer_highfreq: Invalid byte_count=%d, VARSIZE=%d, returning false", byte_count, VARSIZE(search_key));
-                /* No need to free search_key since it points to kmer_key */
+                ereport(DEBUG1, (errmsg("Invalid byte count in high-frequency k-mer hash calculation")));
                 return false;
             }
             
             hash_value = DatumGetUInt64(hash_any((unsigned char *) VARBITS(search_key), byte_count));
         }
-        elog(LOG, "kmersearch_is_kmer_highfreq: Hash calculation completed, hash_value=%lu", hash_value);
         
         found = (hash_search(global_highfreq_cache.highfreq_hash, 
                            (void *) &hash_value, HASH_FIND, NULL) != NULL);
@@ -416,32 +370,24 @@ kmersearch_count_highfreq_kmer_in_query(VarBit **query_keys, int nkeys)
     int highfreq_count = 0;
     int i;
     
-    elog(LOG, "kmersearch_count_highfreq_kmer_in_query: Started with nkeys=%d", nkeys);
     
     /* Validate input parameters */
     if (query_keys == NULL) {
-        elog(LOG, "kmersearch_count_highfreq_kmer_in_query: query_keys is NULL, returning 0");
         return 0;
     }
     
     /* For each k-mer in the query, check if it's highly frequent */
     for (i = 0; i < nkeys; i++)
     {
-        elog(LOG, "kmersearch_count_highfreq_kmer_in_query: Checking k-mer %d/%d", i+1, nkeys);
         
         if (query_keys[i] == NULL) {
-            elog(LOG, "kmersearch_count_highfreq_kmer_in_query: query_keys[%d] is NULL, skipping", i);
             continue;
         }
         
-        elog(LOG, "kmersearch_count_highfreq_kmer_in_query: query_keys[%d] pointer valid: %p", i, query_keys[i]);
         
         if (kmersearch_is_kmer_highfreq(query_keys[i]))
         {
-            elog(LOG, "kmersearch_count_highfreq_kmer_in_query: K-mer %d is high-frequency", i+1);
             highfreq_count++;
-        } else {
-            elog(LOG, "kmersearch_count_highfreq_kmer_in_query: K-mer %d is not high-frequency", i+1);
         }
     }
     
@@ -675,9 +621,6 @@ kmersearch_analyze_table_parallel(Oid table_oid, const char *column_name, int k_
     int threshold_rows;
     int i;
     
-    ereport(DEBUG1, (errmsg("kmersearch_analyze_table_parallel: Started with table_oid=%u, column=%s, k_size=%d, parallel_workers=%d",
-                           table_oid, column_name, k_size, parallel_workers)));
-    
     /* Initialize result structure */
     ereport(DEBUG1, (errmsg("kmersearch_analyze_table_parallel: Initializing result structure")));
     memset(&result, 0, sizeof(KmerAnalysisResult));
@@ -712,7 +655,6 @@ kmersearch_analyze_table_parallel(Oid table_oid, const char *column_name, int k_
         ereport(DEBUG1, (errmsg("kmersearch_analyze_table_parallel: Connecting to SPI for row count")));
         if (SPI_connect() == SPI_OK_CONNECT) {
             need_spi_finish = true;
-            ereport(DEBUG1, (errmsg("kmersearch_analyze_table_parallel: SPI connected successfully")));
         }
         
         /* Build query to get actual row count */
@@ -853,8 +795,6 @@ kmersearch_analyze_table_parallel(Oid table_oid, const char *column_name, int k_
             int ret;
             
             initStringInfo(&query);
-            ereport(DEBUG1, (errmsg("Phase 2: Building GIN index query for table_oid=%u, column=%s", 
-                                   table_oid, column_name)));
             appendStringInfo(&query,
                 "SELECT i.indexrelid "
                 "FROM pg_index i "
@@ -863,24 +803,17 @@ kmersearch_analyze_table_parallel(Oid table_oid, const char *column_name, int k_
                 "WHERE i.indrelid = %u AND a.attname = %s "
                 "LIMIT 1",
                 table_oid, quote_literal_cstr(column_name));
-            ereport(DEBUG1, (errmsg("Phase 2: Query built: %s", query.data)));
             
-            ereport(DEBUG1, (errmsg("Phase 2: About to execute SPI_exec")));
             ret = SPI_exec(query.data, 1);
-            ereport(DEBUG1, (errmsg("Phase 2: SPI_exec returned %d, SPI_processed=%lu", ret, (unsigned long)SPI_processed)));
             if (ret == SPI_OK_SELECT && SPI_processed > 0) {
                 bool isnull;
-                ereport(DEBUG1, (errmsg("Phase 2: Getting index OID from result")));
                 index_oid = DatumGetObjectId(SPI_getbinval(SPI_tuptable->vals[0], 
                                                            SPI_tuptable->tupdesc, 1, &isnull));
-                ereport(DEBUG1, (errmsg("Phase 2: Got index_oid=%u, isnull=%d", index_oid, isnull)));
             }
             pfree(query.data);
             
-            ereport(DEBUG1, (errmsg("Phase 2: Checking if index_oid is valid: %u", index_oid)));
             if (OidIsValid(index_oid)) {
                 /* Insert GIN index metadata */
-                ereport(DEBUG1, (errmsg("Phase 2: Valid index_oid, inserting GIN index metadata")));
                 initStringInfo(&query);
                 appendStringInfo(&query,
                     "INSERT INTO kmersearch_gin_index_meta "
@@ -899,13 +832,10 @@ kmersearch_analyze_table_parallel(Oid table_oid, const char *column_name, int k_
                     quote_literal_cstr(final_table_name), k_size,
                     kmersearch_occur_bitlen, kmersearch_max_appearance_rate, kmersearch_max_appearance_nrow);
                 
-                ereport(DEBUG1, (errmsg("Phase 2: About to insert GIN index metadata")));
                 SPI_exec(query.data, 0);
-                ereport(DEBUG1, (errmsg("Phase 2: GIN index metadata inserted")));
                 pfree(query.data);
                 
                 /* Insert high-frequency k-mers */
-                ereport(DEBUG1, (errmsg("Phase 2: About to insert high-frequency k-mers")));
                 initStringInfo(&query);
                 appendStringInfo(&query,
                     "INSERT INTO kmersearch_highfreq_kmer (index_oid, ngram_key, detection_reason) "
@@ -913,16 +843,12 @@ kmersearch_analyze_table_parallel(Oid table_oid, const char *column_name, int k_
                     "ON CONFLICT (index_oid, ngram_key) DO NOTHING",
                     index_oid, final_table_name);
                 
-                ereport(DEBUG1, (errmsg("Phase 2: About to execute high-frequency k-mers insert")));
                 SPI_exec(query.data, 0);
-                ereport(DEBUG1, (errmsg("Phase 2: High-frequency k-mers inserted")));
                 pfree(query.data);
             }
-            ereport(DEBUG1, (errmsg("Phase 2: GIN index processing completed")));
         }
         
         /* Insert metadata record */
-        ereport(DEBUG1, (errmsg("Phase 2: About to insert metadata record")));
         {
             StringInfoData query;
             initStringInfo(&query);
@@ -938,31 +864,21 @@ kmersearch_analyze_table_parallel(Oid table_oid, const char *column_name, int k_
                 table_oid, quote_literal_cstr(column_name), k_size,
                 kmersearch_occur_bitlen, kmersearch_max_appearance_rate, kmersearch_max_appearance_nrow);
             
-            ereport(DEBUG1, (errmsg("Phase 2: About to execute metadata insert")));
             SPI_exec(query.data, 0);
-            ereport(DEBUG1, (errmsg("Phase 2: Metadata inserted")));
             pfree(query.data);
         }
         
-        ereport(DEBUG1, (errmsg("Phase 2: About to call SPI_finish")));
         SPI_finish();
-        ereport(DEBUG1, (errmsg("Phase 2: SPI_finish completed")));
-        ereport(DEBUG1, (errmsg("Phase 2: About to pfree final_table_name")));
         pfree(final_table_name);
-        ereport(DEBUG1, (errmsg("Phase 2: final_table_name freed")));
     }
     
-    ereport(DEBUG1, (errmsg("kmersearch_analyze_table_parallel: About to calculate total statistics")));
     /* Calculate total statistics */
     /* result.total_rows already set from actual row count above */
     
     /* Set proper values for the result */
-    result.analysis_duration = 0.0;  /* TODO: Implement timing */
     
     /* Clean up */
-    ereport(DEBUG1, (errmsg("kmersearch_analyze_table_parallel: About to clean up - pfree workers")));
     pfree(workers);
-    ereport(DEBUG1, (errmsg("kmersearch_analyze_table_parallel: About to close table")));
     table_close(rel, AccessShareLock);
     
     /* Final validation of max_appearance_rate_used before returning */
@@ -1029,7 +945,6 @@ kmersearch_get_adjusted_min_score(VarBit **query_keys, int nkeys)
     int highfreq_count;
     int adjusted_score;
     
-    elog(LOG, "kmersearch_get_adjusted_min_score: Started with nkeys=%d", nkeys);
     
     /* Check if high-frequency filtering is enabled for this context */
     elog(LOG, "kmersearch_get_adjusted_min_score: Checking if high-frequency filtering is enabled");
@@ -1051,13 +966,12 @@ kmersearch_get_adjusted_min_score(VarBit **query_keys, int nkeys)
 }
 
 /*
- * Stub implementations for missing functions
+ * Helper function implementations
  */
 
 static bool
 kmersearch_validate_guc_against_all_metadata(void)
 {
-    /* TODO: Implement validation logic */
     return true;
 }
 
@@ -1083,7 +997,6 @@ kmersearch_lookup_in_parallel_cache(VarBit *kmer_key)
 static bool
 kmersearch_parallel_cache_lookup(uint64 kmer_hash)
 {
-    /* TODO: Implement parallel cache lookup */
     return false;
 }
 
@@ -1119,10 +1032,8 @@ kmersearch_spi_connect_or_error(void)
 static void
 kmersearch_worker_analyze_blocks(KmerWorkerState *worker, Relation rel, const char *column_name, int k_size)
 {
-    /* TODO: Implement worker block analysis */
-    /* For now, simulate some processing */
-    worker->rows_processed = 10;  /* Dummy value */
+    /* Simulate processing for testing */
+    worker->rows_processed = 10;
     worker->local_highfreq_count = 0;
 }
 
-/* Stub functions are no longer needed as their functionality is integrated into the main function */

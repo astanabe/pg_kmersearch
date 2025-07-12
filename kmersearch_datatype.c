@@ -25,8 +25,6 @@ PG_FUNCTION_INFO_V1(kmersearch_dna2_eq);
 PG_FUNCTION_INFO_V1(kmersearch_dna4_eq);
 PG_FUNCTION_INFO_V1(kmersearch_dna2_char_length);
 PG_FUNCTION_INFO_V1(kmersearch_dna4_char_length);
-
-
 /* Helper functions */
 static bool kmersearch_is_valid_dna2_char(char c)
 {

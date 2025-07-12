@@ -29,10 +29,7 @@ QueryPatternCacheManager *query_pattern_cache_manager = NULL;
 /* Global rawscore cache manager for cross-query sharing */
 RawscoreCacheManager *rawscore_cache_manager = NULL;
 
-/* Removed module_initializing flag - warnings now only appear when cache is actually cleared */
 bool parallel_cache_exit_callback_registered = false;
-
-
 
 /* Macro for safe memory cleanup */
 #define CLEANUP_KMER_ARRAYS(seq_keys, seq_nkeys, query_keys, query_nkeys) \
@@ -58,7 +55,6 @@ bool parallel_cache_exit_callback_registered = false;
     } while(0)
 
 /* Forward declarations */
-/* High-frequency filtering functions moved to kmersearch_freq.c */
 static bool kmersearch_validate_guc_against_all_metadata(void);
 static bool kmersearch_is_parallel_highfreq_cache_loaded(void);
 static bool kmersearch_lookup_in_parallel_cache(VarBit *kmer_key);
@@ -66,19 +62,13 @@ static int kmersearch_calculate_raw_score(VarBit *seq1, VarBit *seq2, text *quer
 
 /* High-frequency k-mer filtering functions */
 Datum *kmersearch_filter_highfreq_kmers_from_keys(Datum *original_keys, int *nkeys, HTAB *highfreq_hash, int k);
-
-/* High-frequency k-mer cache management functions (moved to kmersearch_cache.c) */
-
 /* Parallel high-frequency k-mer cache management functions */
 static bool kmersearch_parallel_highfreq_kmer_cache_is_valid(Oid table_oid, const char *column_name, int k_value);
 static bool kmersearch_parallel_cache_lookup(uint64 kmer_hash);
 static bool kmersearch_parallel_cache_attach(dsm_handle handle);
-/* kmersearch_is_highfreq_kmer_parallel moved to kmersearch_freq.c */
 Datum *kmersearch_filter_highfreq_kmers_from_keys_parallel(Datum *original_keys, int *nkeys, int k);
 static void kmersearch_parallel_cache_cleanup_internal(void);
 static void dshash_cache_cleanup_callback(int code, Datum arg);
-
-
 /* High-frequency k-mer analysis functions - Phase 2 */
 static void kmersearch_collect_ngram_key2_for_highfreq_kmer(Oid table_oid, const char *column_name, int k_size, const char *highfreq_table_name);
 static void kmersearch_worker_collect_ngram_key2(KmerWorkerState *worker, Relation rel, const char *column_name, int k_size, const char *highfreq_table_name);
@@ -87,8 +77,6 @@ static void kmersearch_merge_ngram_worker_results(KmerWorkerState *workers, int 
 static void kmersearch_persist_collected_ngram_key2(Oid table_oid, const char *final_table_name);
 static bool kmersearch_is_kmer_high_frequency(VarBit *ngram_key, int k_size, const char *highfreq_table_name);
 static void kmersearch_persist_highfreq_kmers_metadata(Oid table_oid, const char *column_name, int k_size);
-
-
 /* B-2: Other functions */
 Datum *kmersearch_extract_dna4_kmer2_with_expansion_direct(VarBit *seq, int k, int *nkeys);
 static int kmersearch_count_matching_kmer_fast(VarBit **seq_keys, int seq_nkeys, VarBit **query_keys, int query_nkeys);
@@ -100,7 +88,6 @@ static bool kmersearch_evaluate_match_conditions(int shared_count, int query_tot
 static bool evaluate_optimized_match_condition(VarBit **query_keys, int nkeys, int shared_count, const char *query_string, int query_total_kmers);
 
 /* New parallel analysis functions */
-/* Parallel analysis functions moved to kmersearch_freq.c */
 static void kmersearch_worker_analyze_blocks(KmerWorkerState *worker, Relation rel, const char *column_name, int k_size);
 static void kmersearch_merge_worker_results_sql(KmerWorkerState *workers, int num_workers, const char *final_table_name, int k_size, int threshold_rows);
 static void kmersearch_persist_highfreq_kmers(Oid table_oid, const char *column_name, int k_size, void *unused_table, int threshold_rows);
@@ -121,7 +108,6 @@ static void kmersearch_flush_buffer_to_table(KmerBuffer *buffer, const char *tem
 static void kmersearch_aggregate_buffer_entries(KmerBuffer *buffer);
 static void kmersearch_create_worker_temp_table(const char *temp_table_name, int k_size);
 static bool kmersearch_check_analysis_exists(Oid table_oid, const char *column_name, int k_size);
-/* Analysis and filtering functions moved to kmersearch_freq.c */
 static void kmersearch_delete_existing_analysis(Oid table_oid, const char *column_name, int k_size);
 
 /* Custom GUC variables */
@@ -211,24 +197,17 @@ static const uint8 kmersearch_dna4_to_dna2_table[16][5] = {
     {3, 1, 2, 3, 0},     /* 1110 - B (C,G,T) */
     {4, 0, 1, 2, 3}      /* 1111 - N (A,C,G,T) */
 };
-
-
 /* K-mer and GIN index functions */
 PG_FUNCTION_INFO_V1(kmersearch_dna2_match);
 PG_FUNCTION_INFO_V1(kmersearch_dna4_match);
 
 /* K-mer frequency analysis functions */
-/* Frequency analysis functions moved to kmersearch_freq.c */
 
 /* Score calculation functions */
 PG_FUNCTION_INFO_V1(kmersearch_rawscore_dna2);
 PG_FUNCTION_INFO_V1(kmersearch_rawscore_dna4);
 PG_FUNCTION_INFO_V1(kmersearch_correctedscore_dna2);
 PG_FUNCTION_INFO_V1(kmersearch_correctedscore_dna4);
-
-
-
-
 /* SIMD capability detection functions */
 static simd_capability_t detect_cpu_capabilities(void);
 static void init_simd_dispatch_table(void);
@@ -377,8 +356,6 @@ kmersearch_min_shared_ngram_key_rate_assign_hook(double newval, void *extra)
     if (actual_min_score_cache_manager)
         kmersearch_free_actual_min_score_cache_internal();
 }
-
-
 /* Query pattern cache max entries change requires cache recreation */
 static void
 kmersearch_query_pattern_cache_max_entries_assign_hook(int newval, void *extra)
@@ -647,12 +624,6 @@ static void init_simd_dispatch_table(void)
             break;
     }
 }
-
-
-
-
-
-
 /*
  * Expand single DNA4 k-mer to multiple DNA2 k-mers using bit operations
  */
@@ -742,14 +713,6 @@ kmersearch_expand_dna4_kmer2_to_dna2_direct(VarBit *dna4_seq, int start_pos, int
     *expansion_count = total_combinations;
     return results;
 }
-
-
-
-
-
-
-
-
 /*
  * Extract k-mers directly from DNA2 bit sequence (with SIMD dispatch)
  */
@@ -963,15 +926,9 @@ kmersearch_extract_dna4_kmer2_with_expansion_direct_scalar(VarBit *seq, int k, i
     return keys;
 }
 
-
-
 /*
  * Cache management functions
  */
-
-
-
-
 /*
  * Clean up query conditions manager when PortalContext is destroyed
  */
@@ -981,12 +938,6 @@ cleanup_query_conditions_manager(void)
     /* This function will be called when the PortalContext is destroyed */
     /* The static pointer will be automatically set to NULL */
 }
-
-
-
-
-
-
 
 /*
  * Generate cache key for query pattern
@@ -1148,8 +1099,6 @@ store_query_pattern_cache_entry(QueryPatternCacheManager *manager, uint64 hash_k
     MemoryContextSwitchTo(old_context);
 }
 
-
-
 /*
  * Fast k-mer matching using hash table - optimized O(n+m) implementation (with SIMD dispatch)
  */
@@ -1265,8 +1214,6 @@ kmersearch_count_matching_kmer_fast_scalar(VarBit **seq_keys, int seq_nkeys, Var
     return match_count;
 }
 
-
-
 /*
  * DNA2 =% operator for k-mer search
  */
@@ -1307,22 +1254,6 @@ kmersearch_dna4_match(PG_FUNCTION_ARGS)
     PG_RETURN_BOOL(result.valid ? result.match_result : false);
 }
 
-
-
-
-/* A-3: Removed kmersearch_kmer_hash and kmersearch_kmer_compare functions - no longer needed */
-
-/* kmersearch_analyze_table_frequency function moved to kmersearch_freq.c */
-
-/* kmersearch_get_highfreq_kmer function moved to kmersearch_freq.c */
-
-
-/* kmersearch_count_highfreq_kmer_in_query function moved to kmersearch_freq.c */
-
-/* kmersearch_is_highfreq_filtering_enabled function moved to kmersearch_freq.c */
-
-/* kmersearch_get_adjusted_min_score function moved to kmersearch_freq.c */
-
 /*
  * Calculate raw score between two DNA sequences
  */
@@ -1361,10 +1292,6 @@ kmersearch_calculate_raw_score(VarBit *seq1, VarBit *seq2, text *query_text)
     pfree(query_string);
     return score;
 }
-
-
-
-
 /*
  * Raw score calculation function for DNA2
  */
@@ -1539,11 +1466,6 @@ kmersearch_correctedscore_dna4(PG_FUNCTION_ARGS)
     /* Return corrected score (shared k-mer count) */
     PG_RETURN_INT32(shared_count);
 }
-
-
-
-/* kmersearch_is_kmer_highfreq function moved to kmersearch_freq.c */
-
 /*
  * Validate GUC settings against all metadata table entries
  */
@@ -1591,8 +1513,6 @@ kmersearch_validate_guc_against_all_metadata(void)
     
     return valid;
 }
-
-
 /*
  * Check if parallel_highfreq_cache is loaded
  */
@@ -1603,8 +1523,6 @@ kmersearch_is_parallel_highfreq_cache_loaded(void)
             parallel_highfreq_cache->is_initialized &&
             parallel_highfreq_cache->num_entries > 0);
 }
-
-
 /*
  * Lookup k-mer in parallel_highfreq_cache  
  */
@@ -1671,8 +1589,6 @@ kmersearch_dna4_nuc_length(PG_FUNCTION_ARGS)
     
     PG_RETURN_INT32(nuc_len);
 }
-
-
 /* Parallel k-mer analysis functions declarations added elsewhere */
 
 /*
@@ -1698,10 +1614,6 @@ kmersearch_evaluate_match_conditions(int shared_count, int query_total)
     /* AND condition */
     return (score_condition && rate_condition);
 }
-
-
-
-
 /*
  * Optimized match condition evaluation using pre-calculated actual minimum score
  */
@@ -1710,15 +1622,12 @@ evaluate_optimized_match_condition(VarBit **query_keys, int nkeys, int shared_co
 {
     int actual_min_score;
     
-    elog(LOG, "evaluate_optimized_match_condition: Started with nkeys=%d, shared_count=%d", nkeys, shared_count);
     
     /* Get cached actual min score (with TopMemoryContext caching for performance) */
-    elog(LOG, "evaluate_optimized_match_condition: About to call get_cached_actual_min_score");
     actual_min_score = get_cached_actual_min_score(query_keys, nkeys);
     elog(LOG, "evaluate_optimized_match_condition: get_cached_actual_min_score returned %d", actual_min_score);
     
     /* Use optimized condition check with cached actual_min_score */
-    elog(LOG, "evaluate_optimized_match_condition: About to return result");
     return (shared_count >= actual_min_score);
 }
 
@@ -1845,8 +1754,6 @@ kmersearch_kmer_based_match_dna4(VarBit *sequence, const char *query_string)
     
     return result;
 }
-
-
 
 /*
  * Core k-mer matching and scoring function for DNA2 sequences
@@ -2554,8 +2461,6 @@ kmersearch_worker_analyze_blocks(KmerWorkerState *worker, Relation rel,
         pfree(worker->buffer.entries);
     }
 }
-
-
 /*
  * Merge worker results using SQL aggregation
  */
@@ -2613,9 +2518,6 @@ kmersearch_merge_worker_results_sql(KmerWorkerState *workers, int num_workers,
     pfree(query.data);
     pfree(union_query.data);
 }
-
-/* kmersearch_analyze_table_parallel function moved to kmersearch_freq.c */
-
 /*
  * Persist highly frequent k-mers from temporary table to permanent tables
  */
@@ -3027,9 +2929,6 @@ kmersearch_check_analysis_exists(Oid table_oid, const char *column_name, int k_s
     
     return found;
 }
-
-/* kmersearch_validate_analysis_parameters function moved to kmersearch_freq.c */
-
 /*
  * Filter highly frequent k-mers from the key array
  * A-2: Use direct VarBit comparison instead of hash table (k-mer+occurrence n-gram keys are small)
@@ -3147,10 +3046,6 @@ kmersearch_filter_highfreq_kmers(Oid table_oid, const char *column_name, int k_s
     
     return filtered_keys;
 }
-/* kmersearch_analyze_table function moved to kmersearch_freq.c */
-
-/* kmersearch_drop_analysis and related functions moved to kmersearch_freq.c */
-
 /*
  * Helper function to get highly frequent k-mers list for a given index
  */
@@ -3217,28 +3112,10 @@ kmersearch_delete_kmer_from_gin_index(Relation index_rel, VarBit *kmer_key)
                            VARBITLEN(kmer_key))));
     
     /*
-     * TODO: Implement actual GIN key deletion using:
-     * - ginFindLeafPage() to locate the key
-     * - ginDeleteKey() to remove the key and posting list
-     * - ginUpdateStats() to update index statistics
      */
     
     return true;  /* Assume success for now */
 }
-
-
-
-
-
-
-/* free_cache_manager function removed - cache managers are now local and auto-freed */
-
-/* Cache functions moved to kmersearch_cache.c */
-
-
-
-
-
 /*
  * Module cleanup function
  */
@@ -3259,10 +3136,6 @@ _PG_fini(void)
 /*
  * High-frequency k-mer filtering functions implementation
  */
-
-
-
-
 Datum *
 kmersearch_filter_highfreq_kmers_from_keys(Datum *original_keys, int *nkeys, HTAB *highfreq_hash, int k)
 {
@@ -3332,12 +3205,6 @@ kmersearch_filter_highfreq_kmers_from_keys(Datum *original_keys, int *nkeys, HTA
     
     return filtered_keys;
 }
-
-
-
-
-
-
 /*
  * Parallel high-frequency k-mer cache internal functions
  */
@@ -3373,7 +3240,6 @@ kmersearch_parallel_cache_cleanup_internal(void)
                 /* Main process: destroy the hash table */
                 ereport(LOG, (errmsg("kmersearch_parallel_cache_cleanup_internal: Main process destroying dshash table")));
                 dshash_destroy(parallel_cache_hash);
-                ereport(LOG, (errmsg("kmersearch_parallel_cache_cleanup_internal: dshash_destroy completed successfully")));
             } else {
                 /* Parallel worker: detach from hash table */
                 ereport(LOG, (errmsg("kmersearch_parallel_cache_cleanup_internal: Parallel worker detaching from dshash table")));
@@ -3461,7 +3327,6 @@ kmersearch_parallel_cache_cleanup_internal(void)
     parallel_highfreq_cache = NULL;
     parallel_cache_exit_callback_registered = false;
     
-    ereport(LOG, (errmsg("kmersearch_parallel_cache_cleanup_internal: Cleanup completed successfully")));
 }
 
 /*
@@ -3719,7 +3584,6 @@ kmersearch_parallel_highfreq_kmer_cache_load_internal(Oid table_oid, const char 
     if (highfreq_kmers) {
         ereport(LOG, (errmsg("dshash_cache_load: Skipping individual k-mer cleanup to avoid segfault")));
         /* Skip individual k-mer cleanup for now to avoid segfault - memory will be freed when context is destroyed */
-        ereport(LOG, (errmsg("dshash_cache_load: Cleanup completed successfully")));
     }
     
     /* Switch back to original context */
@@ -3734,7 +3598,6 @@ kmersearch_parallel_highfreq_kmer_cache_load_internal(Oid table_oid, const char 
         ereport(LOG, (errmsg("dshash_cache_load: Exit callback already registered")));
     }
     
-    ereport(LOG, (errmsg("dshash_cache_load: Function completed successfully")));
     
     return true;
 }

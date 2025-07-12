@@ -201,8 +201,6 @@ kmersearch_extract_value_dna4(PG_FUNCTION_ARGS)
     
     PG_RETURN_POINTER(keys);
 }
-
-
 /*
  * GIN extract_query function
  */
