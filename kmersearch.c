@@ -55,9 +55,7 @@ bool parallel_cache_exit_callback_registered = false;
     } while(0)
 
 /* Forward declarations */
-static bool kmersearch_validate_guc_against_all_metadata(void);
-static bool kmersearch_is_parallel_highfreq_cache_loaded(void);
-static bool kmersearch_lookup_in_parallel_cache(VarBit *kmer_key);
+/* Functions moved to other modules - declarations remain for compatibility */
 static int kmersearch_calculate_raw_score(VarBit *seq1, VarBit *seq2, text *query_text);
 
 /* High-frequency k-mer filtering functions */
@@ -357,16 +355,7 @@ kmersearch_min_shared_ngram_key_rate_assign_hook(double newval, void *extra)
         kmersearch_free_actual_min_score_cache_internal();
 }
 /* Query pattern cache max entries change requires cache recreation */
-static void
-kmersearch_query_pattern_cache_max_entries_assign_hook(int newval, void *extra)
-{
-    (void) newval;  /* Suppress unused parameter warning */
-    (void) extra;   /* Suppress unused parameter warning */
-    
-    /* Clear query pattern cache to recreate with new size limit */
-    if (query_pattern_cache_manager)
-        kmersearch_free_query_pattern_cache_internal();
-}
+/* Function moved to kmersearch_cache.c */
 
 /* Occurrence bit length change affects rawscore and high-freq caches */
 static void
@@ -929,137 +918,7 @@ kmersearch_extract_dna4_kmer2_with_expansion_direct_scalar(VarBit *seq, int k, i
 /*
  * Cache management functions
  */
-/*
- * Clean up query conditions manager when PortalContext is destroyed
- */
-static void
-cleanup_query_conditions_manager(void)
-{
-    /* This function will be called when the PortalContext is destroyed */
-    /* The static pointer will be automatically set to NULL */
-}
-
-/*
- * Generate cache key for query pattern
- */
-static uint64
-generate_query_pattern_cache_key(const char *query_string, int k_size)
-{
-    uint64 query_hash, k_hash;
-    
-    /* Hash query string */
-    query_hash = hash_any_extended((unsigned char*)query_string, strlen(query_string), 0);
-    
-    /* Hash k_size with different seed */
-    k_hash = hash_any_extended((unsigned char*)&k_size, sizeof(k_size), 1);
-    
-    /* Combine hashes */
-    return query_hash ^ (k_hash << 1);
-}
-
-/*
- * Move entry to head of LRU chain (most recently used)
- */
-static void
-lru_touch_query_pattern_cache(QueryPatternCacheManager *manager, QueryPatternCacheEntry *entry)
-{
-    if (entry == manager->lru_head)
-        return;  /* Already at head */
-    
-    /* Remove from current position */
-    if (entry->prev)
-        entry->prev->next = entry->next;
-    else
-        manager->lru_tail = entry->next;
-    
-    if (entry->next)
-        entry->next->prev = entry->prev;
-    else
-        manager->lru_head = entry->prev;
-    
-    /* Add to head */
-    entry->prev = NULL;
-    entry->next = manager->lru_head;
-    if (manager->lru_head)
-        manager->lru_head->prev = entry;
-    else
-        manager->lru_tail = entry;
-    manager->lru_head = entry;
-}
-
-
-/*
- * Look up query pattern cache entry
- */
-static QueryPatternCacheEntry *
-lookup_query_pattern_cache_entry(QueryPatternCacheManager *manager, const char *query_string, int k_size)
-{
-    uint64 hash_key = generate_query_pattern_cache_key(query_string, k_size);
-    QueryPatternCacheEntry *entry;
-    bool found;
-    
-    entry = (QueryPatternCacheEntry *) hash_search(manager->hash_table, &hash_key, HASH_FIND, &found);
-    
-    if (found && entry && strcmp(entry->query_string_copy, query_string) == 0 && entry->kmer_size == k_size)
-    {
-        /* Cache hit - move to head of LRU */
-        lru_touch_query_pattern_cache(manager, entry);
-        manager->hits++;
-        return entry;
-    }
-    
-    return NULL;  /* Cache miss */
-}
-
-/*
- * Store entry in query pattern cache
- */
-static void
-store_query_pattern_cache_entry(QueryPatternCacheManager *manager, uint64 hash_key, 
-                               const char *query_string, int k_size, VarBit **kmers, int kmer_count)
-{
-    QueryPatternCacheEntry *entry;
-    MemoryContext old_context;
-    bool found;
-    int i;
-    
-    /* Evict oldest entries if cache is full */
-    while (manager->current_entries >= manager->max_entries)
-        lru_evict_oldest_query_pattern_cache(manager);
-    
-    old_context = MemoryContextSwitchTo(manager->query_pattern_cache_context);
-    
-    /* Create new entry */
-    entry = (QueryPatternCacheEntry *) hash_search(manager->hash_table, &hash_key, HASH_ENTER, &found);
-    if (!found)
-    {
-        entry->hash_key = hash_key;
-        entry->query_string_copy = pstrdup(query_string);
-        entry->kmer_size = k_size;
-        entry->kmer_count = kmer_count;
-        
-        /* Copy k-mers */
-        entry->extracted_kmers = (VarBit **) palloc(kmer_count * sizeof(VarBit *));
-        for (i = 0; i < kmer_count; i++)
-        {
-            entry->extracted_kmers[i] = (VarBit *) palloc(VARSIZE(kmers[i]));
-            memcpy(entry->extracted_kmers[i], kmers[i], VARSIZE(kmers[i]));
-        }
-        
-        /* Add to LRU chain */
-        entry->prev = NULL;
-        entry->next = manager->lru_head;
-        if (manager->lru_head)
-            manager->lru_head->prev = entry;
-        else
-            manager->lru_tail = entry;
-        manager->lru_head = entry;
-        
-        manager->current_entries++;
-    }
-    
-    MemoryContextSwitchTo(old_context);
-}
+/* Cache management functions moved to kmersearch_cache.c */
 
 /*
  * Fast k-mer matching using hash table - optimized O(n+m) implementation (with SIMD dispatch)
@@ -1423,112 +1282,7 @@ kmersearch_correctedscore_dna4(PG_FUNCTION_ARGS)
     /* Return corrected score (shared k-mer count) */
     PG_RETURN_INT32(shared_count);
 }
-/*
- * Validate GUC settings against all metadata table entries
- */
-static bool
-kmersearch_validate_guc_against_all_metadata(void)
-{
-    int ret;
-    StringInfoData query;
-    bool valid = true;
-    
-    /* Connect to SPI */
-    if (SPI_connect() != SPI_OK_CONNECT)
-        return true;  /* Assume valid if we can't check */
-    
-    /* Check if metadata table exists */
-    ret = SPI_execute("SELECT 1 FROM information_schema.tables WHERE table_name = 'kmersearch_highfreq_kmer_meta' LIMIT 1", true, 1);
-    if (ret != SPI_OK_SELECT || SPI_processed == 0) {
-        /* Table doesn't exist, validation passes */
-        SPI_finish();
-        return true;
-    }
-    
-    /* Query metadata table and compare with current GUC values */
-    initStringInfo(&query);
-    appendStringInfo(&query,
-        "SELECT occur_bitlen, max_appearance_rate, max_appearance_nrow "
-        "FROM kmersearch_highfreq_kmer_meta "
-        "WHERE occur_bitlen != %d OR "
-        "      abs(max_appearance_rate - %f) > 0.0001 OR "
-        "      max_appearance_nrow != %d "
-        "LIMIT 1",
-        kmersearch_occur_bitlen,
-        kmersearch_max_appearance_rate,
-        kmersearch_max_appearance_nrow);
-    
-    /* Execute query */
-    ret = SPI_execute(query.data, true, 1);
-    if (ret == SPI_OK_SELECT && SPI_processed > 0) {
-        valid = false;  /* Found mismatching entry */
-    }
-    
-    /* Clean up */
-    pfree(query.data);
-    SPI_finish();
-    
-    return valid;
-}
-/*
- * Check if parallel_highfreq_cache is loaded
- */
-static bool
-kmersearch_is_parallel_highfreq_cache_loaded(void)
-{
-    return (parallel_highfreq_cache != NULL && 
-            parallel_highfreq_cache->is_initialized &&
-            parallel_highfreq_cache->num_entries > 0);
-}
-/*
- * Lookup k-mer in parallel_highfreq_cache  
- */
-static bool
-kmersearch_lookup_in_parallel_cache(VarBit *kmer_key)
-{
-    MemoryContext oldcontext;
-    uint64 kmer_hash;
-    ParallelHighfreqKmerCacheEntry *entry = NULL;
-    bool found = false;
-    
-    /* Basic validation checks */
-    if (!parallel_highfreq_cache || !parallel_highfreq_cache->is_initialized || 
-        parallel_highfreq_cache->num_entries == 0)
-        return false;
-    
-    if (!parallel_cache_hash)
-        return false;
-    
-    /* Switch to TopMemoryContext for dshash operations */
-    oldcontext = MemoryContextSwitchTo(TopMemoryContext);
-    
-    PG_TRY();
-    {
-        /* Calculate hash using same logic as global cache */
-        kmer_hash = kmersearch_ngram_key_to_hash(kmer_key);
-        
-        /* Lookup in dshash table */
-        entry = (ParallelHighfreqKmerCacheEntry *) dshash_find(parallel_cache_hash, &kmer_hash, false);
-        
-        if (entry != NULL) {
-            found = true;
-            /* Must release lock after dshash_find() */
-            dshash_release_lock(parallel_cache_hash, entry);
-        }
-    }
-    PG_CATCH();
-    {
-        /* Ensure lock is released even in error cases */
-        if (entry)
-            dshash_release_lock(parallel_cache_hash, entry);
-        MemoryContextSwitchTo(oldcontext);
-        PG_RE_THROW();
-    }
-    PG_END_TRY();
-    
-    MemoryContextSwitchTo(oldcontext);
-    return found;
-}
+/* High-frequency k-mer validation and parallel cache functions moved to kmersearch_freq.c */
 
 /*
  * Length functions for DNA2 and DNA4 types

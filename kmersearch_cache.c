@@ -1802,3 +1802,17 @@ kmersearch_parallel_highfreq_kmer_cache_free(PG_FUNCTION_ARGS)
     
     PG_RETURN_INT32(freed_entries);
 }
+
+/*
+ * GUC hook function for query pattern cache max entries changes
+ */
+void
+kmersearch_query_pattern_cache_max_entries_assign_hook(int newval, void *extra)
+{
+    (void) newval;  /* Suppress unused parameter warning */
+    (void) extra;   /* Suppress unused parameter warning */
+    
+    /* Clear query pattern cache to recreate with new size limit */
+    if (query_pattern_cache_manager)
+        kmersearch_free_query_pattern_cache_internal();
+}

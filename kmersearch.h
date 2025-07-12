@@ -536,11 +536,15 @@ int get_cached_actual_min_score(VarBit **query_keys, int nkeys);
 
 /* Rawscore cache functions (implemented in kmersearch_cache.c) */
 void kmersearch_rawscore_cache_max_entries_assign_hook(int newval, void *extra);
+void kmersearch_query_pattern_cache_max_entries_assign_hook(int newval, void *extra);
 KmerMatchResult get_cached_rawscore_dna2(VarBit *sequence, const char *query_string);
 KmerMatchResult get_cached_rawscore_dna4(VarBit *sequence, const char *query_string);
 
 /* Internal functions that should be declared (implemented in kmersearch_freq.c) */
 int kmersearch_get_adjusted_min_score(VarBit **query_keys, int nkeys);
+bool kmersearch_validate_guc_against_all_metadata(void);
+bool kmersearch_is_parallel_highfreq_cache_loaded(void);
+bool kmersearch_lookup_in_parallel_cache(VarBit *kmer_key);
 KmerMatchResult kmersearch_calculate_kmer_match_and_score_dna2(VarBit *sequence, const char *query_string);
 KmerMatchResult kmersearch_calculate_kmer_match_and_score_dna4(VarBit *sequence, const char *query_string);
 

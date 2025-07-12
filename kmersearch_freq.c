@@ -32,9 +32,6 @@ static bool kmersearch_is_highfreq_kmer_parallel(VarBit *kmer);
 static Datum *kmersearch_filter_highfreq_kmers(Oid table_oid, const char *column_name, int k_size, Datum *all_keys, int total_keys, int *filtered_count);
 /* Utility functions */
 static List *kmersearch_get_highfreq_kmer_list(Oid index_oid);
-static bool kmersearch_validate_guc_against_all_metadata(void);
-static bool kmersearch_is_parallel_highfreq_cache_loaded(void);
-static bool kmersearch_lookup_in_parallel_cache(VarBit *kmer_key);
 static int kmersearch_varbit_cmp(VarBit *a, VarBit *b);
 static void kmersearch_spi_connect_or_error(void);
 
@@ -941,30 +938,7 @@ kmersearch_get_adjusted_min_score(VarBit **query_keys, int nkeys)
  * Helper function implementations
  */
 
-static bool
-kmersearch_validate_guc_against_all_metadata(void)
-{
-    return true;
-}
-
-static bool
-kmersearch_is_parallel_highfreq_cache_loaded(void)
-{
-    return (parallel_cache_hash != NULL);
-}
-
-static bool
-kmersearch_lookup_in_parallel_cache(VarBit *kmer_key)
-{
-    uint64 kmer_hash;
-    
-    if (!parallel_cache_hash)
-        return false;
-    
-    kmer_hash = hash_any((unsigned char *) VARDATA(kmer_key), 
-                        VARSIZE(kmer_key) - VARHDRSZ);
-    return kmersearch_parallel_cache_lookup(kmer_hash);
-}
+/* Functions moved here from kmersearch.c are now implemented below */
 
 
 static int
@@ -991,6 +965,115 @@ kmersearch_spi_connect_or_error(void)
 {
     if (SPI_connect() != SPI_OK_CONNECT)
         ereport(ERROR, (errmsg("SPI_connect failed")));
+}
+
+/*
+ * Validate GUC settings against all metadata table entries
+ */
+bool
+kmersearch_validate_guc_against_all_metadata(void)
+{
+    int ret;
+    StringInfoData query;
+    bool valid = true;
+    
+    /* Connect to SPI */
+    if (SPI_connect() != SPI_OK_CONNECT)
+        return true;  /* Assume valid if we can't check */
+    
+    /* Check if metadata table exists */
+    ret = SPI_execute("SELECT 1 FROM information_schema.tables WHERE table_name = 'kmersearch_highfreq_kmer_meta' LIMIT 1", true, 1);
+    if (ret != SPI_OK_SELECT || SPI_processed == 0) {
+        /* Table doesn't exist, validation passes */
+        SPI_finish();
+        return true;
+    }
+    
+    /* Query metadata table and compare with current GUC values */
+    initStringInfo(&query);
+    appendStringInfo(&query,
+        "SELECT occur_bitlen, max_appearance_rate, max_appearance_nrow "
+        "FROM kmersearch_highfreq_kmer_meta "
+        "WHERE occur_bitlen != %d OR "
+        "      abs(max_appearance_rate - %f) > 0.0001 OR "
+        "      max_appearance_nrow != %d "
+        "LIMIT 1",
+        kmersearch_occur_bitlen,
+        kmersearch_max_appearance_rate,
+        kmersearch_max_appearance_nrow);
+    
+    /* Execute query */
+    ret = SPI_execute(query.data, true, 1);
+    if (ret == SPI_OK_SELECT && SPI_processed > 0) {
+        valid = false;  /* Found mismatching entry */
+    }
+    
+    /* Clean up */
+    pfree(query.data);
+    SPI_finish();
+    
+    return valid;
+}
+
+/*
+ * Check if parallel_highfreq_cache is loaded
+ */
+bool
+kmersearch_is_parallel_highfreq_cache_loaded(void)
+{
+    return (parallel_highfreq_cache != NULL && 
+            parallel_highfreq_cache->is_initialized &&
+            parallel_highfreq_cache->num_entries > 0);
+}
+
+/*
+ * Lookup k-mer in parallel_highfreq_cache  
+ */
+bool
+kmersearch_lookup_in_parallel_cache(VarBit *kmer_key)
+{
+    MemoryContext oldcontext;
+    uint64 kmer_hash;
+    ParallelHighfreqKmerCacheEntry *entry = NULL;
+    bool found = false;
+    
+    /* Basic validation checks */
+    if (!parallel_highfreq_cache || !parallel_highfreq_cache->is_initialized || 
+        parallel_highfreq_cache->num_entries == 0)
+        return false;
+    
+    if (!parallel_cache_hash)
+        return false;
+    
+    /* Switch to TopMemoryContext for dshash operations */
+    oldcontext = MemoryContextSwitchTo(TopMemoryContext);
+    
+    PG_TRY();
+    {
+        /* Calculate hash using same logic as global cache */
+        kmer_hash = kmersearch_ngram_key_to_hash(kmer_key);
+        
+        /* Lookup in dshash table */
+        entry = (ParallelHighfreqKmerCacheEntry *) dshash_find(parallel_cache_hash, &kmer_hash, false);
+        
+        if (entry != NULL) {
+            found = true;
+            /* Must release lock after dshash_find() */
+            dshash_release_lock(parallel_cache_hash, entry);
+        }
+    }
+    PG_CATCH();
+    {
+        /* Ensure lock is released even in error cases */
+        if (entry)
+            dshash_release_lock(parallel_cache_hash, entry);
+        MemoryContextSwitchTo(oldcontext);
+        PG_RE_THROW();
+    }
+    PG_END_TRY();
+    
+    MemoryContextSwitchTo(oldcontext);
+    return found;
 }
 
 /*
