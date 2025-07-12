@@ -281,6 +281,385 @@ ORDER BY length(dna_seq) DESC;
 | B | CまたはGまたはT | 1110 |
 | N | AまたはCまたはGまたはT | 1111 |
 
+## システムテーブルとビュー
+
+pg_kmersearchは、メタデータ管理と監視のための複数のシステムテーブルとビューを作成します。
+
+### システムテーブル
+
+#### kmersearch_highfreq_kmer
+GINインデックスから除外される高頻出k-merを格納：
+
+```sql
+-- 特定インデックスの除外k-merを表示
+SELECT index_oid, ngram_key, detection_reason, created_at
+FROM kmersearch_highfreq_kmer 
+WHERE index_oid = 'sequences_kmer_idx'::regclass;
+
+-- インデックスごとの除外k-mer数をカウント
+SELECT index_oid, COUNT(*) as excluded_count
+FROM kmersearch_highfreq_kmer
+GROUP BY index_oid;
+```
+
+#### kmersearch_highfreq_kmer_meta
+k-mer頻度解析のメタデータを格納：
+
+```sql
+-- 全テーブルの解析メタデータを表示
+SELECT table_oid, column_name, k_value, occur_bitlen, 
+       max_appearance_rate, max_appearance_nrow, analysis_timestamp
+FROM kmersearch_highfreq_kmer_meta;
+
+-- 特定テーブルの解析パラメータを確認
+SELECT * FROM kmersearch_highfreq_kmer_meta 
+WHERE table_oid = 'sequences'::regclass AND column_name = 'dna_seq';
+```
+
+#### kmersearch_gin_index_meta
+高頻出フィルタリング情報を含むGINインデックスメタデータを格納：
+
+```sql
+-- GINインデックスメタデータを表示
+SELECT index_oid, table_oid, column_name, highfreq_filtered, 
+       k_value, occur_bitlen, created_at
+FROM kmersearch_gin_index_meta;
+
+-- インデックスが高頻出フィルタリングを使用しているか確認
+SELECT highfreq_filtered FROM kmersearch_gin_index_meta 
+WHERE index_oid = 'sequences_kmer_idx'::regclass;
+```
+
+#### kmersearch_index_info
+包括的なインデックス統計と設定を格納：
+
+```sql
+-- インデックス統計を表示
+SELECT index_oid, table_oid, column_name, k_value, total_rows,
+       highfreq_kmer_count, max_appearance_rate, created_at
+FROM kmersearch_index_info;
+```
+
+### 管理ビュー
+
+#### kmersearch_cache_summary
+全キャッシュタイプの統合統計を提供：
+
+```sql
+-- キャッシュパフォーマンス概要を表示
+SELECT cache_type, total_entries, total_hits, total_misses, hit_rate
+FROM kmersearch_cache_summary;
+
+-- キャッシュ効率を監視
+SELECT cache_type, 
+       ROUND(hit_rate * 100, 2) as hit_rate_percent,
+       total_hits + total_misses as total_requests
+FROM kmersearch_cache_summary
+WHERE total_hits + total_misses > 0;
+```
+
+#### kmersearch_analysis_status
+解析済み全テーブルの高頻出k-mer解析状況を表示：
+
+```sql
+-- 全テーブルの解析状況を表示
+SELECT table_name, column_name, k_value, highfreq_kmer_count,
+       analysis_timestamp
+FROM kmersearch_analysis_status;
+
+-- 解析パラメータと結果を確認
+SELECT table_name, column_name, k_value, occur_bitlen,
+       max_appearance_rate, max_appearance_nrow,
+       highfreq_kmer_count, analysis_timestamp
+FROM kmersearch_analysis_status
+WHERE table_name = 'sequences';
+```
+
+## 解析・管理関数
+
+### k-mer頻度解析
+
+#### kmersearch_analyze_table()
+テーブルに対する並列k-mer頻度解析を実行：
+
+```sql
+-- デフォルト並列ワーカーでの基本解析
+SELECT kmersearch_analyze_table(
+    'sequences'::regclass::oid,    -- テーブルOID
+    'dna_seq',                     -- カラム名
+    8                              -- k-merサイズ
+);
+
+-- 特定の並列ワーカー数での解析
+SELECT kmersearch_analyze_table(
+    (SELECT oid FROM pg_class WHERE relname = 'sequences'),
+    'dna_seq',
+    8,     -- k-merサイズ
+    4      -- 並列ワーカー数
+);
+
+-- 結果の解釈例
+SELECT (result).total_rows,
+       (result).highfreq_kmers_count,
+       (result).parallel_workers_used,
+       (result).analysis_duration,
+       (result).max_appearance_rate_used
+FROM (
+    SELECT kmersearch_analyze_table('sequences'::regclass::oid, 'dna_seq', 8) as result
+) t;
+```
+
+#### kmersearch_drop_analysis()
+解析データを削除してストレージを解放：
+
+```sql
+-- 特定のテーブル/カラム/k-サイズ組み合わせの解析を削除
+SELECT kmersearch_drop_analysis(
+    'sequences'::regclass::oid,
+    'dna_seq',
+    8
+);
+
+-- 結果の解釈例
+SELECT (result).dropped_analyses,
+       (result).dropped_highfreq_kmers,
+       (result).freed_storage_bytes
+FROM (
+    SELECT kmersearch_drop_analysis('sequences'::regclass::oid, 'dna_seq', 8) as result
+) t;
+```
+
+### 高頻出k-merキャッシュ管理
+
+#### グローバルキャッシュ関数
+
+```sql
+-- 高頻出k-merをグローバルキャッシュに読み込み
+SELECT kmersearch_highfreq_kmers_cache_load(
+    'sequences'::regclass::oid,
+    'dna_seq',
+    8
+);
+
+-- グローバルキャッシュを解放
+SELECT kmersearch_highfreq_kmers_cache_free();
+```
+
+#### 並列キャッシュ関数
+
+```sql
+-- 高頻出k-merを並列キャッシュに読み込み（マルチプロセス共有用）
+SELECT kmersearch_parallel_highfreq_kmers_cache_load(
+    'sequences'::regclass::oid,
+    'dna_seq', 
+    8
+);
+
+-- 並列キャッシュを解放
+SELECT kmersearch_parallel_highfreq_kmers_cache_free();
+```
+
+### キャッシュ統計・管理
+
+#### Rawscoreキャッシュ
+
+```sql
+-- rawscoreキャッシュ統計を表示
+SELECT * FROM kmersearch_rawscore_cache_stats();
+
+-- キャッシュパフォーマンスを監視
+SELECT dna2_hits, dna2_misses, 
+       CASE WHEN (dna2_hits + dna2_misses) > 0 
+            THEN dna2_hits::float / (dna2_hits + dna2_misses)::float * 100
+            ELSE 0 END as dna2_hit_rate_percent,
+       dna4_hits, dna4_misses,
+       CASE WHEN (dna4_hits + dna4_misses) > 0 
+            THEN dna4_hits::float / (dna4_hits + dna4_misses)::float * 100
+            ELSE 0 END as dna4_hit_rate_percent
+FROM kmersearch_rawscore_cache_stats();
+
+-- rawscoreキャッシュをクリア
+SELECT kmersearch_rawscore_cache_free();
+```
+
+#### クエリパターンキャッシュ
+
+```sql
+-- クエリパターンキャッシュ統計を表示
+SELECT * FROM kmersearch_query_pattern_cache_stats();
+
+-- キャッシュ効率を監視
+SELECT hits, misses, current_entries, max_entries,
+       CASE WHEN (hits + misses) > 0 
+            THEN hits::float / (hits + misses)::float * 100
+            ELSE 0 END as hit_rate_percent
+FROM kmersearch_query_pattern_cache_stats();
+
+-- クエリパターンキャッシュをクリア
+SELECT kmersearch_query_pattern_cache_free();
+```
+
+#### Actual Min Scoreキャッシュ
+
+```sql
+-- actual min scoreキャッシュ統計を表示
+SELECT * FROM kmersearch_actual_min_score_cache_stats();
+
+-- actual min scoreキャッシュをクリア
+SELECT kmersearch_actual_min_score_cache_free();
+```
+
+### レガシー解析関数
+
+#### kmersearch_analyze_table_frequency()
+GINインデックス作成用の内部関数（自動的に呼び出される）：
+
+```sql
+-- この関数は通常インデックス作成時に内部的に呼び出される
+-- 手動使用: 特定インデックス用の頻度解析
+SELECT kmersearch_analyze_table_frequency(
+    'sequences'::regclass::oid,    -- テーブルOID
+    'dna_seq',                     -- カラム名
+    8,                             -- k-merサイズ
+    'sequences_kmer_idx'::regclass::oid  -- インデックスOID
+);
+```
+
+#### kmersearch_get_highfreq_kmer()
+特定インデックスの高頻出k-merを取得：
+
+```sql
+-- インデックスの高頻出k-mer配列を取得
+SELECT kmersearch_get_highfreq_kmer('sequences_kmer_idx'::regclass::oid);
+
+-- 高頻出k-merの数をカウント
+SELECT array_length(
+    kmersearch_get_highfreq_kmer('sequences_kmer_idx'::regclass::oid), 
+    1
+) as highfreq_count;
+
+-- 個別k-merを処理
+SELECT unnest(kmersearch_get_highfreq_kmer('sequences_kmer_idx'::regclass::oid)) as kmer;
+```
+
+## 完全なワークフロー例
+
+### k-mer解析とインデックス構築のセットアップ
+
+```sql
+-- 1. パラメータを設定
+SET kmersearch.kmer_size = 8;
+SET kmersearch.max_appearance_rate = 0.05;
+SET kmersearch.max_appearance_nrow = 1000;
+SET kmersearch.occur_bitlen = 8;
+
+-- 2. 頻度解析を実行
+SELECT kmersearch_analyze_table(
+    'sequences'::regclass::oid,
+    'dna_seq',
+    8,
+    4  -- 並列ワーカー数
+);
+
+-- 3. 解析結果を確認
+SELECT * FROM kmersearch_analysis_status WHERE table_name = 'sequences';
+
+-- 4. GINインデックスを作成（解析結果を自動使用）
+CREATE INDEX sequences_kmer_idx ON sequences USING gin(dna_seq);
+
+-- 5. 最適なパフォーマンスのためキャッシュを読み込み
+SELECT kmersearch_highfreq_kmers_cache_load('sequences'::regclass::oid, 'dna_seq', 8);
+SELECT kmersearch_parallel_highfreq_kmers_cache_load('sequences'::regclass::oid, 'dna_seq', 8);
+
+-- 6. 検索を実行
+SELECT id, name, kmersearch_rawscore(dna_seq, 'ATCGATCG') as score
+FROM sequences 
+WHERE dna_seq =% 'ATCGATCG'
+ORDER BY score DESC;
+```
+
+### キャッシュパフォーマンス監視
+
+```sql
+-- 全キャッシュタイプを監視
+SELECT cache_type, hit_rate, total_entries, 
+       total_hits + total_misses as total_requests
+FROM kmersearch_cache_summary;
+
+-- rawscoreキャッシュの詳細解析
+WITH cache_stats AS (
+    SELECT dna2_hits, dna2_misses, dna2_entries,
+           dna4_hits, dna4_misses, dna4_entries
+    FROM kmersearch_rawscore_cache_stats()
+)
+SELECT 
+    'DNA2' as type,
+    dna2_entries as entries,
+    dna2_hits as hits,
+    dna2_misses as misses,
+    CASE WHEN (dna2_hits + dna2_misses) > 0 
+         THEN dna2_hits::float / (dna2_hits + dna2_misses)::float 
+         ELSE 0 END as hit_rate
+FROM cache_stats
+UNION ALL
+SELECT 
+    'DNA4' as type,
+    dna4_entries as entries, 
+    dna4_hits as hits,
+    dna4_misses as misses,
+    CASE WHEN (dna4_hits + dna4_misses) > 0 
+         THEN dna4_hits::float / (dna4_hits + dna4_misses)::float 
+         ELSE 0 END as hit_rate
+FROM cache_stats;
+```
+
+## 複合型定義
+
+pg_kmersearchは、関数の戻り値用にカスタム複合型を定義します：
+
+### kmersearch_analysis_result
+`kmersearch_analyze_table()`によって返される：
+
+```sql
+-- 型定義相当:
+-- CREATE TYPE kmersearch_analysis_result AS (
+--     total_rows bigint,
+--     highfreq_kmers_count integer,
+--     parallel_workers_used integer,
+--     analysis_duration real,
+--     max_appearance_rate_used real,
+--     max_appearance_nrow_used integer
+-- );
+
+-- 使用例:
+SELECT (result).total_rows,
+       (result).highfreq_kmers_count,
+       ROUND((result).analysis_duration, 2) as duration_seconds
+FROM (
+    SELECT kmersearch_analyze_table('sequences'::regclass::oid, 'dna_seq', 8) as result
+) t;
+```
+
+### kmersearch_drop_result
+`kmersearch_drop_analysis()`によって返される：
+
+```sql
+-- 型定義相当:
+-- CREATE TYPE kmersearch_drop_result AS (
+--     dropped_analyses integer,
+--     dropped_highfreq_kmers integer,
+--     freed_storage_bytes bigint
+-- );
+
+-- 使用例:
+SELECT (result).dropped_analyses,
+       (result).dropped_highfreq_kmers,
+       pg_size_pretty((result).freed_storage_bytes) as freed_storage
+FROM (
+    SELECT kmersearch_drop_analysis('sequences'::regclass::oid, 'dna_seq', 8) as result
+) t;
+```
+
 ## 技術的詳細
 
 ### アーキテクチャ
