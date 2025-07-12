@@ -279,13 +279,24 @@ typedef struct HighfreqKmerHashEntry
 } HighfreqKmerHashEntry;
 
 /*
+ * High-frequency k-mer cache key structure (24 bytes total)
+ */
+typedef struct HighfreqCacheKey
+{
+    Oid         table_oid;               /* Table OID (4 bytes) */
+    uint32      column_name_hash;        /* Column name hash (4 bytes) */
+    int         kmer_size;               /* K-mer size (4 bytes) */
+    int         occur_bitlen;            /* Occurrence bit length (4 bytes) */
+    float       max_appearance_rate;     /* Max appearance rate (4 bytes) */
+    int         max_appearance_nrow;     /* Max appearance nrow (4 bytes) */
+} HighfreqCacheKey;
+
+/*
  * High-frequency k-mer cache
  */
 typedef struct HighfreqKmerCache
 {
-    Oid         current_table_oid;        /* Current table OID */
-    char       *current_column_name;      /* Current column name */
-    int         current_kmer_size;        /* Current k-mer size */
+    HighfreqCacheKey current_cache_key;   /* Current cache key */
     MemoryContext cache_context;          /* Memory context for cache data */
     HTAB       *highfreq_hash;           /* Hash table for fast lookup */
     VarBit    **highfreq_kmers;          /* Array of high-frequency k-mers */
@@ -300,8 +311,7 @@ typedef struct ParallelHighfreqKmerCacheEntry
 {
     uint64      kmer_hash;               /* k-mer hash value (key) */
     int32       frequency_count;         /* frequency count */
-    Oid         table_oid;               /* table OID */
-    int32       kmer_size;               /* k-mer size */
+    HighfreqCacheKey cache_key;          /* cache key for validation */
 } ParallelHighfreqKmerCacheEntry;
 
 /*
@@ -314,8 +324,7 @@ typedef struct ParallelHighfreqKmerCache
     Size                segment_size;    /* DSM segment size */
     bool                is_initialized;  /* initialization flag */
     dsm_handle          dsm_handle;      /* DSM segment handle */
-    Oid                 table_oid;       /* table OID */
-    int32               kmer_size;       /* k-mer size */
+    HighfreqCacheKey    cache_key;       /* cache key for validation */
 } ParallelHighfreqKmerCache;
 
 /*

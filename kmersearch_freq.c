@@ -113,13 +113,28 @@ kmersearch_analyze_table_frequency(PG_FUNCTION_ARGS)
 Datum
 kmersearch_analyze_table(PG_FUNCTION_ARGS)
 {
-    Oid table_oid = PG_GETARG_OID(0);
+    text *table_name_text = PG_GETARG_TEXT_P(0);
     text *column_name_text = PG_GETARG_TEXT_P(1);
-    int k_size = PG_GETARG_INT32(2);
-    int parallel_workers = PG_GETARG_INT32(3);
     
+    char *table_name = text_to_cstring(table_name_text);
     char *column_name = text_to_cstring(column_name_text);
     KmerAnalysisResult result = {0};  /* Initialize all fields to zero */
+    Oid table_oid;
+    int k_size;
+    int parallel_workers;
+    
+    /* Get table OID from table name */
+    table_oid = RelnameGetRelid(table_name);
+    if (!OidIsValid(table_oid))
+    {
+        ereport(ERROR,
+                (errcode(ERRCODE_UNDEFINED_TABLE),
+                 errmsg("relation \"%s\" does not exist", table_name)));
+    }
+    
+    /* Get configuration from GUC variables */
+    k_size = kmersearch_kmer_size;
+    parallel_workers = max_parallel_maintenance_workers;
     
     /* Comprehensive parameter validation */
     kmersearch_validate_analysis_parameters(table_oid, column_name, k_size);
@@ -179,17 +194,26 @@ kmersearch_analyze_table(PG_FUNCTION_ARGS)
 Datum
 kmersearch_drop_analysis(PG_FUNCTION_ARGS)
 {
-    Oid table_oid = PG_GETARG_OID(0);
+    text *table_name_text = PG_GETARG_TEXT_P(0);
     text *column_name_text = PG_GETARG_TEXT_P(1);
-    int k_size = PG_GETARG_INT32(2);  /* 0 means all k-sizes */
     
+    char *table_name = text_to_cstring(table_name_text);
     char *column_name = text_to_cstring(column_name_text);
     DropAnalysisResult result;
+    Oid table_oid;
+    int k_size;
     
-    /* Validate table OID */
-    if (!OidIsValid(table_oid)) {
-        ereport(ERROR, (errmsg("invalid table OID")));
+    /* Get table OID from table name */
+    table_oid = RelnameGetRelid(table_name);
+    if (!OidIsValid(table_oid))
+    {
+        ereport(ERROR,
+                (errcode(ERRCODE_UNDEFINED_TABLE),
+                 errmsg("relation \"%s\" does not exist", table_name)));
     }
+    
+    /* Get k_size from GUC variable */
+    k_size = kmersearch_kmer_size;
     
     /* Perform drop operation */
     result = kmersearch_drop_analysis_internal(table_oid, column_name, k_size);
@@ -453,22 +477,21 @@ kmersearch_drop_analysis_internal(Oid table_oid, const char *column_name, int k_
     /* Build query to delete analysis data */
     initStringInfo(&query);
     if (k_size > 0) {
-        /* Delete from highfreq_kmer table using index_oid from gin_index_meta */
+        /* Delete from highfreq_kmer table using table_oid and column_name */
         appendStringInfo(&query,
             "DELETE FROM kmersearch_highfreq_kmer "
-            "WHERE index_oid IN ("
-            "  SELECT index_oid FROM kmersearch_gin_index_meta "
-            "  WHERE table_oid = %u AND column_name = %s AND k_value = %d"
+            "WHERE table_oid = %u AND column_name = %s "
+            "AND EXISTS ("
+            "  SELECT 1 FROM kmersearch_highfreq_kmer_meta "
+            "  WHERE table_oid = %u AND column_name = %s AND kmer_size = %d"
             ")",
+            table_oid, quote_literal_cstr(column_name), 
             table_oid, quote_literal_cstr(column_name), k_size);
     } else {
         /* Delete all k-mer sizes */
         appendStringInfo(&query,
             "DELETE FROM kmersearch_highfreq_kmer "
-            "WHERE index_oid IN ("
-            "  SELECT index_oid FROM kmersearch_gin_index_meta "
-            "  WHERE table_oid = %u AND column_name = %s"
-            ")",
+            "WHERE table_oid = %u AND column_name = %s",
             table_oid, quote_literal_cstr(column_name));
     }
     
@@ -484,7 +507,7 @@ kmersearch_drop_analysis_internal(Oid table_oid, const char *column_name, int k_
     if (k_size > 0) {
         appendStringInfo(&query,
             "DELETE FROM kmersearch_highfreq_kmer_meta "
-            "WHERE table_oid = %u AND column_name = %s AND k_value = %d",
+            "WHERE table_oid = %u AND column_name = %s AND kmer_size = %d",
             table_oid, quote_literal_cstr(column_name), k_size);
     } else {
         appendStringInfo(&query,
@@ -504,7 +527,7 @@ kmersearch_drop_analysis_internal(Oid table_oid, const char *column_name, int k_
     if (k_size > 0) {
         appendStringInfo(&query,
             "DELETE FROM kmersearch_gin_index_meta "
-            "WHERE table_oid = %u AND column_name = %s AND k_value = %d",
+            "WHERE table_oid = %u AND column_name = %s AND kmer_size = %d",
             table_oid, quote_literal_cstr(column_name), k_size);
     } else {
         appendStringInfo(&query,
@@ -709,12 +732,12 @@ kmersearch_analyze_table_parallel(Oid table_oid, const char *column_name, int k_
                 appendStringInfo(&query,
                     "INSERT INTO kmersearch_gin_index_meta "
                     "(index_oid, table_oid, column_name, highfreq_filtered, highfreq_source_table, "
-                    "k_value, occur_bitlen, max_appearance_rate, max_appearance_nrow) "
+                    "kmer_size, occur_bitlen, max_appearance_rate, max_appearance_nrow) "
                     "VALUES (%u, %u, %s, true, %s, %d, %d, %f, %d) "
                     "ON CONFLICT (index_oid) DO UPDATE SET "
                     "highfreq_filtered = EXCLUDED.highfreq_filtered, "
                     "highfreq_source_table = EXCLUDED.highfreq_source_table, "
-                    "k_value = EXCLUDED.k_value, "
+                    "kmer_size = EXCLUDED.kmer_size, "
                     "occur_bitlen = EXCLUDED.occur_bitlen, "
                     "max_appearance_rate = EXCLUDED.max_appearance_rate, "
                     "max_appearance_nrow = EXCLUDED.max_appearance_nrow, "
@@ -729,10 +752,10 @@ kmersearch_analyze_table_parallel(Oid table_oid, const char *column_name, int k_
                 /* Insert high-frequency k-mers */
                 initStringInfo(&query);
                 appendStringInfo(&query,
-                    "INSERT INTO kmersearch_highfreq_kmer (index_oid, ngram_key, detection_reason) "
-                    "SELECT %u, kmer_key, 'frequency analysis' FROM %s "
-                    "ON CONFLICT (index_oid, ngram_key) DO NOTHING",
-                    index_oid, final_table_name);
+                    "INSERT INTO kmersearch_highfreq_kmer (table_oid, column_name, ngram_key, detection_reason) "
+                    "SELECT %u, '%s', kmer_key, 'frequency analysis' FROM %s "
+                    "ON CONFLICT (table_oid, column_name, ngram_key) DO NOTHING",
+                    table_oid, column_name, final_table_name);
                 
                 SPI_exec(query.data, 0);
                 pfree(query.data);
@@ -745,9 +768,9 @@ kmersearch_analyze_table_parallel(Oid table_oid, const char *column_name, int k_
             initStringInfo(&query);
             appendStringInfo(&query,
                 "INSERT INTO kmersearch_highfreq_kmer_meta "
-                "(table_oid, column_name, k_value, occur_bitlen, max_appearance_rate, max_appearance_nrow) "
+                "(table_oid, column_name, kmer_size, occur_bitlen, max_appearance_rate, max_appearance_nrow) "
                 "VALUES (%u, %s, %d, %d, %f, %d) "
-                "ON CONFLICT (table_oid, column_name, k_value) DO UPDATE SET "
+                "ON CONFLICT (table_oid, column_name, kmer_size) DO UPDATE SET "
                 "occur_bitlen = EXCLUDED.occur_bitlen, "
                 "max_appearance_rate = EXCLUDED.max_appearance_rate, "
                 "max_appearance_nrow = EXCLUDED.max_appearance_nrow, "
@@ -1095,7 +1118,7 @@ kmersearch_check_analysis_exists(Oid table_oid, const char *column_name, int k_s
     initStringInfo(&query);
     appendStringInfo(&query,
         "SELECT COUNT(*) FROM kmersearch_index_info "
-        "WHERE table_oid = %u AND column_name = '%s' AND k_value = %d",
+        "WHERE table_oid = %u AND column_name = '%s' AND kmer_size = %d",
         table_oid, column_name, k_size);
     
     /* Execute query */

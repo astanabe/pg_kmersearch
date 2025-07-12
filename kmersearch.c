@@ -64,7 +64,7 @@ static void kmersearch_collect_ngram_key2_for_highfreq_kmer(Oid table_oid, const
 static void kmersearch_worker_collect_ngram_key2(KmerWorkerState *worker, Relation rel, const char *column_name, int k_size, const char *highfreq_table_name);
 static void kmersearch_create_worker_ngram_table(const char *table_name);
 static void kmersearch_merge_ngram_worker_results(KmerWorkerState *workers, int num_workers, const char *final_table_name);
-static void kmersearch_persist_collected_ngram_key2(Oid table_oid, const char *final_table_name);
+static void kmersearch_persist_collected_ngram_key2(Oid table_oid, const char *column_name, const char *final_table_name);
 static bool kmersearch_is_kmer_high_frequency(VarBit *ngram_key, int k_size, const char *highfreq_table_name);
 static void kmersearch_persist_highfreq_kmers_metadata(Oid table_oid, const char *column_name, int k_size);
 /* B-2: Other functions */
@@ -1677,7 +1677,7 @@ kmersearch_get_index_info(Oid index_oid, Oid *table_oid, char **column_name, int
     /* Build query to get index information */
     initStringInfo(&query);
     appendStringInfo(&query,
-        "SELECT table_oid, column_name, k_value FROM kmersearch_index_info "
+        "SELECT table_oid, column_name, kmer_size FROM kmersearch_index_info "
         "WHERE index_oid = %u",
         index_oid);
     
@@ -2120,13 +2120,13 @@ kmersearch_persist_highfreq_kmers_from_temp(Oid table_oid, const char *column_na
     /* Insert highly frequent k-mers into permanent table */
     /* Note: Combining kmer_data and frequency_count into ngram_key */
     appendStringInfo(&query,
-        "INSERT INTO kmersearch_highfreq_kmer (index_oid, ngram_key, detection_reason) "
-        "SELECT %u, "
+        "INSERT INTO kmersearch_highfreq_kmer (table_oid, column_name, ngram_key, detection_reason) "
+        "SELECT %u, '%s', "
         "  substring(kmer_data::varbit, 1, length(kmer_data::varbit)) || "
         "  substring(frequency_count::bit(%d), 1, %d) AS ngram_key, "
         "  'high_frequency' "
         "FROM %s",
-        table_oid, kmersearch_occur_bitlen, kmersearch_occur_bitlen, temp_table_name);
+        table_oid, column_name, kmersearch_occur_bitlen, kmersearch_occur_bitlen, temp_table_name);
     
     SPI_connect();
     SPI_exec(query.data, 0);
@@ -2136,9 +2136,9 @@ kmersearch_persist_highfreq_kmers_from_temp(Oid table_oid, const char *column_na
     initStringInfo(&query);
     appendStringInfo(&query,
         "INSERT INTO kmersearch_highfreq_kmer_meta "
-        "(table_oid, column_name, k_value, occur_bitlen, max_appearance_rate, max_appearance_nrow) "
+        "(table_oid, column_name, kmer_size, occur_bitlen, max_appearance_rate, max_appearance_nrow) "
         "VALUES (%u, '%s', %d, %d, %f, %d) "
-        "ON CONFLICT (table_oid, column_name, k_value) DO UPDATE SET "
+        "ON CONFLICT (table_oid, column_name, kmer_size) DO UPDATE SET "
         "occur_bitlen = EXCLUDED.occur_bitlen, "
         "max_appearance_rate = EXCLUDED.max_appearance_rate, "
         "max_appearance_nrow = EXCLUDED.max_appearance_nrow, "
@@ -2210,7 +2210,7 @@ kmersearch_collect_ngram_key2_for_highfreq_kmer(Oid table_oid, const char *colum
     kmersearch_merge_ngram_worker_results(workers, num_workers, final_ngram_table.data);
     
     /* Insert collected n-gram keys into permanent table */
-    kmersearch_persist_collected_ngram_key2(table_oid, final_ngram_table.data);
+    kmersearch_persist_collected_ngram_key2(table_oid, column_name, final_ngram_table.data);
     
     /* Clean up worker temp tables */
     for (i = 0; i < num_workers; i++) {
@@ -2350,7 +2350,7 @@ kmersearch_merge_ngram_worker_results(KmerWorkerState *workers, int num_workers,
  * Persist collected n-gram keys to permanent table
  */
 static void
-kmersearch_persist_collected_ngram_key2(Oid table_oid, const char *final_table_name)
+kmersearch_persist_collected_ngram_key2(Oid table_oid, const char *column_name, const char *final_table_name)
 {
     StringInfoData query;
     
@@ -2358,12 +2358,10 @@ kmersearch_persist_collected_ngram_key2(Oid table_oid, const char *final_table_n
     
     /* Get index OID for the table */
     appendStringInfo(&query,
-        "INSERT INTO kmersearch_highfreq_kmer (index_oid, ngram_key, detection_reason) "
-        "SELECT idx.indexrelid, ng.ngram_key, 'high_frequency' "
-        "FROM %s ng "
-        "CROSS JOIN pg_stat_user_indexes idx "
-        "WHERE idx.relid = %u AND idx.schemaname = 'public'",
-        final_table_name, table_oid);
+        "INSERT INTO kmersearch_highfreq_kmer (table_oid, column_name, ngram_key, detection_reason) "
+        "SELECT %u, '%s', ng.ngram_key, 'high_frequency' "
+        "FROM %s ng",
+        table_oid, column_name, final_table_name);
     
     SPI_connect();
     SPI_exec(query.data, 0);
@@ -2429,9 +2427,9 @@ kmersearch_persist_highfreq_kmers_metadata(Oid table_oid, const char *column_nam
     initStringInfo(&query);
     appendStringInfo(&query,
         "INSERT INTO kmersearch_highfreq_kmer_meta "
-        "(table_oid, column_name, k_value, occur_bitlen, max_appearance_rate, max_appearance_nrow) "
+        "(table_oid, column_name, kmer_size, occur_bitlen, max_appearance_rate, max_appearance_nrow) "
         "VALUES (%u, '%s', %d, %d, %f, %d) "
-        "ON CONFLICT (table_oid, column_name, k_value) DO UPDATE SET "
+        "ON CONFLICT (table_oid, column_name, kmer_size) DO UPDATE SET "
         "occur_bitlen = EXCLUDED.occur_bitlen, "
         "max_appearance_rate = EXCLUDED.max_appearance_rate, "
         "max_appearance_nrow = EXCLUDED.max_appearance_nrow, "
@@ -2512,8 +2510,8 @@ kmersearch_parallel_highfreq_kmer_cache_is_valid(Oid table_oid, const char *colu
         return false;
     
     /* Check if cache matches the requested parameters */
-    if (parallel_highfreq_cache->table_oid != table_oid || 
-        parallel_highfreq_cache->kmer_size != k_value)
+    if (parallel_highfreq_cache->cache_key.table_oid != table_oid || 
+        parallel_highfreq_cache->cache_key.kmer_size != k_value)
         return false;
     
     return true;

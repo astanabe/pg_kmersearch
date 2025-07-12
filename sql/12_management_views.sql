@@ -37,10 +37,8 @@ SELECT
     max_appearance_rate_used,
     max_appearance_nrow_used
 FROM kmersearch_analyze_table(
-    (SELECT oid FROM pg_class WHERE relname = 'test_analysis_dna2'), 
-    'sequence', 
-    8, 
-    0  -- no parallel workers
+    'test_analysis_dna2', 
+    'sequence'
 );
 
 -- Check if the analysis is reflected in the view
@@ -48,7 +46,7 @@ SELECT 'Checking analysis status after analyze...' as test_phase;
 SELECT 
     table_name,
     column_name,
-    k_value,
+    kmer_size,
     occur_bitlen,
     max_appearance_rate,
     max_appearance_nrow,
@@ -63,9 +61,8 @@ SELECT
     dropped_highfreq_kmers,
     freed_storage_bytes >= 0 as storage_freed
 FROM kmersearch_drop_analysis(
-    (SELECT oid FROM pg_class WHERE relname = 'test_analysis_dna2'), 
-    'sequence', 
-    8
+    'test_analysis_dna2', 
+    'sequence'
 );
 
 -- Verify analysis was dropped
@@ -81,9 +78,8 @@ SELECT
     dropped_highfreq_kmers,
     freed_storage_bytes
 FROM kmersearch_drop_analysis(
-    (SELECT oid FROM pg_class WHERE relname = 'test_analysis_dna2'), 
-    'sequence', 
-    8
+    'test_analysis_dna2', 
+    'sequence'
 );
 
 -- Test the cache summary view again after operations

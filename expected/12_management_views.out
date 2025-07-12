@@ -57,18 +57,16 @@ SELECT
     max_appearance_rate_used,
     max_appearance_nrow_used
 FROM kmersearch_analyze_table(
-    (SELECT oid FROM pg_class WHERE relname = 'test_analysis_dna2'), 
-    'sequence', 
-    8, 
-    0  -- no parallel workers
+    'test_analysis_dna2', 
+    'sequence'
 );
 NOTICE:  Performing k-mer frequency analysis for k=8
 NOTICE:  Max appearance rate: 0.050000, Max appearance nrow: 0
-NOTICE:  Phase 1: Analyzing k-mer frequencies with 1 parallel workers...
+NOTICE:  Phase 1: Analyzing k-mer frequencies with 2 parallel workers...
 NOTICE:  Phase 2: Collecting n-gram keys for high-frequency k-mers...
  total_rows | highfreq_kmers_count | parallel_workers_used | duration_valid | max_appearance_rate_used | max_appearance_nrow_used 
 ------------+----------------------+-----------------------+----------------+--------------------------+--------------------------
-          3 |                    0 |                     1 | t              |                     0.05 |                        0
+          3 |                    0 |                     2 | t              |                     0.05 |                        0
 (1 row)
 
 -- Check if the analysis is reflected in the view
@@ -81,16 +79,16 @@ SELECT 'Checking analysis status after analyze...' as test_phase;
 SELECT 
     table_name,
     column_name,
-    k_value,
+    kmer_size,
     occur_bitlen,
     max_appearance_rate,
     max_appearance_nrow,
     highfreq_kmer_count >= 0 as has_kmers
 FROM kmersearch_analysis_status
 WHERE table_name = 'test_analysis_dna2';
-     table_name     | column_name | k_value | occur_bitlen | max_appearance_rate | max_appearance_nrow | has_kmers 
---------------------+-------------+---------+--------------+---------------------+---------------------+-----------
- test_analysis_dna2 | sequence    |       8 |            8 |                0.05 |                   0 | t
+     table_name     | column_name | kmer_size | occur_bitlen | max_appearance_rate | max_appearance_nrow | has_kmers 
+--------------------+-------------+-----------+--------------+---------------------+---------------------+-----------
+ test_analysis_dna2 | sequence    |         8 |            8 |                0.05 |                   0 | t
 (1 row)
 
 -- Test kmersearch_drop_analysis with complex return type
@@ -105,9 +103,8 @@ SELECT
     dropped_highfreq_kmers,
     freed_storage_bytes >= 0 as storage_freed
 FROM kmersearch_drop_analysis(
-    (SELECT oid FROM pg_class WHERE relname = 'test_analysis_dna2'), 
-    'sequence', 
-    8
+    'test_analysis_dna2', 
+    'sequence'
 );
  dropped_analyses | dropped_highfreq_kmers | storage_freed 
 ------------------+------------------------+---------------
@@ -141,9 +138,8 @@ SELECT
     dropped_highfreq_kmers,
     freed_storage_bytes
 FROM kmersearch_drop_analysis(
-    (SELECT oid FROM pg_class WHERE relname = 'test_analysis_dna2'), 
-    'sequence', 
-    8
+    'test_analysis_dna2', 
+    'sequence'
 );
  dropped_analyses | dropped_highfreq_kmers | freed_storage_bytes 
 ------------------+------------------------+---------------------

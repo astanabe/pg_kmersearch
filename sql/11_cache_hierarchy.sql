@@ -33,10 +33,11 @@ SELECT test_seq =% 'ATCGATCG' as no_metadata_query FROM test_cache_hierarchy LIM
 SELECT 'Phase 2: Testing GUC validation...' as test_phase;
 
 -- Insert metadata with specific GUC values
-INSERT INTO kmersearch_highfreq_kmer_meta (table_oid, column_name, k_value, occur_bitlen, max_appearance_rate, max_appearance_nrow)
+INSERT INTO kmersearch_highfreq_kmer_meta (table_oid, column_name, kmer_size, occur_bitlen, max_appearance_rate, max_appearance_nrow)
 VALUES ((SELECT oid FROM pg_class WHERE relname = 'test_cache_hierarchy'), 'test_seq', 6, 8, 0.4, 3);
 
 -- Test 2.1: Matching GUC settings (should work)
+SET kmersearch.kmer_size = 6;
 SET kmersearch.occur_bitlen = 8;
 SET kmersearch.max_appearance_rate = 0.4;
 SET kmersearch.max_appearance_nrow = 3;
@@ -45,36 +46,42 @@ SELECT test_seq =% 'ATCGATCG' as matching_guc_query FROM test_cache_hierarchy LI
 -- Test 2.2: Mismatched GUC - occur_bitlen (should fail during cache load)
 SET kmersearch.occur_bitlen = 16;
 SELECT kmersearch_highfreq_kmer_cache_load(
-  (SELECT oid FROM pg_class WHERE relname = 'test_cache_hierarchy'),
-  'test_seq', 6
+  'test_cache_hierarchy',
+  'test_seq'
 ) as mismatched_occur_bitlen;
 
 -- Test 2.3: Mismatched GUC - max_appearance_rate (should fail during cache load)
+SET kmersearch.kmer_size = 6;  -- Reset
 SET kmersearch.occur_bitlen = 8;  -- Reset
 SET kmersearch.max_appearance_rate = 0.8;
 SELECT kmersearch_highfreq_kmer_cache_load(
-  (SELECT oid FROM pg_class WHERE relname = 'test_cache_hierarchy'),
-  'test_seq', 6
+  'test_cache_hierarchy',
+  'test_seq'
 ) as mismatched_rate;
 
 -- Test 2.4: Mismatched GUC - max_appearance_nrow (should fail during cache load)
+SET kmersearch.kmer_size = 6;  -- Reset
 SET kmersearch.max_appearance_rate = 0.4;  -- Reset
 SET kmersearch.max_appearance_nrow = 10;
 SELECT kmersearch_highfreq_kmer_cache_load(
-  (SELECT oid FROM pg_class WHERE relname = 'test_cache_hierarchy'),
-  'test_seq', 6
+  'test_cache_hierarchy',
+  'test_seq'
 ) as mismatched_nrow;
 
 -- Reset to correct values for subsequent tests
+SET kmersearch.kmer_size = 6;
 SET kmersearch.max_appearance_nrow = 3;
+SET kmersearch.occur_bitlen = 8;
+SET kmersearch.max_appearance_rate = 0.4;
 
 -- Test Phase 3: Cache hierarchy testing
 SELECT 'Phase 3: Testing cache hierarchy...' as test_phase;
 
 -- Insert test high-frequency k-mer data
-INSERT INTO kmersearch_highfreq_kmer (index_oid, ngram_key, detection_reason)
+INSERT INTO kmersearch_highfreq_kmer (table_oid, column_name, ngram_key, detection_reason)
 VALUES (
-  (SELECT indexrelid FROM pg_stat_user_indexes WHERE relname = 'test_cache_hierarchy' AND indexrelname = 'test_cache_hierarchy_gin_idx'),
+  (SELECT oid FROM pg_class WHERE relname = 'test_cache_hierarchy'),
+  'test_seq',
   '01010101'::bit(16),  -- Sample n-gram key
   'cache_hierarchy_test'
 );
@@ -82,8 +89,8 @@ VALUES (
 -- Test 3.1: Global cache loading and usage
 SELECT 'Testing global cache...' as test_substep;
 SELECT kmersearch_highfreq_kmer_cache_load(
-  (SELECT oid FROM pg_class WHERE relname = 'test_cache_hierarchy'),
-  'test_seq', 6
+  'test_cache_hierarchy',
+  'test_seq'
 ) as global_cache_load_result;
 
 -- Query with global cache loaded
@@ -92,22 +99,22 @@ SELECT test_seq =% 'ATCGATCG' as global_cache_query FROM test_cache_hierarchy LI
 -- Test 3.2: Parallel cache loading and usage
 SELECT 'Testing parallel cache...' as test_substep;
 SELECT kmersearch_parallel_highfreq_kmer_cache_load(
-  (SELECT oid FROM pg_class WHERE relname = 'test_cache_hierarchy'),
-  'test_seq', 6
+  'test_cache_hierarchy',
+  'test_seq'
 ) as parallel_cache_load_result;
 
 -- Test 3.3: Cache hierarchy fallback sequence
 SELECT 'Testing cache hierarchy fallback...' as test_substep;
 
 -- Clear global cache first
-SELECT kmersearch_highfreq_kmers_cache_free() as global_cache_cleared;
+SELECT kmersearch_highfreq_kmer_cache_free_all() as global_cache_cleared;
 
 -- Test with parallel cache only (should work)
 SET kmersearch.force_use_parallel_highfreq_kmer_cache = true;
 SELECT test_seq =% 'ATCGATCG' as parallel_only_query FROM test_cache_hierarchy LIMIT 1;
 
 -- Clear parallel cache too
-SELECT kmersearch_parallel_highfreq_kmer_cache_free() as parallel_cache_cleared;
+SELECT kmersearch_parallel_highfreq_kmer_cache_free_all() as parallel_cache_cleared;
 
 -- Test with no cache (should fall back to table lookup)
 SET kmersearch.force_use_parallel_highfreq_kmer_cache = false;

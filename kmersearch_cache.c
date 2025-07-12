@@ -19,8 +19,10 @@ PG_FUNCTION_INFO_V1(kmersearch_actual_min_score_cache_stats);
 PG_FUNCTION_INFO_V1(kmersearch_actual_min_score_cache_free);
 PG_FUNCTION_INFO_V1(kmersearch_highfreq_kmer_cache_load);
 PG_FUNCTION_INFO_V1(kmersearch_highfreq_kmer_cache_free);
+PG_FUNCTION_INFO_V1(kmersearch_highfreq_kmer_cache_free_all);
 PG_FUNCTION_INFO_V1(kmersearch_parallel_highfreq_kmer_cache_load);
 PG_FUNCTION_INFO_V1(kmersearch_parallel_highfreq_kmer_cache_free);
+PG_FUNCTION_INFO_V1(kmersearch_parallel_highfreq_kmer_cache_free_all);
 
 /* Global high-frequency k-mer cache */
 HighfreqKmerCache global_highfreq_cache = {0};
@@ -1231,9 +1233,8 @@ kmersearch_highfreq_kmer_cache_init(void)
     /* Initialize cache structure */
     memset(&global_highfreq_cache, 0, sizeof(HighfreqKmerCache));
     global_highfreq_cache.is_valid = false;
-    global_highfreq_cache.current_table_oid = InvalidOid;
-    global_highfreq_cache.current_column_name = NULL;
-    global_highfreq_cache.current_kmer_size = 0;
+    memset(&global_highfreq_cache.current_cache_key, 0, sizeof(HighfreqCacheKey));
+    global_highfreq_cache.current_cache_key.table_oid = InvalidOid;
     
     /* Create dedicated memory context for high-frequency k-mer cache */
     global_highfreq_cache.cache_context = AllocSetContextCreate(TopMemoryContext,
@@ -1306,12 +1307,13 @@ kmersearch_highfreq_kmer_cache_load_internal(Oid table_oid, const char *column_n
     
     ereport(DEBUG1, (errmsg("kmersearch_highfreq_kmer_cache_load_internal: Switched to cache context successfully")));
     
-    /* Store in cache */
-    global_highfreq_cache.current_table_oid = table_oid;
-    
-    global_highfreq_cache.current_column_name = pstrdup(column_name);  /* Cache context copy */
-    
-    global_highfreq_cache.current_kmer_size = k_value;
+    /* Store in cache - build cache key */
+    global_highfreq_cache.current_cache_key.table_oid = table_oid;
+    global_highfreq_cache.current_cache_key.column_name_hash = hash_any((unsigned char*)column_name, strlen(column_name));
+    global_highfreq_cache.current_cache_key.kmer_size = k_value;
+    global_highfreq_cache.current_cache_key.occur_bitlen = kmersearch_occur_bitlen;
+    global_highfreq_cache.current_cache_key.max_appearance_rate = kmersearch_max_appearance_rate;
+    global_highfreq_cache.current_cache_key.max_appearance_nrow = kmersearch_max_appearance_nrow;
     
     
     /* Copy the k-mer array to cache context to prevent memory context issues */
@@ -1365,23 +1367,28 @@ kmersearch_highfreq_kmer_cache_free_internal(void)
     
     /* Reset cache state */
     global_highfreq_cache.is_valid = false;
-    global_highfreq_cache.current_table_oid = InvalidOid;
-    global_highfreq_cache.current_kmer_size = 0;
+    memset(&global_highfreq_cache.current_cache_key, 0, sizeof(HighfreqCacheKey));
+    global_highfreq_cache.current_cache_key.table_oid = InvalidOid;
     global_highfreq_cache.highfreq_count = 0;
     global_highfreq_cache.highfreq_hash = NULL;
     global_highfreq_cache.highfreq_kmers = NULL;
-    global_highfreq_cache.current_column_name = NULL;
 }
 
 bool
 kmersearch_highfreq_kmer_cache_is_valid(Oid table_oid, const char *column_name, int k_value)
 {
+    /* Build expected cache key */
+    HighfreqCacheKey expected_key;
+    expected_key.table_oid = table_oid;
+    expected_key.column_name_hash = hash_any((unsigned char*)column_name, strlen(column_name));
+    expected_key.kmer_size = k_value;
+    expected_key.occur_bitlen = kmersearch_occur_bitlen;
+    expected_key.max_appearance_rate = kmersearch_max_appearance_rate;
+    expected_key.max_appearance_nrow = kmersearch_max_appearance_nrow;
+    
+    /* Compare cache keys */
     return (global_highfreq_cache.is_valid &&
-            global_highfreq_cache.current_table_oid == table_oid &&
-            global_highfreq_cache.current_kmer_size == k_value &&
-            global_highfreq_cache.current_column_name &&
-            column_name &&
-            strcmp(global_highfreq_cache.current_column_name, column_name) == 0);
+            memcmp(&global_highfreq_cache.current_cache_key, &expected_key, sizeof(HighfreqCacheKey)) == 0);
 }
 
 /*
@@ -1418,11 +1425,26 @@ kmersearch_lookup_in_global_cache(VarBit *kmer_key)
 Datum
 kmersearch_highfreq_kmer_cache_load(PG_FUNCTION_ARGS)
 {
-    Oid table_oid = PG_GETARG_OID(0);
+    text *table_name_text = PG_GETARG_TEXT_P(0);
     text *column_name_text = PG_GETARG_TEXT_P(1);
-    int k_value = PG_GETARG_INT32(2);
+    
+    char *table_name = text_to_cstring(table_name_text);
     char *column_name = text_to_cstring(column_name_text);
     bool success;
+    Oid table_oid;
+    int k_value;
+    
+    /* Get table OID from table name */
+    table_oid = RelnameGetRelid(table_name);
+    if (!OidIsValid(table_oid))
+    {
+        ereport(ERROR,
+                (errcode(ERRCODE_UNDEFINED_TABLE),
+                 errmsg("relation \"%s\" does not exist", table_name)));
+    }
+    
+    /* Get k_value from GUC variable */
+    k_value = kmersearch_kmer_size;
     
     success = kmersearch_highfreq_kmer_cache_load_internal(table_oid, column_name, k_value);
     
@@ -1435,11 +1457,46 @@ kmersearch_highfreq_kmer_cache_load(PG_FUNCTION_ARGS)
 Datum
 kmersearch_highfreq_kmer_cache_free(PG_FUNCTION_ARGS)
 {
+    text *table_name_text = PG_GETARG_TEXT_P(0);
+    text *column_name_text = PG_GETARG_TEXT_P(1);
+    
+    char *table_name = text_to_cstring(table_name_text);
+    char *column_name = text_to_cstring(column_name_text);
     int freed_entries = 0;
+    
+    /* Get table OID from table name */
+    Oid table_oid = RelnameGetRelid(table_name);
+    if (!OidIsValid(table_oid))
+    {
+        ereport(ERROR,
+                (errcode(ERRCODE_UNDEFINED_TABLE),
+                 errmsg("relation \"%s\" does not exist", table_name)));
+    }
+    
+    /* TODO: Validate cache key matches table/column before freeing */
+    /* For now, just free the global cache */
     
     /* Count entries before freeing */
     if (global_highfreq_cache.is_valid)
         freed_entries = global_highfreq_cache.highfreq_count;
+    
+    /* Free the cache */
+    kmersearch_highfreq_kmer_cache_free_internal();
+    
+    PG_RETURN_INT32(freed_entries);
+}
+
+/*
+ * SQL-accessible high-frequency cache free function without parameters
+ * For backwards compatibility with test cases
+ */
+Datum
+kmersearch_highfreq_kmer_cache_free_all(PG_FUNCTION_ARGS)
+{
+    int freed_entries = 0;
+    
+    if (global_highfreq_cache.is_valid)
+        freed_entries = 1;
     
     /* Free the cache */
     kmersearch_highfreq_kmer_cache_free_internal();
@@ -1467,7 +1524,7 @@ kmersearch_validate_guc_against_metadata(Oid table_oid, const char *column_name,
     appendStringInfo(&query,
         "SELECT occur_bitlen, max_appearance_rate, max_appearance_nrow "
         "FROM kmersearch_highfreq_kmer_meta "
-        "WHERE table_oid = %u AND column_name = '%s' AND k_value = %d",
+        "WHERE table_oid = %u AND column_name = '%s' AND kmer_size = %d",
         table_oid, column_name, k_value);
     
     
@@ -1551,7 +1608,7 @@ kmersearch_validate_guc_against_metadata(Oid table_oid, const char *column_name,
         ereport(DEBUG1, (errmsg("kmersearch_validate_guc_against_metadata: No metadata found or query failed")));
         ereport(ERROR,
                 (errcode(ERRCODE_UNDEFINED_TABLE),
-                 errmsg("No metadata found for table_oid=%u, column_name='%s', k_value=%d",
+                 errmsg("No metadata found for table_oid=%u, column_name='%s', kmer_size=%d",
                        table_oid, column_name, k_value),
                  errhint("Run kmersearch_analyze_table() first to create metadata.")));
         validation_passed = false;
@@ -1588,19 +1645,16 @@ kmersearch_get_highfreq_kmer_from_table(Oid table_oid, const char *column_name, 
     initStringInfo(&query);
     appendStringInfo(&query,
         "SELECT DISTINCT hkm.ngram_key FROM kmersearch_highfreq_kmer hkm "
-        "WHERE hkm.index_oid IN ("
-        "    SELECT indexrelid FROM pg_stat_user_indexes pui "
-        "    JOIN pg_class pc ON pui.relid = pc.oid "
-        "    WHERE pc.oid = %u "
-        "    AND EXISTS ("
-        "        SELECT 1 FROM kmersearch_highfreq_kmer_meta hkm_meta "
-        "        WHERE hkm_meta.table_oid = %u "
-        "        AND hkm_meta.column_name = '%s' "
-        "        AND hkm_meta.k_value = %d"
-        "    )"
+        "WHERE hkm.table_oid = %u "
+        "AND hkm.column_name = '%s' "
+        "AND EXISTS ("
+        "    SELECT 1 FROM kmersearch_highfreq_kmer_meta hkm_meta "
+        "    WHERE hkm_meta.table_oid = %u "
+        "    AND hkm_meta.column_name = '%s' "
+        "    AND hkm_meta.kmer_size = %d"
         ") "
         "ORDER BY hkm.ngram_key",
-        table_oid, table_oid, column_name, k);
+        table_oid, column_name, table_oid, column_name, k);
     
     
     /* Execute query */
@@ -1754,11 +1808,26 @@ kmersearch_ngram_key_to_hash(VarBit *ngram_key)
 Datum
 kmersearch_parallel_highfreq_kmer_cache_load(PG_FUNCTION_ARGS)
 {
-    Oid table_oid = PG_GETARG_OID(0);
-    text *column_name_text = PG_GETARG_TEXT_PP(1);
-    int k_value = PG_GETARG_INT32(2);
+    text *table_name_text = PG_GETARG_TEXT_P(0);
+    text *column_name_text = PG_GETARG_TEXT_P(1);
+    
+    char *table_name = text_to_cstring(table_name_text);
     char *column_name = text_to_cstring(column_name_text);
     bool result;
+    Oid table_oid;
+    int k_value;
+    
+    /* Get table OID from table name */
+    table_oid = RelnameGetRelid(table_name);
+    if (!OidIsValid(table_oid))
+    {
+        ereport(ERROR,
+                (errcode(ERRCODE_UNDEFINED_TABLE),
+                 errmsg("relation \"%s\" does not exist", table_name)));
+    }
+    
+    /* Get k_value from GUC variable */
+    k_value = kmersearch_kmer_size;
     
     /* Initialize parallel cache if not already done */
     if (parallel_highfreq_cache == NULL) {
@@ -1783,9 +1852,26 @@ kmersearch_parallel_highfreq_kmer_cache_load(PG_FUNCTION_ARGS)
 Datum
 kmersearch_parallel_highfreq_kmer_cache_free(PG_FUNCTION_ARGS)
 {
+    text *table_name_text = PG_GETARG_TEXT_P(0);
+    text *column_name_text = PG_GETARG_TEXT_P(1);
+    
+    char *table_name = text_to_cstring(table_name_text);
+    char *column_name = text_to_cstring(column_name_text);
     int32 freed_entries = 0;
     
-    ereport(LOG, (errmsg("kmersearch_parallel_highfreq_kmer_cache_free: Starting function call")));
+    /* Get table OID from table name */
+    Oid table_oid = RelnameGetRelid(table_name);
+    if (!OidIsValid(table_oid))
+    {
+        ereport(ERROR,
+                (errcode(ERRCODE_UNDEFINED_TABLE),
+                 errmsg("relation \"%s\" does not exist", table_name)));
+    }
+    
+    ereport(LOG, (errmsg("kmersearch_parallel_highfreq_kmer_cache_free: Starting function call for table %s, column %s", table_name, column_name)));
+    
+    /* TODO: Validate cache key matches table/column before freeing */
+    /* For now, just free the parallel cache */
     
     /* Get the actual number of entries from the cache */
     if (parallel_highfreq_cache != NULL && parallel_highfreq_cache->is_initialized) {
@@ -1799,6 +1885,25 @@ kmersearch_parallel_highfreq_kmer_cache_free(PG_FUNCTION_ARGS)
     /* Free parallel cache */
     kmersearch_parallel_highfreq_kmer_cache_free_internal();
     
+    
+    PG_RETURN_INT32(freed_entries);
+}
+
+/*
+ * SQL-accessible parallel high-frequency cache free function without parameters
+ * For backwards compatibility with test cases
+ */
+Datum
+kmersearch_parallel_highfreq_kmer_cache_free_all(PG_FUNCTION_ARGS)
+{
+    int32 freed_entries = 0;
+    
+    if (parallel_highfreq_cache != NULL && parallel_highfreq_cache->is_initialized) {
+        freed_entries = parallel_highfreq_cache->num_entries;
+    }
+    
+    /* Free parallel cache */
+    kmersearch_parallel_highfreq_kmer_cache_free_internal();
     
     PG_RETURN_INT32(freed_entries);
 }
@@ -2000,8 +2105,8 @@ kmersearch_parallel_highfreq_kmer_cache_load_internal(Oid table_oid, const char 
         
         /* Verify cache data is still valid */
         if (parallel_highfreq_cache->is_initialized &&
-            parallel_highfreq_cache->table_oid == table_oid &&
-            parallel_highfreq_cache->kmer_size == k_value) {
+            parallel_highfreq_cache->cache_key.table_oid == table_oid &&
+            parallel_highfreq_cache->cache_key.kmer_size == k_value) {
             ereport(LOG, (errmsg("dshash_cache_load: Cache already loaded for table %u, k=%d", 
                                 table_oid, k_value)));
             return true;
@@ -2059,8 +2164,8 @@ kmersearch_parallel_highfreq_kmer_cache_load_internal(Oid table_oid, const char 
     
     /* Initialize parallel cache structure in DSM */
     parallel_highfreq_cache = (ParallelHighfreqKmerCache *) dsm_segment_address(parallel_cache_segment);
-    parallel_highfreq_cache->table_oid = table_oid;
-    parallel_highfreq_cache->kmer_size = k_value;
+    parallel_highfreq_cache->cache_key.table_oid = table_oid;
+    parallel_highfreq_cache->cache_key.kmer_size = k_value;
     parallel_highfreq_cache->num_entries = highfreq_count;
     parallel_highfreq_cache->segment_size = segment_size;
     parallel_highfreq_cache->dsm_handle = dsm_segment_handle(parallel_cache_segment);
@@ -2165,8 +2270,8 @@ kmersearch_parallel_highfreq_kmer_cache_load_internal(Oid table_oid, const char 
                 ereport(LOG, (errmsg("dshash_cache_load: Got entry pointer, setting values")));
                 entry->kmer_hash = kmer_hash;
                 entry->frequency_count = 1; /* Mark as high-frequency */
-                entry->table_oid = table_oid;
-                entry->kmer_size = k_value;
+                entry->cache_key.table_oid = table_oid;
+                entry->cache_key.kmer_size = k_value;
                 /* Must release lock after dshash_find_or_insert() */
                 dshash_release_lock(parallel_cache_hash, entry);
                 ereport(LOG, (errmsg("dshash_cache_load: Successfully inserted k-mer %d", i + 1)));
@@ -2238,8 +2343,8 @@ kmersearch_parallel_highfreq_kmer_cache_is_valid(Oid table_oid, const char *colu
         return false;
     
     /* Check if cache matches the requested parameters */
-    if (parallel_highfreq_cache->table_oid != table_oid || 
-        parallel_highfreq_cache->kmer_size != k_value)
+    if (parallel_highfreq_cache->cache_key.table_oid != table_oid || 
+        parallel_highfreq_cache->cache_key.kmer_size != k_value)
         return false;
     
     return true;

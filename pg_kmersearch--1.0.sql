@@ -154,23 +154,24 @@ CREATE OPERATOR CLASS kmersearch_dna4_gin_ops
 
 -- System table for storing highly frequent k-mers
 CREATE TABLE kmersearch_highfreq_kmer (
-    index_oid oid NOT NULL,
+    table_oid oid NOT NULL,
+    column_name name NOT NULL,
     ngram_key varbit NOT NULL,
     detection_reason text,
     created_at timestamp with time zone DEFAULT now(),
-    PRIMARY KEY (index_oid, ngram_key)
+    PRIMARY KEY (table_oid, column_name, ngram_key)
 );
 
 -- High-frequency k-mers metadata table
 CREATE TABLE kmersearch_highfreq_kmer_meta (
     table_oid oid NOT NULL,
     column_name name NOT NULL,
-    k_value integer NOT NULL,
+    kmer_size integer NOT NULL,
     occur_bitlen integer NOT NULL,
     max_appearance_rate real NOT NULL,
     max_appearance_nrow integer NOT NULL,
     analysis_timestamp timestamp with time zone DEFAULT now(),
-    PRIMARY KEY (table_oid, column_name, k_value)
+    PRIMARY KEY (table_oid, column_name, kmer_size)
 );
 
 -- GIN index metadata table
@@ -180,7 +181,7 @@ CREATE TABLE kmersearch_gin_index_meta (
     column_name name NOT NULL,
     highfreq_filtered boolean NOT NULL,
     highfreq_source_table name NOT NULL,
-    k_value integer NOT NULL,
+    kmer_size integer NOT NULL,
     occur_bitlen integer NOT NULL,
     max_appearance_rate real NOT NULL,
     max_appearance_nrow integer NOT NULL,
@@ -192,9 +193,9 @@ CREATE TABLE kmersearch_index_info (
     index_oid oid PRIMARY KEY,
     table_oid oid NOT NULL,
     column_name name NOT NULL,
-    k_value integer NOT NULL,
+    kmer_size integer NOT NULL,
     occur_bitlen integer NOT NULL,
-    total_rows bigint NOT NULL,
+    total_nrow bigint NOT NULL,
     highfreq_kmer_count integer NOT NULL,
     max_appearance_rate real NOT NULL,
     max_appearance_nrow integer NOT NULL,
@@ -320,12 +321,12 @@ CREATE TYPE kmersearch_drop_result AS (
 );
 
 -- Parallel k-mer analysis functions
-CREATE FUNCTION kmersearch_analyze_table(table_oid oid, column_name text, k integer, parallel_workers integer DEFAULT 0) 
+CREATE FUNCTION kmersearch_analyze_table(table_name text, column_name text) 
     RETURNS kmersearch_analysis_result
     AS 'MODULE_PATHNAME', 'kmersearch_analyze_table'
     LANGUAGE C VOLATILE STRICT;
 
-CREATE FUNCTION kmersearch_drop_analysis(table_oid oid, column_name text, k integer) 
+CREATE FUNCTION kmersearch_drop_analysis(table_name text, column_name text) 
     RETURNS kmersearch_drop_result
     AS 'MODULE_PATHNAME', 'kmersearch_drop_analysis'
     LANGUAGE C VOLATILE STRICT;
@@ -387,31 +388,42 @@ CREATE FUNCTION kmersearch_actual_min_score_cache_free()
     LANGUAGE C VOLATILE;
 
 -- High-frequency k-mer cache management functions
-CREATE FUNCTION kmersearch_highfreq_kmer_cache_load(table_oid oid, column_name text, kmer_size integer)
+CREATE FUNCTION kmersearch_highfreq_kmer_cache_load(table_name text, column_name text)
     RETURNS boolean
     AS 'MODULE_PATHNAME', 'kmersearch_highfreq_kmer_cache_load'
     LANGUAGE C VOLATILE STRICT;
 
-CREATE FUNCTION kmersearch_highfreq_kmers_cache_free()
+CREATE FUNCTION kmersearch_highfreq_kmer_cache_free(table_name text, column_name text)
     RETURNS integer
     AS 'MODULE_PATHNAME', 'kmersearch_highfreq_kmer_cache_free'
-    LANGUAGE C VOLATILE;
+    LANGUAGE C VOLATILE STRICT;
 
 -- Parallel high-frequency k-mer cache management functions
-CREATE FUNCTION kmersearch_parallel_highfreq_kmer_cache_load(table_oid oid, column_name text, kmer_size integer)
+CREATE FUNCTION kmersearch_parallel_highfreq_kmer_cache_load(table_name text, column_name text)
     RETURNS boolean
     AS 'MODULE_PATHNAME', 'kmersearch_parallel_highfreq_kmer_cache_load'
     LANGUAGE C VOLATILE STRICT;
 
-CREATE FUNCTION kmersearch_parallel_highfreq_kmer_cache_free()
+CREATE FUNCTION kmersearch_parallel_highfreq_kmer_cache_free(table_name text, column_name text)
     RETURNS integer
     AS 'MODULE_PATHNAME', 'kmersearch_parallel_highfreq_kmer_cache_free'
+    LANGUAGE C VOLATILE STRICT;
+
+-- Cache free functions without parameters (for backwards compatibility)
+CREATE FUNCTION kmersearch_highfreq_kmer_cache_free_all()
+    RETURNS integer
+    AS 'MODULE_PATHNAME', 'kmersearch_highfreq_kmer_cache_free_all'
+    LANGUAGE C VOLATILE;
+
+CREATE FUNCTION kmersearch_parallel_highfreq_kmer_cache_free_all()
+    RETURNS integer
+    AS 'MODULE_PATHNAME', 'kmersearch_parallel_highfreq_kmer_cache_free_all'
     LANGUAGE C VOLATILE;
 
 -- Performance optimization: Add indexes on system tables
 -- Note: varbit type doesn't have a default GIN operator class, so we use btree instead
 CREATE INDEX kmersearch_highfreq_kmer_idx 
-    ON kmersearch_highfreq_kmer(index_oid, ngram_key);
+    ON kmersearch_highfreq_kmer(table_oid, column_name, ngram_key);
 
 CREATE INDEX kmersearch_highfreq_kmer_meta_idx 
     ON kmersearch_highfreq_kmer_meta(table_oid, column_name);
@@ -461,7 +473,7 @@ SELECT
     m.table_oid,
     pg_class.relname as table_name,
     m.column_name,
-    m.k_value,
+    m.kmer_size,
     m.occur_bitlen,
     m.max_appearance_rate,
     m.max_appearance_nrow,
@@ -469,12 +481,10 @@ SELECT
     COUNT(DISTINCT h.ngram_key) as highfreq_kmer_count
 FROM kmersearch_highfreq_kmer_meta m
 LEFT JOIN pg_class ON pg_class.oid = m.table_oid
-LEFT JOIN kmersearch_highfreq_kmer h ON EXISTS (
-    SELECT 1 FROM kmersearch_gin_index_meta gim 
-    WHERE gim.table_oid = m.table_oid 
-    AND gim.column_name = m.column_name 
-    AND h.index_oid = gim.index_oid
+LEFT JOIN kmersearch_highfreq_kmer h ON (
+    h.table_oid = m.table_oid 
+    AND h.column_name = m.column_name
 )
-GROUP BY m.table_oid, pg_class.relname, m.column_name, m.k_value, 
+GROUP BY m.table_oid, pg_class.relname, m.column_name, m.kmer_size, 
          m.occur_bitlen, m.max_appearance_rate, m.max_appearance_nrow, 
          m.analysis_timestamp;
