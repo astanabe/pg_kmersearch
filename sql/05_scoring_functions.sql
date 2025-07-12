@@ -1,5 +1,8 @@
 CREATE EXTENSION IF NOT EXISTS pg_kmersearch;
 
+-- Set k-mer size to 4 for efficient testing (must be after CREATE EXTENSION)
+SET kmersearch.kmer_size = 4;
+
 -- Test scoring functions
 -- This test covers kmersearch_rawscore and kmersearch_correctedscore functions
 

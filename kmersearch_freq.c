@@ -170,7 +170,7 @@ kmersearch_analyze_table(PG_FUNCTION_ARGS)
     /* Extra validation for max_appearance_rate_used before conversion */
     if (result.max_appearance_rate_used < 0.0 || result.max_appearance_rate_used != result.max_appearance_rate_used) {
         ereport(WARNING, (errmsg("kmersearch_analyze_table: Detected corrupted max_appearance_rate_used (%f) during conversion, fixing", result.max_appearance_rate_used)));
-        result.max_appearance_rate_used = 0.05;
+        result.max_appearance_rate_used = 0.5;
     }
     
     values[4] = Float4GetDatum((float4)result.max_appearance_rate_used);  /* real type = 4-byte float */
@@ -481,7 +481,7 @@ kmersearch_analyze_table_parallel(Oid table_oid, const char *column_name, int k_
     /* Initialize max_appearance_rate_used early to prevent corruption */
     result.max_appearance_rate_used = kmersearch_max_appearance_rate;
     if (result.max_appearance_rate_used <= 0.0) {
-        result.max_appearance_rate_used = 0.05;  /* Default value */
+        result.max_appearance_rate_used = 0.5;  /* Default value */
     }
     ereport(DEBUG1, (errmsg("kmersearch_analyze_table_parallel: Initialized max_appearance_rate_used to %f", result.max_appearance_rate_used)));
     
@@ -544,8 +544,8 @@ kmersearch_analyze_table_parallel(Oid table_oid, const char *column_name, int k_
     ereport(DEBUG1, (errmsg("kmersearch_analyze_table_parallel: Setting max_appearance_rate_used from %f to %f", result.max_appearance_rate_used, kmersearch_max_appearance_rate)));
     result.max_appearance_rate_used = kmersearch_max_appearance_rate;
     if (result.max_appearance_rate_used <= 0.0) {
-        ereport(DEBUG1, (errmsg("kmersearch_analyze_table_parallel: max_appearance_rate_used was %f, setting to default 0.05", result.max_appearance_rate_used)));
-        result.max_appearance_rate_used = 0.05;  /* Default value */
+        ereport(DEBUG1, (errmsg("kmersearch_analyze_table_parallel: max_appearance_rate_used was %f, setting to default 0.5", result.max_appearance_rate_used)));
+        result.max_appearance_rate_used = 0.5;  /* Default value */
     }
     ereport(DEBUG1, (errmsg("kmersearch_analyze_table_parallel: Final max_appearance_rate_used = %f", result.max_appearance_rate_used)));
     result.max_appearance_nrow_used = threshold_rows;
@@ -714,7 +714,7 @@ kmersearch_analyze_table_parallel(Oid table_oid, const char *column_name, int k_
         ereport(WARNING, (errmsg("kmersearch_analyze_table_parallel: Detected corrupted max_appearance_rate_used (%f), fixing to default", result.max_appearance_rate_used)));
         result.max_appearance_rate_used = kmersearch_max_appearance_rate;
         if (result.max_appearance_rate_used <= 0.0) {
-            result.max_appearance_rate_used = 0.05;
+            result.max_appearance_rate_used = 0.5;
         }
     }
     

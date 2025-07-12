@@ -94,8 +94,8 @@ SELECT name, dna_seq FROM degenerate_sequences;
 ### k-mer検索機能の使用例
 
 ```sql
--- k-merサイズを設定（デフォルト8-mer）
-SET kmersearch.kmer_size = 8;
+-- k-merサイズを設定（デフォルト16-mer）
+SET kmersearch.kmer_size = 16;
 
 -- GINインデックスを作成（現在のkmersearch.kmer_size設定を使用）
 CREATE INDEX sequences_kmer_idx ON sequences USING gin (dna_seq);
@@ -131,9 +131,9 @@ pg_kmersearchは、PostgreSQLの`SET`コマンドで設定可能な複数の設�
 
 | 変数名 | デフォルト値 | 範囲 | 説明 |
 |--------|-------------|------|------|
-| `kmersearch.kmer_size` | 8 | 4-64 | インデックス作成と検索のk-mer長 |
+| `kmersearch.kmer_size` | 16 | 4-64 | インデックス作成と検索のk-mer長 |
 | `kmersearch.occur_bitlen` | 8 | 0-16 | 出現回数格納のビット数 |
-| `kmersearch.max_appearance_rate` | 0.05 | 0.0-1.0 | インデックス化するk-merの最大出現率 |
+| `kmersearch.max_appearance_rate` | 0.5 | 0.0-1.0 | インデックス化するk-merの最大出現率 |
 | `kmersearch.max_appearance_nrow` | 0 | 0-∞ | k-merが含まれる最大行数（0=無制限） |
 | `kmersearch.min_score` | 1 | 0-∞ | 検索結果の最小類似度スコア |
 | `kmersearch.min_shared_ngram_key_rate` | 0.9 | 0.0-1.0 | 共有n-gramキー率の最小閾値 |
@@ -149,16 +149,16 @@ pg_kmersearchは、PostgreSQLの`SET`コマンドで設定可能な複数の設�
 
 ```sql
 -- 除外パラメータの設定（インデックス作成前）
-SET kmersearch.max_appearance_rate = 0.05;  -- デフォルト: 5%の最大出現率
+SET kmersearch.max_appearance_rate = 0.5;  -- デフォルト: 50%の最大出現率
 SET kmersearch.max_appearance_nrow = 1000;  -- デフォルト: 0（無効）
 
 -- 頻度解析付きインデックス作成
 CREATE INDEX sequences_kmer_idx ON sequences USING gin (dna_seq);
 
--- インデックスの除外k-mer確認
+-- テーブル/カラムの除外k-mer確認
 SELECT ngram_key, detection_reason 
 FROM kmersearch_highfreq_kmer 
-WHERE index_oid = 'sequences_kmer_idx'::regclass;
+WHERE table_oid = 'sequences'::regclass AND column_name = 'dna_seq';
 
 -- インデックス統計情報
 SELECT table_oid, column_name, kmer_size, occur_bitlen, max_appearance_rate, max_appearance_nrow 
@@ -291,15 +291,15 @@ pg_kmersearchは、メタデータ管理と監視のための複数のシステ�
 GINインデックスから除外される高頻出k-merを格納：
 
 ```sql
--- 特定インデックスの除外k-merを表示
-SELECT index_oid, ngram_key, detection_reason, created_at
+-- 特定テーブル/カラムの除外k-merを表示
+SELECT table_oid, column_name, ngram_key, detection_reason, created_at
 FROM kmersearch_highfreq_kmer 
-WHERE index_oid = 'sequences_kmer_idx'::regclass;
+WHERE table_oid = 'sequences'::regclass AND column_name = 'dna_seq';
 
--- インデックスごとの除外k-mer数をカウント
-SELECT index_oid, COUNT(*) as excluded_count
+-- テーブル/カラムごとの除外k-mer数をカウント
+SELECT table_oid, column_name, COUNT(*) as excluded_count
 FROM kmersearch_highfreq_kmer
-GROUP BY index_oid;
+GROUP BY table_oid, column_name;
 ```
 
 #### kmersearch_highfreq_kmer_meta
@@ -307,7 +307,7 @@ k-mer頻度解析のメタデータを格納：
 
 ```sql
 -- 全テーブルの解析メタデータを表示
-SELECT table_oid, column_name, k_value, occur_bitlen, 
+SELECT table_oid, column_name, kmer_size, occur_bitlen, 
        max_appearance_rate, max_appearance_nrow, analysis_timestamp
 FROM kmersearch_highfreq_kmer_meta;
 
@@ -322,7 +322,7 @@ WHERE table_oid = 'sequences'::regclass AND column_name = 'dna_seq';
 ```sql
 -- GINインデックスメタデータを表示
 SELECT index_oid, table_oid, column_name, highfreq_filtered, 
-       k_value, occur_bitlen, created_at
+       kmer_size, occur_bitlen, created_at
 FROM kmersearch_gin_index_meta;
 
 -- インデックスが高頻出フィルタリングを使用しているか確認
@@ -335,7 +335,7 @@ WHERE index_oid = 'sequences_kmer_idx'::regclass;
 
 ```sql
 -- インデックス統計を表示
-SELECT index_oid, table_oid, column_name, k_value, total_rows,
+SELECT index_oid, table_oid, column_name, kmer_size, total_nrow,
        highfreq_kmer_count, max_appearance_rate, created_at
 FROM kmersearch_index_info;
 ```
@@ -363,12 +363,12 @@ WHERE total_hits + total_misses > 0;
 
 ```sql
 -- 全テーブルの解析状況を表示
-SELECT table_name, column_name, k_value, highfreq_kmer_count,
+SELECT table_name, column_name, kmer_size, highfreq_kmer_count,
        analysis_timestamp
 FROM kmersearch_analysis_status;
 
 -- 解析パラメータと結果を確認
-SELECT table_name, column_name, k_value, occur_bitlen,
+SELECT table_name, column_name, kmer_size, occur_bitlen,
        max_appearance_rate, max_appearance_nrow,
        highfreq_kmer_count, analysis_timestamp
 FROM kmersearch_analysis_status
@@ -383,19 +383,10 @@ WHERE table_name = 'sequences';
 テーブルに対する並列k-mer頻度解析を実行：
 
 ```sql
--- デフォルト並列ワーカーでの基本解析
+-- テーブル名とカラム名を使用した基本解析
 SELECT kmersearch_analyze_table(
-    'sequences'::regclass::oid,    -- テーブルOID
-    'dna_seq',                     -- カラム名
-    8                              -- k-merサイズ
-);
-
--- 特定の並列ワーカー数での解析
-SELECT kmersearch_analyze_table(
-    (SELECT oid FROM pg_class WHERE relname = 'sequences'),
-    'dna_seq',
-    8,     -- k-merサイズ
-    4      -- 並列ワーカー数
+    'sequences',                   -- テーブル名
+    'dna_seq'                     -- カラム名
 );
 
 -- 結果の解釈例
@@ -405,7 +396,7 @@ SELECT (result).total_rows,
        (result).analysis_duration,
        (result).max_appearance_rate_used
 FROM (
-    SELECT kmersearch_analyze_table('sequences'::regclass::oid, 'dna_seq', 8) as result
+    SELECT kmersearch_analyze_table('sequences', 'dna_seq') as result
 ) t;
 ```
 
@@ -413,11 +404,10 @@ FROM (
 解析データを削除してストレージを解放：
 
 ```sql
--- 特定のテーブル/カラム/k-サイズ組み合わせの解析を削除
+-- 特定のテーブル/カラム組み合わせの解析を削除
 SELECT kmersearch_drop_analysis(
-    'sequences'::regclass::oid,
-    'dna_seq',
-    8
+    'sequences',                   -- テーブル名
+    'dna_seq'                     -- カラム名
 );
 
 -- 結果の解釈例
@@ -425,7 +415,7 @@ SELECT (result).dropped_analyses,
        (result).dropped_highfreq_kmers,
        (result).freed_storage_bytes
 FROM (
-    SELECT kmersearch_drop_analysis('sequences'::regclass::oid, 'dna_seq', 8) as result
+    SELECT kmersearch_drop_analysis('sequences', 'dna_seq') as result
 ) t;
 ```
 
@@ -435,28 +425,38 @@ FROM (
 
 ```sql
 -- 高頻出k-merをグローバルキャッシュに読み込み
-SELECT kmersearch_highfreq_kmers_cache_load(
-    'sequences'::regclass::oid,
-    'dna_seq',
-    8
+SELECT kmersearch_highfreq_kmer_cache_load(
+    'sequences',                   -- テーブル名
+    'dna_seq'                     -- カラム名
 );
 
--- グローバルキャッシュを解放
-SELECT kmersearch_highfreq_kmers_cache_free();
+-- 特定テーブル/カラムのグローバルキャッシュを解放
+SELECT kmersearch_highfreq_kmer_cache_free(
+    'sequences',                   -- テーブル名
+    'dna_seq'                     -- カラム名
+);
+
+-- グローバルキャッシュの全エントリを解放
+SELECT kmersearch_highfreq_kmer_cache_free_all();
 ```
 
 #### 並列キャッシュ関数
 
 ```sql
 -- 高頻出k-merを並列キャッシュに読み込み（マルチプロセス共有用）
-SELECT kmersearch_parallel_highfreq_kmers_cache_load(
-    'sequences'::regclass::oid,
-    'dna_seq', 
-    8
+SELECT kmersearch_parallel_highfreq_kmer_cache_load(
+    'sequences',                   -- テーブル名
+    'dna_seq'                     -- カラム名
 );
 
--- 並列キャッシュを解放
-SELECT kmersearch_parallel_highfreq_kmers_cache_free();
+-- 特定テーブル/カラムの並列キャッシュを解放
+SELECT kmersearch_parallel_highfreq_kmer_cache_free(
+    'sequences',                   -- テーブル名
+    'dna_seq'                     -- カラム名
+);
+
+-- 並列キャッシュの全エントリを解放
+SELECT kmersearch_parallel_highfreq_kmer_cache_free_all();
 ```
 
 ### キャッシュ統計・管理
@@ -548,17 +548,15 @@ SELECT unnest(kmersearch_get_highfreq_kmer('sequences_kmer_idx'::regclass::oid))
 
 ```sql
 -- 1. パラメータを設定
-SET kmersearch.kmer_size = 8;
-SET kmersearch.max_appearance_rate = 0.05;
+SET kmersearch.kmer_size = 16;
+SET kmersearch.max_appearance_rate = 0.5;
 SET kmersearch.max_appearance_nrow = 1000;
 SET kmersearch.occur_bitlen = 8;
 
 -- 2. 頻度解析を実行
 SELECT kmersearch_analyze_table(
-    'sequences'::regclass::oid,
-    'dna_seq',
-    8,
-    4  -- 並列ワーカー数
+    'sequences',                   -- テーブル名
+    'dna_seq'                     -- カラム名
 );
 
 -- 3. 解析結果を確認
@@ -568,8 +566,8 @@ SELECT * FROM kmersearch_analysis_status WHERE table_name = 'sequences';
 CREATE INDEX sequences_kmer_idx ON sequences USING gin(dna_seq);
 
 -- 5. 最適なパフォーマンスのためキャッシュを読み込み
-SELECT kmersearch_highfreq_kmers_cache_load('sequences'::regclass::oid, 'dna_seq', 8);
-SELECT kmersearch_parallel_highfreq_kmers_cache_load('sequences'::regclass::oid, 'dna_seq', 8);
+SELECT kmersearch_highfreq_kmer_cache_load('sequences', 'dna_seq');
+SELECT kmersearch_parallel_highfreq_kmer_cache_load('sequences', 'dna_seq');
 
 -- 6. 検索を実行
 SELECT id, name, kmersearch_rawscore(dna_seq, 'ATCGATCG') as score
@@ -636,7 +634,7 @@ SELECT (result).total_rows,
        (result).highfreq_kmers_count,
        ROUND((result).analysis_duration, 2) as duration_seconds
 FROM (
-    SELECT kmersearch_analyze_table('sequences'::regclass::oid, 'dna_seq', 8) as result
+    SELECT kmersearch_analyze_table('sequences', 'dna_seq') as result
 ) t;
 ```
 
@@ -656,7 +654,7 @@ SELECT (result).dropped_analyses,
        (result).dropped_highfreq_kmers,
        pg_size_pretty((result).freed_storage_bytes) as freed_storage
 FROM (
-    SELECT kmersearch_drop_analysis('sequences'::regclass::oid, 'dna_seq', 8) as result
+    SELECT kmersearch_drop_analysis('sequences', 'dna_seq') as result
 ) t;
 ```
 
@@ -719,7 +717,7 @@ SELECT * FROM kmersearch_query_pattern_cache_stats();
 -- キャッシュクリア
 SELECT kmersearch_actual_min_score_cache_free();
 SELECT kmersearch_query_pattern_cache_free();
-SELECT kmersearch_highfreq_kmer_cache_free();
+SELECT kmersearch_highfreq_kmer_cache_free_all();
 
 -- キャッシュサイズ設定
 SET kmersearch.actual_min_score_cache_max_entries = 25000;
@@ -772,28 +770,26 @@ pg_kmersearchは、PostgreSQL 16/18に最適化された多層キャッシュア
 ```sql
 -- 高頻出k-mer解析の実行（メタデータ作成）
 SELECT kmersearch_analyze_table(
-    (SELECT oid FROM pg_class WHERE relname = 'sequences'), 
-    'dna_seq', 
-    8,    -- k-mer長
-    100   -- 最大出現行数閾値
+    'sequences',                   -- テーブル名
+    'dna_seq'                     -- カラム名
 );
 
 -- GUC設定をメタデータに合わせる
-SET kmersearch.max_appearance_rate = 0.05;
+SET kmersearch.max_appearance_rate = 0.5;
 SET kmersearch.max_appearance_nrow = 100;
 SET kmersearch.occur_bitlen = 8;
-SET kmersearch.kmer_size = 8;
+SET kmersearch.kmer_size = 16;
 
 -- グローバルキャッシュの読み込み
 SELECT kmersearch_highfreq_kmer_cache_load(
-    (SELECT oid FROM pg_class WHERE relname = 'sequences'),
-    'dna_seq', 8
+    'sequences',                   -- テーブル名
+    'dna_seq'                     -- カラム名
 );
 
 -- 並列キャッシュの読み込み（オプション）
 SELECT kmersearch_parallel_highfreq_kmer_cache_load(
-    (SELECT oid FROM pg_class WHERE relname = 'sequences'),
-    'dna_seq', 8
+    'sequences',                   -- テーブル名
+    'dna_seq'                     -- カラム名
 );
 
 -- キャッシュ階層を使用した高速検索
@@ -802,14 +798,15 @@ WHERE dna_seq =% 'ATCGATCG'
 ORDER BY kmersearch_rawscore(dna_seq, 'ATCGATCG') DESC;
 
 -- キャッシュの解放
-SELECT kmersearch_highfreq_kmer_cache_free();
-SELECT kmersearch_parallel_highfreq_kmer_cache_free();
+SELECT kmersearch_highfreq_kmer_cache_free('sequences', 'dna_seq');
+SELECT kmersearch_parallel_highfreq_kmer_cache_free('sequences', 'dna_seq');
 ```
 
 ### 並列キャッシュ関数
 
-- **`kmersearch_parallel_highfreq_kmer_cache_load(table_oid, column_name, kmer_size)`**: 高頻出k-merを共有dshashキャッシュに読み込み
-- **`kmersearch_parallel_highfreq_kmer_cache_free()`**: 並列キャッシュからすべてのエントリを解放し、共有メモリ構造を破棄
+- **`kmersearch_parallel_highfreq_kmer_cache_load(table_name, column_name)`**: 高頻出k-merを共有dshashキャッシュに読み込み
+- **`kmersearch_parallel_highfreq_kmer_cache_free(table_name, column_name)`**: 並列キャッシュから特定エントリを解放
+- **`kmersearch_parallel_highfreq_kmer_cache_free_all()`**: 並列キャッシュからすべてのエントリを解放し、共有メモリ構造を破棄
 
 ### 使用シナリオ
 

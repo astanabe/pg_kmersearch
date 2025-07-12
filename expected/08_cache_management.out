@@ -2,7 +2,7 @@ CREATE EXTENSION IF NOT EXISTS pg_kmersearch;
 -- Test cache management functionality
 -- This test covers actual min score cache, rawscore cache, and query pattern cache
 -- Set k-mer size for consistent cache behavior
-SET kmersearch.kmer_size = 8;
+SET kmersearch.kmer_size = 4;
 -- Clean up any existing tables
 DROP TABLE IF EXISTS test_cache_DNA2, test_cache_DNA4 CASCADE;
 NOTICE:  table "test_cache_dna2" does not exist, skipping
@@ -177,7 +177,7 @@ SELECT COUNT(*) FROM test_cache_DNA4 WHERE sequence =% 'NNNNNNNN';
 SELECT kmersearch_rawscore(sequence, 'ATCGATCG') FROM test_cache_DNA2 WHERE id <= 2;
  kmersearch_rawscore 
 ---------------------
-                  14
+                  58
                    0
 (2 rows)
 
@@ -185,7 +185,7 @@ SELECT kmersearch_rawscore(sequence, 'TTTTTTTT') FROM test_cache_DNA2 WHERE id <
  kmersearch_rawscore 
 ---------------------
                    0
-                  53
+                  57
 (2 rows)
 
 -- Check cache statistics after usage
@@ -300,13 +300,13 @@ SET kmersearch.min_shared_ngram_key_rate = 0.8;
 SELECT COUNT(*) FROM test_cache_DNA2 WHERE sequence =% 'ATCGATCG';
  count 
 -------
-     1
+     2
 (1 row)
 
 SELECT COUNT(*) FROM test_cache_DNA2 WHERE sequence =% 'ATCGATCG';
  count 
 -------
-     1
+     2
 (1 row)
 
 -- Check cache after configuration change
@@ -319,7 +319,7 @@ SELECT 'With changed settings - actual min score cache:' as test_phase;
 SELECT * FROM kmersearch_actual_min_score_cache_stats();
  hits | misses | current_entries | max_entries 
 ------+--------+-----------------+-------------
-   17 |      1 |               1 |       50000
+   15 |      1 |               1 |       50000
 (1 row)
 
 -- Reset to defaults

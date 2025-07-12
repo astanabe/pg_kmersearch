@@ -18,7 +18,7 @@ BEGIN
 END $$;
 
 -- Set parameters to detect high-frequency k-mers
-SET kmersearch.kmer_size = 8;
+SET kmersearch.kmer_size = 4;
 SET kmersearch.occur_bitlen = 8;
 SET kmersearch.max_appearance_rate = 0.1;  -- Allow up to 10% appearance rate
 SET kmersearch.max_appearance_nrow = 10;   -- k-mers appearing in > 10 rows are high-frequency

@@ -1,4 +1,6 @@
 CREATE EXTENSION IF NOT EXISTS pg_kmersearch;
+-- Set k-mer size to 4 for efficient testing (must be after CREATE EXTENSION)
+SET kmersearch.kmer_size = 4;
 -- Test scoring functions
 -- This test covers kmersearch_rawscore and kmersearch_correctedscore functions
 -- Clean up any existing tables
@@ -29,9 +31,9 @@ SELECT id, name,
 FROM test_DNA2_sequences ORDER BY id;
  id | name | rawscore 
 ----+------+----------
-  1 | seq1 |       54
+  1 | seq1 |       58
   2 | seq2 |        0
-  3 | seq3 |        1
+  3 | seq3 |        5
 (3 rows)
 
 -- Test rawscore function with DNA4
@@ -40,9 +42,9 @@ SELECT id, name,
 FROM test_DNA4_sequences ORDER BY id;
  id | name | rawscore 
 ----+------+----------
-  1 | seq1 |       54
+  1 | seq1 |       58
   2 | seq2 |        0
-  3 | seq3 |       47
+  3 | seq3 |       55
 (3 rows)
 
 -- Test correctedscore function with DNA2
@@ -51,9 +53,9 @@ SELECT id, name,
 FROM test_DNA2_sequences ORDER BY id;
  id | name | correctedscore 
 ----+------+----------------
-  1 | seq1 |             54
+  1 | seq1 |             58
   2 | seq2 |              0
-  3 | seq3 |              1
+  3 | seq3 |              5
 (3 rows)
 
 -- Test correctedscore function with DNA4
@@ -62,22 +64,22 @@ SELECT id, name,
 FROM test_DNA4_sequences ORDER BY id;
  id | name | correctedscore 
 ----+------+----------------
-  1 | seq1 |             54
+  1 | seq1 |             58
   2 | seq2 |              0
-  3 | seq3 |             47
+  3 | seq3 |             55
 (3 rows)
 
 -- Test with shorter sequences for exact match
 SELECT kmersearch_rawscore('ATCGATCG'::DNA2, 'ATCGATCG') AS exact_match_score;
  exact_match_score 
 -------------------
-                 1
+                 5
 (1 row)
 
 SELECT kmersearch_rawscore('ATCGATCG'::DNA4, 'ATCGATCG') AS exact_match_score;
  exact_match_score 
 -------------------
-                 1
+                 5
 (1 row)
 
 -- Test with completely different sequences
@@ -97,13 +99,13 @@ SELECT kmersearch_rawscore('ATCGATCG'::DNA4, 'GCTAGCTA') AS no_match_score;
 SELECT kmersearch_rawscore('ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA'::DNA2, 'ATCGATCG') AS partial_match;
  partial_match 
 ---------------
-            14
+            58
 (1 row)
 
 SELECT kmersearch_rawscore('ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA'::DNA4, 'ATCGATCG') AS partial_match;
  partial_match 
 ---------------
-            14
+            58
 (1 row)
 
 DROP EXTENSION pg_kmersearch CASCADE;

@@ -1,4 +1,6 @@
 CREATE EXTENSION IF NOT EXISTS pg_kmersearch;
+-- Set k-mer size to 4 for efficient testing (must be after CREATE EXTENSION)
+SET kmersearch.kmer_size = 4;
 -- Test high-frequency k-mer cache management functionality
 -- This test covers manual cache loading and clearing
 -- Clean up any existing tables
@@ -11,7 +13,7 @@ CREATE TABLE test_highfreq_dna2 (
     sequence DNA2
 );
 -- Insert test data with sequences that contain high-frequency k-mers
--- Many sequences contain repeated patterns to generate high-frequency 8-mers
+-- Many sequences contain repeated patterns to generate high-frequency 4-mers
 INSERT INTO test_highfreq_dna2 (name, sequence) VALUES
     -- Sequences with repeated ATCGATCG pattern (creates high-freq k-mers)
     ('seq1', 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCG'),
@@ -46,7 +48,7 @@ WITH analysis_result AS (
     ) AS result
 )
 SELECT (result).* FROM analysis_result;
-NOTICE:  Performing k-mer frequency analysis for k=8
+NOTICE:  Performing k-mer frequency analysis for k=4
 NOTICE:  Max appearance rate: 0.300000, Max appearance nrow: 2
 NOTICE:  Phase 1: Analyzing k-mer frequencies with 2 parallel workers...
 NOTICE:  Phase 2: Collecting n-gram keys for high-frequency k-mers...

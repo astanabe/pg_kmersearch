@@ -27,32 +27,32 @@ SELECT id, name,
        kmersearch_rawscore(sequence, 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA') AS rawscore
 FROM test_k6_sequences ORDER BY id;
 
--- Test with k=10
-SET kmersearch.kmer_size = 10;
+-- Test with k=6
+SET kmersearch.kmer_size = 6;
 
-CREATE TABLE test_k10_sequences (
+CREATE TABLE test_k6_sequences_2 (
     id SERIAL PRIMARY KEY,
     name TEXT,
     sequence DNA2
 );
 
-INSERT INTO test_k10_sequences (name, sequence) VALUES
-    ('k10_test1', 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA'),
-    ('k10_test2', 'GCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTA');
+INSERT INTO test_k6_sequences_2 (name, sequence) VALUES
+    ('k6_test1', 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA'),
+    ('k6_test2', 'GCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTA');
 
-CREATE INDEX idx_k10_gin ON test_k10_sequences USING gin (sequence);
+CREATE INDEX idx_k6_gin_2 ON test_k6_sequences_2 USING gin (sequence);
 
--- Test search with k=10
-SELECT id, name FROM test_k10_sequences WHERE sequence =% 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA' ORDER BY id;
+-- Test search with k=6
+SELECT id, name FROM test_k6_sequences_2 WHERE sequence =% 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA' ORDER BY id;
 
 -- Test complete search workflow with ORDER BY score
 SELECT id, name, 
        kmersearch_rawscore(sequence, 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA') AS score
-FROM test_k10_sequences 
+FROM test_k6_sequences_2 
 WHERE sequence =% 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA'
 ORDER BY score DESC, id;
 
 -- Reset k-mer size for other tests
-SET kmersearch.kmer_size = 8;
+SET kmersearch.kmer_size = 4;
 
 DROP EXTENSION pg_kmersearch CASCADE;

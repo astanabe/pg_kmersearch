@@ -1,4 +1,6 @@
 CREATE EXTENSION IF NOT EXISTS pg_kmersearch;
+-- Set k-mer size to 4 for efficient testing (must be after CREATE EXTENSION)
+SET kmersearch.kmer_size = 4;
 -- Test management views and new functions
 -- This test covers the newly added views and complex return types
 -- Test cache summary view
@@ -60,13 +62,13 @@ FROM kmersearch_analyze_table(
     'test_analysis_dna2', 
     'sequence'
 );
-NOTICE:  Performing k-mer frequency analysis for k=8
-NOTICE:  Max appearance rate: 0.050000, Max appearance nrow: 0
+NOTICE:  Performing k-mer frequency analysis for k=4
+NOTICE:  Max appearance rate: 0.500000, Max appearance nrow: 0
 NOTICE:  Phase 1: Analyzing k-mer frequencies with 2 parallel workers...
 NOTICE:  Phase 2: Collecting n-gram keys for high-frequency k-mers...
  total_rows | highfreq_kmers_count | parallel_workers_used | duration_valid | max_appearance_rate_used | max_appearance_nrow_used 
 ------------+----------------------+-----------------------+----------------+--------------------------+--------------------------
-          3 |                    0 |                     2 | t              |                     0.05 |                        0
+          3 |                    0 |                     2 | t              |                      0.5 |                        1
 (1 row)
 
 -- Check if the analysis is reflected in the view
@@ -88,7 +90,7 @@ FROM kmersearch_analysis_status
 WHERE table_name = 'test_analysis_dna2';
      table_name     | column_name | kmer_size | occur_bitlen | max_appearance_rate | max_appearance_nrow | has_kmers 
 --------------------+-------------+-----------+--------------+---------------------+---------------------+-----------
- test_analysis_dna2 | sequence    |         8 |            8 |                0.05 |                   0 | t
+ test_analysis_dna2 | sequence    |         4 |            8 |                 0.5 |                   0 | t
 (1 row)
 
 -- Test kmersearch_drop_analysis with complex return type

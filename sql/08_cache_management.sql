@@ -4,7 +4,7 @@ CREATE EXTENSION IF NOT EXISTS pg_kmersearch;
 -- This test covers actual min score cache, rawscore cache, and query pattern cache
 
 -- Set k-mer size for consistent cache behavior
-SET kmersearch.kmer_size = 8;
+SET kmersearch.kmer_size = 4;
 
 -- Clean up any existing tables
 DROP TABLE IF EXISTS test_cache_DNA2, test_cache_DNA4 CASCADE;

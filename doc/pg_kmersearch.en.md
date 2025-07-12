@@ -94,8 +94,8 @@ SELECT name, dna_seq FROM degenerate_sequences;
 ### K-mer Search Usage Examples
 
 ```sql
--- Configure k-mer size (default 8-mer)
-SET kmersearch.kmer_size = 8;
+-- Configure k-mer size (default 16-mer)
+SET kmersearch.kmer_size = 16;
 
 -- Create GIN index (uses current kmersearch.kmer_size setting)
 CREATE INDEX sequences_kmer_idx ON sequences USING gin (dna_seq);
@@ -131,9 +131,9 @@ pg_kmersearch provides several configuration variables that can be set using Pos
 
 | Variable | Default | Range | Description |
 |----------|---------|-------|-------------|
-| `kmersearch.kmer_size` | 8 | 4-64 | K-mer length for index creation and search |
+| `kmersearch.kmer_size` | 16 | 4-64 | K-mer length for index creation and search |
 | `kmersearch.occur_bitlen` | 8 | 0-16 | Bits for occurrence count storage |
-| `kmersearch.max_appearance_rate` | 0.05 | 0.0-1.0 | Maximum k-mer appearance rate for indexing |
+| `kmersearch.max_appearance_rate` | 0.5 | 0.0-1.0 | Maximum k-mer appearance rate for indexing |
 | `kmersearch.max_appearance_nrow` | 0 | 0-∞ | Maximum rows containing k-mer (0=unlimited) |
 | `kmersearch.min_score` | 1 | 0-∞ | Minimum similarity score for search results |
 | `kmersearch.min_shared_ngram_key_rate` | 0.9 | 0.0-1.0 | Minimum threshold for shared n-gram key rate |
@@ -149,16 +149,16 @@ The extension includes automatic exclusion of high-frequency k-mers to improve i
 
 ```sql
 -- Configure exclusion parameters (before index creation)
-SET kmersearch.max_appearance_rate = 0.05;  -- Default: 5% max appearance rate
+SET kmersearch.max_appearance_rate = 0.5;  -- Default: 50% max appearance rate
 SET kmersearch.max_appearance_nrow = 1000;  -- Default: 0 (disabled)
 
 -- Create index with frequency analysis
 CREATE INDEX sequences_kmer_idx ON sequences USING gin (dna_seq);
 
--- View excluded k-mers for an index
+-- View excluded k-mers for a table/column
 SELECT ngram_key, detection_reason 
 FROM kmersearch_highfreq_kmer 
-WHERE index_oid = 'sequences_kmer_idx'::regclass;
+WHERE table_oid = 'sequences'::regclass AND column_name = 'dna_seq';
 
 -- View index statistics
 SELECT table_oid, column_name, kmer_size, occur_bitlen, max_appearance_rate, max_appearance_nrow 
@@ -291,15 +291,15 @@ pg_kmersearch creates several system tables and views for metadata management an
 Stores high-frequency k-mers that are excluded from GIN indexes:
 
 ```sql
--- View excluded k-mers for a specific index
-SELECT index_oid, ngram_key, detection_reason, created_at
+-- View excluded k-mers for a specific table/column
+SELECT table_oid, column_name, ngram_key, detection_reason, created_at
 FROM kmersearch_highfreq_kmer 
-WHERE index_oid = 'sequences_kmer_idx'::regclass;
+WHERE table_oid = 'sequences'::regclass AND column_name = 'dna_seq';
 
--- Count excluded k-mers per index
-SELECT index_oid, COUNT(*) as excluded_count
+-- Count excluded k-mers per table/column
+SELECT table_oid, column_name, COUNT(*) as excluded_count
 FROM kmersearch_highfreq_kmer
-GROUP BY index_oid;
+GROUP BY table_oid, column_name;
 ```
 
 #### kmersearch_highfreq_kmer_meta
@@ -307,7 +307,7 @@ Stores metadata about k-mer frequency analysis:
 
 ```sql
 -- View analysis metadata for all tables
-SELECT table_oid, column_name, k_value, occur_bitlen, 
+SELECT table_oid, column_name, kmer_size, occur_bitlen, 
        max_appearance_rate, max_appearance_nrow, analysis_timestamp
 FROM kmersearch_highfreq_kmer_meta;
 
@@ -322,7 +322,7 @@ Stores GIN index metadata including high-frequency filtering information:
 ```sql
 -- View GIN index metadata
 SELECT index_oid, table_oid, column_name, highfreq_filtered, 
-       k_value, occur_bitlen, created_at
+       kmer_size, occur_bitlen, created_at
 FROM kmersearch_gin_index_meta;
 
 -- Check if an index uses high-frequency filtering
@@ -335,7 +335,7 @@ Stores comprehensive index statistics and configuration:
 
 ```sql
 -- View index statistics
-SELECT index_oid, table_oid, column_name, k_value, total_rows,
+SELECT index_oid, table_oid, column_name, kmer_size, total_nrow,
        highfreq_kmer_count, max_appearance_rate, created_at
 FROM kmersearch_index_info;
 ```
@@ -363,12 +363,12 @@ Shows high-frequency k-mer analysis status for all analyzed tables:
 
 ```sql
 -- View analysis status for all tables
-SELECT table_name, column_name, k_value, highfreq_kmer_count,
+SELECT table_name, column_name, kmer_size, highfreq_kmer_count,
        analysis_timestamp
 FROM kmersearch_analysis_status;
 
 -- Check analysis parameters and results
-SELECT table_name, column_name, k_value, occur_bitlen,
+SELECT table_name, column_name, kmer_size, occur_bitlen,
        max_appearance_rate, max_appearance_nrow,
        highfreq_kmer_count, analysis_timestamp
 FROM kmersearch_analysis_status
@@ -383,19 +383,10 @@ WHERE table_name = 'sequences';
 Performs parallel k-mer frequency analysis on a table:
 
 ```sql
--- Basic analysis with default parallel workers
+-- Basic analysis using table name and column name
 SELECT kmersearch_analyze_table(
-    'sequences'::regclass::oid,    -- table OID
-    'dna_seq',                      -- column name
-    8                               -- k-mer size
-);
-
--- Analysis with specific number of parallel workers
-SELECT kmersearch_analyze_table(
-    (SELECT oid FROM pg_class WHERE relname = 'sequences'),
-    'dna_seq',
-    8,     -- k-mer size
-    4      -- parallel workers
+    'sequences',                   -- table name
+    'dna_seq'                     -- column name
 );
 
 -- Example result interpretation
@@ -405,7 +396,7 @@ SELECT (result).total_rows,
        (result).analysis_duration,
        (result).max_appearance_rate_used
 FROM (
-    SELECT kmersearch_analyze_table('sequences'::regclass::oid, 'dna_seq', 8) as result
+    SELECT kmersearch_analyze_table('sequences', 'dna_seq') as result
 ) t;
 ```
 
@@ -413,11 +404,10 @@ FROM (
 Removes analysis data and frees storage:
 
 ```sql
--- Drop analysis for specific table/column/k-size combination
+-- Drop analysis for specific table/column combination
 SELECT kmersearch_drop_analysis(
-    'sequences'::regclass::oid,
-    'dna_seq',
-    8
+    'sequences',                   -- table name
+    'dna_seq'                     -- column name
 );
 
 -- Example result interpretation
@@ -425,7 +415,7 @@ SELECT (result).dropped_analyses,
        (result).dropped_highfreq_kmers,
        (result).freed_storage_bytes
 FROM (
-    SELECT kmersearch_drop_analysis('sequences'::regclass::oid, 'dna_seq', 8) as result
+    SELECT kmersearch_drop_analysis('sequences', 'dna_seq') as result
 ) t;
 ```
 
@@ -435,28 +425,38 @@ FROM (
 
 ```sql
 -- Load high-frequency k-mers into global cache
-SELECT kmersearch_highfreq_kmers_cache_load(
-    'sequences'::regclass::oid,
-    'dna_seq',
-    8
+SELECT kmersearch_highfreq_kmer_cache_load(
+    'sequences',                   -- table name
+    'dna_seq'                     -- column name
 );
 
--- Free global cache
-SELECT kmersearch_highfreq_kmers_cache_free();
+-- Free global cache for specific table/column
+SELECT kmersearch_highfreq_kmer_cache_free(
+    'sequences',                   -- table name
+    'dna_seq'                     -- column name
+);
+
+-- Free all entries from global cache
+SELECT kmersearch_highfreq_kmer_cache_free_all();
 ```
 
 #### Parallel Cache Functions
 
 ```sql
 -- Load high-frequency k-mers into parallel cache (for multi-process sharing)
-SELECT kmersearch_parallel_highfreq_kmers_cache_load(
-    'sequences'::regclass::oid,
-    'dna_seq', 
-    8
+SELECT kmersearch_parallel_highfreq_kmer_cache_load(
+    'sequences',                   -- table name
+    'dna_seq'                     -- column name
 );
 
--- Free parallel cache
-SELECT kmersearch_parallel_highfreq_kmers_cache_free();
+-- Free parallel cache for specific table/column
+SELECT kmersearch_parallel_highfreq_kmer_cache_free(
+    'sequences',                   -- table name
+    'dna_seq'                     -- column name
+);
+
+-- Free all entries from parallel cache
+SELECT kmersearch_parallel_highfreq_kmer_cache_free_all();
 ```
 
 ### Cache Statistics and Management
@@ -548,17 +548,15 @@ SELECT unnest(kmersearch_get_highfreq_kmer('sequences_kmer_idx'::regclass::oid))
 
 ```sql
 -- 1. Configure parameters
-SET kmersearch.kmer_size = 8;
-SET kmersearch.max_appearance_rate = 0.05;
+SET kmersearch.kmer_size = 16;
+SET kmersearch.max_appearance_rate = 0.5;
 SET kmersearch.max_appearance_nrow = 1000;
 SET kmersearch.occur_bitlen = 8;
 
 -- 2. Perform frequency analysis
 SELECT kmersearch_analyze_table(
-    'sequences'::regclass::oid,
-    'dna_seq',
-    8,
-    4  -- parallel workers
+    'sequences',                   -- table name
+    'dna_seq'                     -- column name
 );
 
 -- 3. Check analysis results
@@ -568,8 +566,8 @@ SELECT * FROM kmersearch_analysis_status WHERE table_name = 'sequences';
 CREATE INDEX sequences_kmer_idx ON sequences USING gin(dna_seq);
 
 -- 5. Load caches for optimal performance
-SELECT kmersearch_highfreq_kmers_cache_load('sequences'::regclass::oid, 'dna_seq', 8);
-SELECT kmersearch_parallel_highfreq_kmers_cache_load('sequences'::regclass::oid, 'dna_seq', 8);
+SELECT kmersearch_highfreq_kmer_cache_load('sequences', 'dna_seq');
+SELECT kmersearch_parallel_highfreq_kmer_cache_load('sequences', 'dna_seq');
 
 -- 6. Perform searches
 SELECT id, name, kmersearch_rawscore(dna_seq, 'ATCGATCG') as score
@@ -636,7 +634,7 @@ SELECT (result).total_rows,
        (result).highfreq_kmers_count,
        ROUND((result).analysis_duration, 2) as duration_seconds
 FROM (
-    SELECT kmersearch_analyze_table('sequences'::regclass::oid, 'dna_seq', 8) as result
+    SELECT kmersearch_analyze_table('sequences', 'dna_seq') as result
 ) t;
 ```
 
@@ -656,7 +654,7 @@ SELECT (result).dropped_analyses,
        (result).dropped_highfreq_kmers,
        pg_size_pretty((result).freed_storage_bytes) as freed_storage
 FROM (
-    SELECT kmersearch_drop_analysis('sequences'::regclass::oid, 'dna_seq', 8) as result
+    SELECT kmersearch_drop_analysis('sequences', 'dna_seq') as result
 ) t;
 ```
 
@@ -719,7 +717,7 @@ SELECT * FROM kmersearch_query_pattern_cache_stats();
 -- Clear caches
 SELECT kmersearch_actual_min_score_cache_free();
 SELECT kmersearch_query_pattern_cache_free();
-SELECT kmersearch_highfreq_kmer_cache_free();
+SELECT kmersearch_highfreq_kmer_cache_free_all();
 
 -- Configure cache sizes
 SET kmersearch.actual_min_score_cache_max_entries = 25000;
@@ -772,28 +770,26 @@ Detailed error messages and hints are provided when settings mismatch.
 ```sql
 -- Execute high-frequency k-mer analysis (create metadata)
 SELECT kmersearch_analyze_table(
-    (SELECT oid FROM pg_class WHERE relname = 'sequences'), 
-    'dna_seq', 
-    8,    -- k-mer length
-    100   -- max appearance row threshold
+    'sequences',                   -- table name
+    'dna_seq'                     -- column name
 );
 
 -- Set GUC variables to match metadata
-SET kmersearch.max_appearance_rate = 0.05;
+SET kmersearch.max_appearance_rate = 0.5;
 SET kmersearch.max_appearance_nrow = 100;
 SET kmersearch.occur_bitlen = 8;
-SET kmersearch.kmer_size = 8;
+SET kmersearch.kmer_size = 16;
 
 -- Load global cache
 SELECT kmersearch_highfreq_kmer_cache_load(
-    (SELECT oid FROM pg_class WHERE relname = 'sequences'),
-    'dna_seq', 8
+    'sequences',                   -- table name
+    'dna_seq'                     -- column name
 );
 
 -- Load parallel cache (optional)
 SELECT kmersearch_parallel_highfreq_kmer_cache_load(
-    (SELECT oid FROM pg_class WHERE relname = 'sequences'),
-    'dna_seq', 8
+    'sequences',                   -- table name
+    'dna_seq'                     -- column name
 );
 
 -- High-speed search using cache hierarchy
@@ -802,14 +798,15 @@ WHERE dna_seq =% 'ATCGATCG'
 ORDER BY kmersearch_rawscore(dna_seq, 'ATCGATCG') DESC;
 
 -- Free caches
-SELECT kmersearch_highfreq_kmer_cache_free();
-SELECT kmersearch_parallel_highfreq_kmer_cache_free();
+SELECT kmersearch_highfreq_kmer_cache_free('sequences', 'dna_seq');
+SELECT kmersearch_parallel_highfreq_kmer_cache_free('sequences', 'dna_seq');
 ```
 
 ### Parallel Cache Functions
 
-- **`kmersearch_parallel_highfreq_kmer_cache_load(table_oid, column_name, kmer_size)`**: Load high-frequency k-mers into shared dshash cache
-- **`kmersearch_parallel_highfreq_kmer_cache_free()`**: Free all entries from the parallel cache and destroy shared memory structures
+- **`kmersearch_parallel_highfreq_kmer_cache_load(table_name, column_name)`**: Load high-frequency k-mers into shared dshash cache
+- **`kmersearch_parallel_highfreq_kmer_cache_free(table_name, column_name)`**: Free specific entries from the parallel cache
+- **`kmersearch_parallel_highfreq_kmer_cache_free_all()`**: Free all entries from the parallel cache and destroy shared memory structures
 
 ### Usage Scenarios
 

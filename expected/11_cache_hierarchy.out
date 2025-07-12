@@ -30,7 +30,7 @@ SELECT 'Phase 1: Testing without metadata table...' as test_phase;
 SELECT test_seq =% 'ATCGATCG' as no_metadata_query FROM test_cache_hierarchy LIMIT 1;
  no_metadata_query 
 -------------------
- t
+ f
 (1 row)
 
 -- Test Phase 2: Create metadata and test GUC validation
@@ -42,9 +42,9 @@ SELECT 'Phase 2: Testing GUC validation...' as test_phase;
 
 -- Insert metadata with specific GUC values
 INSERT INTO kmersearch_highfreq_kmer_meta (table_oid, column_name, kmer_size, occur_bitlen, max_appearance_rate, max_appearance_nrow)
-VALUES ((SELECT oid FROM pg_class WHERE relname = 'test_cache_hierarchy'), 'test_seq', 6, 8, 0.4, 3);
+VALUES ((SELECT oid FROM pg_class WHERE relname = 'test_cache_hierarchy'), 'test_seq', 4, 8, 0.4, 3);
 -- Test 2.1: Matching GUC settings (should work)
-SET kmersearch.kmer_size = 6;
+SET kmersearch.kmer_size = 4;
 SET kmersearch.occur_bitlen = 8;
 SET kmersearch.max_appearance_rate = 0.4;
 SET kmersearch.max_appearance_nrow = 3;
@@ -64,7 +64,7 @@ ERROR:  GUC validation failed: kmersearch.occur_bitlen mismatch
 DETAIL:  Current setting: 16, Required by metadata: 8
 HINT:  Set kmersearch.occur_bitlen = 8 before loading cache.
 -- Test 2.3: Mismatched GUC - max_appearance_rate (should fail during cache load)
-SET kmersearch.kmer_size = 6;  -- Reset
+SET kmersearch.kmer_size = 4;  -- Reset
 SET kmersearch.occur_bitlen = 8;  -- Reset
 SET kmersearch.max_appearance_rate = 0.8;
 SELECT kmersearch_highfreq_kmer_cache_load(
@@ -75,7 +75,7 @@ ERROR:  GUC validation failed: kmersearch.max_appearance_rate mismatch
 DETAIL:  Current setting: 0.8000, Required by metadata: 0.4000
 HINT:  Set kmersearch.max_appearance_rate = 0.4000 before loading cache.
 -- Test 2.4: Mismatched GUC - max_appearance_nrow (should fail during cache load)
-SET kmersearch.kmer_size = 6;  -- Reset
+SET kmersearch.kmer_size = 4;  -- Reset
 SET kmersearch.max_appearance_rate = 0.4;  -- Reset
 SET kmersearch.max_appearance_nrow = 10;
 SELECT kmersearch_highfreq_kmer_cache_load(
@@ -86,7 +86,7 @@ ERROR:  GUC validation failed: kmersearch.max_appearance_nrow mismatch
 DETAIL:  Current setting: 10, Required by metadata: 3
 HINT:  Set kmersearch.max_appearance_nrow = 3 before loading cache.
 -- Reset to correct values for subsequent tests
-SET kmersearch.kmer_size = 6;
+SET kmersearch.kmer_size = 4;
 SET kmersearch.max_appearance_nrow = 3;
 SET kmersearch.occur_bitlen = 8;
 SET kmersearch.max_appearance_rate = 0.4;

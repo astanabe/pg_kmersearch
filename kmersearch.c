@@ -8,8 +8,8 @@ simd_capability_t simd_capability = SIMD_NONE;
 
 /* Global variables for k-mer search configuration */
 int kmersearch_occur_bitlen = 8;  /* Default 8 bits for occurrence count */
-int kmersearch_kmer_size = 8;  /* Default k-mer size */
-double kmersearch_max_appearance_rate = 0.05;  /* Default max appearance rate */
+int kmersearch_kmer_size = 16;  /* Default k-mer size */
+double kmersearch_max_appearance_rate = 0.5;  /* Default max appearance rate */
 int kmersearch_max_appearance_nrow = 0;  /* Default max appearance nrow (0 = undefined) */
 int kmersearch_min_score = 1;  /* Default minimum score for GIN search */
 double kmersearch_min_shared_ngram_key_rate = 0.9;  /* Default minimum shared n-gram key rate for =% operator */
@@ -370,7 +370,7 @@ _PG_init(void)
                             "Maximum appearance rate for k-mers to be included in index",
                             "K-mers appearing in more than this fraction of rows will be identified as highly frequent",
                             &kmersearch_max_appearance_rate,
-                            0.05,
+                            0.5,
                             0.0,
                             1.0,
                             PGC_USERSET,
@@ -422,7 +422,7 @@ _PG_init(void)
                            "K-mer size used for index creation and search",
                            "Length of k-mer sequences for similarity matching (4-64)",
                            &kmersearch_kmer_size,
-                           8,
+                           16,
                            4,
                            64,
                            PGC_USERSET,

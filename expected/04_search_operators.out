@@ -1,4 +1,6 @@
 CREATE EXTENSION IF NOT EXISTS pg_kmersearch;
+-- Set k-mer size to 4 for efficient testing (must be after CREATE EXTENSION)
+SET kmersearch.kmer_size = 4;
 -- Test k-mer search operators and functionality
 -- This test covers the =% operator and search functionality
 -- Clean up any existing tables
@@ -54,7 +56,7 @@ SELECT id, name FROM test_DNA4_sequences WHERE sequence =% 'GCTAG' ORDER BY id;
 ERROR:  Query sequence must be at least 8 bases long
 SELECT id, name FROM test_DNA4_sequences WHERE sequence =% 'NNATCG' ORDER BY id;
 ERROR:  Query sequence must be at least 8 bases long
--- Test query length validation (should work with 8+ characters)
+-- Test query length validation (should work with 4+ characters when k=4)
 SELECT id, name FROM test_DNA2_sequences WHERE sequence =% 'ATCGATCG' ORDER BY id;
  id | name 
 ----+------
@@ -64,7 +66,7 @@ SELECT id, name FROM test_DNA2_sequences WHERE sequence =% 'ATCGATCG' ORDER BY i
 
 -- Test too short query (should error)
 \set ON_ERROR_STOP off
-SELECT id, name FROM test_DNA2_sequences WHERE sequence =% 'ATCG';
+SELECT id, name FROM test_DNA2_sequences WHERE sequence =% 'ATC';
 ERROR:  Query sequence must be at least 8 bases long
 \set ON_ERROR_STOP on
 -- Test case insensitivity in queries

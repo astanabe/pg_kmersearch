@@ -14,7 +14,7 @@ BEGIN
     END LOOP;
 END $$;
 -- Set parameters to detect high-frequency k-mers
-SET kmersearch.kmer_size = 8;
+SET kmersearch.kmer_size = 4;
 SET kmersearch.occur_bitlen = 8;
 SET kmersearch.max_appearance_rate = 0.1;  -- Allow up to 10% appearance rate
 SET kmersearch.max_appearance_nrow = 10;   -- k-mers appearing in > 10 rows are high-frequency
@@ -29,7 +29,7 @@ SELECT kmersearch_analyze_table(
     'test_parallel_enhanced'::text,
     'seq'::text
 ) AS analysis_result;
-NOTICE:  Performing k-mer frequency analysis for k=8
+NOTICE:  Performing k-mer frequency analysis for k=4
 NOTICE:  Max appearance rate: 0.100000, Max appearance nrow: 10
 NOTICE:  Phase 1: Analyzing k-mer frequencies with 2 parallel workers...
 NOTICE:  Phase 2: Collecting n-gram keys for high-frequency k-mers...
@@ -168,11 +168,11 @@ WHERE seq =% 'ATCGATCG'
 LIMIT 5;
  id | rawscore 
 ----+----------
-  1 |       25
-  3 |       25
-  5 |       25
-  7 |       25
-  9 |       25
+  1 |       29
+  3 |       29
+  5 |       29
+  7 |       29
+  9 |       29
 (5 rows)
 
 -- Test Phase 6: Cache cleanup and fallback

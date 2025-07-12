@@ -15,7 +15,7 @@ SHOW kmersearch.rawscore_cache_max_entries;
 SHOW kmersearch.query_pattern_cache_max_entries;
 
 -- Test setting valid values
-SET kmersearch.kmer_size = 12;
+SET kmersearch.kmer_size = 6;
 SHOW kmersearch.kmer_size;
 
 SET kmersearch.occur_bitlen = 10;
@@ -87,9 +87,9 @@ SET kmersearch.actual_min_score_cache_max_entries = 10000001;  -- above maximum
 \set ON_ERROR_STOP on
 
 -- Reset to defaults for other tests
-SET kmersearch.kmer_size = 8;
+SET kmersearch.kmer_size = 4;
 SET kmersearch.occur_bitlen = 8;
-SET kmersearch.max_appearance_rate = 0.05;
+SET kmersearch.max_appearance_rate = 0.5;
 SET kmersearch.max_appearance_nrow = 0;
 SET kmersearch.min_score = 1;
 SET kmersearch.min_shared_ngram_key_rate = 0.9;

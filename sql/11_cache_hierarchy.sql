@@ -34,10 +34,10 @@ SELECT 'Phase 2: Testing GUC validation...' as test_phase;
 
 -- Insert metadata with specific GUC values
 INSERT INTO kmersearch_highfreq_kmer_meta (table_oid, column_name, kmer_size, occur_bitlen, max_appearance_rate, max_appearance_nrow)
-VALUES ((SELECT oid FROM pg_class WHERE relname = 'test_cache_hierarchy'), 'test_seq', 6, 8, 0.4, 3);
+VALUES ((SELECT oid FROM pg_class WHERE relname = 'test_cache_hierarchy'), 'test_seq', 4, 8, 0.4, 3);
 
 -- Test 2.1: Matching GUC settings (should work)
-SET kmersearch.kmer_size = 6;
+SET kmersearch.kmer_size = 4;
 SET kmersearch.occur_bitlen = 8;
 SET kmersearch.max_appearance_rate = 0.4;
 SET kmersearch.max_appearance_nrow = 3;
@@ -51,7 +51,7 @@ SELECT kmersearch_highfreq_kmer_cache_load(
 ) as mismatched_occur_bitlen;
 
 -- Test 2.3: Mismatched GUC - max_appearance_rate (should fail during cache load)
-SET kmersearch.kmer_size = 6;  -- Reset
+SET kmersearch.kmer_size = 4;  -- Reset
 SET kmersearch.occur_bitlen = 8;  -- Reset
 SET kmersearch.max_appearance_rate = 0.8;
 SELECT kmersearch_highfreq_kmer_cache_load(
@@ -60,7 +60,7 @@ SELECT kmersearch_highfreq_kmer_cache_load(
 ) as mismatched_rate;
 
 -- Test 2.4: Mismatched GUC - max_appearance_nrow (should fail during cache load)
-SET kmersearch.kmer_size = 6;  -- Reset
+SET kmersearch.kmer_size = 4;  -- Reset
 SET kmersearch.max_appearance_rate = 0.4;  -- Reset
 SET kmersearch.max_appearance_nrow = 10;
 SELECT kmersearch_highfreq_kmer_cache_load(
@@ -69,7 +69,7 @@ SELECT kmersearch_highfreq_kmer_cache_load(
 ) as mismatched_nrow;
 
 -- Reset to correct values for subsequent tests
-SET kmersearch.kmer_size = 6;
+SET kmersearch.kmer_size = 4;
 SET kmersearch.max_appearance_nrow = 3;
 SET kmersearch.occur_bitlen = 8;
 SET kmersearch.max_appearance_rate = 0.4;
