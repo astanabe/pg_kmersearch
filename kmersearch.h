@@ -444,6 +444,32 @@ Datum kmersearch_query_pattern_cache_free(PG_FUNCTION_ARGS);
 void kmersearch_free_query_pattern_cache_internal(void);
 void kmersearch_free_actual_min_score_cache_internal(void);
 
+/* High-frequency k-mer cache global variables (defined in kmersearch_cache.c) */
+extern HighfreqKmerCache global_highfreq_cache;
+extern bool kmersearch_force_use_dshash;
+extern ParallelHighfreqKmerCache *parallel_highfreq_cache;
+extern dsm_segment *parallel_cache_segment;
+extern dsa_area *parallel_cache_dsa;
+extern dshash_table *parallel_cache_hash;
+
+/* High-frequency k-mer cache internal functions */
+bool kmersearch_validate_guc_against_metadata(Oid table_oid, const char *column_name, int k_value);
+VarBit **kmersearch_get_highfreq_kmer_from_table(Oid table_oid, const char *column_name, int k, int *nkeys);
+HTAB *kmersearch_create_highfreq_hash_from_array(VarBit **kmers, int nkeys);
+uint64 kmersearch_ngram_key_to_hash(VarBit *ngram_key);
+bool kmersearch_is_global_highfreq_cache_loaded(void);
+bool kmersearch_lookup_in_global_cache(VarBit *kmer_key);
+void kmersearch_highfreq_kmer_cache_init(void);
+bool kmersearch_highfreq_kmer_cache_load_internal(Oid table_oid, const char *column_name, int k_value);
+void kmersearch_highfreq_kmer_cache_free_internal(void);
+bool kmersearch_highfreq_kmer_cache_is_valid(Oid table_oid, const char *column_name, int k_value);
+
+/* Parallel high-frequency k-mer cache internal functions */
+void kmersearch_parallel_highfreq_kmer_cache_init(void);
+bool kmersearch_parallel_highfreq_kmer_cache_load_internal(Oid table_oid, const char *column_name, int k_value);
+void kmersearch_parallel_highfreq_kmer_cache_free_internal(void);
+void kmersearch_parallel_cache_cleanup_on_exit(int code, Datum arg);
+
 /* High-frequency k-mer cache functions */
 Datum kmersearch_highfreq_kmer_cache_load(PG_FUNCTION_ARGS);
 Datum kmersearch_highfreq_kmer_cache_free(PG_FUNCTION_ARGS);
