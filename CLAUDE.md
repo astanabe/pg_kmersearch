@@ -335,6 +335,35 @@ The codebase includes platform-specific SIMD optimizations with function dispatc
 
 ## Development Notes
 
+### Repository File Management
+
+**IMPORTANT: Files to EXCLUDE from Git Repository**
+
+The following types of files should NEVER be committed to the git repository:
+
+**Compiled Files and Build Artifacts:**
+- `*.bc` - LLVM bitcode files
+- `*.o` - Object files  
+- `*.so` - Shared library files (e.g., `pg_kmersearch.so`)
+- Any other compiled binaries or intermediate build files
+
+**Regression Test Output Files:**
+- `results/*.out` - Generated test result files
+- `results/` directory itself (created during testing)
+
+**Temporary and Debug Files:**
+- `test_*.sql` - Temporary test files created for debugging
+- `debug_*.sql` - Debug scripts
+- `*.tmp` - Temporary files
+- `*.log` - Log files
+- `*~` - Backup files created by editors
+- `.DS_Store` - macOS system files
+- `Thumbs.db` - Windows thumbnail cache
+
+**Note:** The `expected/` directory and its `*.out` files ARE required as they contain the expected test results for regression testing.
+
+Use `make clean` to remove build artifacts before committing changes. Always verify with `git status` that no temporary or compiled files are being tracked.
+
 ### File Organization
 - SQL extension definition: `pg_kmersearch--1.0.sql`
 - Test cases: `sql/*.sql` with expected outputs in `expected/`

@@ -25,7 +25,7 @@ SET kmersearch.max_appearance_nrow = 10;   -- k-mers appearing in > 10 rows are 
 
 -- Perform analysis
 SELECT 'Performing k-mer frequency analysis...' AS status;
-SELECT kmersearch_analyze_table(
+SELECT kmersearch_perform_highfreq_analysis(
     'test_parallel_enhanced'::text,
     'seq'::text
 ) AS analysis_result;

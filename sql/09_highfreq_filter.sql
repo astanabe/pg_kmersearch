@@ -35,8 +35,8 @@ INSERT INTO test_highfreq_dna2 (name, sequence) VALUES
 -- Create GIN index for high-frequency k-mer analysis
 CREATE INDEX idx_test_highfreq_dna2_gin ON test_highfreq_dna2 USING gin (sequence);
 
--- Test kmersearch_analyze_table functionality
-SELECT 'Testing kmersearch_analyze_table...' as test_phase;
+-- Test kmersearch_perform_highfreq_analysis functionality
+SELECT 'Testing kmersearch_perform_highfreq_analysis...' as test_phase;
 
 -- Analyze the table to identify high-frequency k-mers
 -- This will create entries in kmersearch_highfreq_kmer and kmersearch_highfreq_kmer_meta tables
@@ -45,7 +45,7 @@ SET kmersearch.max_appearance_rate = 0.3;  -- 30% appearance rate
 SET kmersearch.max_appearance_nrow = 2;    -- k-mers in >2 rows are high-freq
 
 WITH analysis_result AS (
-    SELECT kmersearch_analyze_table(
+    SELECT kmersearch_perform_highfreq_analysis(
         'test_highfreq_dna2'::text, 
         'sequence'::text
     ) AS result

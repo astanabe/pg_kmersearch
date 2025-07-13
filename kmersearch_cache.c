@@ -1402,6 +1402,88 @@ kmersearch_is_global_highfreq_cache_loaded(void)
 }
 
 /*
+ * Validate that the cache key matches the specified table and column
+ */
+bool
+kmersearch_validate_cache_key_match(Oid table_oid, const char *column_name)
+{
+    HighfreqCacheKey expected_key;
+    bool matches;
+    
+    if (!global_highfreq_cache.is_valid) {
+        ereport(DEBUG1, (errmsg("kmersearch_validate_cache_key_match: global cache is not valid")));
+        return false;
+    }
+    
+    /* Build expected cache key using current GUC values */
+    expected_key.table_oid = table_oid;
+    expected_key.column_name_hash = hash_any((unsigned char*)column_name, strlen(column_name));
+    expected_key.kmer_size = kmersearch_kmer_size;
+    expected_key.occur_bitlen = kmersearch_occur_bitlen;
+    expected_key.max_appearance_rate = kmersearch_max_appearance_rate;
+    expected_key.max_appearance_nrow = kmersearch_max_appearance_nrow;
+    
+    /* Compare with current cache key */
+    matches = (memcmp(&global_highfreq_cache.current_cache_key, &expected_key, sizeof(HighfreqCacheKey)) == 0);
+    
+    if (!matches) {
+        ereport(DEBUG1, (errmsg("kmersearch_validate_cache_key_match: cache key mismatch - "
+                               "expected table_oid=%u, kmer_size=%d, occur_bitlen=%d, max_appearance_rate=%f, max_appearance_nrow=%d "
+                               "but cache has table_oid=%u, kmer_size=%d, occur_bitlen=%d, max_appearance_rate=%f, max_appearance_nrow=%d",
+                               expected_key.table_oid, expected_key.kmer_size, expected_key.occur_bitlen,
+                               expected_key.max_appearance_rate, expected_key.max_appearance_nrow,
+                               global_highfreq_cache.current_cache_key.table_oid,
+                               global_highfreq_cache.current_cache_key.kmer_size,
+                               global_highfreq_cache.current_cache_key.occur_bitlen,
+                               global_highfreq_cache.current_cache_key.max_appearance_rate,
+                               global_highfreq_cache.current_cache_key.max_appearance_nrow)));
+    }
+    
+    return matches;
+}
+
+/*
+ * Validate that the parallel cache key matches the specified table and column
+ */
+bool
+kmersearch_validate_parallel_cache_key_match(Oid table_oid, const char *column_name)
+{
+    HighfreqCacheKey expected_key;
+    bool matches;
+    
+    if (parallel_highfreq_cache == NULL || !parallel_highfreq_cache->is_initialized) {
+        ereport(DEBUG1, (errmsg("kmersearch_validate_parallel_cache_key_match: parallel cache is not initialized")));
+        return false;
+    }
+    
+    /* Build expected cache key using current GUC values */
+    expected_key.table_oid = table_oid;
+    expected_key.column_name_hash = hash_any((unsigned char*)column_name, strlen(column_name));
+    expected_key.kmer_size = kmersearch_kmer_size;
+    expected_key.occur_bitlen = kmersearch_occur_bitlen;
+    expected_key.max_appearance_rate = kmersearch_max_appearance_rate;
+    expected_key.max_appearance_nrow = kmersearch_max_appearance_nrow;
+    
+    /* Compare with current parallel cache key */
+    matches = (memcmp(&parallel_highfreq_cache->cache_key, &expected_key, sizeof(HighfreqCacheKey)) == 0);
+    
+    if (!matches) {
+        ereport(DEBUG1, (errmsg("kmersearch_validate_parallel_cache_key_match: cache key mismatch - "
+                               "expected table_oid=%u, kmer_size=%d, occur_bitlen=%d, max_appearance_rate=%f, max_appearance_nrow=%d "
+                               "but parallel cache has table_oid=%u, kmer_size=%d, occur_bitlen=%d, max_appearance_rate=%f, max_appearance_nrow=%d",
+                               expected_key.table_oid, expected_key.kmer_size, expected_key.occur_bitlen,
+                               expected_key.max_appearance_rate, expected_key.max_appearance_nrow,
+                               parallel_highfreq_cache->cache_key.table_oid,
+                               parallel_highfreq_cache->cache_key.kmer_size,
+                               parallel_highfreq_cache->cache_key.occur_bitlen,
+                               parallel_highfreq_cache->cache_key.max_appearance_rate,
+                               parallel_highfreq_cache->cache_key.max_appearance_nrow)));
+    }
+    
+    return matches;
+}
+
+/*
  * Lookup k-mer in global_highfreq_cache
  */
 bool
@@ -1473,12 +1555,21 @@ kmersearch_highfreq_kmer_cache_free(PG_FUNCTION_ARGS)
                  errmsg("relation \"%s\" does not exist", table_name)));
     }
     
-    /* TODO: Validate cache key matches table/column before freeing */
-    /* For now, just free the global cache */
+    /* Validate cache key matches table/column before freeing */
+    if (!kmersearch_validate_cache_key_match(table_oid, column_name)) {
+        ereport(WARNING,
+                (errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+                 errmsg("cache key mismatch for table \"%s\" column \"%s\"", table_name, column_name),
+                 errhint("The cache was not loaded for this table/column combination, or was loaded with different parameters.")));
+        PG_RETURN_INT32(0);
+    }
     
     /* Count entries before freeing */
     if (global_highfreq_cache.is_valid)
         freed_entries = global_highfreq_cache.highfreq_count;
+    
+    ereport(LOG, (errmsg("kmersearch_highfreq_kmer_cache_free: freeing %d entries for table \"%s\" column \"%s\"", 
+                         freed_entries, table_name, column_name)));
     
     /* Free the cache */
     kmersearch_highfreq_kmer_cache_free_internal();
@@ -1870,8 +1961,14 @@ kmersearch_parallel_highfreq_kmer_cache_free(PG_FUNCTION_ARGS)
     
     ereport(LOG, (errmsg("kmersearch_parallel_highfreq_kmer_cache_free: Starting function call for table %s, column %s", table_name, column_name)));
     
-    /* TODO: Validate cache key matches table/column before freeing */
-    /* For now, just free the parallel cache */
+    /* Validate cache key matches table/column before freeing */
+    if (!kmersearch_validate_parallel_cache_key_match(table_oid, column_name)) {
+        ereport(WARNING,
+                (errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+                 errmsg("parallel cache key mismatch for table \"%s\" column \"%s\"", table_name, column_name),
+                 errhint("The parallel cache was not loaded for this table/column combination, or was loaded with different parameters.")));
+        PG_RETURN_INT32(0);
+    }
     
     /* Get the actual number of entries from the cache */
     if (parallel_highfreq_cache != NULL && parallel_highfreq_cache->is_initialized) {
@@ -2164,8 +2261,15 @@ kmersearch_parallel_highfreq_kmer_cache_load_internal(Oid table_oid, const char 
     
     /* Initialize parallel cache structure in DSM */
     parallel_highfreq_cache = (ParallelHighfreqKmerCache *) dsm_segment_address(parallel_cache_segment);
+    
+    /* Initialize complete cache key */
     parallel_highfreq_cache->cache_key.table_oid = table_oid;
+    parallel_highfreq_cache->cache_key.column_name_hash = hash_any((unsigned char*)column_name, strlen(column_name));
     parallel_highfreq_cache->cache_key.kmer_size = k_value;
+    parallel_highfreq_cache->cache_key.occur_bitlen = kmersearch_occur_bitlen;
+    parallel_highfreq_cache->cache_key.max_appearance_rate = kmersearch_max_appearance_rate;
+    parallel_highfreq_cache->cache_key.max_appearance_nrow = kmersearch_max_appearance_nrow;
+    
     parallel_highfreq_cache->num_entries = highfreq_count;
     parallel_highfreq_cache->segment_size = segment_size;
     parallel_highfreq_cache->dsm_handle = dsm_segment_handle(parallel_cache_segment);

@@ -30,8 +30,8 @@ INSERT INTO test_analysis_dna2 (name, sequence) VALUES
 -- Create GIN index
 CREATE INDEX idx_test_analysis_gin ON test_analysis_dna2 USING gin (sequence);
 
--- Test kmersearch_analyze_table with complex return type
-SELECT 'Testing kmersearch_analyze_table return type...' as test_phase;
+-- Test kmersearch_perform_highfreq_analysis with complex return type
+SELECT 'Testing kmersearch_perform_highfreq_analysis return type...' as test_phase;
 SELECT 
     total_rows,
     highfreq_kmers_count,
@@ -39,7 +39,7 @@ SELECT
     analysis_duration >= 0 as duration_valid,
     max_appearance_rate_used,
     max_appearance_nrow_used
-FROM kmersearch_analyze_table(
+FROM kmersearch_perform_highfreq_analysis(
     'test_analysis_dna2', 
     'sequence'
 );
@@ -57,13 +57,13 @@ SELECT
 FROM kmersearch_analysis_status
 WHERE table_name = 'test_analysis_dna2';
 
--- Test kmersearch_drop_analysis with complex return type
-SELECT 'Testing kmersearch_drop_analysis return type...' as test_phase;
+-- Test kmersearch_undo_highfreq_analysis with complex return type
+SELECT 'Testing kmersearch_undo_highfreq_analysis return type...' as test_phase;
 SELECT 
     dropped_analyses,
     dropped_highfreq_kmers,
     freed_storage_bytes >= 0 as storage_freed
-FROM kmersearch_drop_analysis(
+FROM kmersearch_undo_highfreq_analysis(
     'test_analysis_dna2', 
     'sequence'
 );
@@ -80,7 +80,7 @@ SELECT
     dropped_analyses,
     dropped_highfreq_kmers,
     freed_storage_bytes
-FROM kmersearch_drop_analysis(
+FROM kmersearch_undo_highfreq_analysis(
     'test_analysis_dna2', 
     'sequence'
 );
