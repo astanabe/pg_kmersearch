@@ -523,8 +523,9 @@ static simd_capability_t detect_cpu_capabilities(void)
         __cpuid_count(7, 0, eax, ebx, ecx, edx);
         if (ebx & (1 << 16)) { /* AVX512F */
             if (ebx & (1 << 30)) { /* AVX512BW */
-                return SIMD_AVX512;
+                return SIMD_AVX512BW;
             }
+            return SIMD_AVX512F;
         }
     }
     
@@ -564,11 +565,18 @@ static void init_simd_dispatch_table(void)
     /* Override with SIMD implementations if available */
     switch (simd_capability) {
 #ifdef __x86_64__
-        case SIMD_AVX512:
+        case SIMD_AVX512BW:
             simd_dispatch.dna2_encode = dna2_encode_avx512;
             simd_dispatch.dna2_decode = dna2_decode_avx512;
             simd_dispatch.dna4_encode = dna4_encode_avx512;
             simd_dispatch.dna4_decode = dna4_decode_avx512;
+            break;
+        case SIMD_AVX512F:
+            /* AVX512F without BW - use AVX2 fallback for encode/decode */
+            simd_dispatch.dna2_encode = dna2_encode_avx2;
+            simd_dispatch.dna2_decode = dna2_decode_avx2;
+            simd_dispatch.dna4_encode = dna4_encode_avx2;
+            simd_dispatch.dna4_decode = dna4_decode_avx2;
             break;
         case SIMD_AVX2:
             simd_dispatch.dna2_encode = dna2_encode_avx2;
@@ -694,8 +702,9 @@ kmersearch_expand_dna4_kmer2_to_dna2_direct(VarBit *dna4_seq, int start_pos, int
 Datum *
 kmersearch_extract_dna2_kmer2_direct(VarBit *seq, int k, int *nkeys)
 {
+    /* Use SIMD based on runtime capability */
 #ifdef __x86_64__
-    if (simd_capability >= SIMD_AVX512) {
+    if (simd_capability >= SIMD_AVX512BW) {
         return kmersearch_extract_dna2_kmer2_direct_avx512(seq, k, nkeys);
     }
     if (simd_capability >= SIMD_AVX2) {
@@ -797,8 +806,9 @@ kmersearch_extract_dna2_kmer2_direct_scalar(VarBit *seq, int k, int *nkeys)
 Datum *
 kmersearch_extract_dna4_kmer2_with_expansion_direct(VarBit *seq, int k, int *nkeys)
 {
+    /* Use SIMD based on runtime capability */
 #ifdef __x86_64__
-    if (simd_capability >= SIMD_AVX512) {
+    if (simd_capability >= SIMD_AVX512BW) {
         return kmersearch_extract_dna4_kmer2_with_expansion_direct_avx512(seq, k, nkeys);
     }
     if (simd_capability >= SIMD_AVX2) {
@@ -912,8 +922,9 @@ kmersearch_extract_dna4_kmer2_with_expansion_direct_scalar(VarBit *seq, int k, i
 static int
 kmersearch_count_matching_kmer_fast(VarBit **seq_keys, int seq_nkeys, VarBit **query_keys, int query_nkeys)
 {
+    /* Use SIMD based on runtime capability */
 #ifdef __x86_64__
-    if (simd_capability >= SIMD_AVX512) {
+    if (simd_capability >= SIMD_AVX512BW) {
         return kmersearch_count_matching_kmer_fast_avx512(seq_keys, seq_nkeys, query_keys, query_nkeys);
     }
     if (simd_capability >= SIMD_AVX2) {
@@ -971,16 +982,12 @@ kmersearch_count_matching_kmer_fast_scalar(VarBit **seq_keys, int seq_nkeys, Var
     
     /* Safety check: ensure we have valid query keys */
     if (query_keys[0] == NULL) {
-        elog(LOG, "kmersearch_count_matching_kmer_fast: NULL query key detected");
         return 0;
     }
     
     hash_ctl.keysize = VARBITBYTES(query_keys[0]);  /* Use data size, not total size */
     hash_ctl.entrysize = sizeof(bool);
     hash_ctl.hash = tag_hash;
-    
-    elog(LOG, "kmersearch_count_matching_kmer_fast: Creating hash with keysize=%zu, query_nkeys=%d", 
-         (size_t)VARBITBYTES(query_keys[0]), query_nkeys);
     
     query_hash = hash_create("QueryKmerHash", query_nkeys * 2, &hash_ctl,
                             HASH_ELEM | HASH_FUNCTION | HASH_BLOBS);
@@ -989,7 +996,6 @@ kmersearch_count_matching_kmer_fast_scalar(VarBit **seq_keys, int seq_nkeys, Var
     for (i = 0; i < query_nkeys; i++)
     {
         if (query_keys[i] == NULL) {
-            elog(LOG, "kmersearch_count_matching_kmer_fast: NULL query key at index %d", i);
             continue;
         }
         hash_search(query_hash, VARBITS(query_keys[i]), HASH_ENTER, &found);
@@ -999,13 +1005,10 @@ kmersearch_count_matching_kmer_fast_scalar(VarBit **seq_keys, int seq_nkeys, Var
     for (i = 0; i < seq_nkeys; i++)
     {
         if (seq_keys[i] == NULL) {
-            elog(LOG, "kmersearch_count_matching_kmer_fast: NULL seq key at index %d", i);
             continue;
         }
         
         if (VARBITBYTES(seq_keys[i]) != VARBITBYTES(query_keys[0])) {
-            elog(LOG, "kmersearch_count_matching_kmer_fast: Size mismatch seq[%d]=%zu vs query[0]=%zu", 
-                 i, (size_t)VARBITBYTES(seq_keys[i]), (size_t)VARBITBYTES(query_keys[0]));
             continue;
         }
         
@@ -1170,23 +1173,12 @@ kmersearch_correctedscore_dna2(PG_FUNCTION_ARGS)
             seq_keys[i] = DatumGetVarBitP(seq_datum_keys[i]);
         }
     }
-    elog(LOG, "correctedscore_dna2: seq_keys=%p, seq_nkeys=%d", seq_keys, seq_nkeys);
-    if (seq_keys && seq_nkeys > 0) {
-        elog(LOG, "correctedscore_dna2: First seq k-mer bitlen=%d", VARBITLEN(seq_keys[0]));
-    }
-    
     /* Extract k-mers from query */
     query_keys = kmersearch_extract_kmer_from_query(query_string, k, &query_nkeys);
-    elog(LOG, "correctedscore_dna2: query_keys=%p, query_nkeys=%d", query_keys, query_nkeys);
-    if (query_keys && query_nkeys > 0) {
-        elog(LOG, "correctedscore_dna2: First query k-mer bitlen=%d", VARBITLEN(query_keys[0]));
-    }
     
     /* Count shared k-mers using optimized function */
     if (seq_keys && query_keys && seq_nkeys > 0 && query_nkeys > 0) {
-        elog(LOG, "correctedscore_dna2: Calling kmersearch_count_matching_kmer_fast");
         shared_count = kmersearch_count_matching_kmer_fast(seq_keys, seq_nkeys, query_keys, query_nkeys);
-        elog(LOG, "correctedscore_dna2: shared_count=%d", shared_count);
     }
     
     /* Cleanup */
@@ -1231,23 +1223,12 @@ kmersearch_correctedscore_dna4(PG_FUNCTION_ARGS)
             seq_keys[i] = DatumGetVarBitP(seq_datum_keys[i]);
         }
     }
-    elog(LOG, "correctedscore_dna4: seq_keys=%p, seq_nkeys=%d", seq_keys, seq_nkeys);
-    if (seq_keys && seq_nkeys > 0) {
-        elog(LOG, "correctedscore_dna4: First seq k-mer bitlen=%d", VARBITLEN(seq_keys[0]));
-    }
-    
     /* Extract k-mers from query */
     query_keys = kmersearch_extract_kmer_from_query(query_string, k, &query_nkeys);
-    elog(LOG, "correctedscore_dna4: query_keys=%p, query_nkeys=%d", query_keys, query_nkeys);
-    if (query_keys && query_nkeys > 0) {
-        elog(LOG, "correctedscore_dna4: First query k-mer bitlen=%d", VARBITLEN(query_keys[0]));
-    }
     
     /* Count shared k-mers using optimized function */
     if (seq_keys && query_keys && seq_nkeys > 0 && query_nkeys > 0) {
-        elog(LOG, "correctedscore_dna4: Calling kmersearch_count_matching_kmer_fast");
         shared_count = kmersearch_count_matching_kmer_fast(seq_keys, seq_nkeys, query_keys, query_nkeys);
-        elog(LOG, "correctedscore_dna4: shared_count=%d", shared_count);
     }
     
     /* Cleanup */

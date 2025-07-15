@@ -88,10 +88,20 @@
 typedef enum {
     SIMD_NONE,
     SIMD_AVX2,     /* AMD64: AVX2 + SSE4.x */
-    SIMD_AVX512,   /* AMD64: AVX512 + AVX2 + SSE4.x */
+    SIMD_AVX512F,  /* AMD64: AVX512F (basic set) */
+    SIMD_AVX512BW, /* AMD64: AVX512BW (byte/word operations) */
     SIMD_NEON,     /* ARM64: Apple M1+ NEON */
     SIMD_SVE       /* ARM64: Graviton4+ SVE */
 } simd_capability_t;
+
+/*
+ * SIMD comparison thresholds (bit length)
+ * These thresholds determine when to use SIMD over memcmp
+ */
+#define SIMD_COMPARE_AVX2_THRESHOLD    128     /* 128 bits: Use AVX2 */
+#define SIMD_COMPARE_AVX512_THRESHOLD  256     /* 256 bits: Use AVX512 */
+#define SIMD_COMPARE_NEON_THRESHOLD    64      /* 64 bits: Use NEON */
+#define SIMD_COMPARE_SVE_THRESHOLD     128     /* 128 bits: Use SVE */
 
 /* Function pointers for different SIMD implementations */
 typedef struct {
@@ -99,6 +109,7 @@ typedef struct {
     void (*dna2_decode)(const uint8_t* input, char* output, int len);
     void (*dna4_encode)(const char* input, uint8_t* output, int len);
     void (*dna4_decode)(const uint8_t* input, char* output, int len);
+    int (*dna_compare)(const uint8_t* a, const uint8_t* b, int bit_len);
 } simd_dispatch_table_t;
 
 /*

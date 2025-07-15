@@ -83,6 +83,137 @@ CREATE OPERATOR = (
     HASHES
 );
 
+-- BTree comparison functions
+CREATE FUNCTION kmersearch_dna2_cmp(DNA2, DNA2) RETURNS integer
+    AS 'MODULE_PATHNAME', 'kmersearch_dna2_cmp'
+    LANGUAGE C IMMUTABLE STRICT;
+
+CREATE FUNCTION kmersearch_dna4_cmp(DNA4, DNA4) RETURNS integer
+    AS 'MODULE_PATHNAME', 'kmersearch_dna4_cmp'
+    LANGUAGE C IMMUTABLE STRICT;
+
+-- DNA2 comparison operators
+CREATE FUNCTION kmersearch_dna2_lt(DNA2, DNA2) RETURNS boolean
+    AS 'MODULE_PATHNAME', 'kmersearch_dna2_lt'
+    LANGUAGE C IMMUTABLE STRICT;
+
+CREATE FUNCTION kmersearch_dna2_le(DNA2, DNA2) RETURNS boolean
+    AS 'MODULE_PATHNAME', 'kmersearch_dna2_le'
+    LANGUAGE C IMMUTABLE STRICT;
+
+CREATE FUNCTION kmersearch_dna2_gt(DNA2, DNA2) RETURNS boolean
+    AS 'MODULE_PATHNAME', 'kmersearch_dna2_gt'
+    LANGUAGE C IMMUTABLE STRICT;
+
+CREATE FUNCTION kmersearch_dna2_ge(DNA2, DNA2) RETURNS boolean
+    AS 'MODULE_PATHNAME', 'kmersearch_dna2_ge'
+    LANGUAGE C IMMUTABLE STRICT;
+
+CREATE FUNCTION kmersearch_dna2_ne(DNA2, DNA2) RETURNS boolean
+    AS 'MODULE_PATHNAME', 'kmersearch_dna2_ne'
+    LANGUAGE C IMMUTABLE STRICT;
+
+CREATE OPERATOR < (
+    LEFTARG = DNA2,
+    RIGHTARG = DNA2,
+    FUNCTION = kmersearch_dna2_lt,
+    COMMUTATOR = >,
+    NEGATOR = >=
+);
+
+CREATE OPERATOR <= (
+    LEFTARG = DNA2,
+    RIGHTARG = DNA2,
+    FUNCTION = kmersearch_dna2_le,
+    COMMUTATOR = >=,
+    NEGATOR = >
+);
+
+CREATE OPERATOR > (
+    LEFTARG = DNA2,
+    RIGHTARG = DNA2,
+    FUNCTION = kmersearch_dna2_gt,
+    COMMUTATOR = <,
+    NEGATOR = <=
+);
+
+CREATE OPERATOR >= (
+    LEFTARG = DNA2,
+    RIGHTARG = DNA2,
+    FUNCTION = kmersearch_dna2_ge,
+    COMMUTATOR = <=,
+    NEGATOR = <
+);
+
+CREATE OPERATOR <> (
+    LEFTARG = DNA2,
+    RIGHTARG = DNA2,
+    FUNCTION = kmersearch_dna2_ne,
+    COMMUTATOR = <>,
+    NEGATOR = =
+);
+
+-- DNA4 comparison operators
+CREATE FUNCTION kmersearch_dna4_lt(DNA4, DNA4) RETURNS boolean
+    AS 'MODULE_PATHNAME', 'kmersearch_dna4_lt'
+    LANGUAGE C IMMUTABLE STRICT;
+
+CREATE FUNCTION kmersearch_dna4_le(DNA4, DNA4) RETURNS boolean
+    AS 'MODULE_PATHNAME', 'kmersearch_dna4_le'
+    LANGUAGE C IMMUTABLE STRICT;
+
+CREATE FUNCTION kmersearch_dna4_gt(DNA4, DNA4) RETURNS boolean
+    AS 'MODULE_PATHNAME', 'kmersearch_dna4_gt'
+    LANGUAGE C IMMUTABLE STRICT;
+
+CREATE FUNCTION kmersearch_dna4_ge(DNA4, DNA4) RETURNS boolean
+    AS 'MODULE_PATHNAME', 'kmersearch_dna4_ge'
+    LANGUAGE C IMMUTABLE STRICT;
+
+CREATE FUNCTION kmersearch_dna4_ne(DNA4, DNA4) RETURNS boolean
+    AS 'MODULE_PATHNAME', 'kmersearch_dna4_ne'
+    LANGUAGE C IMMUTABLE STRICT;
+
+CREATE OPERATOR < (
+    LEFTARG = DNA4,
+    RIGHTARG = DNA4,
+    FUNCTION = kmersearch_dna4_lt,
+    COMMUTATOR = >,
+    NEGATOR = >=
+);
+
+CREATE OPERATOR <= (
+    LEFTARG = DNA4,
+    RIGHTARG = DNA4,
+    FUNCTION = kmersearch_dna4_le,
+    COMMUTATOR = >=,
+    NEGATOR = >
+);
+
+CREATE OPERATOR > (
+    LEFTARG = DNA4,
+    RIGHTARG = DNA4,
+    FUNCTION = kmersearch_dna4_gt,
+    COMMUTATOR = <,
+    NEGATOR = <=
+);
+
+CREATE OPERATOR >= (
+    LEFTARG = DNA4,
+    RIGHTARG = DNA4,
+    FUNCTION = kmersearch_dna4_ge,
+    COMMUTATOR = <=,
+    NEGATOR = <
+);
+
+CREATE OPERATOR <> (
+    LEFTARG = DNA4,
+    RIGHTARG = DNA4,
+    FUNCTION = kmersearch_dna4_ne,
+    COMMUTATOR = <>,
+    NEGATOR = =
+);
+
 -- =% operators for k-mer search
 CREATE FUNCTION kmersearch_dna2_match(DNA2, text) RETURNS boolean
     AS 'MODULE_PATHNAME', 'kmersearch_dna2_match'
@@ -151,6 +282,24 @@ CREATE OPERATOR CLASS kmersearch_dna4_gin_ops
         FUNCTION 5 kmersearch_compare_partial(varbit, varbit),
         STORAGE varbit;
 
+-- BTree operator classes for DNA2 and DNA4
+CREATE OPERATOR CLASS kmersearch_dna2_btree_ops
+    FOR TYPE DNA2 USING btree AS
+        OPERATOR 1 <,
+        OPERATOR 2 <=,
+        OPERATOR 3 =,
+        OPERATOR 4 >=,
+        OPERATOR 5 >,
+        FUNCTION 1 kmersearch_dna2_cmp(DNA2, DNA2);
+
+CREATE OPERATOR CLASS kmersearch_dna4_btree_ops
+    FOR TYPE DNA4 USING btree AS
+        OPERATOR 1 <,
+        OPERATOR 2 <=,
+        OPERATOR 3 =,
+        OPERATOR 4 >=,
+        OPERATOR 5 >,
+        FUNCTION 1 kmersearch_dna4_cmp(DNA4, DNA4);
 
 -- System table for storing highly frequent k-mers
 CREATE TABLE kmersearch_highfreq_kmer (

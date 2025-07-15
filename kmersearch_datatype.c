@@ -12,6 +12,9 @@
 
 #include "kmersearch.h"
 
+/* Forward declaration for comparison function */
+static int dna_compare_simd(const uint8_t* a, const uint8_t* b, int bit_len);
+
 /* PostgreSQL function info declarations for datatype functions */
 PG_FUNCTION_INFO_V1(kmersearch_dna2_in);
 PG_FUNCTION_INFO_V1(kmersearch_dna2_out);
@@ -25,6 +28,20 @@ PG_FUNCTION_INFO_V1(kmersearch_dna2_eq);
 PG_FUNCTION_INFO_V1(kmersearch_dna4_eq);
 PG_FUNCTION_INFO_V1(kmersearch_dna2_char_length);
 PG_FUNCTION_INFO_V1(kmersearch_dna4_char_length);
+
+/* BTree comparison functions */
+PG_FUNCTION_INFO_V1(kmersearch_dna2_cmp);
+PG_FUNCTION_INFO_V1(kmersearch_dna4_cmp);
+PG_FUNCTION_INFO_V1(kmersearch_dna2_lt);
+PG_FUNCTION_INFO_V1(kmersearch_dna2_le);
+PG_FUNCTION_INFO_V1(kmersearch_dna2_gt);
+PG_FUNCTION_INFO_V1(kmersearch_dna2_ge);
+PG_FUNCTION_INFO_V1(kmersearch_dna2_ne);
+PG_FUNCTION_INFO_V1(kmersearch_dna4_lt);
+PG_FUNCTION_INFO_V1(kmersearch_dna4_le);
+PG_FUNCTION_INFO_V1(kmersearch_dna4_gt);
+PG_FUNCTION_INFO_V1(kmersearch_dna4_ge);
+PG_FUNCTION_INFO_V1(kmersearch_dna4_ne);
 /* Helper functions */
 static bool kmersearch_is_valid_dna2_char(char c)
 {
@@ -371,4 +388,325 @@ kmersearch_dna4_to_string(VarBit *dna)
     simd_dispatch.dna4_decode((uint8_t*)data_ptr, result, char_len);
     
     return result;
+}
+
+/*
+ * SIMD-optimized comparison functions
+ */
+
+/* Scalar comparison function (fallback) */
+static int
+dna_compare_scalar(const uint8_t* a, const uint8_t* b, int bit_len)
+{
+    int byte_len = (bit_len + 7) / 8;
+    return memcmp(a, b, byte_len);
+}
+
+/*
+ * SIMD comparison functions - enabled when proper compiler flags are set
+ */
+
+#ifdef __x86_64__
+/* AVX2 comparison function */
+__attribute__((target("avx2")))
+static int
+dna_compare_avx2(const uint8_t* a, const uint8_t* b, int bit_len)
+{
+    int byte_len = (bit_len + 7) / 8;
+    int simd_len = byte_len & ~31;  /* Process 32 bytes at a time */
+    
+    for (int i = 0; i < simd_len; i += 32) {
+        __m256i va = _mm256_loadu_si256((const __m256i*)(a + i));
+        __m256i vb = _mm256_loadu_si256((const __m256i*)(b + i));
+        __m256i cmp = _mm256_cmpeq_epi8(va, vb);
+        
+        if (_mm256_movemask_epi8(cmp) != 0xFFFFFFFF) {
+            /* Found difference, need detailed comparison */
+            for (int j = 0; j < 32; j++) {
+                if (a[i + j] != b[i + j]) {
+                    return (a[i + j] < b[i + j]) ? -1 : 1;
+                }
+            }
+        }
+    }
+    
+    /* Handle remaining bytes with scalar comparison */
+    for (int i = simd_len; i < byte_len; i++) {
+        if (a[i] != b[i]) {
+            return (a[i] < b[i]) ? -1 : 1;
+        }
+    }
+    
+    return 0;
+}
+
+/* AVX512 comparison function */
+__attribute__((target("avx512f,avx512bw")))
+static int
+dna_compare_avx512(const uint8_t* a, const uint8_t* b, int bit_len)
+{
+    int byte_len = (bit_len + 7) / 8;
+    int simd_len = byte_len & ~63;  /* Process 64 bytes at a time */
+    int remaining;
+    
+    for (int i = 0; i < simd_len; i += 64) {
+        __m512i va = _mm512_loadu_si512((const __m512i*)(a + i));
+        __m512i vb = _mm512_loadu_si512((const __m512i*)(b + i));
+        __mmask64 cmp = _mm512_cmpeq_epi8_mask(va, vb);
+        
+        if (cmp != 0xFFFFFFFFFFFFFFFF) {
+            /* Found difference, need detailed comparison */
+            for (int j = 0; j < 64; j++) {
+                if (a[i + j] != b[i + j]) {
+                    return (a[i + j] < b[i + j]) ? -1 : 1;
+                }
+            }
+        }
+    }
+    
+    /* Handle remaining bytes with smaller SIMD or scalar */
+    remaining = byte_len - simd_len;
+    if (remaining >= 32) {
+        return dna_compare_avx2(a + simd_len, b + simd_len, remaining * 8);
+    } else {
+        return dna_compare_scalar(a + simd_len, b + simd_len, remaining * 8);
+    }
+}
+#endif
+
+#ifdef __aarch64__
+/* NEON comparison function */
+__attribute__((target("neon")))
+static int
+dna_compare_neon(const uint8_t* a, const uint8_t* b, int bit_len)
+{
+    int byte_len = (bit_len + 7) / 8;
+    int simd_len = byte_len & ~15;  /* Process 16 bytes at a time */
+    
+    for (int i = 0; i < simd_len; i += 16) {
+        uint8x16_t va = vld1q_u8(a + i);
+        uint8x16_t vb = vld1q_u8(b + i);
+        uint8x16_t cmp = vceqq_u8(va, vb);
+        
+        /* Check if all elements are equal */
+        uint64x2_t cmp64 = vreinterpretq_u64_u8(cmp);
+        if (vgetq_lane_u64(cmp64, 0) != 0xFFFFFFFFFFFFFFFF ||
+            vgetq_lane_u64(cmp64, 1) != 0xFFFFFFFFFFFFFFFF) {
+            /* Found difference, need detailed comparison */
+            for (int j = 0; j < 16; j++) {
+                if (a[i + j] != b[i + j]) {
+                    return (a[i + j] < b[i + j]) ? -1 : 1;
+                }
+            }
+        }
+    }
+    
+    /* Handle remaining bytes with scalar comparison */
+    for (int i = simd_len; i < byte_len; i++) {
+        if (a[i] != b[i]) {
+            return (a[i] < b[i]) ? -1 : 1;
+        }
+    }
+    
+    return 0;
+}
+
+/* SVE comparison function */
+__attribute__((target("+sve")))
+static int
+dna_compare_sve(const uint8_t* a, const uint8_t* b, int bit_len)
+{
+    int byte_len = (bit_len + 7) / 8;
+    int vector_len = svcntb();
+    
+    for (int i = 0; i < byte_len; i += vector_len) {
+        svbool_t pg = svwhilelt_b8(i, byte_len);
+        svuint8_t va = svld1_u8(pg, a + i);
+        svuint8_t vb = svld1_u8(pg, b + i);
+        svbool_t cmp = svcmpeq_u8(pg, va, vb);
+        
+        if (!svptest_any(svptrue_b8(), cmp)) {
+            /* Found difference, need detailed comparison */
+            int remaining = (byte_len - i < vector_len) ? byte_len - i : vector_len;
+            for (int j = 0; j < remaining; j++) {
+                if (a[i + j] != b[i + j]) {
+                    return (a[i + j] < b[i + j]) ? -1 : 1;
+                }
+            }
+        }
+    }
+    
+    return 0;
+}
+#endif
+
+/* Main SIMD dispatch function */
+static int
+dna_compare_simd(const uint8_t* a, const uint8_t* b, int bit_len)
+{
+    /* Use SIMD based on runtime capability and compiler flags */
+#ifdef __x86_64__
+    if (simd_capability >= SIMD_AVX512BW) {
+        return dna_compare_avx512(a, b, bit_len);
+    }
+    if (simd_capability >= SIMD_AVX2) {
+        return dna_compare_avx2(a, b, bit_len);
+    }
+#elif defined(__aarch64__)
+    if (simd_capability >= SIMD_SVE) {
+        return dna_compare_sve(a, b, bit_len);
+    }
+    if (simd_capability >= SIMD_NEON) {
+        return dna_compare_neon(a, b, bit_len);
+    }
+#endif
+    
+    /* Fallback to scalar comparison */
+    return dna_compare_scalar(a, b, bit_len);
+}
+
+/*
+ * BTree comparison functions
+ */
+
+/*
+ * DNA2 comparison function
+ */
+Datum
+kmersearch_dna2_cmp(PG_FUNCTION_ARGS)
+{
+    VarBit *a = PG_GETARG_VARBIT_P(0);
+    VarBit *b = PG_GETARG_VARBIT_P(1);
+    int32 bit_len_a = VARBITLEN(a);
+    int32 bit_len_b = VARBITLEN(b);
+    int result;
+    
+    /* Compare bit lengths first */
+    if (bit_len_a < bit_len_b)
+        PG_RETURN_INT32(-1);
+    if (bit_len_a > bit_len_b)
+        PG_RETURN_INT32(1);
+    
+    /* Same bit length, compare bit data using SIMD */
+    result = dna_compare_simd(VARBITS(a), VARBITS(b), bit_len_a);
+    PG_RETURN_INT32(result);
+}
+
+/*
+ * DNA4 comparison function
+ */
+Datum
+kmersearch_dna4_cmp(PG_FUNCTION_ARGS)
+{
+    VarBit *a = PG_GETARG_VARBIT_P(0);
+    VarBit *b = PG_GETARG_VARBIT_P(1);
+    int32 bit_len_a = VARBITLEN(a);
+    int32 bit_len_b = VARBITLEN(b);
+    int result;
+    
+    /* Compare bit lengths first */
+    if (bit_len_a < bit_len_b)
+        PG_RETURN_INT32(-1);
+    if (bit_len_a > bit_len_b)
+        PG_RETURN_INT32(1);
+    
+    /* Same bit length, compare bit data using SIMD */
+    result = dna_compare_simd(VARBITS(a), VARBITS(b), bit_len_a);
+    PG_RETURN_INT32(result);
+}
+
+/*
+ * DNA2 comparison operators
+ */
+Datum
+kmersearch_dna2_lt(PG_FUNCTION_ARGS)
+{
+    int32 cmp = DatumGetInt32(DirectFunctionCall2(kmersearch_dna2_cmp,
+                                                  PG_GETARG_DATUM(0),
+                                                  PG_GETARG_DATUM(1)));
+    PG_RETURN_BOOL(cmp < 0);
+}
+
+Datum
+kmersearch_dna2_le(PG_FUNCTION_ARGS)
+{
+    int32 cmp = DatumGetInt32(DirectFunctionCall2(kmersearch_dna2_cmp,
+                                                  PG_GETARG_DATUM(0),
+                                                  PG_GETARG_DATUM(1)));
+    PG_RETURN_BOOL(cmp <= 0);
+}
+
+Datum
+kmersearch_dna2_gt(PG_FUNCTION_ARGS)
+{
+    int32 cmp = DatumGetInt32(DirectFunctionCall2(kmersearch_dna2_cmp,
+                                                  PG_GETARG_DATUM(0),
+                                                  PG_GETARG_DATUM(1)));
+    PG_RETURN_BOOL(cmp > 0);
+}
+
+Datum
+kmersearch_dna2_ge(PG_FUNCTION_ARGS)
+{
+    int32 cmp = DatumGetInt32(DirectFunctionCall2(kmersearch_dna2_cmp,
+                                                  PG_GETARG_DATUM(0),
+                                                  PG_GETARG_DATUM(1)));
+    PG_RETURN_BOOL(cmp >= 0);
+}
+
+Datum
+kmersearch_dna2_ne(PG_FUNCTION_ARGS)
+{
+    int32 cmp = DatumGetInt32(DirectFunctionCall2(kmersearch_dna2_cmp,
+                                                  PG_GETARG_DATUM(0),
+                                                  PG_GETARG_DATUM(1)));
+    PG_RETURN_BOOL(cmp != 0);
+}
+
+/*
+ * DNA4 comparison operators
+ */
+Datum
+kmersearch_dna4_lt(PG_FUNCTION_ARGS)
+{
+    int32 cmp = DatumGetInt32(DirectFunctionCall2(kmersearch_dna4_cmp,
+                                                  PG_GETARG_DATUM(0),
+                                                  PG_GETARG_DATUM(1)));
+    PG_RETURN_BOOL(cmp < 0);
+}
+
+Datum
+kmersearch_dna4_le(PG_FUNCTION_ARGS)
+{
+    int32 cmp = DatumGetInt32(DirectFunctionCall2(kmersearch_dna4_cmp,
+                                                  PG_GETARG_DATUM(0),
+                                                  PG_GETARG_DATUM(1)));
+    PG_RETURN_BOOL(cmp <= 0);
+}
+
+Datum
+kmersearch_dna4_gt(PG_FUNCTION_ARGS)
+{
+    int32 cmp = DatumGetInt32(DirectFunctionCall2(kmersearch_dna4_cmp,
+                                                  PG_GETARG_DATUM(0),
+                                                  PG_GETARG_DATUM(1)));
+    PG_RETURN_BOOL(cmp > 0);
+}
+
+Datum
+kmersearch_dna4_ge(PG_FUNCTION_ARGS)
+{
+    int32 cmp = DatumGetInt32(DirectFunctionCall2(kmersearch_dna4_cmp,
+                                                  PG_GETARG_DATUM(0),
+                                                  PG_GETARG_DATUM(1)));
+    PG_RETURN_BOOL(cmp >= 0);
+}
+
+Datum
+kmersearch_dna4_ne(PG_FUNCTION_ARGS)
+{
+    int32 cmp = DatumGetInt32(DirectFunctionCall2(kmersearch_dna4_cmp,
+                                                  PG_GETARG_DATUM(0),
+                                                  PG_GETARG_DATUM(1)));
+    PG_RETURN_BOOL(cmp != 0);
 }

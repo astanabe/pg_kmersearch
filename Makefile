@@ -12,3 +12,28 @@ PGXS := $(shell $(PG_CONFIG) --pgxs)
 include $(PGXS)
 
 override CPPFLAGS += -Wno-unused-variable -Wno-unused-function
+
+# SIMD Optimization Support
+# To enable SIMD optimizations for DNA comparison functions, uncomment the
+# appropriate lines below based on your target CPU architecture:
+#
+# For x86_64 processors:
+#   AVX2 support:         override CPPFLAGS += -mavx2
+#   AVX512F support:      override CPPFLAGS += -mavx512f
+#   AVX512BW support:     override CPPFLAGS += -mavx512f -mavx512bw
+#   All optimizations:    override CPPFLAGS += -mavx2 -mavx512f -mavx512bw
+#
+# For ARM64 processors:
+#   NEON support:      override CPPFLAGS += -mfpu=neon (automatically enabled on ARM64)
+#   SVE support:       override CPPFLAGS += -march=armv8-a+sve
+#
+# Example for enabling AVX2 on x86_64:
+# override CPPFLAGS += -mavx2
+#
+# Example for enabling AVX512F (basic set) on x86_64:
+# override CPPFLAGS += -mavx512f
+#
+# Example for enabling full AVX512BW support on x86_64:
+# override CPPFLAGS += -mavx2 -mavx512f -mavx512bw
+#
+# Note: Ensure your target CPU supports these instruction sets before enabling
