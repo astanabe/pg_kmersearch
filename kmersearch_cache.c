@@ -1052,12 +1052,12 @@ get_cached_rawscore_dna4(VarBit *sequence, const char *query_string)
 Datum
 kmersearch_rawscore_cache_stats(PG_FUNCTION_ARGS)
 {
-    check_guc_initialization();
-    
     TupleDesc tupdesc;
     Datum values[8];
     bool nulls[8] = {false};
     HeapTuple tuple;
+    
+    check_guc_initialization();
     
     /* Build tuple descriptor */
     if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
@@ -1087,9 +1087,9 @@ kmersearch_rawscore_cache_stats(PG_FUNCTION_ARGS)
 Datum
 kmersearch_rawscore_cache_free(PG_FUNCTION_ARGS)
 {
-    check_guc_initialization();
-    
     int freed_entries = 0;
+    
+    check_guc_initialization();
     
     /* Count current entries before clearing */
     if (rawscore_cache_manager)
@@ -1118,12 +1118,12 @@ kmersearch_rawscore_cache_free(PG_FUNCTION_ARGS)
 Datum
 kmersearch_query_pattern_cache_stats(PG_FUNCTION_ARGS)
 {
-    check_guc_initialization();
-    
     TupleDesc tupdesc;
     Datum values[4];
     bool nulls[4] = {false};
     HeapTuple tuple;
+    
+    check_guc_initialization();
     
     /* Build tuple descriptor */
     if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
@@ -1158,9 +1158,9 @@ kmersearch_query_pattern_cache_stats(PG_FUNCTION_ARGS)
 Datum
 kmersearch_query_pattern_cache_free(PG_FUNCTION_ARGS)
 {
-    check_guc_initialization();
-    
     int freed_entries = 0;
+    
+    check_guc_initialization();
     
     /* Count entries before freeing */
     if (query_pattern_cache_manager)
@@ -1179,12 +1179,12 @@ kmersearch_query_pattern_cache_free(PG_FUNCTION_ARGS)
 Datum
 kmersearch_actual_min_score_cache_stats(PG_FUNCTION_ARGS)
 {
-    check_guc_initialization();
-    
     TupleDesc tupdesc;
     Datum values[4];
     bool nulls[4] = {false};
     HeapTuple tuple;
+    
+    check_guc_initialization();
     
     /* Build tuple descriptor */
     if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
@@ -1219,9 +1219,9 @@ kmersearch_actual_min_score_cache_stats(PG_FUNCTION_ARGS)
 Datum
 kmersearch_actual_min_score_cache_free(PG_FUNCTION_ARGS)
 {
-    check_guc_initialization();
-    
     int freed_entries = 0;
+    
+    check_guc_initialization();
     
     /* Count entries before freeing */
     if (actual_min_score_cache_manager)
@@ -1541,11 +1541,14 @@ kmersearch_lookup_in_global_cache(VarBit *kmer_key)
 Datum
 kmersearch_highfreq_kmer_cache_load(PG_FUNCTION_ARGS)
 {
-    check_guc_initialization();
-    
     text *table_name_text;
     text *column_name_text;
     char *column_name;
+    bool success;
+    Oid table_oid;
+    int k_value;
+    
+    check_guc_initialization();
     
     /* Validate parameters are not NULL */
     if (PG_ARGISNULL(0) || PG_ARGISNULL(1))
@@ -1566,10 +1569,6 @@ kmersearch_highfreq_kmer_cache_load(PG_FUNCTION_ARGS)
                 (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
                  errmsg("table_name and column_name cannot be empty")));
     }
-    
-    bool success;
-    Oid table_oid;
-    int k_value;
     
     column_name = text_to_cstring(column_name_text);
     
@@ -1600,12 +1599,14 @@ kmersearch_highfreq_kmer_cache_load(PG_FUNCTION_ARGS)
 Datum
 kmersearch_highfreq_kmer_cache_free(PG_FUNCTION_ARGS)
 {
-    check_guc_initialization();
-    
     text *table_name_text;
     text *column_name_text;
     char *column_name;
     char *table_name;
+    int freed_entries = 0;
+    Oid table_oid;
+    
+    check_guc_initialization();
     
     /* Validate parameters are not NULL */
     if (PG_ARGISNULL(0) || PG_ARGISNULL(1))
@@ -1626,9 +1627,6 @@ kmersearch_highfreq_kmer_cache_free(PG_FUNCTION_ARGS)
                 (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
                  errmsg("table_name and column_name cannot be empty")));
     }
-    
-    int freed_entries = 0;
-    Oid table_oid;
     
     column_name = text_to_cstring(column_name_text);
     
@@ -1677,9 +1675,9 @@ kmersearch_highfreq_kmer_cache_free(PG_FUNCTION_ARGS)
 Datum
 kmersearch_highfreq_kmer_cache_free_all(PG_FUNCTION_ARGS)
 {
-    check_guc_initialization();
-    
     int freed_entries = 0;
+    
+    check_guc_initialization();
     
     if (global_highfreq_cache.is_valid)
         freed_entries = 1;
@@ -2015,16 +2013,21 @@ kmersearch_ngram_key_to_hash(VarBit *ngram_key)
 Datum
 kmersearch_parallel_highfreq_kmer_cache_load(PG_FUNCTION_ARGS)
 {
-    check_guc_initialization();
-    
-    text *table_name_text = PG_GETARG_TEXT_P(0);
-    text *column_name_text = PG_GETARG_TEXT_P(1);
-    
-    char *table_name = text_to_cstring(table_name_text);
-    char *column_name = text_to_cstring(column_name_text);
+    text *table_name_text;
+    text *column_name_text;
+    char *table_name;
+    char *column_name;
     bool result;
     Oid table_oid;
     int k_value;
+    
+    check_guc_initialization();
+    
+    table_name_text = PG_GETARG_TEXT_P(0);
+    column_name_text = PG_GETARG_TEXT_P(1);
+    
+    table_name = text_to_cstring(table_name_text);
+    column_name = text_to_cstring(column_name_text);
     
     /* Get table OID from table name */
     table_oid = RelnameGetRelid(table_name);
@@ -2061,17 +2064,23 @@ kmersearch_parallel_highfreq_kmer_cache_load(PG_FUNCTION_ARGS)
 Datum
 kmersearch_parallel_highfreq_kmer_cache_free(PG_FUNCTION_ARGS)
 {
+    text *table_name_text;
+    text *column_name_text;
+    char *table_name;
+    char *column_name;
+    int32 freed_entries = 0;
+    Oid table_oid;
+    
     check_guc_initialization();
     
-    text *table_name_text = PG_GETARG_TEXT_P(0);
-    text *column_name_text = PG_GETARG_TEXT_P(1);
+    table_name_text = PG_GETARG_TEXT_P(0);
+    column_name_text = PG_GETARG_TEXT_P(1);
     
-    char *table_name = text_to_cstring(table_name_text);
-    char *column_name = text_to_cstring(column_name_text);
-    int32 freed_entries = 0;
+    table_name = text_to_cstring(table_name_text);
+    column_name = text_to_cstring(column_name_text);
     
     /* Get table OID from table name */
-    Oid table_oid = RelnameGetRelid(table_name);
+    table_oid = RelnameGetRelid(table_name);
     if (!OidIsValid(table_oid))
     {
         ereport(ERROR,
@@ -2113,9 +2122,9 @@ kmersearch_parallel_highfreq_kmer_cache_free(PG_FUNCTION_ARGS)
 Datum
 kmersearch_parallel_highfreq_kmer_cache_free_all(PG_FUNCTION_ARGS)
 {
-    check_guc_initialization();
-    
     int32 freed_entries = 0;
+    
+    check_guc_initialization();
     
     if (parallel_highfreq_cache != NULL && parallel_highfreq_cache->is_initialized) {
         freed_entries = parallel_highfreq_cache->num_entries;

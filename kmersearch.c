@@ -1873,7 +1873,11 @@ kmersearch_flush_buffer_to_table(KmerBuffer *buffer, const char *temp_table_name
     initStringInfo(&query);
     
     /* Build bulk INSERT statement */
-    appendStringInfo(&query, "INSERT INTO %s (kmer_data, frequency_count) VALUES ", temp_table_name);
+    if (buffer->kmer_size > 32) {
+        appendStringInfo(&query, "INSERT INTO %s (kmer_data_high, kmer_data_low, frequency_count) VALUES ", temp_table_name);
+    } else {
+        appendStringInfo(&query, "INSERT INTO %s (kmer_data, frequency_count) VALUES ", temp_table_name);
+    }
     
     for (i = 0; i < buffer->count; i++) {
         if (i > 0) appendStringInfoString(&query, ", ");
@@ -1891,14 +1895,20 @@ kmersearch_flush_buffer_to_table(KmerBuffer *buffer, const char *temp_table_name
                            buffer->entries[i].kmer_data.k32_data,
                            buffer->entries[i].frequency_count);
         } else {
-            /* For k > 32, we'll store as two bigint columns or use a different approach */
-            appendStringInfo(&query, "(%lu, %d)", 
-                           buffer->entries[i].kmer_data.k32_data,  /* Simplified for now */
+            /* For k > 32, store as two bigint columns */
+            appendStringInfo(&query, "(%lu, %lu, %d)", 
+                           buffer->entries[i].kmer_data.k64_data.high,
+                           buffer->entries[i].kmer_data.k64_data.low,
                            buffer->entries[i].frequency_count);
         }
     }
     
-    appendStringInfo(&query, " ON CONFLICT (kmer_data) DO UPDATE SET frequency_count = %s.frequency_count + EXCLUDED.frequency_count", temp_table_name);
+    /* Handle conflict resolution based on k-mer size */
+    if (buffer->kmer_size > 32) {
+        appendStringInfo(&query, " ON CONFLICT (kmer_data_high, kmer_data_low) DO UPDATE SET frequency_count = %s.frequency_count + EXCLUDED.frequency_count", temp_table_name);
+    } else {
+        appendStringInfo(&query, " ON CONFLICT (kmer_data) DO UPDATE SET frequency_count = %s.frequency_count + EXCLUDED.frequency_count", temp_table_name);
+    }
     
     /* Execute the query */
     SPI_connect();
@@ -1942,7 +1952,7 @@ kmersearch_flush_hash_buffer_to_table(KmerBuffer *buffer, const char *temp_table
     
     /* Execute the query */
     SPI_connect();
-    int result = SPI_exec(query.data, 0);
+    SPI_exec(query.data, 0);
     SPI_finish();
     
     /* Reset buffer */
@@ -2018,18 +2028,29 @@ static void
 kmersearch_create_worker_temp_table(const char *temp_table_name, int k_size)
 {
     StringInfoData query;
-    const char *data_type;
     
     initStringInfo(&query);
     
-    /* Use bigint for all k-mer hash values consistently */
-    data_type = "bigint";  /* Always store hash values as bigint for consistency */
-    
-    appendStringInfo(&query, 
-        "CREATE TEMP TABLE %s ("
-        "kmer_data %s PRIMARY KEY, "
-        "frequency_count integer DEFAULT 1"
-        ")", temp_table_name, data_type);
+    if (k_size > 32)
+    {
+        /* For k > 32, use two bigint columns for 128-bit k-mer data */
+        appendStringInfo(&query, 
+            "CREATE TEMP TABLE %s ("
+            "kmer_data_high bigint, "
+            "kmer_data_low bigint, "
+            "frequency_count integer DEFAULT 1, "
+            "PRIMARY KEY (kmer_data_high, kmer_data_low)"
+            ")", temp_table_name);
+    }
+    else
+    {
+        /* For k <= 32, use single bigint column */
+        appendStringInfo(&query, 
+            "CREATE TEMP TABLE %s ("
+            "kmer_data bigint PRIMARY KEY, "
+            "frequency_count integer DEFAULT 1"
+            ")", temp_table_name);
+    }
     
     SPI_connect();
     SPI_exec(query.data, 0);
@@ -2191,15 +2212,22 @@ kmersearch_merge_worker_results_sql(KmerWorkerState *workers, int num_workers,
     initStringInfo(&query);
     initStringInfo(&union_query);
     
-    /* Use bigint for all k-mer hash values consistently */
-    data_type = "bigint";  /* Always store hash values as bigint for consistency */
-    
-    /* Create final aggregation table */
-    appendStringInfo(&query, 
-        "CREATE TEMP TABLE %s ("
-        "kmer_data %s PRIMARY KEY, "
-        "frequency_count integer"
-        ")", final_table_name, data_type);
+    /* Create final aggregation table based on k-mer size */
+    if (k_size > 32) {
+        appendStringInfo(&query, 
+            "CREATE TEMP TABLE %s ("
+            "kmer_data_high bigint, "
+            "kmer_data_low bigint, "
+            "frequency_count integer, "
+            "PRIMARY KEY (kmer_data_high, kmer_data_low)"
+            ")", final_table_name);
+    } else {
+        appendStringInfo(&query, 
+            "CREATE TEMP TABLE %s ("
+            "kmer_data bigint PRIMARY KEY, "
+            "frequency_count integer"
+            ")", final_table_name);
+    }
     
     /* Use existing SPI connection from main function - don't call SPI_connect() again */
     SPI_exec(query.data, 0);
@@ -2220,17 +2248,31 @@ kmersearch_merge_worker_results_sql(KmerWorkerState *workers, int num_workers,
 
     /* Build UNION ALL query to combine all worker tables */
     resetStringInfo(&query);
-    appendStringInfo(&query, "INSERT INTO %s (kmer_data, frequency_count) ", final_table_name);
-    appendStringInfoString(&query, "SELECT kmer_data, sum(frequency_count) FROM (");
-    
-    for (i = 0; i < num_workers; i++) {
-        if (i > 0) appendStringInfoString(&query, " UNION ALL ");
-        appendStringInfo(&query, "SELECT kmer_data, frequency_count FROM %s", 
-                        workers[i].temp_table_name);
+    if (k_size > 32) {
+        appendStringInfo(&query, "INSERT INTO %s (kmer_data_high, kmer_data_low, frequency_count) ", final_table_name);
+        appendStringInfoString(&query, "SELECT kmer_data_high, kmer_data_low, sum(frequency_count) FROM (");
+        
+        for (i = 0; i < num_workers; i++) {
+            if (i > 0) appendStringInfoString(&query, " UNION ALL ");
+            appendStringInfo(&query, "SELECT kmer_data_high, kmer_data_low, frequency_count FROM %s", 
+                            workers[i].temp_table_name);
+        }
+        
+        appendStringInfo(&query, ") AS combined GROUP BY kmer_data_high, kmer_data_low HAVING sum(frequency_count) >= %d", 
+                        threshold_rows);
+    } else {
+        appendStringInfo(&query, "INSERT INTO %s (kmer_data, frequency_count) ", final_table_name);
+        appendStringInfoString(&query, "SELECT kmer_data, sum(frequency_count) FROM (");
+        
+        for (i = 0; i < num_workers; i++) {
+            if (i > 0) appendStringInfoString(&query, " UNION ALL ");
+            appendStringInfo(&query, "SELECT kmer_data, frequency_count FROM %s", 
+                            workers[i].temp_table_name);
+        }
+        
+        appendStringInfo(&query, ") AS combined GROUP BY kmer_data HAVING sum(frequency_count) >= %d", 
+                        threshold_rows);
     }
-    
-    appendStringInfo(&query, ") AS combined GROUP BY kmer_data HAVING sum(frequency_count) >= %d", 
-                    threshold_rows);
     
     /* Execute aggregation query with detailed error handling */
     ret = SPI_exec(query.data, 0);
@@ -2264,22 +2306,37 @@ kmersearch_persist_highfreq_kmers_from_temp(Oid table_oid, const char *column_na
     /* Note: Converting integer values to bit strings for ngram_key */
     ereport(DEBUG1, (errmsg("Building INSERT query for %s with occur_bitlen=%d", temp_table_name, kmersearch_occur_bitlen)));
     
-    appendStringInfo(&query,
-        "INSERT INTO kmersearch_highfreq_kmer (table_oid, column_name, ngram_key, detection_reason) "
-        "SELECT %u, '%s', "
-        "  CASE "
-        "    WHEN %d <= 8 THEN (kmer_data::integer)::bit(32) || (frequency_count::integer)::bit(%d) "
-        "    WHEN %d <= 16 THEN (kmer_data::bigint)::bit(64) || (frequency_count::integer)::bit(%d) "
-        "    ELSE (kmer_data::bigint)::bit(64) || (frequency_count::integer)::bit(%d) "
-        "  END AS ngram_key, "
-        "  'high_frequency' "
-        "FROM %s "
-        "WHERE kmer_data IS NOT NULL AND frequency_count > 0",
-        table_oid, column_name, 
-        k_size, kmersearch_occur_bitlen,
-        k_size, kmersearch_occur_bitlen,
-        kmersearch_occur_bitlen,
-        temp_table_name);
+    if (k_size > 32) {
+        /* For k > 32, combine high and low parts into 128-bit representation */
+        appendStringInfo(&query,
+            "INSERT INTO kmersearch_highfreq_kmer (table_oid, column_name, ngram_key, detection_reason) "
+            "SELECT %u, '%s', "
+            "  (kmer_data_high::bigint)::bit(64) || (kmer_data_low::bigint)::bit(64) || (frequency_count::integer)::bit(%d) AS ngram_key, "
+            "  'high_frequency' "
+            "FROM %s "
+            "WHERE kmer_data_high IS NOT NULL AND kmer_data_low IS NOT NULL AND frequency_count > 0",
+            table_oid, column_name, 
+            kmersearch_occur_bitlen,
+            temp_table_name);
+    } else {
+        /* For k <= 32, use single column approach */
+        appendStringInfo(&query,
+            "INSERT INTO kmersearch_highfreq_kmer (table_oid, column_name, ngram_key, detection_reason) "
+            "SELECT %u, '%s', "
+            "  CASE "
+            "    WHEN %d <= 8 THEN (kmer_data::integer)::bit(32) || (frequency_count::integer)::bit(%d) "
+            "    WHEN %d <= 16 THEN (kmer_data::bigint)::bit(64) || (frequency_count::integer)::bit(%d) "
+            "    ELSE (kmer_data::bigint)::bit(64) || (frequency_count::integer)::bit(%d) "
+            "  END AS ngram_key, "
+            "  'high_frequency' "
+            "FROM %s "
+            "WHERE kmer_data IS NOT NULL AND frequency_count > 0",
+            table_oid, column_name, 
+            k_size, kmersearch_occur_bitlen,
+            k_size, kmersearch_occur_bitlen,
+            kmersearch_occur_bitlen,
+            temp_table_name);
+    }
     
     ereport(DEBUG1, (errmsg("Generated INSERT query: %s", query.data)));
     

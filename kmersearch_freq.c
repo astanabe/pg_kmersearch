@@ -49,17 +49,16 @@ extern dshash_table *parallel_cache_hash;
 Datum
 kmersearch_perform_highfreq_analysis(PG_FUNCTION_ARGS)
 {
-    check_guc_initialization();
-    
     text *table_name_text = PG_GETARG_TEXT_P(0);
     text *column_name_text = PG_GETARG_TEXT_P(1);
-    
     char *table_name = text_to_cstring(table_name_text);
     char *column_name = text_to_cstring(column_name_text);
     KmerAnalysisResult result = {0};  /* Initialize all fields to zero */
     Oid table_oid;
     int k_size;
     int parallel_workers;
+    
+    check_guc_initialization();
     
     /* Get table OID from table name */
     table_oid = RelnameGetRelid(table_name);
@@ -132,15 +131,14 @@ kmersearch_perform_highfreq_analysis(PG_FUNCTION_ARGS)
 Datum
 kmersearch_undo_highfreq_analysis(PG_FUNCTION_ARGS)
 {
-    check_guc_initialization();
-    
     text *table_name_text = PG_GETARG_TEXT_P(0);
     text *column_name_text = PG_GETARG_TEXT_P(1);
-    
     char *table_name = text_to_cstring(table_name_text);
     char *column_name = text_to_cstring(column_name_text);
     DropAnalysisResult result;
     Oid table_oid;
+    
+    check_guc_initialization();
     
     /* Get table OID from table name */
     table_oid = RelnameGetRelid(table_name);
