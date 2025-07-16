@@ -125,6 +125,7 @@ Important GUC variables:
 - `kmersearch.actual_min_score_cache_max_entries` (1000-10000000): Maximum entries for actual min score cache (default: 50000)
 - `kmersearch.preclude_highfreq_kmer` (true/false): Enable high-frequency k-mer exclusion during GIN index construction (default: false)
 - `kmersearch.force_use_parallel_highfreq_kmer_cache` (true/false): Force use of dshash parallel cache for high-frequency k-mer lookups (default: false)
+- `kmersearch.highfreq_kmer_cache_load_batch_size` (1000-1000000): Batch size for loading high-frequency k-mers into cache (default: 10000)
 
 ## Architecture Overview
 

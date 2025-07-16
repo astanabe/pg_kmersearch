@@ -142,6 +142,7 @@ pg_kmersearch provides several configuration variables that can be set using Pos
 | `kmersearch.actual_min_score_cache_max_entries` | 50000 | 1000-10000000 | Maximum entries for actual min score cache |
 | `kmersearch.preclude_highfreq_kmer` | false | true/false | Enable high-frequency k-mer exclusion during GIN index construction |
 | `kmersearch.force_use_parallel_highfreq_kmer_cache` | false | true/false | Force use of dshash parallel cache for high-frequency k-mer lookups |
+| `kmersearch.highfreq_kmer_cache_load_batch_size` | 10000 | 1000-1000000 | Batch size for loading high-frequency k-mers into cache |
 
 ### High-Frequency K-mer Exclusion
 
