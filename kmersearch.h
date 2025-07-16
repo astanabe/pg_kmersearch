@@ -78,9 +78,10 @@
 #include <unistd.h>
 
 /*
- * LWLock tranche for parallel cache
+ * LWLock tranche for parallel cache and analysis
  */
 #define LWTRANCHE_KMERSEARCH_CACHE    (LWTRANCHE_FIRST_USER_DEFINED + 100)
+#define LWTRANCHE_KMERSEARCH_ANALYSIS (LWTRANCHE_FIRST_USER_DEFINED + 101)
 
 /*
  * SIMD capability detection
@@ -527,6 +528,9 @@ Datum kmersearch_parallel_highfreq_kmer_cache_free(PG_FUNCTION_ARGS);
 /* Analysis functions */
 Datum kmersearch_perform_highfreq_analysis(PG_FUNCTION_ARGS);
 Datum kmersearch_undo_highfreq_analysis(PG_FUNCTION_ARGS);
+
+/* Analysis dshash functions */
+bool kmersearch_is_kmer_hash_in_analysis_dshash(uint64 kmer_hash);
 
 /* K-mer utility functions */
 void kmersearch_expand_degenerate_sequence(const char *kmer, int k, char **expanded, int *expand_count);
