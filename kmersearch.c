@@ -117,7 +117,6 @@ static bool evaluate_optimized_match_condition(VarBit **query_keys, int nkeys, i
 /* New parallel analysis functions */
 void kmersearch_worker_analyze_blocks(KmerWorkerState *worker, Relation rel, const char *column_name, int k_size);
 void kmersearch_merge_worker_results_sql(KmerWorkerState *workers, int num_workers, const char *final_table_name, int k_size, int threshold_rows);
-static void kmersearch_persist_highfreq_kmers(Oid table_oid, const char *column_name, int k_size, void *unused_table, int threshold_rows);
 static void kmersearch_persist_highfreq_kmers_from_temp(Oid table_oid, const char *column_name, int k_size, const char *temp_table_name);
 
 /* New memory-efficient k-mer functions */
@@ -131,7 +130,6 @@ static void kmersearch_flush_buffer_to_table(KmerBuffer *buffer, const char *tem
 static void kmersearch_flush_hash_buffer_to_table(KmerBuffer *buffer, const char *temp_table_name);
 static void kmersearch_aggregate_buffer_entries(KmerBuffer *buffer);
 static void kmersearch_create_worker_temp_table(const char *temp_table_name, int k_size);
-static void kmersearch_delete_existing_analysis(Oid table_oid, const char *column_name, int k_size);
 
 /* Custom GUC variables */
 void _PG_init(void);
@@ -2998,33 +2996,6 @@ kmersearch_persist_highfreq_kmers_metadata(Oid table_oid, const char *column_nam
     pfree(query.data);
 }
 
-/*
- * Persist highly frequent k-mers to database tables (legacy - disabled in memory-efficient version)
- */
-static void
-kmersearch_persist_highfreq_kmers(Oid table_oid, const char *column_name, int k_size, 
-                                 void *unused_table, int threshold_rows)
-{
-    /* Memory-efficient implementation uses SQL-based analysis instead */
-    (void) table_oid;
-    (void) column_name;
-    (void) k_size;
-    (void) unused_table;
-    (void) threshold_rows;
-    
-    ereport(NOTICE, (errmsg("Legacy persist function called - using memory-efficient analysis instead")));
-}
-
-/*
- * Delete existing analysis results
- */
-static void
-kmersearch_delete_existing_analysis(Oid table_oid, const char *column_name, int k_size)
-{
-    /* For now, just log that we would delete existing analysis */
-    ereport(NOTICE, (errmsg("Would delete existing analysis for table %u, column %s, k=%d", 
-                           table_oid, column_name, k_size)));
-}
 
 
 /*
