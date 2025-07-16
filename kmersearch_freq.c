@@ -394,8 +394,11 @@ kmersearch_perform_highfreq_analysis_parallel(Oid table_oid, const char *column_
         
         /* Build query to get actual row count */
         initStringInfo(&count_query);
-        appendStringInfo(&count_query, "SELECT COUNT(*) FROM %s", 
-                        get_rel_name(table_oid));
+        {
+            char *table_name = get_rel_name(table_oid);
+            const char *escaped_table_name = quote_identifier(table_name);
+            appendStringInfo(&count_query, "SELECT COUNT(*) FROM %s", escaped_table_name);
+        }
         
         /* Execute count query */
         ret = SPI_exec(count_query.data, 0);
@@ -415,6 +418,16 @@ kmersearch_perform_highfreq_analysis_parallel(Oid table_oid, const char *column_
         
         /* Store actual row count for result */
         result.total_rows = actual_row_count;
+        
+        /* Check for empty table */
+        if (actual_row_count == 0) {
+            ereport(WARNING,
+                    (errcode(ERRCODE_DATA_EXCEPTION),
+                     errmsg("Cannot perform frequency analysis on empty table"),
+                     errhint("Insert data into the table before analysis")));
+            result.highfreq_kmers_count = 0;
+            return result;
+        }
         
         /* Calculate threshold using both rate and nrow limits */
         rate_threshold = (int)(actual_row_count * kmersearch_max_appearance_rate);

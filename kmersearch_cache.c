@@ -1359,11 +1359,13 @@ kmersearch_highfreq_kmer_cache_load_internal(Oid table_oid, const char *column_n
     if (global_highfreq_cache.highfreq_hash) {
         global_highfreq_cache.is_valid = true;
     } else {
-        /* Hash table creation failed, clean up by deleting the context */
-        MemoryContextSwitchTo(old_context);
-        MemoryContextDelete(global_highfreq_cache.cache_context);
-        global_highfreq_cache.cache_context = NULL;
+        /* Hash table creation failed - reset state safely */
+        global_highfreq_cache.highfreq_kmers = NULL;
+        global_highfreq_cache.highfreq_count = 0;
         global_highfreq_cache.is_valid = false;
+        
+        MemoryContextSwitchTo(old_context);
+        MemoryContextReset(global_highfreq_cache.cache_context);  /* Reset instead of delete */
         return false;
     }
     
@@ -1527,22 +1529,47 @@ kmersearch_lookup_in_global_cache(VarBit *kmer_key)
 Datum
 kmersearch_highfreq_kmer_cache_load(PG_FUNCTION_ARGS)
 {
-    text *table_name_text = PG_GETARG_TEXT_P(0);
-    text *column_name_text = PG_GETARG_TEXT_P(1);
+    text *table_name_text;
+    text *column_name_text;
+    char *column_name;
     
-    char *table_name = text_to_cstring(table_name_text);
-    char *column_name = text_to_cstring(column_name_text);
+    /* Validate parameters are not NULL */
+    if (PG_ARGISNULL(0) || PG_ARGISNULL(1))
+    {
+        ereport(ERROR,
+                (errcode(ERRCODE_NULL_VALUE_NOT_ALLOWED),
+                 errmsg("table_name and column_name cannot be NULL")));
+    }
+    
+    table_name_text = PG_GETARG_TEXT_P(0);
+    column_name_text = PG_GETARG_TEXT_P(1);
+    
+    /* Validate non-empty strings */
+    if (VARSIZE_ANY_EXHDR(table_name_text) == 0 ||
+        VARSIZE_ANY_EXHDR(column_name_text) == 0)
+    {
+        ereport(ERROR,
+                (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+                 errmsg("table_name and column_name cannot be empty")));
+    }
+    
     bool success;
     Oid table_oid;
     int k_value;
     
-    /* Get table OID from table name */
-    table_oid = RelnameGetRelid(table_name);
-    if (!OidIsValid(table_oid))
+    column_name = text_to_cstring(column_name_text);
+    
+    /* Get table OID from table name using proper namespace resolution */
     {
-        ereport(ERROR,
-                (errcode(ERRCODE_UNDEFINED_TABLE),
-                 errmsg("relation \"%s\" does not exist", table_name)));
+        List *names;
+        RangeVar *table_rv;
+        
+        /* Parse table name into qualified name list (handles schema.table) */
+        names = textToQualifiedNameList(table_name_text);
+        table_rv = makeRangeVarFromNameList(names);
+        
+        /* Get table OID with proper case-insensitive resolution */
+        table_oid = RangeVarGetRelid(table_rv, NoLock, false);
     }
     
     /* Get k_value from GUC variable */
@@ -1559,21 +1586,51 @@ kmersearch_highfreq_kmer_cache_load(PG_FUNCTION_ARGS)
 Datum
 kmersearch_highfreq_kmer_cache_free(PG_FUNCTION_ARGS)
 {
-    text *table_name_text = PG_GETARG_TEXT_P(0);
-    text *column_name_text = PG_GETARG_TEXT_P(1);
+    text *table_name_text;
+    text *column_name_text;
+    char *column_name;
+    char *table_name;
     
-    char *table_name = text_to_cstring(table_name_text);
-    char *column_name = text_to_cstring(column_name_text);
-    int freed_entries = 0;
-    
-    /* Get table OID from table name */
-    Oid table_oid = RelnameGetRelid(table_name);
-    if (!OidIsValid(table_oid))
+    /* Validate parameters are not NULL */
+    if (PG_ARGISNULL(0) || PG_ARGISNULL(1))
     {
         ereport(ERROR,
-                (errcode(ERRCODE_UNDEFINED_TABLE),
-                 errmsg("relation \"%s\" does not exist", table_name)));
+                (errcode(ERRCODE_NULL_VALUE_NOT_ALLOWED),
+                 errmsg("table_name and column_name cannot be NULL")));
     }
+    
+    table_name_text = PG_GETARG_TEXT_P(0);
+    column_name_text = PG_GETARG_TEXT_P(1);
+    
+    /* Validate non-empty strings */
+    if (VARSIZE_ANY_EXHDR(table_name_text) == 0 ||
+        VARSIZE_ANY_EXHDR(column_name_text) == 0)
+    {
+        ereport(ERROR,
+                (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+                 errmsg("table_name and column_name cannot be empty")));
+    }
+    
+    int freed_entries = 0;
+    Oid table_oid;
+    
+    column_name = text_to_cstring(column_name_text);
+    
+    /* Get table OID from table name using proper namespace resolution */
+    {
+        List *names;
+        RangeVar *table_rv;
+        
+        /* Parse table name into qualified name list (handles schema.table) */
+        names = textToQualifiedNameList(table_name_text);
+        table_rv = makeRangeVarFromNameList(names);
+        
+        /* Get table OID with proper case-insensitive resolution */
+        table_oid = RangeVarGetRelid(table_rv, NoLock, false);
+    }
+    
+    /* Get table name once for error messages */
+    table_name = get_rel_name(table_oid);
     
     /* Validate cache key matches table/column before freeing */
     if (!kmersearch_validate_cache_key_match(table_oid, column_name)) {
