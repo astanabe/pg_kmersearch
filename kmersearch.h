@@ -494,7 +494,6 @@ extern dshash_table *parallel_cache_hash;
 
 /* High-frequency k-mer cache internal functions */
 bool kmersearch_validate_guc_against_metadata(Oid table_oid, const char *column_name, int k_value);
-VarBit **kmersearch_get_highfreq_kmer_from_table(Oid table_oid, const char *column_name, int k, int *nkeys);
 HTAB *kmersearch_create_highfreq_hash_from_array(VarBit **kmers, int nkeys);
 uint64 kmersearch_ngram_key_to_hash(VarBit *ngram_key);
 bool kmersearch_is_global_highfreq_cache_loaded(void);
