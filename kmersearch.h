@@ -470,6 +470,9 @@ Datum kmersearch_rawscore_dna4(PG_FUNCTION_ARGS);
 Datum kmersearch_correctedscore_dna2(PG_FUNCTION_ARGS);
 Datum kmersearch_correctedscore_dna4(PG_FUNCTION_ARGS);
 
+/* GUC initialization check function */
+void check_guc_initialization(void);
+
 /* Cache management functions */
 Datum kmersearch_actual_min_score_cache_stats(PG_FUNCTION_ARGS);
 Datum kmersearch_actual_min_score_cache_free(PG_FUNCTION_ARGS);

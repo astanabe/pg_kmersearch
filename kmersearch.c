@@ -400,6 +400,21 @@ kmersearch_occur_bitlen_assign_hook(int newval, void *extra)
 /* Global flag to prevent duplicate GUC initialization */
 static bool guc_variables_initialized = false;
 
+/*
+ * Check if GUC variables are properly initialized
+ * If not, report an error with instructions for shared_preload_libraries
+ */
+void
+check_guc_initialization(void)
+{
+    if (!guc_variables_initialized) {
+        ereport(ERROR,
+                (errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+                 errmsg("pg_kmersearch extension not properly initialized"),
+                 errhint("Add 'pg_kmersearch' to shared_preload_libraries in postgresql.conf and restart PostgreSQL.")));
+    }
+}
+
 void
 _PG_init(void)
 {

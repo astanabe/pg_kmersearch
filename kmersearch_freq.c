@@ -61,6 +61,8 @@ extern dshash_table *parallel_cache_hash;
 Datum
 kmersearch_perform_highfreq_analysis(PG_FUNCTION_ARGS)
 {
+    check_guc_initialization();
+    
     text *table_name_text = PG_GETARG_TEXT_P(0);
     text *column_name_text = PG_GETARG_TEXT_P(1);
     
@@ -142,6 +144,8 @@ kmersearch_perform_highfreq_analysis(PG_FUNCTION_ARGS)
 Datum
 kmersearch_undo_highfreq_analysis(PG_FUNCTION_ARGS)
 {
+    check_guc_initialization();
+    
     text *table_name_text = PG_GETARG_TEXT_P(0);
     text *column_name_text = PG_GETARG_TEXT_P(1);
     
