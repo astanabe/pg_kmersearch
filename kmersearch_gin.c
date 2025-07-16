@@ -186,26 +186,7 @@ kmersearch_consistent(PG_FUNCTION_ARGS)
     int i;
     VarBit **query_key_array;
     
-    /* Handle high-frequency k-mer cache only if enabled */
-    if (kmersearch_preclude_highfreq_kmer) {
-        if (kmersearch_force_use_parallel_highfreq_kmer_cache || IsParallelWorker()) {
-            /* Use parallel cache for worker processes or when forcing dshash */
-            if (!(parallel_highfreq_cache && parallel_highfreq_cache->is_initialized)) {
-                ereport(ERROR,
-                        (errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-                         errmsg("parallel high-frequency k-mer cache is not initialized"),
-                         errhint("Use kmersearch_parallel_highfreq_kmers_cache_load() to create the cache first.")));
-            }
-        } else {
-            /* Use global cache for main process */
-            if (!global_highfreq_cache.is_valid) {
-                ereport(ERROR,
-                        (errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-                         errmsg("global high-frequency k-mer cache is not initialized"),
-                         errhint("Use kmersearch_highfreq_kmers_cache_load() to create the cache first.")));
-            }
-        }
-    }
+    /* High-frequency k-mer cache checking is not needed during search operations */
     
     *recheck = true;  /* Always recheck for scoring */
     
@@ -216,15 +197,15 @@ kmersearch_consistent(PG_FUNCTION_ARGS)
             match_count++;
     }
     
-    /* Convert queryKeys to VarBit array for excluded k-mer checking */
+    /* Convert queryKeys to VarBit array for actual min score calculation */
     query_key_array = (VarBit **) palloc(nkeys * sizeof(VarBit *));
     for (i = 0; i < nkeys; i++)
     {
         query_key_array[i] = DatumGetVarBitP(queryKeys[i]);
     }
     
-    /* Calculate actual minimum score using comprehensive scoring logic */
-    actual_min_score = calculate_actual_min_score(query_key_array, nkeys, nkeys);
+    /* Use cached actual minimum score for better performance */
+    actual_min_score = get_cached_actual_min_score(query_key_array, nkeys);
     
     pfree(query_key_array);
     

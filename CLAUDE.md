@@ -211,6 +211,30 @@ Removes analysis data and frees storage
 - `kmersearch_actual_min_score_cache_free()`: Clear actual min score cache
 
 
+## Scoring Functions: rawscore vs correctedscore
+
+**IMPORTANT**: The distinction between rawscore and correctedscore functions is critical for understanding high-frequency k-mer exclusion functionality:
+
+### rawscore Functions
+- **Purpose**: Calculate match count based on GIN index capabilities
+- **Behavior**: 
+  - When GIN index exists WITH high-frequency k-mer exclusion (`kmersearch.preclude_highfreq_kmer = true`): Returns match count with high-frequency k-mers excluded
+  - When GIN index exists WITHOUT high-frequency k-mer exclusion: Returns full match count
+  - When no GIN index exists: Returns full match count
+- **Performance**: Fast (utilizes GIN index when available)
+- **Use case**: Primary scoring function for search operations
+
+### correctedscore Functions  
+- **Purpose**: Calculate unfiltered match count through direct comparison
+- **Behavior**: Always returns full match count by directly comparing ngram_key2 extracted from query sequence and DNA2/DNA4 data, regardless of GIN index configuration
+- **Performance**: Slower (direct sequence comparison, no index utilization)
+- **Use case**: Baseline comparison to understand the effect of high-frequency k-mer exclusion
+
+### Expected Relationship
+- When high-frequency k-mer exclusion is active: `correctedscore >= rawscore`
+- When high-frequency k-mer exclusion is not active: `correctedscore == rawscore`
+- The difference (`correctedscore - rawscore`) indicates the number of high-frequency k-mers that were excluded from the rawscore calculation
+
 ## Complex Type Definitions
 
 ### kmersearch_analysis_result
