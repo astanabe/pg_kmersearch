@@ -45,6 +45,7 @@ bool kmersearch_preclude_highfreq_kmer = false;  /* Default to not exclude high-
 int kmersearch_rawscore_cache_max_entries = 50000;  /* Default max rawscore cache entries */
 int kmersearch_query_pattern_cache_max_entries = 50000;  /* Default max query pattern cache entries */
 int kmersearch_actual_min_score_cache_max_entries = 50000;  /* Default max actual min score cache entries */
+int kmersearch_highfreq_kmer_cache_load_batch_size = 10000;  /* Default batch size for loading high-frequency k-mers */
 
 /* Global cache managers */
 ActualMinScoreCacheManager *actual_min_score_cache_manager = NULL;
@@ -560,6 +561,19 @@ _PG_init(void)
                            50000,
                            1000,
                            10000000,
+                           PGC_USERSET,
+                           0,
+                           NULL,
+                           NULL,
+                           NULL);
+
+    DefineCustomIntVariable("kmersearch.highfreq_kmer_cache_load_batch_size",
+                           "Batch size for loading high-frequency k-mers into cache",
+                           "Controls the number of k-mers loaded in each batch to reduce memory usage",
+                           &kmersearch_highfreq_kmer_cache_load_batch_size,
+                           10000,
+                           1000,
+                           1000000,
                            PGC_USERSET,
                            0,
                            NULL,

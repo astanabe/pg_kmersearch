@@ -393,6 +393,7 @@ extern bool kmersearch_preclude_highfreq_kmer;
 extern int kmersearch_rawscore_cache_max_entries;
 extern int kmersearch_query_pattern_cache_max_entries;
 extern int kmersearch_actual_min_score_cache_max_entries;
+extern int kmersearch_highfreq_kmer_cache_load_batch_size;
 
 /* Global cache managers */
 extern ActualMinScoreCacheManager *actual_min_score_cache_manager;
@@ -425,6 +426,7 @@ extern const char kmersearch_dna4_decode_table[16];
 /* Module initialization */
 void _PG_init(void);
 void _PG_fini(void);
+void check_guc_initialization(void);
 
 /* DNA datatype functions (implemented in kmersearch_datatype.c) */
 Datum kmersearch_dna2_in(PG_FUNCTION_ARGS);
@@ -469,9 +471,6 @@ Datum kmersearch_rawscore_dna2(PG_FUNCTION_ARGS);
 Datum kmersearch_rawscore_dna4(PG_FUNCTION_ARGS);
 Datum kmersearch_correctedscore_dna2(PG_FUNCTION_ARGS);
 Datum kmersearch_correctedscore_dna4(PG_FUNCTION_ARGS);
-
-/* GUC initialization check function */
-void check_guc_initialization(void);
 
 /* Cache management functions */
 Datum kmersearch_actual_min_score_cache_stats(PG_FUNCTION_ARGS);
@@ -552,6 +551,7 @@ VarBit **kmersearch_extract_query_ngram_key2(const char *query, int k, int *nkey
 uint8 kmersearch_get_bit_at(bits8 *data, int bit_pos);
 bool kmersearch_will_exceed_degenerate_limit(const char *seq, int len);
 VarBit **kmersearch_extract_query_kmer_with_degenerate(const char *query, int k, int *nkeys);
+VarBit **kmersearch_extract_query_ngram_key2_with_expansion(const char *query, int k, int *nkeys);
 char *kmersearch_varbit_to_hex_string(VarBit *varbit);
 Datum *kmersearch_extract_dna2_kmer2_only(VarBit *seq, int k, int *nkeys);
 KmerData kmersearch_encode_kmer2_only_data(VarBit *kmer, int k_size);
@@ -559,6 +559,8 @@ KmerData kmersearch_encode_kmer_data(VarBit *kmer, int k_size);
 
 /* Functions for easy migration between files */
 Datum *kmersearch_extract_kmer_with_degenerate(const char *sequence, int seq_len, int k, int *nkeys);
+/* kmersearch_extract_kmers now in kmersearch_kmer.c */
+Datum *kmersearch_extract_kmers(const char *sequence, int seq_len, int k, int *nkeys);
 
 /* Parallel analysis functions (implemented in kmersearch.c) */
 void kmersearch_worker_analyze_blocks(KmerWorkerState *worker, Relation rel, const char *column_name, int k_size);

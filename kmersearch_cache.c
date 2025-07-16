@@ -66,6 +66,7 @@ void kmersearch_highfreq_kmer_cache_init(void);
 bool kmersearch_highfreq_kmer_cache_load_internal(Oid table_oid, const char *column_name, int k_value);
 void kmersearch_highfreq_kmer_cache_free_internal(void);
 bool kmersearch_highfreq_kmer_cache_is_valid(Oid table_oid, const char *column_name, int k_value);
+static VarBit **kmersearch_get_highfreq_kmer_from_table_batch(Oid table_oid, const char *column_name, int k, int *nkeys, int batch_size);
 
 /* Rawscore cache heap management */
 static void rawscore_heap_swap(RawscoreCacheManager *manager, int i, int j);
@@ -1057,8 +1058,6 @@ kmersearch_rawscore_cache_stats(PG_FUNCTION_ARGS)
     bool nulls[8] = {false};
     HeapTuple tuple;
     
-    check_guc_initialization();
-    
     /* Build tuple descriptor */
     if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
         ereport(ERROR,
@@ -1088,8 +1087,6 @@ Datum
 kmersearch_rawscore_cache_free(PG_FUNCTION_ARGS)
 {
     int freed_entries = 0;
-    
-    check_guc_initialization();
     
     /* Count current entries before clearing */
     if (rawscore_cache_manager)
@@ -1122,8 +1119,6 @@ kmersearch_query_pattern_cache_stats(PG_FUNCTION_ARGS)
     Datum values[4];
     bool nulls[4] = {false};
     HeapTuple tuple;
-    
-    check_guc_initialization();
     
     /* Build tuple descriptor */
     if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
@@ -1160,8 +1155,6 @@ kmersearch_query_pattern_cache_free(PG_FUNCTION_ARGS)
 {
     int freed_entries = 0;
     
-    check_guc_initialization();
-    
     /* Count entries before freeing */
     if (query_pattern_cache_manager)
         freed_entries += query_pattern_cache_manager->current_entries;
@@ -1183,8 +1176,6 @@ kmersearch_actual_min_score_cache_stats(PG_FUNCTION_ARGS)
     Datum values[4];
     bool nulls[4] = {false};
     HeapTuple tuple;
-    
-    check_guc_initialization();
     
     /* Build tuple descriptor */
     if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
@@ -1220,8 +1211,6 @@ Datum
 kmersearch_actual_min_score_cache_free(PG_FUNCTION_ARGS)
 {
     int freed_entries = 0;
-    
-    check_guc_initialization();
     
     /* Count entries before freeing */
     if (actual_min_score_cache_manager)
@@ -1322,10 +1311,13 @@ kmersearch_highfreq_kmer_cache_load_internal(Oid table_oid, const char *column_n
     }
     
     
-    /* Get high-frequency k-mers list */
-    highfreq_kmers = kmersearch_get_highfreq_kmer_from_table(table_oid, column_name, k_value, &highfreq_count);
+    /* Get high-frequency k-mers list using batch processing */
+    ereport(DEBUG1, (errmsg("kmersearch_highfreq_kmer_cache_load_internal: Starting batch loading with batch_size=%d", 
+                           kmersearch_highfreq_kmer_cache_load_batch_size)));
     
-    ereport(DEBUG1, (errmsg("kmersearch_highfreq_kmer_cache_load_internal: Retrieved %d high-frequency k-mers",
+    highfreq_kmers = kmersearch_get_highfreq_kmer_from_table_batch(table_oid, column_name, k_value, &highfreq_count, kmersearch_highfreq_kmer_cache_load_batch_size);
+    
+    ereport(DEBUG1, (errmsg("kmersearch_highfreq_kmer_cache_load_internal: Retrieved %d high-frequency k-mers using batch processing",
                            highfreq_count)));
     
     if (!highfreq_kmers || highfreq_count <= 0) {
@@ -1347,6 +1339,7 @@ kmersearch_highfreq_kmer_cache_load_internal(Oid table_oid, const char *column_n
     global_highfreq_cache.current_cache_key.max_appearance_rate = kmersearch_max_appearance_rate;
     global_highfreq_cache.current_cache_key.max_appearance_nrow = kmersearch_max_appearance_nrow;
     
+    ereport(DEBUG1, (errmsg("kmersearch_highfreq_kmer_cache_load_internal: Building cache key and copying k-mers to cache context")));
     
     /* Copy the k-mer array to cache context to prevent memory context issues */
     cache_kmers = (VarBit **) palloc(highfreq_count * sizeof(VarBit *));
@@ -1360,28 +1353,36 @@ kmersearch_highfreq_kmer_cache_load_internal(Oid table_oid, const char *column_n
     }
     
     global_highfreq_cache.highfreq_kmers = cache_kmers;
-    
     global_highfreq_cache.highfreq_count = highfreq_count;
     
+    ereport(DEBUG1, (errmsg("kmersearch_highfreq_kmer_cache_load_internal: Copied %d k-mers to cache context, creating hash table", 
+                           highfreq_count)));
     
     /* Create hash table in cache context */
     global_highfreq_cache.highfreq_hash = kmersearch_create_highfreq_hash_from_array(cache_kmers, highfreq_count);
     
+    ereport(DEBUG1, (errmsg("kmersearch_highfreq_kmer_cache_load_internal: Hash table creation %s", 
+                           global_highfreq_cache.highfreq_hash ? "successful" : "failed")));
+    
     
     if (global_highfreq_cache.highfreq_hash) {
         global_highfreq_cache.is_valid = true;
+        ereport(DEBUG1, (errmsg("kmersearch_highfreq_kmer_cache_load_internal: Cache loading successful, cache is now valid")));
     } else {
-        /* Hash table creation failed - reset state safely */
-        global_highfreq_cache.highfreq_kmers = NULL;
-        global_highfreq_cache.highfreq_count = 0;
-        global_highfreq_cache.is_valid = false;
-        
+        /* Hash table creation failed, clean up by deleting the context */
+        ereport(DEBUG1, (errmsg("kmersearch_highfreq_kmer_cache_load_internal: Hash table creation failed, cleaning up cache context")));
         MemoryContextSwitchTo(old_context);
-        MemoryContextReset(global_highfreq_cache.cache_context);  /* Reset instead of delete */
+        MemoryContextDelete(global_highfreq_cache.cache_context);
+        global_highfreq_cache.cache_context = NULL;
+        global_highfreq_cache.is_valid = false;
+        ereport(DEBUG1, (errmsg("kmersearch_highfreq_kmer_cache_load_internal: Cache cleanup completed, returning false")));
         return false;
     }
     
     MemoryContextSwitchTo(old_context);
+    
+    ereport(DEBUG1, (errmsg("kmersearch_highfreq_kmer_cache_load_internal: Function completed successfully, cache is valid=%s", 
+                           global_highfreq_cache.is_valid ? "true" : "false")));
     
     return global_highfreq_cache.is_valid;
 }
@@ -1541,48 +1542,22 @@ kmersearch_lookup_in_global_cache(VarBit *kmer_key)
 Datum
 kmersearch_highfreq_kmer_cache_load(PG_FUNCTION_ARGS)
 {
-    text *table_name_text;
-    text *column_name_text;
-    char *column_name;
+    text *table_name_text = PG_GETARG_TEXT_P(0);
+    text *column_name_text = PG_GETARG_TEXT_P(1);
+    
+    char *table_name = text_to_cstring(table_name_text);
+    char *column_name = text_to_cstring(column_name_text);
     bool success;
     Oid table_oid;
     int k_value;
     
-    check_guc_initialization();
-    
-    /* Validate parameters are not NULL */
-    if (PG_ARGISNULL(0) || PG_ARGISNULL(1))
+    /* Get table OID from table name */
+    table_oid = RelnameGetRelid(table_name);
+    if (!OidIsValid(table_oid))
     {
         ereport(ERROR,
-                (errcode(ERRCODE_NULL_VALUE_NOT_ALLOWED),
-                 errmsg("table_name and column_name cannot be NULL")));
-    }
-    
-    table_name_text = PG_GETARG_TEXT_P(0);
-    column_name_text = PG_GETARG_TEXT_P(1);
-    
-    /* Validate non-empty strings */
-    if (VARSIZE_ANY_EXHDR(table_name_text) == 0 ||
-        VARSIZE_ANY_EXHDR(column_name_text) == 0)
-    {
-        ereport(ERROR,
-                (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-                 errmsg("table_name and column_name cannot be empty")));
-    }
-    
-    column_name = text_to_cstring(column_name_text);
-    
-    /* Get table OID from table name using proper namespace resolution */
-    {
-        List *names;
-        RangeVar *table_rv;
-        
-        /* Parse table name into qualified name list (handles schema.table) */
-        names = textToQualifiedNameList(table_name_text);
-        table_rv = makeRangeVarFromNameList(names);
-        
-        /* Get table OID with proper case-insensitive resolution */
-        table_oid = RangeVarGetRelid(table_rv, NoLock, false);
+                (errcode(ERRCODE_UNDEFINED_TABLE),
+                 errmsg("relation \"%s\" does not exist", table_name)));
     }
     
     /* Get k_value from GUC variable */
@@ -1599,52 +1574,21 @@ kmersearch_highfreq_kmer_cache_load(PG_FUNCTION_ARGS)
 Datum
 kmersearch_highfreq_kmer_cache_free(PG_FUNCTION_ARGS)
 {
-    text *table_name_text;
-    text *column_name_text;
-    char *column_name;
-    char *table_name;
+    text *table_name_text = PG_GETARG_TEXT_P(0);
+    text *column_name_text = PG_GETARG_TEXT_P(1);
+    
+    char *table_name = text_to_cstring(table_name_text);
+    char *column_name = text_to_cstring(column_name_text);
     int freed_entries = 0;
-    Oid table_oid;
     
-    check_guc_initialization();
-    
-    /* Validate parameters are not NULL */
-    if (PG_ARGISNULL(0) || PG_ARGISNULL(1))
+    /* Get table OID from table name */
+    Oid table_oid = RelnameGetRelid(table_name);
+    if (!OidIsValid(table_oid))
     {
         ereport(ERROR,
-                (errcode(ERRCODE_NULL_VALUE_NOT_ALLOWED),
-                 errmsg("table_name and column_name cannot be NULL")));
+                (errcode(ERRCODE_UNDEFINED_TABLE),
+                 errmsg("relation \"%s\" does not exist", table_name)));
     }
-    
-    table_name_text = PG_GETARG_TEXT_P(0);
-    column_name_text = PG_GETARG_TEXT_P(1);
-    
-    /* Validate non-empty strings */
-    if (VARSIZE_ANY_EXHDR(table_name_text) == 0 ||
-        VARSIZE_ANY_EXHDR(column_name_text) == 0)
-    {
-        ereport(ERROR,
-                (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-                 errmsg("table_name and column_name cannot be empty")));
-    }
-    
-    column_name = text_to_cstring(column_name_text);
-    
-    /* Get table OID from table name using proper namespace resolution */
-    {
-        List *names;
-        RangeVar *table_rv;
-        
-        /* Parse table name into qualified name list (handles schema.table) */
-        names = textToQualifiedNameList(table_name_text);
-        table_rv = makeRangeVarFromNameList(names);
-        
-        /* Get table OID with proper case-insensitive resolution */
-        table_oid = RangeVarGetRelid(table_rv, NoLock, false);
-    }
-    
-    /* Get table name once for error messages */
-    table_name = get_rel_name(table_oid);
     
     /* Validate cache key matches table/column before freeing */
     if (!kmersearch_validate_cache_key_match(table_oid, column_name)) {
@@ -1676,8 +1620,6 @@ Datum
 kmersearch_highfreq_kmer_cache_free_all(PG_FUNCTION_ARGS)
 {
     int freed_entries = 0;
-    
-    check_guc_initialization();
     
     if (global_highfreq_cache.is_valid)
         freed_entries = 1;
@@ -1827,6 +1769,171 @@ kmersearch_validate_guc_against_metadata(Oid table_oid, const char *column_name,
     return validation_passed;
 }
 
+/*
+ * Get high-frequency k-mers from system table with batch processing
+ * Returns an array of VarBit pointers loaded in batches to reduce memory usage
+ */
+static VarBit **
+kmersearch_get_highfreq_kmer_from_table_batch(Oid table_oid, const char *column_name, int k, int *nkeys, int batch_size)
+{
+    VarBit **result = NULL;
+    int total_processed = 0;
+    int current_batch = 0;
+    int ret;
+    StringInfoData query;
+    char *escaped_column_name;
+    char *cp;
+    const char *sp;
+    int offset = 0;
+    int limit = batch_size;
+    MemoryContext batch_context;
+    MemoryContext old_context;
+    
+    if (!nkeys) {
+        ereport(DEBUG1, (errmsg("kmersearch_get_highfreq_kmer_from_table_batch: nkeys is NULL, returning NULL")));
+        return NULL;
+    }
+    
+    *nkeys = 0;
+    
+    ereport(DEBUG1, (errmsg("kmersearch_get_highfreq_kmer_from_table_batch: Starting batch processing with batch_size=%d", batch_size)));
+    
+    /* Create a temporary context for batch processing */
+    batch_context = AllocSetContextCreate(CurrentMemoryContext,
+                                         "BatchProcessingContext",
+                                         ALLOCSET_DEFAULT_SIZES);
+    
+    /* Connect to SPI */
+    if (SPI_connect() != SPI_OK_CONNECT) {
+        ereport(ERROR, (errmsg("kmersearch_get_highfreq_kmer_from_table_batch: SPI_connect failed")));
+    }
+    
+    /* Escape column name to prevent SQL injection */
+    escaped_column_name = SPI_palloc(strlen(column_name) * 2 + 1);
+    cp = escaped_column_name;
+    sp = column_name;
+    
+    /* Escape single quotes in column name */
+    while (*sp) {
+        if (*sp == '\'') {
+            *cp++ = '\'';
+            *cp++ = '\'';
+        } else {
+            *cp++ = *sp;
+        }
+        sp++;
+    }
+    *cp = '\0';
+    
+    /* Process in batches until no more data */
+    while (true) {
+        int batch_count = 0;
+        int i;
+        
+        old_context = MemoryContextSwitchTo(batch_context);
+        
+        /* Build query with LIMIT/OFFSET for batch processing */
+        initStringInfo(&query);
+        appendStringInfo(&query,
+            "SELECT DISTINCT hkm.ngram_key FROM kmersearch_highfreq_kmer hkm "
+            "WHERE hkm.table_oid = %u "
+            "AND hkm.column_name = '%s' "
+            "AND EXISTS ("
+            "    SELECT 1 FROM kmersearch_highfreq_kmer_meta hkm_meta "
+            "    WHERE hkm_meta.table_oid = %u "
+            "    AND hkm_meta.column_name = '%s' "
+            "    AND hkm_meta.kmer_size = %d"
+            ") "
+            "ORDER BY hkm.ngram_key "
+            "LIMIT %d OFFSET %d",
+            table_oid, escaped_column_name, table_oid, escaped_column_name, k, limit, offset);
+        
+        ereport(DEBUG1, (errmsg("kmersearch_get_highfreq_kmer_from_table_batch: Executing batch %d (offset=%d, limit=%d)",
+                               current_batch, offset, limit)));
+        
+        /* Execute batch query */
+        ret = SPI_execute(query.data, true, 0);
+        
+        if (ret == SPI_OK_SELECT && SPI_processed > 0) {
+            batch_count = SPI_processed;
+            
+            ereport(DEBUG1, (errmsg("kmersearch_get_highfreq_kmer_from_table_batch: Batch %d returned %d rows",
+                                   current_batch, batch_count)));
+            
+            /* Switch back to parent context for result allocation */
+            MemoryContextSwitchTo(old_context);
+            
+            /* Reallocate result array for new batch */
+            if (result == NULL) {
+                result = (VarBit **) palloc((total_processed + batch_count) * sizeof(VarBit *));
+            } else {
+                result = (VarBit **) repalloc(result, (total_processed + batch_count) * sizeof(VarBit *));
+            }
+            
+            /* Switch back to batch context for data processing */
+            MemoryContextSwitchTo(batch_context);
+            
+            /* Process batch results */
+            for (i = 0; i < batch_count; i++) {
+                bool isnull;
+                Datum kmer_datum;
+                
+                kmer_datum = SPI_getbinval(SPI_tuptable->vals[i], SPI_tuptable->tupdesc, 1, &isnull);
+                if (!isnull) {
+                    /* Switch to parent context for k-mer copying */
+                    MemoryContextSwitchTo(old_context);
+                    result[total_processed + i] = DatumGetVarBitPCopy(kmer_datum);
+                    MemoryContextSwitchTo(batch_context);
+                } else {
+                    result[total_processed + i] = NULL;
+                }
+            }
+            
+            total_processed += batch_count;
+            
+            ereport(DEBUG1, (errmsg("kmersearch_get_highfreq_kmer_from_table_batch: Batch %d processed, total_processed=%d",
+                                   current_batch, total_processed)));
+            
+            /* If we got fewer results than requested, we're done */
+            if (batch_count < limit) {
+                ereport(DEBUG1, (errmsg("kmersearch_get_highfreq_kmer_from_table_batch: Last batch (batch_count=%d < limit=%d), finishing",
+                                       batch_count, limit)));
+                MemoryContextSwitchTo(old_context);
+                break;
+            }
+            
+            /* Prepare for next batch */
+            offset += batch_count;
+            current_batch++;
+            
+            /* Switch back to parent context */
+            MemoryContextSwitchTo(old_context);
+            
+            /* Reset batch context for next iteration */
+            MemoryContextReset(batch_context);
+        } else {
+            ereport(DEBUG1, (errmsg("kmersearch_get_highfreq_kmer_from_table_batch: No more data available (batch=%d)",
+                                   current_batch)));
+            MemoryContextSwitchTo(old_context);
+            break;
+        }
+    }
+    
+    /* Cleanup */
+    pfree(escaped_column_name);
+    SPI_finish();
+    
+    /* Delete batch context */
+    MemoryContextDelete(batch_context);
+    
+    *nkeys = total_processed;
+    
+    ereport(DEBUG1, (errmsg("kmersearch_get_highfreq_kmer_from_table_batch: Completed processing %d total k-mers in %d batches",
+                           total_processed, current_batch + 1)));
+    
+    return result;
+}
+
 VarBit **
 kmersearch_get_highfreq_kmer_from_table(Oid table_oid, const char *column_name, int k, int *nkeys)
 {
@@ -1834,6 +1941,10 @@ kmersearch_get_highfreq_kmer_from_table(Oid table_oid, const char *column_name, 
     int ret;
     StringInfoData query;
     int i;
+    char *escaped_column_name;
+    char *cp;
+    const char *sp;
+    
     if (!nkeys) {
         ereport(DEBUG1, (errmsg("kmersearch_get_highfreq_kmer_from_table: nkeys is NULL, returning NULL")));
         return NULL;
@@ -1845,6 +1956,23 @@ kmersearch_get_highfreq_kmer_from_table(Oid table_oid, const char *column_name, 
     if (SPI_connect() != SPI_OK_CONNECT) {
         ereport(ERROR, (errmsg("kmersearch_get_highfreq_kmer_from_table: SPI_connect failed")));
     }
+    
+    /* Escape column name to prevent SQL injection */
+    escaped_column_name = SPI_palloc(strlen(column_name) * 2 + 1);
+    cp = escaped_column_name;
+    sp = column_name;
+    
+    /* Escape single quotes in column name */
+    while (*sp) {
+        if (*sp == '\'') {
+            *cp++ = '\'';
+            *cp++ = '\'';
+        } else {
+            *cp++ = *sp;
+        }
+        sp++;
+    }
+    *cp = '\0';
     
     /* Build query to get highly frequent k-mers */
     initStringInfo(&query);
@@ -1859,7 +1987,7 @@ kmersearch_get_highfreq_kmer_from_table(Oid table_oid, const char *column_name, 
         "    AND hkm_meta.kmer_size = %d"
         ") "
         "ORDER BY hkm.ngram_key",
-        table_oid, column_name, table_oid, column_name, k);
+        table_oid, escaped_column_name, table_oid, escaped_column_name, k);
     
     
     /* Execute query */
@@ -1890,6 +2018,7 @@ kmersearch_get_highfreq_kmer_from_table(Oid table_oid, const char *column_name, 
     
     /* Cleanup */
     pfree(query.data);
+    pfree(escaped_column_name);
     SPI_finish();
     
     
@@ -2013,21 +2142,14 @@ kmersearch_ngram_key_to_hash(VarBit *ngram_key)
 Datum
 kmersearch_parallel_highfreq_kmer_cache_load(PG_FUNCTION_ARGS)
 {
-    text *table_name_text;
-    text *column_name_text;
-    char *table_name;
-    char *column_name;
+    text *table_name_text = PG_GETARG_TEXT_P(0);
+    text *column_name_text = PG_GETARG_TEXT_P(1);
+    
+    char *table_name = text_to_cstring(table_name_text);
+    char *column_name = text_to_cstring(column_name_text);
     bool result;
     Oid table_oid;
     int k_value;
-    
-    check_guc_initialization();
-    
-    table_name_text = PG_GETARG_TEXT_P(0);
-    column_name_text = PG_GETARG_TEXT_P(1);
-    
-    table_name = text_to_cstring(table_name_text);
-    column_name = text_to_cstring(column_name_text);
     
     /* Get table OID from table name */
     table_oid = RelnameGetRelid(table_name);
@@ -2064,23 +2186,15 @@ kmersearch_parallel_highfreq_kmer_cache_load(PG_FUNCTION_ARGS)
 Datum
 kmersearch_parallel_highfreq_kmer_cache_free(PG_FUNCTION_ARGS)
 {
-    text *table_name_text;
-    text *column_name_text;
-    char *table_name;
-    char *column_name;
+    text *table_name_text = PG_GETARG_TEXT_P(0);
+    text *column_name_text = PG_GETARG_TEXT_P(1);
+    
+    char *table_name = text_to_cstring(table_name_text);
+    char *column_name = text_to_cstring(column_name_text);
     int32 freed_entries = 0;
-    Oid table_oid;
-    
-    check_guc_initialization();
-    
-    table_name_text = PG_GETARG_TEXT_P(0);
-    column_name_text = PG_GETARG_TEXT_P(1);
-    
-    table_name = text_to_cstring(table_name_text);
-    column_name = text_to_cstring(column_name_text);
     
     /* Get table OID from table name */
-    table_oid = RelnameGetRelid(table_name);
+    Oid table_oid = RelnameGetRelid(table_name);
     if (!OidIsValid(table_oid))
     {
         ereport(ERROR,
@@ -2123,8 +2237,6 @@ Datum
 kmersearch_parallel_highfreq_kmer_cache_free_all(PG_FUNCTION_ARGS)
 {
     int32 freed_entries = 0;
-    
-    check_guc_initialization();
     
     if (parallel_highfreq_cache != NULL && parallel_highfreq_cache->is_initialized) {
         freed_entries = parallel_highfreq_cache->num_entries;
@@ -2345,11 +2457,11 @@ kmersearch_parallel_highfreq_kmer_cache_load_internal(Oid table_oid, const char 
         }
     }
     
-    /* Get high-frequency k-mers list from the regular cache function */
-    ereport(LOG, (errmsg("dshash_cache_load: Starting cache load for table %u, column %s, k=%d", 
-                        table_oid, column_name, k_value)));
+    /* Get high-frequency k-mers list using batch processing */
+    ereport(LOG, (errmsg("dshash_cache_load: Starting cache load for table %u, column %s, k=%d with batch_size=%d", 
+                        table_oid, column_name, k_value, kmersearch_highfreq_kmer_cache_load_batch_size)));
     
-    highfreq_kmers = kmersearch_get_highfreq_kmer_from_table(table_oid, column_name, k_value, &highfreq_count);
+    highfreq_kmers = kmersearch_get_highfreq_kmer_from_table_batch(table_oid, column_name, k_value, &highfreq_count, kmersearch_highfreq_kmer_cache_load_batch_size);
     
     if (!highfreq_kmers || highfreq_count <= 0) {
         /* No high-frequency k-mers found */
