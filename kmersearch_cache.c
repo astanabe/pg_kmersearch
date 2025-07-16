@@ -1276,6 +1276,10 @@ kmersearch_highfreq_kmer_cache_load_internal(Oid table_oid, const char *column_n
     int highfreq_count;
     VarBit **cache_kmers;
     int i;
+    HASHCTL hash_ctl;
+    int total_inserted;
+    int batch_num;
+    int offset;
     
     if (!column_name || k_value <= 0) {
         return false;
@@ -1398,7 +1402,6 @@ kmersearch_highfreq_kmer_cache_load_internal(Oid table_oid, const char *column_n
     ereport(DEBUG1, (errmsg("kmersearch_highfreq_kmer_cache_load_internal: Building cache key and initializing hash table")));
     
     /* Initialize hash table in cache context */
-    HASHCTL hash_ctl;
     MemSet(&hash_ctl, 0, sizeof(hash_ctl));
     hash_ctl.keysize = sizeof(uint64);  /* Use hash value as key */
     hash_ctl.entrysize = sizeof(HighfreqKmerHashEntry);
@@ -1422,9 +1425,9 @@ kmersearch_highfreq_kmer_cache_load_internal(Oid table_oid, const char *column_n
     ereport(DEBUG1, (errmsg("kmersearch_highfreq_kmer_cache_load_internal: Hash table created successfully, starting batch population")));
     
     /* Populate hash table with k-mers using batch processing */
-    int total_inserted = 0;
-    int batch_num = 0;
-    int offset = 0;
+    total_inserted = 0;
+    batch_num = 0;
+    offset = 0;
     
     /* Process k-mers in batches to reduce memory usage */
     while (offset < highfreq_count) {

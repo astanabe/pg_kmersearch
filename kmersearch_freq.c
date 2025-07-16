@@ -1151,6 +1151,8 @@ kmersearch_populate_analysis_dshash_from_workers(KmerWorkerState *workers, int n
     int worker_id;
     int ret;
     int processed_entries = 0;
+    StringInfoData debug_query;
+    bool first_table;
     
     if (analysis_highfreq_hash == NULL) {
         ereport(ERROR, (errmsg("Analysis dshash table not initialized")));
@@ -1181,7 +1183,6 @@ kmersearch_populate_analysis_dshash_from_workers(KmerWorkerState *workers, int n
             continue;
         }
         
-        StringInfoData debug_query;
         initStringInfo(&debug_query);
         appendStringInfo(&debug_query, "SELECT count(*) FROM %s", workers[worker_id].temp_table_name);
         
@@ -1200,7 +1201,7 @@ kmersearch_populate_analysis_dshash_from_workers(KmerWorkerState *workers, int n
     appendStringInfo(&query, "INSERT INTO %s (kmer_data, frequency_count) ", temp_kmer_final_name);
     appendStringInfoString(&query, "SELECT kmer_data, sum(frequency_count) FROM (");
     
-    bool first_table = true;
+    first_table = true;
     for (worker_id = 0; worker_id < num_workers; worker_id++) {
         if (workers[worker_id].temp_table_name == NULL) {
             continue;
