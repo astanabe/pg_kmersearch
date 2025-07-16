@@ -2649,7 +2649,12 @@ is_kmer2_in_highfreq_table(uint64_t kmer2_value, const char *highfreq_table_name
             "SELECT 1 FROM %s WHERE kmer_data = %lu LIMIT 1",
             highfreq_table_name, kmer2_value);
     } else {
-        /* Permanent table uses different structure - not supported yet */
+        /* 
+         * Permanent table uses different structure - not supported yet
+         * NOTE: This path is never reached in current implementation since
+         * highfreq_table_name is always generated with "temp_kmer_final_" prefix
+         * via kmersearch_generate_unique_temp_table_name()
+         */
         ereport(ERROR, (errmsg("Permanent table lookup not supported in is_kmer2_in_highfreq_table")));
     }
     
@@ -2705,38 +2710,6 @@ create_ngram_key2_from_kmer2_and_count(uint64_t kmer2_value, int k_size, int occ
     return result;
 }
 
-/*
- * Process extracted n-gram keys and store high-frequency ones
- */
-static void
-process_extracted_ngram_keys(Datum *ngram_keys, int nkeys, const char *worker_table, const char *highfreq_table)
-{
-    StringInfoData query;
-    int i;
-    
-    if (!ngram_keys || nkeys <= 0)
-        return;
-    
-    initStringInfo(&query);
-    
-    for (i = 0; i < nkeys; i++) {
-        VarBit *ngram_key = DatumGetVarBitP(ngram_keys[i]);
-        
-        /* Check if this n-gram key corresponds to a high-frequency k-mer (legacy function - not used in new implementation) */
-        /* Note: This function is not called in the new implementation, keeping for compatibility */
-        if (false) { /* Disabled - use process_extracted_kmer2 instead */
-            resetStringInfo(&query);
-            appendStringInfo(&query,
-                "INSERT INTO %s (ngram_key) VALUES ('%s')",
-                worker_table,
-                DatumGetCString(DirectFunctionCall1(varbit_out, VarBitPGetDatum(ngram_key))));
-            
-            SPI_exec(query.data, 0);
-        }
-    }
-    
-    pfree(query.data);
-}
 
 /*
  * Process extracted kmer2 values and generate ngram_key2 for high-frequency ones
