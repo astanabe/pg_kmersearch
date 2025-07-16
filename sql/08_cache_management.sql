@@ -1,3 +1,4 @@
+SET client_min_messages = WARNING;
 CREATE EXTENSION IF NOT EXISTS pg_kmersearch;
 
 -- Test cache management functionality
@@ -10,30 +11,30 @@ SET kmersearch.min_shared_ngram_key_rate = 0.2;  -- Allow matches with 20% share
 SHOW kmersearch.min_shared_ngram_key_rate;
 
 -- Clean up any existing tables
-DROP TABLE IF EXISTS test_cache_DNA2, test_cache_DNA4 CASCADE;
+DROP TABLE IF EXISTS test_cache_dna2, test_cache_dna4 CASCADE;
 
 -- Create test tables for cache testing
-CREATE TABLE test_cache_DNA2 (
+CREATE TABLE test_cache_dna2 (
     id SERIAL PRIMARY KEY,
     name TEXT,
     sequence DNA2
 );
 
-CREATE TABLE test_cache_DNA4 (
+CREATE TABLE test_cache_dna4 (
     id SERIAL PRIMARY KEY,
     name TEXT,
     sequence DNA4
 );
 
 -- Insert test data for cache testing
-INSERT INTO test_cache_DNA2 (name, sequence) VALUES
+INSERT INTO test_cache_dna2 (name, sequence) VALUES
     ('cache_seq1', 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA'),
     ('cache_seq2', 'TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT'),
     ('cache_seq3', 'ATCGATCGTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT'),
     ('cache_seq4', 'GCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTA'),
     ('cache_seq5', 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA');
 
-INSERT INTO test_cache_DNA4 (name, sequence) VALUES
+INSERT INTO test_cache_dna4 (name, sequence) VALUES
     ('cache_seq1', 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA'),
     ('cache_seq2', 'TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT'),
     ('cache_seq3', 'ATCGATCGNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNN'),
@@ -41,8 +42,8 @@ INSERT INTO test_cache_DNA4 (name, sequence) VALUES
     ('cache_seq5', 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA');
 
 -- Create GIN indexes for testing
-CREATE INDEX test_cache_dna2_gin_idx ON test_cache_DNA2 USING gin (sequence);
-CREATE INDEX test_cache_dna4_gin_idx ON test_cache_DNA4 USING gin (sequence);
+CREATE INDEX test_cache_dna2_gin_idx ON test_cache_dna2 USING gin (sequence);
+CREATE INDEX test_cache_dna4_gin_idx ON test_cache_dna4 USING gin (sequence);
 
 -- Test GUC configuration for cache settings
 SHOW kmersearch.actual_min_score_cache_max_entries;
@@ -76,22 +77,22 @@ SELECT * FROM kmersearch_query_pattern_cache_stats();
 SELECT 'Populating caches with queries...' as test_phase;
 
 -- Same query multiple times to test actual min score caching
-SELECT COUNT(*) FROM test_cache_DNA2 WHERE sequence =% 'ATCGATCG';
-SELECT COUNT(*) FROM test_cache_DNA2 WHERE sequence =% 'ATCGATCG';
-SELECT COUNT(*) FROM test_cache_DNA2 WHERE sequence =% 'ATCGATCG';
+SELECT COUNT(*) FROM test_cache_dna2 WHERE sequence =% 'ATCGATCG';
+SELECT COUNT(*) FROM test_cache_dna2 WHERE sequence =% 'ATCGATCG';
+SELECT COUNT(*) FROM test_cache_dna2 WHERE sequence =% 'ATCGATCG';
 
 -- Different queries to test cache diversity
-SELECT COUNT(*) FROM test_cache_DNA2 WHERE sequence =% 'TTTTTTTT';
-SELECT COUNT(*) FROM test_cache_DNA2 WHERE sequence =% 'TTTTTTTT';
-SELECT COUNT(*) FROM test_cache_DNA2 WHERE sequence =% 'GCTAGCTA';
+SELECT COUNT(*) FROM test_cache_dna2 WHERE sequence =% 'TTTTTTTT';
+SELECT COUNT(*) FROM test_cache_dna2 WHERE sequence =% 'TTTTTTTT';
+SELECT COUNT(*) FROM test_cache_dna2 WHERE sequence =% 'GCTAGCTA';
 
 -- DNA4 queries
-SELECT COUNT(*) FROM test_cache_DNA4 WHERE sequence =% 'ATCGATCG';
-SELECT COUNT(*) FROM test_cache_DNA4 WHERE sequence =% 'NNNNNNNN';
+SELECT COUNT(*) FROM test_cache_dna4 WHERE sequence =% 'ATCGATCG';
+SELECT COUNT(*) FROM test_cache_dna4 WHERE sequence =% 'NNNNNNNN';
 
 -- Test scoring functions to populate rawscore cache
-SELECT kmersearch_rawscore(sequence, 'ATCGATCG') FROM test_cache_DNA2 WHERE id <= 2;
-SELECT kmersearch_rawscore(sequence, 'TTTTTTTT') FROM test_cache_DNA2 WHERE id <= 2;
+SELECT kmersearch_rawscore(sequence, 'ATCGATCG') FROM test_cache_dna2 WHERE id <= 2;
+SELECT kmersearch_rawscore(sequence, 'TTTTTTTT') FROM test_cache_dna2 WHERE id <= 2;
 
 -- Check cache statistics after usage
 SELECT 'After query execution - actual min score cache:' as test_phase;
@@ -127,8 +128,8 @@ SET kmersearch.min_score = 5;
 SET kmersearch.min_shared_ngram_key_rate = 0.8;
 
 -- Execute queries with new settings
-SELECT COUNT(*) FROM test_cache_DNA2 WHERE sequence =% 'ATCGATCG';
-SELECT COUNT(*) FROM test_cache_DNA2 WHERE sequence =% 'ATCGATCG';
+SELECT COUNT(*) FROM test_cache_dna2 WHERE sequence =% 'ATCGATCG';
+SELECT COUNT(*) FROM test_cache_dna2 WHERE sequence =% 'ATCGATCG';
 
 -- Check cache after configuration change
 SELECT 'With changed settings - actual min score cache:' as test_phase;
@@ -148,16 +149,18 @@ SET kmersearch.actual_min_score_cache_max_entries = 1000;
 SELECT kmersearch_actual_min_score_cache_free();
 
 -- Execute multiple different queries to test eviction
-SELECT COUNT(*) FROM test_cache_DNA2 WHERE sequence =% 'AAAAAAAA';
-SELECT COUNT(*) FROM test_cache_DNA2 WHERE sequence =% 'TTTTTTTT';
-SELECT COUNT(*) FROM test_cache_DNA2 WHERE sequence =% 'CCCCCCCC';
-SELECT COUNT(*) FROM test_cache_DNA2 WHERE sequence =% 'GGGGGGGG';
+SELECT COUNT(*) FROM test_cache_dna2 WHERE sequence =% 'AAAAAAAA';
+SELECT COUNT(*) FROM test_cache_dna2 WHERE sequence =% 'TTTTTTTT';
+SELECT COUNT(*) FROM test_cache_dna2 WHERE sequence =% 'CCCCCCCC';
+SELECT COUNT(*) FROM test_cache_dna2 WHERE sequence =% 'GGGGGGGG';
 
 -- Check final cache state
 SELECT 'Final cache state:' as test_phase;
 SELECT * FROM kmersearch_actual_min_score_cache_stats();
 
 -- Clean up
-DROP TABLE test_cache_DNA2, test_cache_DNA4 CASCADE;
+DROP TABLE IF EXISTS test_cache_dna2 CASCADE;
+DROP TABLE IF EXISTS test_cache_dna4 CASCADE;
 
 DROP EXTENSION pg_kmersearch CASCADE;
+SET client_min_messages = NOTICE;

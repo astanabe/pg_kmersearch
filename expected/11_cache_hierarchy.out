@@ -1,3 +1,4 @@
+SET client_min_messages = WARNING;
 CREATE EXTENSION IF NOT EXISTS pg_kmersearch;
 -- Test comprehensive cache hierarchy and GUC validation functionality
 -- This test covers the enhanced kmersearch_is_kmer_highfreq implementation
@@ -8,7 +9,6 @@ SET kmersearch.max_appearance_rate = 0.2;
 SET kmersearch.max_appearance_nrow = 3;
 -- Clean up any existing test data
 DROP TABLE IF EXISTS test_cache_hierarchy CASCADE;
-NOTICE:  table "test_cache_hierarchy" does not exist, skipping
 DELETE FROM kmersearch_highfreq_kmer WHERE detection_reason LIKE 'cache_hierarchy_%';
 DELETE FROM kmersearch_highfreq_kmer_meta WHERE column_name = 'test_seq';
 -- Create test table for cache hierarchy testing
@@ -58,14 +58,6 @@ SELECT kmersearch_perform_highfreq_analysis(
     'test_cache_hierarchy'::text,
     'test_seq'::text
 ) AS analysis_result;
-NOTICE:  Performing k-mer frequency analysis for k=4
-NOTICE:  Max appearance rate: 0.200000, Max appearance nrow: 3
-NOTICE:  Phase 1: Analyzing k-mer frequencies with 2 parallel workers...
-NOTICE:  table "temp_kmer_final_3092357_1752640568_604506_3" does not exist, skipping
-NOTICE:  Phase 2: Collecting n-gram keys for high-frequency k-mers...
-NOTICE:  Source table temp_ngram_keys_3092357_1752640568_606122_4 contains 10 n-gram key records
-NOTICE:  Successfully inserted 10 n-gram key records
-NOTICE:  High-frequency k-mer analysis transaction committed successfully
  analysis_result  
 ------------------
  (13,9,2,0,0.2,2)
@@ -253,7 +245,7 @@ SELECT 'Cleaning up test data...' as cleanup_phase;
  Cleaning up test data...
 (1 row)
 
-DROP TABLE test_cache_hierarchy CASCADE;
+DROP TABLE IF EXISTS test_cache_hierarchy CASCADE;
 DELETE FROM kmersearch_highfreq_kmer WHERE table_oid = (SELECT oid FROM pg_class WHERE relname = 'test_cache_hierarchy') AND column_name = 'test_seq';
 DELETE FROM kmersearch_highfreq_kmer_meta WHERE column_name = 'test_seq';
 SELECT 'Cache hierarchy test completed successfully!' as final_result;
@@ -263,3 +255,4 @@ SELECT 'Cache hierarchy test completed successfully!' as final_result;
 (1 row)
 
 DROP EXTENSION pg_kmersearch CASCADE;
+SET client_min_messages = NOTICE;

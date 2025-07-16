@@ -1,3 +1,4 @@
+SET client_min_messages = WARNING;
 CREATE EXTENSION IF NOT EXISTS pg_kmersearch;
 
 -- Set consistent GUC variables for this test
@@ -14,13 +15,13 @@ SHOW kmersearch.max_appearance_nrow;
 -- This test covers DDL operations and index creation
 
 -- Create test tables
-CREATE TABLE test_DNA2_sequences (
+CREATE TABLE test_dna2_sequences (
     id SERIAL PRIMARY KEY,
     name TEXT,
     sequence DNA2
 );
 
-CREATE TABLE test_DNA4_sequences (
+CREATE TABLE test_dna4_sequences (
     id SERIAL PRIMARY KEY,
     name TEXT,
     sequence DNA4
@@ -50,4 +51,9 @@ SELECT indexname, tablename FROM pg_indexes
 WHERE indexname IN ('idx_dna2_gin', 'idx_dna4_gin')
 ORDER BY indexname;
 
+-- Clean up test tables
+DROP TABLE IF EXISTS test_dna2_sequences CASCADE;
+DROP TABLE IF EXISTS test_dna4_sequences CASCADE;
+
 DROP EXTENSION pg_kmersearch CASCADE;
+SET client_min_messages = NOTICE;

@@ -1,3 +1,4 @@
+SET client_min_messages = WARNING;
 CREATE EXTENSION IF NOT EXISTS pg_kmersearch;
 -- Test advanced search functionality and configuration
 -- This test covers different k-mer sizes and configuration options
@@ -61,7 +62,8 @@ ORDER BY score DESC, id;
 
 -- Reset k-mer size for other tests
 SET kmersearch.kmer_size = 4;
+-- Clean up test tables
+DROP TABLE IF EXISTS test_k6_sequences CASCADE;
+DROP TABLE IF EXISTS test_k6_sequences_2 CASCADE;
 DROP EXTENSION pg_kmersearch CASCADE;
-NOTICE:  drop cascades to 2 other objects
-DETAIL:  drop cascades to column sequence of table test_k6_sequences
-drop cascades to column sequence of table test_k6_sequences_2
+SET client_min_messages = NOTICE;

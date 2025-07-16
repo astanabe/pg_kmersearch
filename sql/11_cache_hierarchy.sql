@@ -1,3 +1,4 @@
+SET client_min_messages = WARNING;
 CREATE EXTENSION IF NOT EXISTS pg_kmersearch;
 
 -- Test comprehensive cache hierarchy and GUC validation functionality
@@ -156,10 +157,11 @@ SELECT test_seq =% 'ATCGATCG' as no_table_query FROM test_cache_hierarchy LIMIT 
 
 -- Clean up test data
 SELECT 'Cleaning up test data...' as cleanup_phase;
-DROP TABLE test_cache_hierarchy CASCADE;
+DROP TABLE IF EXISTS test_cache_hierarchy CASCADE;
 DELETE FROM kmersearch_highfreq_kmer WHERE table_oid = (SELECT oid FROM pg_class WHERE relname = 'test_cache_hierarchy') AND column_name = 'test_seq';
 DELETE FROM kmersearch_highfreq_kmer_meta WHERE column_name = 'test_seq';
 
 SELECT 'Cache hierarchy test completed successfully!' as final_result;
 
 DROP EXTENSION pg_kmersearch CASCADE;
+SET client_min_messages = NOTICE;

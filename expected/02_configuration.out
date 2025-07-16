@@ -1,3 +1,4 @@
+SET client_min_messages = WARNING;
 CREATE EXTENSION IF NOT EXISTS pg_kmersearch;
 -- Test GUC configuration variables
 -- This test covers all configuration parameters
@@ -295,3 +296,4 @@ SELECT kmersearch_query_pattern_cache_free();  -- Should return 0 (no entries to
 (1 row)
 
 DROP EXTENSION pg_kmersearch CASCADE;
+SET client_min_messages = NOTICE;

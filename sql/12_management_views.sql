@@ -1,3 +1,4 @@
+SET client_min_messages = WARNING;
 CREATE EXTENSION IF NOT EXISTS pg_kmersearch;
 
 -- Set k-mer size to 4 for efficient testing (must be after CREATE EXTENSION)
@@ -98,6 +99,7 @@ FROM kmersearch_cache_summary
 ORDER BY cache_type;
 
 -- Clean up
-DROP TABLE test_analysis_dna2 CASCADE;
+DROP TABLE IF EXISTS test_analysis_dna2 CASCADE;
 
 DROP EXTENSION pg_kmersearch CASCADE;
+SET client_min_messages = NOTICE;

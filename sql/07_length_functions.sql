@@ -1,3 +1,4 @@
+SET client_min_messages = WARNING;
 CREATE EXTENSION IF NOT EXISTS pg_kmersearch;
 
 -- Test length functions for DNA2 and DNA4 types
@@ -57,3 +58,4 @@ SELECT
     char_length('ATCGATCGA'::DNA4) = length('ATCGATCGA'::DNA4) AS dna4_length_consistency_9bp;
 
 DROP EXTENSION pg_kmersearch CASCADE;
+SET client_min_messages = NOTICE;

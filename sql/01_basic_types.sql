@@ -1,3 +1,4 @@
+SET client_min_messages = WARNING;
 CREATE EXTENSION IF NOT EXISTS pg_kmersearch;
 
 -- Test basic DNA2 and DNA4 type functionality
@@ -26,3 +27,4 @@ SELECT 'AUCG'::DNA2 AS DNA2_with_u;
 SELECT 'AUCG'::DNA4 AS DNA4_with_u;
 
 DROP EXTENSION pg_kmersearch CASCADE;
+SET client_min_messages = NOTICE;

@@ -1,265 +1,218 @@
--- Enhanced parallel cache test with actual high-frequency k-mers
+SET client_min_messages = WARNING;
 CREATE EXTENSION IF NOT EXISTS pg_kmersearch;
--- Create test table with many repeated sequences to ensure high-frequency k-mers
-CREATE TABLE test_parallel_enhanced (
-    id SERIAL PRIMARY KEY,
-    seq dna2
-);
--- Insert many sequences with the same k-mers to create high frequency
-DO $$
-BEGIN
-    FOR i IN 1..30 LOOP
-        INSERT INTO test_parallel_enhanced (seq) VALUES ('AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'::dna2);
-        INSERT INTO test_parallel_enhanced (seq) VALUES ('TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT'::dna2);
-        INSERT INTO test_parallel_enhanced (seq) VALUES ('CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC'::dna2);
-        INSERT INTO test_parallel_enhanced (seq) VALUES ('GGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGG'::dna2);
-    END LOOP;
-END $$;
--- Set parameters to detect high-frequency k-mers
+-- High-frequency k-mer exclusion functionality parallel cache test
+-- kmersearch.kmer_size=4, kmersearch.occur_bitlen=4, kmersearch.max_appearance_rate=0.25,
+-- kmersearch.max_appearance_nrow=0, kmersearch.min_score=1, kmersearch.min_shared_ngram_key_rate=0.9,
+-- kmersearch.preclude_highfreq_kmer=true, kmersearch.force_use_parallel_highfreq_kmer_cache=true
+-- Apply specified GUC settings
 SET kmersearch.kmer_size = 4;
+SET kmersearch.occur_bitlen = 4;
+SET kmersearch.max_appearance_rate = 0.25;
+SET kmersearch.max_appearance_nrow = 0;
+SET kmersearch.min_score = 1;
+SET kmersearch.min_shared_ngram_key_rate = 0.9;
+SET kmersearch.preclude_highfreq_kmer = true;
+SET kmersearch.force_use_parallel_highfreq_kmer_cache = true;
+-- Configuration verification
+SELECT 'GUC settings verification:' as info;
+            info            
+----------------------------
+ GUC settings verification:
+(1 row)
+
 SHOW kmersearch.kmer_size;
  kmersearch.kmer_size 
 ----------------------
  4
 (1 row)
 
-SET kmersearch.occur_bitlen = 8;
-SHOW kmersearch.occur_bitlen;
- kmersearch.occur_bitlen 
--------------------------
- 8
-(1 row)
-
-SET kmersearch.max_appearance_rate = 0.2;   -- Allow up to 20% appearance rate  
 SHOW kmersearch.max_appearance_rate;
  kmersearch.max_appearance_rate 
 --------------------------------
- 0.2
+ 0.25
 (1 row)
 
-SET kmersearch.max_appearance_nrow = 20;   -- k-mers appearing in > 20 rows are high-frequency
-SHOW kmersearch.max_appearance_nrow;
- kmersearch.max_appearance_nrow 
---------------------------------
- 20
+SHOW kmersearch.preclude_highfreq_kmer;
+ kmersearch.preclude_highfreq_kmer 
+-----------------------------------
+ on
 (1 row)
 
-SET kmersearch.min_shared_ngram_key_rate = 0.2;  -- Allow matches with 20% shared k-mers
-SHOW kmersearch.min_shared_ngram_key_rate;
- kmersearch.min_shared_ngram_key_rate 
+-- Create test table
+DROP TABLE IF EXISTS test_dna_highfreq CASCADE;
+CREATE TABLE test_dna_highfreq (
+    id SERIAL PRIMARY KEY,
+    seq DNA2
+);
+-- Insert test data containing high-frequency k-mers for k=4
+INSERT INTO test_dna_highfreq (seq) VALUES 
+    ('AAAACTGTACGT'::DNA2),    -- Contains AAAA, AAAa, AACa, ACTa
+    ('AAAAGCATGCAT'::DNA2),    -- Contains AAAA, AAAa, AAGa, AGCa  
+    ('AAAATCGATCGA'::DNA2),    -- Contains AAAA, AAAa, AATa, ATCa
+    ('AAAACCCCGGGG'::DNA2),    -- Contains AAAA, AAAa, AACc, CCCC
+    ('AAAATTTTAAAA'::DNA2),    -- Contains AAAA, AAAa, AATt, TTTT
+    ('TCGTAAAACGTA'::DNA2),    -- Contains AAAA
+    ('GCATAAAATCGA'::DNA2),    -- Contains AAAA
+    ('ATCGAAAACCCC'::DNA2),    -- Contains AAAA, CCCC
+    ('CCCCAAAATTTT'::DNA2),    -- Contains CCCC, AAAA, TTTT
+    ('TTTTAAAACCCC'::DNA2),    -- Contains TTTT, AAAA, CCCC
+    ('CCCCCCCCCCCC'::DNA2),    -- Contains many CCCC
+    ('TTTTTTTTTTTT'::DNA2),    -- Contains many TTTT
+    ('ACGTACGTACGT'::DNA2),    -- Different pattern
+    ('TGCATGCATGCA'::DNA2);    -- Different pattern
+SELECT 'Test data creation completed:' as info, COUNT(*) as total_rows FROM test_dna_highfreq;
+             info              | total_rows 
+-------------------------------+------------
+ Test data creation completed: |         14
+(1 row)
+
+-- 1. Execute kmersearch_perform_highfreq_analysis()
+SELECT '1. High-frequency k-mer analysis execution:' as step;
+                    step                     
+---------------------------------------------
+ 1. High-frequency k-mer analysis execution:
+(1 row)
+
+SELECT kmersearch_perform_highfreq_analysis('test_dna_highfreq', 'seq');
+ kmersearch_perform_highfreq_analysis 
 --------------------------------------
- 0.2
+ (14,23,2,0,0.25,3)
 (1 row)
 
--- Perform analysis
-SELECT 'Performing k-mer frequency analysis...' AS status;
-                 status                 
-----------------------------------------
- Performing k-mer frequency analysis...
+-- 2. Execute kmersearch_parallel_highfreq_kmer_cache_load()
+SELECT '2. High-frequency k-mer parallel cache load:' as step;
+                     step                     
+----------------------------------------------
+ 2. High-frequency k-mer parallel cache load:
 (1 row)
 
-SELECT kmersearch_perform_highfreq_analysis(
-    'test_parallel_enhanced'::text,
-    'seq'::text
-) AS analysis_result;
-NOTICE:  Performing k-mer frequency analysis for k=4
-NOTICE:  Max appearance rate: 0.200000, Max appearance nrow: 20
-NOTICE:  Phase 1: Analyzing k-mer frequencies with 2 parallel workers...
-NOTICE:  table "temp_kmer_final_3092351_1752640568_480382_3" does not exist, skipping
-NOTICE:  Phase 2: Collecting n-gram keys for high-frequency k-mers...
-NOTICE:  Source table temp_ngram_keys_3092351_1752640568_481855_4 contains 5 n-gram key records
-NOTICE:  Successfully inserted 5 n-gram key records
-NOTICE:  High-frequency k-mer analysis transaction committed successfully
-  analysis_result   
---------------------
- (120,4,2,0,0.2,20)
+SELECT kmersearch_parallel_highfreq_kmer_cache_load('test_dna_highfreq', 'seq');
+ kmersearch_parallel_highfreq_kmer_cache_load 
+----------------------------------------------
+ t
 (1 row)
 
--- Check analysis results
-SELECT 'Analysis results:' AS status;
-      status       
--------------------
- Analysis results:
+-- 3. CREATE INDEX (high-frequency ngram_key2 are excluded from GIN index)
+SELECT '3. GIN index creation:' as step;
+          step          
+------------------------
+ 3. GIN index creation:
 (1 row)
 
-SELECT highfreq_kmer_count FROM kmersearch_analysis_status WHERE table_name = 'test_parallel_enhanced';
+CREATE INDEX idx_test_dna_highfreq_seq ON test_dna_highfreq USING gin (seq);
+-- Index creation verification
+SELECT '   Index creation verification:' as info;
+              info               
+---------------------------------
+    Index creation verification:
+(1 row)
+
+SELECT schemaname, tablename, indexname 
+FROM pg_indexes 
+WHERE tablename = 'test_dna_highfreq' AND indexname = 'idx_test_dna_highfreq_seq';
+ schemaname |     tablename     |         indexname         
+------------+-------------------+---------------------------
+ public     | test_dna_highfreq | idx_test_dna_highfreq_seq
+(1 row)
+
+-- 4. GIN index-based search
+SELECT '4. GIN index-based search:' as step;
+            step            
+----------------------------
+ 4. GIN index-based search:
+(1 row)
+
+SELECT id, seq, kmersearch_rawscore_dna2(seq, 'AAAACTGT') as rawscore
+FROM test_dna_highfreq 
+WHERE seq =% 'AAAACTGT'
+ORDER BY rawscore DESC, id;
+ id |     seq      | rawscore 
+----+--------------+----------
+  1 | AAAACTGTACGT |        5
+(1 row)
+
+-- 5. Execute kmersearch_parallel_highfreq_kmer_cache_free()
+SELECT '5. High-frequency k-mer parallel cache release:' as step;
+                      step                       
+-------------------------------------------------
+ 5. High-frequency k-mer parallel cache release:
+(1 row)
+
+SELECT kmersearch_parallel_highfreq_kmer_cache_free('test_dna_highfreq', 'seq');
+ kmersearch_parallel_highfreq_kmer_cache_free 
+----------------------------------------------
+                                           36
+(1 row)
+
+-- 6. GIN index-based search after cache release
+SELECT '6. GIN index search after cache release:' as step;
+                   step                   
+------------------------------------------
+ 6. GIN index search after cache release:
+(1 row)
+
+SELECT id, seq, kmersearch_rawscore_dna2(seq, 'AAAACTGT') as rawscore
+FROM test_dna_highfreq 
+WHERE seq =% 'AAAACTGT'
+ORDER BY rawscore DESC, id;
+ id |     seq      | rawscore 
+----+--------------+----------
+  1 | AAAACTGTACGT |        5
+(1 row)
+
+-- Additional test: High-frequency k-mer exclusion effect verification
+SELECT '7. High-frequency k-mer exclusion effect verification:' as step;
+                          step                          
+--------------------------------------------------------
+ 7. High-frequency k-mer exclusion effect verification:
+(1 row)
+
+-- High-frequency k-mer status verification
+SELECT 'System table content verification:' as info;
+                info                
+------------------------------------
+ System table content verification:
+(1 row)
+
+SELECT COUNT(*) as highfreq_kmer_count 
+FROM kmersearch_highfreq_kmer 
+WHERE table_oid = (SELECT oid FROM pg_class WHERE relname = 'test_dna_highfreq');
  highfreq_kmer_count 
 ---------------------
-                   5
+                  36
 (1 row)
 
--- Verify that analysis detected high-frequency k-mers
-SELECT 'Verifying analysis results:' AS status;
-           status            
------------------------------
- Verifying analysis results:
-(1 row)
-
-SELECT highfreq_kmer_count, max_appearance_rate, max_appearance_nrow 
-FROM kmersearch_analysis_status 
-WHERE table_name = 'test_parallel_enhanced' AND column_name = 'seq';
- highfreq_kmer_count | max_appearance_rate | max_appearance_nrow 
----------------------+---------------------+---------------------
-                   5 |                 0.2 |                  20
-(1 row)
-
--- Test Phase 1: Load global cache
-SELECT 'Phase 1: Loading global cache...' AS test_phase;
-            test_phase            
+-- Multiple queries search result verification
+SELECT 'Multiple queries search results:' as info;
+               info               
 ----------------------------------
- Phase 1: Loading global cache...
+ Multiple queries search results:
 (1 row)
 
-SELECT kmersearch_highfreq_kmer_cache_load(
-    'test_parallel_enhanced'::text,
-    'seq'::text
-) AS global_cache_loaded;
- global_cache_loaded 
----------------------
- t
+SELECT 'AAAACTGT' as query, COUNT(*) as match_count 
+FROM test_dna_highfreq 
+WHERE seq =% 'AAAACTGT';
+  query   | match_count 
+----------+-------------
+ AAAACTGT |           1
 (1 row)
 
--- Test Phase 2: Load parallel cache
-SELECT 'Phase 2: Loading parallel cache...' AS test_phase;
-             test_phase             
-------------------------------------
- Phase 2: Loading parallel cache...
+SELECT 'CCCCTTTT' as query, COUNT(*) as match_count 
+FROM test_dna_highfreq 
+WHERE seq =% 'CCCCTTTT';
+  query   | match_count 
+----------+-------------
+ CCCCTTTT |           0
 (1 row)
 
-SELECT kmersearch_parallel_highfreq_kmer_cache_load(
-    'test_parallel_enhanced'::text,
-    'seq'::text
-) AS parallel_cache_loaded;
- parallel_cache_loaded 
------------------------
- t
+-- Test completion message
+SELECT 'High-frequency k-mer exclusion functionality test completed' as test_result;
+                         test_result                         
+-------------------------------------------------------------
+ High-frequency k-mer exclusion functionality test completed
 (1 row)
 
--- Test Phase 3: Functional testing
-SELECT 'Phase 3: Testing search functionality...' AS test_phase;
-                test_phase                
-------------------------------------------
- Phase 3: Testing search functionality...
-(1 row)
-
--- Enable high-frequency k-mer exclusion and test different cache modes
-SET kmersearch.preclude_highfreq_kmer = true;
--- Test with global cache only
-SET kmersearch.force_use_parallel_highfreq_kmer_cache = false;
-SELECT 'Testing with global cache:' AS cache_type;
-         cache_type         
-----------------------------
- Testing with global cache:
-(1 row)
-
-SELECT COUNT(*) AS results FROM test_parallel_enhanced WHERE seq =% 'ATCGATCG';
- results 
----------
-       0
-(1 row)
-
--- Test with parallel cache (force dshash)
-SET kmersearch.force_use_parallel_highfreq_kmer_cache = true;
-SELECT 'Testing with parallel cache:' AS cache_type;
-          cache_type          
-------------------------------
- Testing with parallel cache:
-(1 row)
-
-SELECT COUNT(*) AS results FROM test_parallel_enhanced WHERE seq =% 'ATCGATCG';
- results 
----------
-       0
-(1 row)
-
--- Test Phase 4: Cache isolation testing
-SELECT 'Phase 4: Testing cache isolation...' AS test_phase;
-             test_phase              
--------------------------------------
- Phase 4: Testing cache isolation...
-(1 row)
-
--- Clear global cache and test parallel cache only
-SELECT kmersearch_highfreq_kmer_cache_free_all() AS global_cache_freed;
- global_cache_freed 
---------------------
-                  1
-(1 row)
-
-SELECT 'Testing parallel cache after global cache freed:' AS test_description;
-                 test_description                 
---------------------------------------------------
- Testing parallel cache after global cache freed:
-(1 row)
-
-SELECT COUNT(*) AS results FROM test_parallel_enhanced WHERE seq =% 'ATCGATCG';
- results 
----------
-       0
-(1 row)
-
--- Test Phase 5: Raw score verification
-SELECT 'Phase 5: Testing rawscore calculations...' AS test_phase;
-                test_phase                 
--------------------------------------------
- Phase 5: Testing rawscore calculations...
-(1 row)
-
-SELECT id, 
-       kmersearch_rawscore(seq, 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA') AS rawscore
-FROM test_parallel_enhanced 
-WHERE seq =% 'ATCGATCG' 
-LIMIT 5;
- id | rawscore 
-----+----------
-(0 rows)
-
--- Test Phase 6: Cache cleanup and fallback
-SELECT 'Phase 6: Testing cache cleanup and fallback...' AS test_phase;
-                   test_phase                   
-------------------------------------------------
- Phase 6: Testing cache cleanup and fallback...
-(1 row)
-
--- Free parallel cache
-SELECT kmersearch_parallel_highfreq_kmer_cache_free_all() AS parallel_cache_freed;
- parallel_cache_freed 
-----------------------
-                    5
-(1 row)
-
--- Test fallback to table lookup
-SET kmersearch.force_use_parallel_highfreq_kmer_cache = false;
-SELECT 'Testing table lookup fallback:' AS test_description;
-        test_description        
---------------------------------
- Testing table lookup fallback:
-(1 row)
-
-SELECT COUNT(*) AS results FROM test_parallel_enhanced WHERE seq =% 'ATCGATCG';
- results 
----------
-       0
-(1 row)
-
--- Final cleanup
-SELECT 'Cleanup: Removing test data...' AS cleanup_phase;
-         cleanup_phase          
---------------------------------
- Cleanup: Removing test data...
-(1 row)
-
-DROP TABLE test_parallel_enhanced CASCADE;
-SELECT kmersearch_highfreq_kmer_cache_free_all() AS final_cleanup;
- final_cleanup 
----------------
-             0
-(1 row)
-
-SELECT 'Enhanced parallel cache test completed!' AS final_status;
-              final_status               
------------------------------------------
- Enhanced parallel cache test completed!
-(1 row)
-
+-- Cleanup
+DROP TABLE test_dna_highfreq CASCADE;
 DROP EXTENSION pg_kmersearch CASCADE;
+SET client_min_messages = NOTICE;

@@ -1,3 +1,4 @@
+SET client_min_messages = WARNING;
 CREATE EXTENSION IF NOT EXISTS pg_kmersearch;
 -- Test length functions for DNA2 and DNA4 types
 -- This test covers bit_length, nuc_length, char_length, and length functions
@@ -183,3 +184,4 @@ SELECT
 (1 row)
 
 DROP EXTENSION pg_kmersearch CASCADE;
+SET client_min_messages = NOTICE;
