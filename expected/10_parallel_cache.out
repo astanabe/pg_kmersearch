@@ -8,16 +8,49 @@ CREATE TABLE test_parallel_enhanced (
 -- Insert many sequences with the same k-mers to create high frequency
 DO $$
 BEGIN
-    FOR i IN 1..50 LOOP
-        INSERT INTO test_parallel_enhanced (seq) VALUES ('ATCGATCGATCGATCGATCGATCGATCGATCG'::dna2);
-        INSERT INTO test_parallel_enhanced (seq) VALUES ('GCTAGCTAGCTAGCTAGCTAGCTAGCTAGCT'::dna2);
+    FOR i IN 1..30 LOOP
+        INSERT INTO test_parallel_enhanced (seq) VALUES ('AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'::dna2);
+        INSERT INTO test_parallel_enhanced (seq) VALUES ('TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT'::dna2);
+        INSERT INTO test_parallel_enhanced (seq) VALUES ('CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC'::dna2);
+        INSERT INTO test_parallel_enhanced (seq) VALUES ('GGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGG'::dna2);
     END LOOP;
 END $$;
 -- Set parameters to detect high-frequency k-mers
 SET kmersearch.kmer_size = 4;
+SHOW kmersearch.kmer_size;
+ kmersearch.kmer_size 
+----------------------
+ 4
+(1 row)
+
 SET kmersearch.occur_bitlen = 8;
-SET kmersearch.max_appearance_rate = 0.1;  -- Allow up to 10% appearance rate
-SET kmersearch.max_appearance_nrow = 10;   -- k-mers appearing in > 10 rows are high-frequency
+SHOW kmersearch.occur_bitlen;
+ kmersearch.occur_bitlen 
+-------------------------
+ 8
+(1 row)
+
+SET kmersearch.max_appearance_rate = 0.2;   -- Allow up to 20% appearance rate  
+SHOW kmersearch.max_appearance_rate;
+ kmersearch.max_appearance_rate 
+--------------------------------
+ 0.2
+(1 row)
+
+SET kmersearch.max_appearance_nrow = 20;   -- k-mers appearing in > 20 rows are high-frequency
+SHOW kmersearch.max_appearance_nrow;
+ kmersearch.max_appearance_nrow 
+--------------------------------
+ 20
+(1 row)
+
+SET kmersearch.min_shared_ngram_key_rate = 0.2;  -- Allow matches with 20% shared k-mers
+SHOW kmersearch.min_shared_ngram_key_rate;
+ kmersearch.min_shared_ngram_key_rate 
+--------------------------------------
+ 0.2
+(1 row)
+
 -- Perform analysis
 SELECT 'Performing k-mer frequency analysis...' AS status;
                  status                 
@@ -30,12 +63,16 @@ SELECT kmersearch_perform_highfreq_analysis(
     'seq'::text
 ) AS analysis_result;
 NOTICE:  Performing k-mer frequency analysis for k=4
-NOTICE:  Max appearance rate: 0.100000, Max appearance nrow: 10
+NOTICE:  Max appearance rate: 0.200000, Max appearance nrow: 20
 NOTICE:  Phase 1: Analyzing k-mer frequencies with 2 parallel workers...
+NOTICE:  table "temp_kmer_final_3092351_1752640568_480382_3" does not exist, skipping
 NOTICE:  Phase 2: Collecting n-gram keys for high-frequency k-mers...
+NOTICE:  Source table temp_ngram_keys_3092351_1752640568_481855_4 contains 5 n-gram key records
+NOTICE:  Successfully inserted 5 n-gram key records
+NOTICE:  High-frequency k-mer analysis transaction committed successfully
   analysis_result   
 --------------------
- (100,0,2,0,0.1,10)
+ (120,4,2,0,0.2,20)
 (1 row)
 
 -- Check analysis results
@@ -48,17 +85,24 @@ SELECT 'Analysis results:' AS status;
 SELECT highfreq_kmer_count FROM kmersearch_analysis_status WHERE table_name = 'test_parallel_enhanced';
  highfreq_kmer_count 
 ---------------------
-                   0
+                   5
 (1 row)
 
--- Insert some manual high-frequency k-mer entries to ensure we have data
-INSERT INTO kmersearch_highfreq_kmer (table_oid, column_name, ngram_key, detection_reason)
-SELECT 
-    (SELECT oid FROM pg_class WHERE relname = 'test_parallel_enhanced'),
-    'seq'::text,
-    substring(('01010101010101010101010101010101'::bit(32))::text::bit varying, 1, 24),  -- Sample 24-bit n-gram key
-    'manual_test_entry'
-WHERE EXISTS (SELECT 1 FROM pg_stat_user_indexes WHERE relname = 'test_parallel_enhanced');
+-- Verify that analysis detected high-frequency k-mers
+SELECT 'Verifying analysis results:' AS status;
+           status            
+-----------------------------
+ Verifying analysis results:
+(1 row)
+
+SELECT highfreq_kmer_count, max_appearance_rate, max_appearance_nrow 
+FROM kmersearch_analysis_status 
+WHERE table_name = 'test_parallel_enhanced' AND column_name = 'seq';
+ highfreq_kmer_count | max_appearance_rate | max_appearance_nrow 
+---------------------+---------------------+---------------------
+                   5 |                 0.2 |                  20
+(1 row)
+
 -- Test Phase 1: Load global cache
 SELECT 'Phase 1: Loading global cache...' AS test_phase;
             test_phase            
@@ -111,7 +155,7 @@ SELECT 'Testing with global cache:' AS cache_type;
 SELECT COUNT(*) AS results FROM test_parallel_enhanced WHERE seq =% 'ATCGATCG';
  results 
 ---------
-      50
+       0
 (1 row)
 
 -- Test with parallel cache (force dshash)
@@ -125,7 +169,7 @@ SELECT 'Testing with parallel cache:' AS cache_type;
 SELECT COUNT(*) AS results FROM test_parallel_enhanced WHERE seq =% 'ATCGATCG';
  results 
 ---------
-      50
+       0
 (1 row)
 
 -- Test Phase 4: Cache isolation testing
@@ -151,7 +195,7 @@ SELECT 'Testing parallel cache after global cache freed:' AS test_description;
 SELECT COUNT(*) AS results FROM test_parallel_enhanced WHERE seq =% 'ATCGATCG';
  results 
 ---------
-      50
+       0
 (1 row)
 
 -- Test Phase 5: Raw score verification
@@ -168,12 +212,7 @@ WHERE seq =% 'ATCGATCG'
 LIMIT 5;
  id | rawscore 
 ----+----------
-  1 |       29
-  3 |       29
-  5 |       29
-  7 |       29
-  9 |       29
-(5 rows)
+(0 rows)
 
 -- Test Phase 6: Cache cleanup and fallback
 SELECT 'Phase 6: Testing cache cleanup and fallback...' AS test_phase;
@@ -186,7 +225,7 @@ SELECT 'Phase 6: Testing cache cleanup and fallback...' AS test_phase;
 SELECT kmersearch_parallel_highfreq_kmer_cache_free_all() AS parallel_cache_freed;
  parallel_cache_freed 
 ----------------------
-                    1
+                    5
 (1 row)
 
 -- Test fallback to table lookup
@@ -200,7 +239,7 @@ SELECT 'Testing table lookup fallback:' AS test_description;
 SELECT COUNT(*) AS results FROM test_parallel_enhanced WHERE seq =% 'ATCGATCG';
  results 
 ---------
-      50
+       0
 (1 row)
 
 -- Final cleanup

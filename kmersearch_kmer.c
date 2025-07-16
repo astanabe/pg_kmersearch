@@ -177,6 +177,9 @@ kmersearch_create_ngram_key2(const char *kmer, int k, int occurrence)
     VarBit *result;
     bits8 *data_ptr;
     int i;
+    int alloc_size;
+    
+    /* Size calculations */
     
     /* Adjust occurrence to valid range */
     if (adj_occurrence < 0)
@@ -184,8 +187,11 @@ kmersearch_create_ngram_key2(const char *kmer, int k, int occurrence)
     if (adj_occurrence >= (1 << occur_bits))
         adj_occurrence = (1 << occur_bits) - 1;  /* Cap at max value */
     
-    result = (VarBit *) palloc0(VARBITHDRSZ + total_bytes);
-    SET_VARSIZE(result, VARBITHDRSZ + total_bytes);
+    /* Calculate correct allocation size */
+    alloc_size = VARHDRSZ + VARBITHDRSZ + total_bytes;
+    
+    result = (VarBit *) palloc0(alloc_size);
+    SET_VARSIZE(result, alloc_size);
     VARBITLEN(result) = total_bits;
     
     data_ptr = VARBITS(result);
@@ -310,9 +316,15 @@ kmersearch_create_ngram_key2_from_dna2_bits(VarBit *seq, int start_pos, int k, i
     bits8 *src_data, *dst_data;
     int src_bytes = VARBITBYTES(seq);
     int i;
+    int alloc_size;
     
-    result = (VarBit *) palloc0(VARHDRSZ + sizeof(int32) + total_bytes);
-    SET_VARSIZE(result, VARHDRSZ + sizeof(int32) + total_bytes);
+    /* Size calculations */
+    
+    /* Calculate correct allocation size */
+    alloc_size = VARHDRSZ + VARBITHDRSZ + total_bytes;
+    
+    result = (VarBit *) palloc0(alloc_size);
+    SET_VARSIZE(result, alloc_size);
     VARBITLEN(result) = total_bits;
     
     src_data = VARBITS(seq);
@@ -380,6 +392,8 @@ kmersearch_create_ngram_key2_from_dna4_bits(VarBit *seq, int start_pos, int k, i
     VarBit **expanded_kmers;
     int expansion_count;
     VarBit *ngram_key = NULL;
+    
+    /* Function call for DNA4 k-mer processing */
     
     /* Expand DNA4 k-mer to DNA2 k-mers and use the first one for n-gram key generation */
     expanded_kmers = kmersearch_expand_dna4_kmer2_to_dna2_direct(seq, start_pos, k, &expansion_count);
@@ -502,33 +516,55 @@ kmersearch_expand_degenerate_sequence(const char *seq, int len, char **results, 
 }
 
 /*
- * Extract k-mer as single uint64_t value (for k <= 32)
+ * Get k-mer hash value for occurrence tracking
+ * Uses direct bit extraction for k <= 32, PostgreSQL hash for k > 32
  */
 uint64_t
-kmersearch_extract_kmer_as_uint64(VarBit *seq, int start_pos, int k)
+kmersearch_get_kmer_hash(VarBit *seq, int start_pos, int k)
 {
-    uint64_t kmer_value = 0;
     bits8 *src_data = VARBITS(seq);
     int src_bytes = VARBITBYTES(seq);
-    int j;
     
-    for (j = 0; j < k; j++)
-    {
-        int bit_pos = (start_pos + j) * 2;
-        int byte_pos = bit_pos / 8;
-        int bit_offset = bit_pos % 8;
-        uint8 base_bits;
+    /* For k <= 32, use direct bit extraction for performance and deterministic values */
+    if (k <= 32) {
+        uint64_t kmer_value = 0;
+        int j;
+        
+        for (j = 0; j < k; j++)
+        {
+            int bit_pos = (start_pos + j) * 2;
+            int byte_pos = bit_pos / 8;
+            int bit_offset = bit_pos % 8;
+            uint8 base_bits;
+            
+            /* Boundary check to prevent buffer overflow */
+            if (byte_pos >= src_bytes) {
+                return 0;  /* Invalid k-mer */
+            }
+            
+            base_bits = (src_data[byte_pos] >> (6 - bit_offset)) & 0x3;
+            kmer_value = (kmer_value << 2) | base_bits;
+        }
+        
+        return kmer_value;
+    }
+    
+    /* For k > 32, use PostgreSQL's hash function */
+    else {
+        int kmer_bits = k * 2;
+        int start_bit = start_pos * 2;
+        int start_byte = start_bit / 8;
+        int start_bit_offset = start_bit % 8;
+        int kmer_bytes = (kmer_bits + start_bit_offset + 7) / 8;
         
         /* Boundary check to prevent buffer overflow */
-        if (byte_pos >= src_bytes) {
+        if (start_byte + kmer_bytes > src_bytes) {
             return 0;  /* Invalid k-mer */
         }
         
-        base_bits = (src_data[byte_pos] >> (6 - bit_offset)) & 0x3;
-        kmer_value = (kmer_value << 2) | base_bits;
+        /* Hash the k-mer data starting from the appropriate byte position */
+        return hash_any_extended(src_data + start_byte, kmer_bytes, start_bit_offset);
     }
-    
-    return kmer_value;
 }
 
 /*
@@ -665,6 +701,56 @@ kmersearch_extract_kmer_from_query(const char *query, int k, int *nkeys)
 }
 
 /*
+ * Extract k-mers from query string as ngram_key2 format (with occurrence counts)
+ * This function generates ngram_key2 compatible with sequence extraction using SIMD optimizations
+ */
+VarBit **
+kmersearch_extract_query_ngram_key2(const char *query, int k, int *nkeys)
+{
+    int query_len = strlen(query);
+    int bit_len = query_len * 4;  /* 4 bits per character for DNA4 */
+    int byte_len = (bit_len + 7) / 8;  /* Round up to bytes */
+    VarBit *dna4_seq;
+    bits8 *data_ptr;
+    Datum *datum_keys;
+    VarBit **result_keys;
+    int i;
+    
+    *nkeys = 0;
+    if (query_len < k)
+        return NULL;
+    
+    /* Allocate DNA4 sequence */
+    dna4_seq = (VarBit *) palloc0(VARHDRSZ + sizeof(int32) + byte_len);
+    SET_VARSIZE(dna4_seq, VARHDRSZ + sizeof(int32) + byte_len);
+    VARBITLEN(dna4_seq) = bit_len;
+    
+    /* Convert query string to DNA4 format using SIMD dispatch */
+    data_ptr = VARBITS(dna4_seq);
+    simd_dispatch.dna4_encode(query, (uint8_t*)data_ptr, query_len);
+    
+    /* Extract k-mers using SIMD optimized function */
+    datum_keys = kmersearch_extract_dna4_kmer2_with_expansion_direct(dna4_seq, k, nkeys);
+    
+    if (datum_keys == NULL || *nkeys == 0) {
+        pfree(dna4_seq);
+        return NULL;
+    }
+    
+    /* Convert Datum array to VarBit pointer array */
+    result_keys = (VarBit **) palloc(*nkeys * sizeof(VarBit *));
+    for (i = 0; i < *nkeys; i++) {
+        result_keys[i] = DatumGetVarBitP(datum_keys[i]);
+    }
+    
+    /* Cleanup */
+    pfree(dna4_seq);
+    pfree(datum_keys);
+    
+    return result_keys;
+}
+
+/*
  * Helper function to get bit at position from bit array
  */
 uint8
@@ -798,6 +884,179 @@ kmersearch_extract_query_kmer_with_degenerate(const char *query, int k, int *nke
             keys[key_count++] = kmer_key;
         }
     }
+    
+    *nkeys = key_count;
+    return keys;
+}
+
+/*
+ * Extract k-mers from query string with degenerate code expansion
+ * Returns ngram_key2 format (with occurrence counts)
+ */
+VarBit **
+kmersearch_extract_query_ngram_key2_with_expansion(const char *query, int k, int *nkeys)
+{
+    int query_len = strlen(query);
+    int max_kmers = (query_len >= k) ? (query_len - k + 1) : 0;
+    VarBit **keys;
+    int key_count = 0;
+    int i;
+    bool has_degenerate;
+    int j;
+    KmerOccurrence *occurrences;
+    int occurrence_count = 0;
+    
+    /* Validate k-mer size for uint64_t encoding */
+    if (k > 32) {
+        ereport(ERROR, (errmsg("k-mer size %d exceeds maximum supported size 32 for query processing", k)));
+    }
+    
+    *nkeys = 0;
+    if (max_kmers <= 0)
+        return NULL;
+    
+    /* Allocate keys array with room for degenerate expansions */
+    keys = (VarBit **) palloc(max_kmers * 10 * sizeof(VarBit *));
+    
+    /* Allocate occurrence tracking array */
+    occurrences = (KmerOccurrence *) palloc(max_kmers * 10 * sizeof(KmerOccurrence));
+    
+    /* Initialize occurrence tracking array */
+    memset(occurrences, 0, max_kmers * 10 * sizeof(KmerOccurrence));
+    
+    /* Extract k-mers from query */
+    for (i = 0; i <= query_len - k; i++)
+    {
+        char kmer[65];
+        strncpy(kmer, query + i, k);
+        kmer[k] = '\0';
+        
+        /* Check if this k-mer has degenerate codes */
+        if (kmersearch_will_exceed_degenerate_limit(kmer, k))
+            continue;  /* Skip k-mers with too many combinations */
+        
+        /* Check for degenerate codes */
+        has_degenerate = false;
+        for (j = 0; j < k; j++)
+        {
+            char c = toupper(kmer[j]);
+            if (c != 'A' && c != 'C' && c != 'G' && c != 'T' && c != 'U')
+            {
+                has_degenerate = true;
+                break;
+            }
+        }
+        
+        if (has_degenerate)
+        {
+            /* Expand degenerate codes */
+            char *expanded[10];
+            int expand_count;
+            
+            kmersearch_expand_degenerate_sequence(kmer, k, expanded, &expand_count);
+            
+            for (j = 0; j < expand_count; j++)
+            {
+                uint64_t kmer_value;
+                int current_count;
+                VarBit *ngram_key;
+                bool skip_kmer = false;
+                
+                /* Check k-mer length bounds for uint64_t */
+                if (k <= 32) {
+                    /* Convert expanded k-mer to uint64_t for occurrence tracking */
+                    kmer_value = 0;
+                    {
+                        int pos;
+                        for (pos = 0; pos < k && !skip_kmer; pos++) {
+                            char base = toupper(expanded[j][pos]);
+                            uint64_t base_val = 0;
+                            switch (base) {
+                                case 'A': case 'U': base_val = 0; break;
+                                case 'C': base_val = 1; break;
+                                case 'G': base_val = 2; break;
+                                case 'T': base_val = 3; break;
+                                default:
+                                    /* Invalid character, skip this k-mer */
+                                    skip_kmer = true;
+                                    break;
+                            }
+                            if (!skip_kmer) {
+                                kmer_value = (kmer_value << 2) | base_val;
+                            }
+                        }
+                    }
+                    
+                    if (!skip_kmer) {
+                        /* Find or add occurrence count */
+                        current_count = kmersearch_find_or_add_kmer_occurrence(occurrences, &occurrence_count, 
+                                                                              kmer_value, max_kmers * 10);
+                        
+                        /* Check if we should skip due to array full or bit limit exceeded */
+                        if (current_count >= 0 && current_count < (1 << kmersearch_occur_bitlen)) {
+                            /* Create ngram_key2 with occurrence count */
+                            ngram_key = kmersearch_create_ngram_key2(expanded[j], k, current_count);
+                            if (ngram_key != NULL)
+                                keys[key_count++] = ngram_key;
+                        }
+                    }
+                }
+                
+                /* Always cleanup expanded k-mer */
+                pfree(expanded[j]);
+            }
+        }
+        else
+        {
+            uint64_t kmer_value;
+            int current_count;
+            VarBit *ngram_key;
+            bool skip_kmer = false;
+            
+            /* Check k-mer length bounds for uint64_t */
+            if (k <= 32) {
+                /* Convert k-mer to uint64_t for occurrence tracking */
+                kmer_value = 0;
+                {
+                    int pos;
+                    for (pos = 0; pos < k && !skip_kmer; pos++) {
+                        char base = toupper(kmer[pos]);
+                        uint64_t base_val = 0;
+                        switch (base) {
+                            case 'A': case 'U': base_val = 0; break;
+                            case 'C': base_val = 1; break;
+                            case 'G': base_val = 2; break;
+                            case 'T': base_val = 3; break;
+                            default:
+                                /* Invalid character, skip this k-mer */
+                                skip_kmer = true;
+                                break;
+                        }
+                        if (!skip_kmer) {
+                            kmer_value = (kmer_value << 2) | base_val;
+                        }
+                    }
+                }
+                
+                if (!skip_kmer) {
+                    /* Find or add occurrence count */
+                    current_count = kmersearch_find_or_add_kmer_occurrence(occurrences, &occurrence_count, 
+                                                                          kmer_value, max_kmers * 10);
+                    
+                    /* Check if we should skip due to array full or bit limit exceeded */
+                    if (current_count >= 0 && current_count < (1 << kmersearch_occur_bitlen)) {
+                        /* Create ngram_key2 with occurrence count */
+                        ngram_key = kmersearch_create_ngram_key2(kmer, k, current_count);
+                        if (ngram_key != NULL)
+                            keys[key_count++] = ngram_key;
+                    }
+                }
+            }
+        }
+    }
+    
+    /* Cleanup */
+    pfree(occurrences);
     
     *nkeys = key_count;
     return keys;

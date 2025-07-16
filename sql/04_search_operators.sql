@@ -1,7 +1,16 @@
 CREATE EXTENSION IF NOT EXISTS pg_kmersearch;
 
--- Set k-mer size to 4 for efficient testing (must be after CREATE EXTENSION)
+-- Set consistent GUC variables for this test
 SET kmersearch.kmer_size = 4;
+SHOW kmersearch.kmer_size;
+SET kmersearch.occur_bitlen = 8;
+SHOW kmersearch.occur_bitlen;
+SET kmersearch.max_appearance_rate = 0.5;
+SHOW kmersearch.max_appearance_rate;
+SET kmersearch.max_appearance_nrow = 0;
+SHOW kmersearch.max_appearance_nrow;
+SET kmersearch.min_shared_ngram_key_rate = 0.2;  -- Allow matches with 20% shared k-mers
+SHOW kmersearch.min_shared_ngram_key_rate;
 
 -- Test k-mer search operators and functionality
 -- This test covers the =% operator and search functionality

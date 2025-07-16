@@ -103,6 +103,15 @@ typedef enum {
 #define SIMD_COMPARE_NEON_THRESHOLD    64      /* 64 bits: Use NEON */
 #define SIMD_COMPARE_SVE_THRESHOLD     128     /* 128 bits: Use SVE */
 
+/*
+ * SIMD k-mer extraction thresholds (sequence bit length)
+ * These thresholds determine when to use SIMD for k-mer extraction
+ */
+#define SIMD_EXTRACT_AVX2_THRESHOLD    512     /* 512 bits: Use AVX2 for extraction */
+#define SIMD_EXTRACT_AVX512_THRESHOLD  1024    /* 1024 bits: Use AVX512 for extraction */
+#define SIMD_EXTRACT_NEON_THRESHOLD    256     /* 256 bits: Use NEON for extraction */
+#define SIMD_EXTRACT_SVE_THRESHOLD     512     /* 512 bits: Use SVE for extraction */
+
 /* Function pointers for different SIMD implementations */
 typedef struct {
     void (*dna2_encode)(const char* input, uint8_t* output, int len);
@@ -532,13 +541,15 @@ VarBit *kmersearch_create_ngram_key2_from_dna2_bits(VarBit *seq, int start_pos, 
 VarBit *kmersearch_create_ngram_key2_from_dna4_bits(VarBit *seq, int start_pos, int k, int occurrence_count);
 VarBit *kmersearch_create_ngram_key2_with_occurrence_from_dna2(VarBit *dna2_kmer, int k, int occurrence);
 VarBit **kmersearch_expand_dna4_kmer2_to_dna2_direct(VarBit *dna4_seq, int start_pos, int k, int *expansion_count);
-uint64_t kmersearch_extract_kmer_as_uint64(VarBit *seq, int start_pos, int k);
+uint64_t kmersearch_get_kmer_hash(VarBit *seq, int start_pos, int k);
 int kmersearch_find_or_add_kmer_occurrence(KmerOccurrence *occurrences, int *count, uint64_t kmer_value, int max_count);
 VarBit **kmersearch_extract_kmer_from_varbit(VarBit *seq, int k, int *nkeys);
 VarBit **kmersearch_extract_kmer_from_query(const char *query, int k, int *nkeys);
+VarBit **kmersearch_extract_query_ngram_key2(const char *query, int k, int *nkeys);
 uint8 kmersearch_get_bit_at(bits8 *data, int bit_pos);
 bool kmersearch_will_exceed_degenerate_limit(const char *seq, int len);
 VarBit **kmersearch_extract_query_kmer_with_degenerate(const char *query, int k, int *nkeys);
+VarBit **kmersearch_extract_query_ngram_key2_with_expansion(const char *query, int k, int *nkeys);
 char *kmersearch_varbit_to_hex_string(VarBit *varbit);
 Datum *kmersearch_extract_dna2_kmer2_only(VarBit *seq, int k, int *nkeys);
 KmerData kmersearch_encode_kmer2_only_data(VarBit *kmer, int k_size);
@@ -548,6 +559,12 @@ KmerData kmersearch_encode_kmer_data(VarBit *kmer, int k_size);
 Datum *kmersearch_extract_kmer_with_degenerate(const char *sequence, int seq_len, int k, int *nkeys);
 /* kmersearch_extract_kmers now in kmersearch_kmer.c */
 Datum *kmersearch_extract_kmers(const char *sequence, int seq_len, int k, int *nkeys);
+
+/* Parallel analysis functions (implemented in kmersearch.c) */
+void kmersearch_worker_analyze_blocks(KmerWorkerState *worker, Relation rel, const char *column_name, int k_size);
+void kmersearch_merge_worker_results_sql(KmerWorkerState *workers, int num_workers, const char *final_table_name, int k_size, int threshold_rows);
+void kmersearch_collect_ngram_key2_for_highfreq_kmer(Oid table_oid, const char *column_name, int k_size, const char *final_table_name);
+void kmersearch_persist_highfreq_kmers_metadata(Oid table_oid, const char *column_name, int k_size);
 
 /* Cache management functions (implemented in kmersearch_cache.c) */
 int calculate_actual_min_score(VarBit **query_keys, int nkeys, int query_total_kmers);
@@ -592,5 +609,8 @@ Datum kmersearch_undo_highfreq_analysis(PG_FUNCTION_ARGS);
 DropAnalysisResult kmersearch_undo_highfreq_analysis_internal(Oid table_oid, const char *column_name, int k_size);
 KmerAnalysisResult kmersearch_perform_highfreq_analysis_parallel(Oid table_oid, const char *column_name, int k_size, int parallel_workers);
 void kmersearch_validate_analysis_parameters(Oid table_oid, const char *column_name, int k_size);
+
+/* Utility functions for unique temporary table name generation */
+char *kmersearch_generate_unique_temp_table_name(const char *prefix, int additional_id);
 
 #endif   /* KMERSEARCH_H */

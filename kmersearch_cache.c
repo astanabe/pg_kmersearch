@@ -334,7 +334,7 @@ get_cached_query_kmer(const char *query_string, int k_size, int *nkeys)
     
     /* Cache miss - extract k-mers and store in cache */
     query_pattern_cache_manager->misses++;
-    extracted_kmers = kmersearch_extract_query_kmer_with_degenerate(query_string, k_size, nkeys);
+    extracted_kmers = kmersearch_extract_query_ngram_key2(query_string, k_size, nkeys);
     
     if (extracted_kmers != NULL && *nkeys > 0)
     {
@@ -486,10 +486,13 @@ get_cached_actual_min_score(VarBit **query_keys, int nkeys)
         
         PG_TRY();
         {
+            elog(LOG, "get_cached_actual_min_score: About to call create_actual_min_score_cache_manager");
             create_actual_min_score_cache_manager(&actual_min_score_cache_manager);
+            elog(LOG, "get_cached_actual_min_score: Successfully created cache manager");
         }
         PG_CATCH();
         {
+            elog(LOG, "get_cached_actual_min_score: Exception during cache manager creation");
             MemoryContextSwitchTo(old_context);
             /* Fallback to direct calculation if cache creation fails */
             return calculate_actual_min_score(query_keys, nkeys, nkeys);
@@ -497,15 +500,32 @@ get_cached_actual_min_score(VarBit **query_keys, int nkeys)
         PG_END_TRY();
         
         MemoryContextSwitchTo(old_context);
+        elog(LOG, "get_cached_actual_min_score: Switched back to old context");
     }
     
+    elog(LOG, "get_cached_actual_min_score: Starting hash calculation for %d keys", nkeys);
     
     /* Calculate hash value for query keys content (not pointers) */
     query_hash = 0;
     for (i = 0; i < nkeys; i++) {
         uint64 kmer_hash;
+        
+        elog(LOG, "get_cached_actual_min_score: Processing key %d/%d", i+1, nkeys);
+        
+        /* Validate VarBit structure before accessing */
+        if (query_keys[i] == NULL) {
+            elog(ERROR, "get_cached_actual_min_score: query_keys[%d] is NULL", i);
+        }
+        
+        elog(LOG, "get_cached_actual_min_score: key[%d] pointer=%p", i, (void*)query_keys[i]);
+        elog(LOG, "get_cached_actual_min_score: key[%d] VARSIZE=%d", i, VARSIZE(query_keys[i]));
+        elog(LOG, "get_cached_actual_min_score: key[%d] VARBITLEN=%d", i, VARBITLEN(query_keys[i]));
+        elog(LOG, "get_cached_actual_min_score: key[%d] VARBITBYTES=%ld", i, (long)VARBITBYTES(query_keys[i]));
+        
+        elog(LOG, "get_cached_actual_min_score: About to call hash_any_extended for key %d", i);
         kmer_hash = hash_any_extended((unsigned char *)VARBITS(query_keys[i]), 
                                       VARBITBYTES(query_keys[i]), query_hash);
+        elog(LOG, "get_cached_actual_min_score: Successfully hashed key %d, hash=0x%lx", i, kmer_hash);
         query_hash = kmer_hash;
     }
     
@@ -1610,10 +1630,10 @@ kmersearch_validate_guc_against_metadata(Oid table_oid, const char *column_name,
         ereport(ERROR, (errmsg("kmersearch_validate_guc_against_metadata: SPI_connect failed")));
     }
     
-    /* Build query to get metadata */
+    /* Build query to get metadata from high-frequency k-mer metadata table */
     initStringInfo(&query);
     appendStringInfo(&query,
-        "SELECT occur_bitlen, max_appearance_rate, max_appearance_nrow "
+        "SELECT kmer_size, occur_bitlen, max_appearance_rate, max_appearance_nrow "
         "FROM kmersearch_highfreq_kmer_meta "
         "WHERE table_oid = %u AND column_name = '%s' AND kmer_size = %d",
         table_oid, column_name, k_value);
@@ -1625,15 +1645,36 @@ kmersearch_validate_guc_against_metadata(Oid table_oid, const char *column_name,
     if (ret == SPI_OK_SELECT && SPI_processed > 0)
     {
         bool isnull;
-        Datum occur_bitlen_datum, max_appearance_rate_datum, max_appearance_nrow_datum;
-        int stored_occur_bitlen, stored_max_appearance_nrow;
+        Datum kmer_size_datum, occur_bitlen_datum, max_appearance_rate_datum, max_appearance_nrow_datum;
+        int stored_kmer_size, stored_occur_bitlen, stored_max_appearance_nrow;
         float stored_max_appearance_rate;
         
-        ereport(DEBUG1, (errmsg("kmersearch_validate_guc_against_metadata: Found metadata record, extracting values")));
+        ereport(DEBUG1, (errmsg("kmersearch_validate_guc_against_metadata: Found high-frequency k-mer metadata record, extracting values")));
+        
+        /* Get and validate kmer_size */
+        ereport(DEBUG1, (errmsg("kmersearch_validate_guc_against_metadata: Getting kmer_size value")));
+        kmer_size_datum = SPI_getbinval(SPI_tuptable->vals[0], SPI_tuptable->tupdesc, 1, &isnull);
+        if (!isnull)
+        {
+            stored_kmer_size = DatumGetInt32(kmer_size_datum);
+            ereport(DEBUG1, (errmsg("kmersearch_validate_guc_against_metadata: stored_kmer_size=%d, current=%d",
+                                   stored_kmer_size, k_value)));
+            if (stored_kmer_size != k_value)
+            {
+                ereport(ERROR,
+                        (errcode(ERRCODE_CONFIG_FILE_ERROR),
+                         errmsg("GUC validation failed: kmersearch.kmer_size mismatch"),
+                         errdetail("Current setting: %d, Required by metadata: %d",
+                                 k_value, stored_kmer_size),
+                         errhint("Set kmersearch.kmer_size = %d to match the metadata configuration.",
+                                stored_kmer_size)));
+                validation_passed = false;
+            }
+        }
         
         /* Get stored metadata values */
         ereport(DEBUG1, (errmsg("kmersearch_validate_guc_against_metadata: Getting occur_bitlen value")));
-        occur_bitlen_datum = SPI_getbinval(SPI_tuptable->vals[0], SPI_tuptable->tupdesc, 1, &isnull);
+        occur_bitlen_datum = SPI_getbinval(SPI_tuptable->vals[0], SPI_tuptable->tupdesc, 2, &isnull);
         if (!isnull)
         {
             stored_occur_bitlen = DatumGetInt32(occur_bitlen_datum);
@@ -1653,7 +1694,7 @@ kmersearch_validate_guc_against_metadata(Oid table_oid, const char *column_name,
         }
         
         ereport(DEBUG1, (errmsg("kmersearch_validate_guc_against_metadata: Getting max_appearance_rate value")));
-        max_appearance_rate_datum = SPI_getbinval(SPI_tuptable->vals[0], SPI_tuptable->tupdesc, 2, &isnull);
+        max_appearance_rate_datum = SPI_getbinval(SPI_tuptable->vals[0], SPI_tuptable->tupdesc, 3, &isnull);
         if (!isnull)
         {
             stored_max_appearance_rate = DatumGetFloat4(max_appearance_rate_datum);
@@ -1673,7 +1714,7 @@ kmersearch_validate_guc_against_metadata(Oid table_oid, const char *column_name,
         }
         
         ereport(DEBUG1, (errmsg("kmersearch_validate_guc_against_metadata: Getting max_appearance_nrow value")));
-        max_appearance_nrow_datum = SPI_getbinval(SPI_tuptable->vals[0], SPI_tuptable->tupdesc, 3, &isnull);
+        max_appearance_nrow_datum = SPI_getbinval(SPI_tuptable->vals[0], SPI_tuptable->tupdesc, 4, &isnull);
         if (!isnull)
         {
             stored_max_appearance_nrow = DatumGetInt32(max_appearance_nrow_datum);
@@ -1701,7 +1742,7 @@ kmersearch_validate_guc_against_metadata(Oid table_oid, const char *column_name,
                 (errcode(ERRCODE_UNDEFINED_TABLE),
                  errmsg("No metadata found for table_oid=%u, column_name='%s', kmer_size=%d",
                        table_oid, column_name, k_value),
-                 errhint("Run kmersearch_analyze_table() first to create metadata.")));
+                 errhint("Run kmersearch_perform_highfreq_analysis() first to create metadata.")));
         validation_passed = false;
     }
     

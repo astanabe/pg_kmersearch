@@ -9,6 +9,7 @@
  */
 
 #include "kmersearch.h"
+#include <sys/time.h>
 
 /* PostgreSQL function info declarations for frequency functions */
 PG_FUNCTION_INFO_V1(kmersearch_perform_highfreq_analysis);
@@ -40,11 +41,7 @@ extern int kmersearch_kmer_size;
 extern double kmersearch_max_appearance_rate;
 extern int kmersearch_max_appearance_nrow;
 
-/* External functions (defined in kmersearch.c) */
-extern void kmersearch_worker_analyze_blocks(KmerWorkerState *worker, Relation rel, const char *column_name, int k_size);
-extern void kmersearch_merge_worker_results_sql(KmerWorkerState *workers, int num_workers, const char *final_table_name, int k_size, int threshold_rows);
-extern void kmersearch_collect_ngram_key2_for_highfreq_kmer(Oid table_oid, const char *column_name, int k_size, const char *final_table_name);
-extern void kmersearch_persist_highfreq_kmers_metadata(Oid table_oid, const char *column_name, int k_size);
+/* External functions are now declared in kmersearch.h */
 extern int kmersearch_min_score;
 extern bool kmersearch_preclude_highfreq_kmer;
 extern HighfreqKmerCache global_highfreq_cache;
@@ -152,7 +149,6 @@ kmersearch_undo_highfreq_analysis(PG_FUNCTION_ARGS)
     char *column_name = text_to_cstring(column_name_text);
     DropAnalysisResult result;
     Oid table_oid;
-    int k_size;
     
     /* Get table OID from table name */
     table_oid = RelnameGetRelid(table_name);
@@ -163,11 +159,8 @@ kmersearch_undo_highfreq_analysis(PG_FUNCTION_ARGS)
                  errmsg("relation \"%s\" does not exist", table_name)));
     }
     
-    /* Get k_size from GUC variable */
-    k_size = kmersearch_kmer_size;
-    
-    /* Perform drop operation */
-    result = kmersearch_undo_highfreq_analysis_internal(table_oid, column_name, k_size);
+    /* Perform drop operation (delete all k-mer sizes for this table/column) */
+    result = kmersearch_undo_highfreq_analysis_internal(table_oid, column_name, 0);
     
     /* Create result tuple */
     {
@@ -273,10 +266,10 @@ kmersearch_undo_highfreq_analysis_internal(Oid table_oid, const char *column_nam
     /* Connect to SPI */
     kmersearch_spi_connect_or_error();
     
-    /* Build query to delete analysis data */
+    /* Build query to delete high-frequency k-mer data */
     initStringInfo(&query);
     if (k_size > 0) {
-        /* Delete from highfreq_kmer table using table_oid and column_name */
+        /* Delete specific k-mer size from highfreq_kmer table */
         appendStringInfo(&query,
             "DELETE FROM kmersearch_highfreq_kmer "
             "WHERE table_oid = %u AND column_name = %s "
@@ -287,7 +280,7 @@ kmersearch_undo_highfreq_analysis_internal(Oid table_oid, const char *column_nam
             table_oid, quote_literal_cstr(column_name), 
             table_oid, quote_literal_cstr(column_name), k_size);
     } else {
-        /* Delete all k-mer sizes */
+        /* Delete all k-mer sizes for this table/column */
         appendStringInfo(&query,
             "DELETE FROM kmersearch_highfreq_kmer "
             "WHERE table_oid = %u AND column_name = %s",
@@ -304,11 +297,13 @@ kmersearch_undo_highfreq_analysis_internal(Oid table_oid, const char *column_nam
     /* Delete from metadata table */
     initStringInfo(&query);
     if (k_size > 0) {
+        /* Delete specific k-mer size from metadata table */
         appendStringInfo(&query,
             "DELETE FROM kmersearch_highfreq_kmer_meta "
             "WHERE table_oid = %u AND column_name = %s AND kmer_size = %d",
             table_oid, quote_literal_cstr(column_name), k_size);
     } else {
+        /* Delete all k-mer sizes for this table/column from metadata table */
         appendStringInfo(&query,
             "DELETE FROM kmersearch_highfreq_kmer_meta "
             "WHERE table_oid = %u AND column_name = %s",
@@ -358,6 +353,7 @@ kmersearch_perform_highfreq_analysis_parallel(Oid table_oid, const char *column_
     int num_workers;
     KmerWorkerState *workers;
     int threshold_rows;
+    int rate_threshold;
     int i;
     
     /* Initialize result structure */
@@ -420,11 +416,30 @@ kmersearch_perform_highfreq_analysis_parallel(Oid table_oid, const char *column_
         /* Store actual row count for result */
         result.total_rows = actual_row_count;
         
-        /* Calculate threshold */
-        threshold_rows = (int)(actual_row_count * kmersearch_max_appearance_rate);
+        /* Calculate threshold using both rate and nrow limits */
+        rate_threshold = (int)(actual_row_count * kmersearch_max_appearance_rate);
+        
+        /* Validate rate-based threshold calculation */
+        if (kmersearch_max_appearance_rate > 0.0 && rate_threshold == 0) {
+            ereport(ERROR,
+                    (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+                     errmsg("Rate-based threshold calculation resulted in 0 with non-zero max_appearance_rate"),
+                     errdetail("total_rows=%ld, max_appearance_rate=%f, calculated_threshold=%d",
+                               actual_row_count, kmersearch_max_appearance_rate, rate_threshold),
+                     errhint("Increase table size or adjust kmersearch.max_appearance_rate to a larger value. "
+                             "For %ld rows, minimum rate should be approximately %f",
+                             actual_row_count, 1.0 / actual_row_count)));
+        }
+        
+        if (kmersearch_max_appearance_nrow > 0) {
+            /* Use the more restrictive (smaller) threshold between rate and nrow limits */
+            threshold_rows = (rate_threshold < kmersearch_max_appearance_nrow) ? 
+                             rate_threshold : kmersearch_max_appearance_nrow;
+        } else {
+            /* No nrow limit (0 means unlimited), use rate-based threshold only */
+            threshold_rows = rate_threshold;
+        }
     }
-    if (kmersearch_max_appearance_nrow > 0 && threshold_rows > kmersearch_max_appearance_nrow)
-        threshold_rows = kmersearch_max_appearance_nrow;
     
     /* Update max_appearance_rate_used with validation */
     ereport(DEBUG1, (errmsg("kmersearch_analyze_table_parallel: Setting max_appearance_rate_used from %f to %f", result.max_appearance_rate_used, kmersearch_max_appearance_rate)));
@@ -464,24 +479,60 @@ kmersearch_perform_highfreq_analysis_parallel(Oid table_oid, const char *column_
     ereport(NOTICE, (errmsg("Phase 1: Analyzing k-mer frequencies with %d parallel workers...", num_workers)));
     ereport(DEBUG1, (errmsg("kmersearch_analyze_table_parallel: Starting Phase 1 merge")));
     {
-        /* Use a more unique table name to avoid conflicts */
-        static int call_counter = 0;
-        char *final_table_name = psprintf("temp_kmer_final_%d_%d", getpid(), call_counter++);
+        /* Use a globally unique table name to avoid conflicts */
+        char *final_table_name = kmersearch_generate_unique_temp_table_name("temp_kmer_final", -1);
         
-        /* Connect SPI once for all operations */
+        /* Connect SPI once for all operations with transaction management */
         ereport(DEBUG1, (errmsg("kmersearch_analyze_table_parallel: Connecting to SPI for Phase 1")));
         kmersearch_spi_connect_or_error();
+        
+        /* Begin transaction for consistent k-mer analysis data */
+        PG_TRY();
+        {
+            ereport(DEBUG1, (errmsg("Starting transaction for high-frequency k-mer analysis")));
+            SPI_execute("BEGIN", false, 0);
+        }
+        PG_CATCH();
+        {
+            SPI_finish();
+            PG_RE_THROW();
+        }
+        PG_END_TRY();
+        
         ereport(DEBUG1, (errmsg("kmersearch_analyze_table_parallel: SPI connected for Phase 1")));        
-        /* Create and populate temporary table */
+        /* Create final aggregation table with structure matching worker tables */
         {
             StringInfoData query;
+            const char *data_type;
+            int ret;
+            
+            /* Always use bigint for k-mer hash values for consistency with merge function */
+            data_type = "bigint";  /* Always store hash values as bigint for consistency */
+            
             initStringInfo(&query);
-            appendStringInfo(&query, "CREATE TEMP TABLE %s (kmer_key varbit, frequency int)", final_table_name);
+            /* Drop table if it exists to avoid conflicts */
+            appendStringInfo(&query, "DROP TABLE IF EXISTS %s CASCADE", final_table_name);
+            ret = SPI_exec(query.data, 0);
+            ereport(DEBUG1, (errmsg("kmersearch_analyze_table_parallel: Dropped existing table (if any): %s, result: %d", final_table_name, ret)));
+            pfree(query.data);
+            
+            /* Now create the table */
+            initStringInfo(&query);
+            appendStringInfo(&query, "CREATE TABLE %s (kmer_data %s PRIMARY KEY, frequency_count integer)", final_table_name, data_type);
             ereport(DEBUG1, (errmsg("kmersearch_analyze_table_parallel: Creating temp table: %s", query.data)));
-            SPI_exec(query.data, 0);
+            
+            ret = SPI_exec(query.data, 0);
+            if (ret != SPI_OK_UTILITY) {
+                ereport(ERROR, (errmsg("Failed to create temporary table %s, SPI result: %d", final_table_name, ret)));
+            }
             ereport(DEBUG1, (errmsg("kmersearch_analyze_table_parallel: Temp table created")));
             pfree(query.data);
         }
+        
+        /* Phase 1.5: Merge worker results using SQL aggregation */
+        ereport(DEBUG1, (errmsg("kmersearch_analyze_table_parallel: Starting worker results merge")));
+        kmersearch_merge_worker_results_sql(workers, num_workers, final_table_name, k_size, threshold_rows);
+        ereport(DEBUG1, (errmsg("kmersearch_analyze_table_parallel: Worker results merged")));
         
         /* Count highly frequent k-mers */
         {
@@ -525,8 +576,10 @@ kmersearch_perform_highfreq_analysis_parallel(Oid table_oid, const char *column_
             }
             pfree(query.data);
             
+            /* Insert GIN index metadata only if a GIN index exists */
             if (OidIsValid(index_oid)) {
-                /* Insert GIN index metadata */
+                int gin_ret;
+                
                 initStringInfo(&query);
                 appendStringInfo(&query,
                     "INSERT INTO kmersearch_gin_index_meta "
@@ -545,25 +598,29 @@ kmersearch_perform_highfreq_analysis_parallel(Oid table_oid, const char *column_
                     quote_literal_cstr(final_table_name), k_size,
                     kmersearch_occur_bitlen, kmersearch_max_appearance_rate, kmersearch_max_appearance_nrow);
                 
-                SPI_exec(query.data, 0);
-                pfree(query.data);
-                
-                /* Insert high-frequency k-mers */
-                initStringInfo(&query);
-                appendStringInfo(&query,
-                    "INSERT INTO kmersearch_highfreq_kmer (table_oid, column_name, ngram_key, detection_reason) "
-                    "SELECT %u, '%s', kmer_key, 'frequency analysis' FROM %s "
-                    "ON CONFLICT (table_oid, column_name, ngram_key) DO NOTHING",
-                    table_oid, column_name, final_table_name);
-                
-                SPI_exec(query.data, 0);
+                gin_ret = SPI_exec(query.data, 0);
+                if (gin_ret != SPI_OK_INSERT && gin_ret != SPI_OK_UPDATE && gin_ret != SPI_OK_INSERT_RETURNING) {
+                    ereport(ERROR, 
+                            (errcode(ERRCODE_INTERNAL_ERROR),
+                             errmsg("Failed to insert/update GIN index metadata"),
+                             errdetail("SPI_exec returned %d for GIN metadata query", gin_ret),
+                             errhint("Check kmersearch_gin_index_meta table structure and permissions")));
+                } else {
+                    ereport(DEBUG1, (errmsg("Successfully inserted/updated %lu GIN index metadata records", SPI_processed)));
+                }
                 pfree(query.data);
             }
+            
+            /* Always collect n-gram keys for high-frequency k-mers, regardless of GIN index existence */
+            ereport(DEBUG1, (errmsg("kmersearch_analyze_table_parallel: Collecting n-gram keys for high-frequency k-mers from final table: %s", final_table_name)));
+            kmersearch_collect_ngram_key2_for_highfreq_kmer(table_oid, column_name, k_size, final_table_name);
         }
         
         /* Insert metadata record */
         {
             StringInfoData query;
+            int ret;
+            
             initStringInfo(&query);
             appendStringInfo(&query,
                 "INSERT INTO kmersearch_highfreq_kmer_meta "
@@ -577,9 +634,44 @@ kmersearch_perform_highfreq_analysis_parallel(Oid table_oid, const char *column_
                 table_oid, quote_literal_cstr(column_name), k_size,
                 kmersearch_occur_bitlen, kmersearch_max_appearance_rate, kmersearch_max_appearance_nrow);
             
-            SPI_exec(query.data, 0);
+            ret = SPI_exec(query.data, 0);
+            if (ret != SPI_OK_INSERT && ret != SPI_OK_UPDATE && ret != SPI_OK_INSERT_RETURNING) {
+                ereport(ERROR, 
+                        (errcode(ERRCODE_INTERNAL_ERROR),
+                         errmsg("Failed to insert/update high-frequency k-mer metadata"),
+                         errdetail("SPI_exec returned %d for metadata INSERT/UPDATE query", ret),
+                         errhint("Check kmersearch_highfreq_kmer_meta table structure and permissions")));
+            } else {
+                ereport(DEBUG1, (errmsg("Successfully inserted/updated %lu high-frequency k-mer metadata records", SPI_processed)));
+            }
             pfree(query.data);
         }
+        
+        /* Clean up the temporary table */
+        {
+            StringInfoData cleanup_query;
+            initStringInfo(&cleanup_query);
+            appendStringInfo(&cleanup_query, "DROP TABLE IF EXISTS %s", final_table_name);
+            SPI_exec(cleanup_query.data, 0);
+            pfree(cleanup_query.data);
+        }
+        
+        /* Commit transaction for successful analysis completion */
+        PG_TRY();
+        {
+            ereport(DEBUG1, (errmsg("Committing high-frequency k-mer analysis transaction")));
+            SPI_execute("COMMIT", false, 0);
+            ereport(NOTICE, (errmsg("High-frequency k-mer analysis transaction committed successfully")));
+        }
+        PG_CATCH();
+        {
+            ereport(WARNING, (errmsg("Failed to commit transaction, attempting rollback")));
+            SPI_execute("ROLLBACK", false, 0);
+            SPI_finish();
+            pfree(final_table_name);
+            PG_RE_THROW();
+        }
+        PG_END_TRY();
         
         SPI_finish();
         pfree(final_table_name);

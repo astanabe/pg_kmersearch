@@ -5,6 +5,9 @@ CREATE EXTENSION IF NOT EXISTS pg_kmersearch;
 
 -- Set k-mer size for consistent cache behavior
 SET kmersearch.kmer_size = 4;
+SHOW kmersearch.kmer_size;
+SET kmersearch.min_shared_ngram_key_rate = 0.2;  -- Allow matches with 20% shared k-mers
+SHOW kmersearch.min_shared_ngram_key_rate;
 
 -- Clean up any existing tables
 DROP TABLE IF EXISTS test_cache_DNA2, test_cache_DNA4 CASCADE;
@@ -133,7 +136,7 @@ SELECT * FROM kmersearch_actual_min_score_cache_stats();
 
 -- Reset to defaults
 SET kmersearch.min_score = 1;
-SET kmersearch.min_shared_ngram_key_rate = 0.9;
+SET kmersearch.min_shared_ngram_key_rate = 0.2;
 
 -- Test edge cases for cache limits
 SELECT 'Testing cache limit behavior...' as test_phase;

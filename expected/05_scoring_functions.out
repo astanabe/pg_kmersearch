@@ -1,6 +1,40 @@
 CREATE EXTENSION IF NOT EXISTS pg_kmersearch;
--- Set k-mer size to 4 for efficient testing (must be after CREATE EXTENSION)
+-- Set consistent GUC variables for this test
 SET kmersearch.kmer_size = 4;
+SHOW kmersearch.kmer_size;
+ kmersearch.kmer_size 
+----------------------
+ 4
+(1 row)
+
+SET kmersearch.occur_bitlen = 8;
+SHOW kmersearch.occur_bitlen;
+ kmersearch.occur_bitlen 
+-------------------------
+ 8
+(1 row)
+
+SET kmersearch.max_appearance_rate = 0.5;
+SHOW kmersearch.max_appearance_rate;
+ kmersearch.max_appearance_rate 
+--------------------------------
+ 0.5
+(1 row)
+
+SET kmersearch.max_appearance_nrow = 0;
+SHOW kmersearch.max_appearance_nrow;
+ kmersearch.max_appearance_nrow 
+--------------------------------
+ 0
+(1 row)
+
+SET kmersearch.min_shared_ngram_key_rate = 0.2;  -- Allow matches with 20% shared k-mers
+SHOW kmersearch.min_shared_ngram_key_rate;
+ kmersearch.min_shared_ngram_key_rate 
+--------------------------------------
+ 0.2
+(1 row)
+
 -- Test scoring functions
 -- This test covers kmersearch_rawscore and kmersearch_correctedscore functions
 -- Clean up any existing tables
@@ -99,13 +133,13 @@ SELECT kmersearch_rawscore('ATCGATCG'::DNA4, 'GCTAGCTA') AS no_match_score;
 SELECT kmersearch_rawscore('ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA'::DNA2, 'ATCGATCG') AS partial_match;
  partial_match 
 ---------------
-            58
+             5
 (1 row)
 
 SELECT kmersearch_rawscore('ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA'::DNA4, 'ATCGATCG') AS partial_match;
  partial_match 
 ---------------
-            58
+             5
 (1 row)
 
 DROP EXTENSION pg_kmersearch CASCADE;

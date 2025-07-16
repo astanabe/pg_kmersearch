@@ -1,6 +1,40 @@
 CREATE EXTENSION IF NOT EXISTS pg_kmersearch;
--- Set k-mer size to 4 for efficient testing (must be after CREATE EXTENSION)
+-- Set consistent GUC variables for this test
 SET kmersearch.kmer_size = 4;
+SHOW kmersearch.kmer_size;
+ kmersearch.kmer_size 
+----------------------
+ 4
+(1 row)
+
+SET kmersearch.occur_bitlen = 8;
+SHOW kmersearch.occur_bitlen;
+ kmersearch.occur_bitlen 
+-------------------------
+ 8
+(1 row)
+
+SET kmersearch.max_appearance_rate = 0.5;
+SHOW kmersearch.max_appearance_rate;
+ kmersearch.max_appearance_rate 
+--------------------------------
+ 0.5
+(1 row)
+
+SET kmersearch.max_appearance_nrow = 0;
+SHOW kmersearch.max_appearance_nrow;
+ kmersearch.max_appearance_nrow 
+--------------------------------
+ 0
+(1 row)
+
+SET kmersearch.min_shared_ngram_key_rate = 0.2;  -- Allow matches with 20% shared k-mers
+SHOW kmersearch.min_shared_ngram_key_rate;
+ kmersearch.min_shared_ngram_key_rate 
+--------------------------------------
+ 0.2
+(1 row)
+
 -- Test k-mer search operators and functionality
 -- This test covers the =% operator and search functionality
 -- Clean up any existing tables
@@ -37,7 +71,11 @@ SELECT id, name FROM test_DNA2_sequences WHERE sequence =% 'ATCGATCG' ORDER BY i
 (2 rows)
 
 SELECT id, name FROM test_DNA2_sequences WHERE sequence =% 'GCTAG' ORDER BY id;
-ERROR:  Query sequence must be at least 8 bases long
+ id | name 
+----+------
+  2 | seq2
+(1 row)
+
 SELECT id, name FROM test_DNA2_sequences WHERE sequence =% 'TTTTTTTT' ORDER BY id;
  id | name 
 ----+------
@@ -53,9 +91,18 @@ SELECT id, name FROM test_DNA4_sequences WHERE sequence =% 'ATCGATCG' ORDER BY i
 (2 rows)
 
 SELECT id, name FROM test_DNA4_sequences WHERE sequence =% 'GCTAG' ORDER BY id;
-ERROR:  Query sequence must be at least 8 bases long
+ id | name 
+----+------
+  2 | seq2
+(1 row)
+
 SELECT id, name FROM test_DNA4_sequences WHERE sequence =% 'NNATCG' ORDER BY id;
-ERROR:  Query sequence must be at least 8 bases long
+ id | name 
+----+------
+  1 | seq1
+  3 | seq3
+(2 rows)
+
 -- Test query length validation (should work with 4+ characters when k=4)
 SELECT id, name FROM test_DNA2_sequences WHERE sequence =% 'ATCGATCG' ORDER BY id;
  id | name 
@@ -67,7 +114,7 @@ SELECT id, name FROM test_DNA2_sequences WHERE sequence =% 'ATCGATCG' ORDER BY i
 -- Test too short query (should error)
 \set ON_ERROR_STOP off
 SELECT id, name FROM test_DNA2_sequences WHERE sequence =% 'ATC';
-ERROR:  Query sequence must be at least 8 bases long
+ERROR:  Query sequence must be at least 4 bases long
 \set ON_ERROR_STOP on
 -- Test case insensitivity in queries
 SELECT id, name FROM test_DNA2_sequences WHERE sequence =% 'atcgatcg' ORDER BY id;

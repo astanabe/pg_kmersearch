@@ -86,16 +86,25 @@ SET kmersearch.actual_min_score_cache_max_entries = 999;  -- below minimum
 SET kmersearch.actual_min_score_cache_max_entries = 10000001;  -- above maximum
 \set ON_ERROR_STOP on
 
--- Reset to defaults for other tests
-SET kmersearch.kmer_size = 4;
+-- Reset to defaults for other tests (ensure consistency across tests)
+SET kmersearch.kmer_size = 16;
+SHOW kmersearch.kmer_size;
 SET kmersearch.occur_bitlen = 8;
+SHOW kmersearch.occur_bitlen;
 SET kmersearch.max_appearance_rate = 0.5;
+SHOW kmersearch.max_appearance_rate;
 SET kmersearch.max_appearance_nrow = 0;
+SHOW kmersearch.max_appearance_nrow;
 SET kmersearch.min_score = 1;
-SET kmersearch.min_shared_ngram_key_rate = 0.9;
+SHOW kmersearch.min_score;
+SET kmersearch.min_shared_ngram_key_rate = 0.2;
+SHOW kmersearch.min_shared_ngram_key_rate;
 SET kmersearch.rawscore_cache_max_entries = 50000;
+SHOW kmersearch.rawscore_cache_max_entries;
 SET kmersearch.query_pattern_cache_max_entries = 50000;
+SHOW kmersearch.query_pattern_cache_max_entries;
 SET kmersearch.actual_min_score_cache_max_entries = 50000;
+SHOW kmersearch.actual_min_score_cache_max_entries;
 
 -- Test cache management functions
 SELECT kmersearch_rawscore_cache_stats(); -- Should show all zeros initially

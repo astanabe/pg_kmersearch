@@ -1,6 +1,19 @@
 CREATE EXTENSION IF NOT EXISTS pg_kmersearch;
 -- Set k-mer size to 4 for efficient testing (must be after CREATE EXTENSION)
 SET kmersearch.kmer_size = 4;
+SHOW kmersearch.kmer_size;
+ kmersearch.kmer_size 
+----------------------
+ 4
+(1 row)
+
+SET kmersearch.min_shared_ngram_key_rate = 0.2;  -- Allow matches with 20% shared k-mers
+SHOW kmersearch.min_shared_ngram_key_rate;
+ kmersearch.min_shared_ngram_key_rate 
+--------------------------------------
+ 0.2
+(1 row)
+
 -- Test high-frequency k-mer cache management functionality
 -- This test covers manual cache loading and clearing
 -- Clean up any existing tables
@@ -38,9 +51,21 @@ SELECT 'Testing kmersearch_perform_highfreq_analysis...' as test_phase;
 
 -- Analyze the table to identify high-frequency k-mers
 -- This will create entries in kmersearch_highfreq_kmer and kmersearch_highfreq_kmer_meta tables
--- Use higher threshold to ensure we detect the repeated patterns
-SET kmersearch.max_appearance_rate = 0.3;  -- 30% appearance rate
-SET kmersearch.max_appearance_nrow = 2;    -- k-mers in >2 rows are high-freq
+-- Use stricter threshold to ensure we detect the repeated patterns
+SET kmersearch.max_appearance_rate = 0.1;  -- 10% appearance rate
+SHOW kmersearch.max_appearance_rate;
+ kmersearch.max_appearance_rate 
+--------------------------------
+ 0.1
+(1 row)
+
+SET kmersearch.max_appearance_nrow = 3;    -- k-mers in >3 rows are high-freq
+SHOW kmersearch.max_appearance_nrow;
+ kmersearch.max_appearance_nrow 
+--------------------------------
+ 3
+(1 row)
+
 WITH analysis_result AS (
     SELECT kmersearch_perform_highfreq_analysis(
         'test_highfreq_dna2'::text, 
@@ -49,12 +74,16 @@ WITH analysis_result AS (
 )
 SELECT (result).* FROM analysis_result;
 NOTICE:  Performing k-mer frequency analysis for k=4
-NOTICE:  Max appearance rate: 0.300000, Max appearance nrow: 2
+NOTICE:  Max appearance rate: 0.100000, Max appearance nrow: 3
 NOTICE:  Phase 1: Analyzing k-mer frequencies with 2 parallel workers...
+NOTICE:  table "temp_kmer_final_3092345_1752640568_434615_3" does not exist, skipping
 NOTICE:  Phase 2: Collecting n-gram keys for high-frequency k-mers...
+NOTICE:  Source table temp_ngram_keys_3092345_1752640568_436329_4 contains 23 n-gram key records
+NOTICE:  Successfully inserted 23 n-gram key records
+NOTICE:  High-frequency k-mer analysis transaction committed successfully
  total_rows | highfreq_kmers_count | parallel_workers_used | analysis_duration | max_appearance_rate_used | max_appearance_nrow_used 
 ------------+----------------------+-----------------------+-------------------+--------------------------+--------------------------
-         10 |                    0 |                     2 |                 0 |                      0.3 |                        2
+         10 |                   21 |                     2 |                 0 |                      0.1 |                        1
 (1 row)
 
 -- No need to manually insert data since analyze_table should handle it
@@ -84,7 +113,7 @@ WHERE table_oid = (SELECT oid FROM pg_class WHERE relname = 'test_highfreq_dna2'
   AND column_name = 'sequence';
  highfreq_kmer_count 
 ---------------------
-                   0
+                  23
 (1 row)
 
 -- Test high-frequency k-mer cache functions with analysis data
@@ -102,12 +131,24 @@ SELECT 'Testing cache loading...' as test_phase;
 (1 row)
 
 -- Set GUC variables to match metadata
-SET kmersearch.max_appearance_rate = 0.3;
-SET kmersearch.max_appearance_nrow = 2;
+SET kmersearch.max_appearance_rate = 0.1;
+SHOW kmersearch.max_appearance_rate;
+ kmersearch.max_appearance_rate 
+--------------------------------
+ 0.1
+(1 row)
+
+SET kmersearch.max_appearance_nrow = 3;
+SHOW kmersearch.max_appearance_nrow;
+ kmersearch.max_appearance_nrow 
+--------------------------------
+ 3
+(1 row)
+
 SELECT kmersearch_highfreq_kmer_cache_load('test_highfreq_dna2', 'sequence') as cache_loaded;
  cache_loaded 
 --------------
- f
+ t
 (1 row)
 
 -- Test high-frequency k-mer cache clearing
@@ -120,7 +161,7 @@ SELECT 'Testing cache clearing...' as test_phase;
 SELECT kmersearch_highfreq_kmer_cache_free_all() as freed_entries;
  freed_entries 
 ---------------
-             0
+             1
 (1 row)
 
 -- Test cache loading with non-existent data
@@ -153,17 +194,27 @@ SELECT 'Testing GUC validation and cache hierarchy...' as test_phase;
 (1 row)
 
 -- Reset GUC settings to match metadata for testing
-SET kmersearch.max_appearance_rate = 0.3;
-SET kmersearch.max_appearance_nrow = 2;
+SET kmersearch.max_appearance_rate = 0.1;
+SHOW kmersearch.max_appearance_rate;
+ kmersearch.max_appearance_rate 
+--------------------------------
+ 0.1
+(1 row)
+
+SET kmersearch.max_appearance_nrow = 3;
+SHOW kmersearch.max_appearance_nrow;
+ kmersearch.max_appearance_nrow 
+--------------------------------
+ 3
+(1 row)
+
 SET kmersearch.occur_bitlen = 8;
--- Insert some test high-frequency k-mer data for cache hierarchy testing
-INSERT INTO kmersearch_highfreq_kmer (table_oid, column_name, ngram_key, detection_reason)
-VALUES (
-  (SELECT oid FROM pg_class WHERE relname = 'test_highfreq_dna2'),
-  'sequence',
-  '01010101'::bit(16),  -- Sample n-gram key  
-  'regression_test'
-);
+SHOW kmersearch.occur_bitlen;
+ kmersearch.occur_bitlen 
+-------------------------
+ 8
+(1 row)
+
 -- Test 1: GUC validation error handling
 SELECT 'Testing GUC validation errors...' as test_substep;
            test_substep           
@@ -172,16 +223,28 @@ SELECT 'Testing GUC validation errors...' as test_substep;
 (1 row)
 
 -- Change GUC to cause mismatch and test cache loading (should fail)
-SET kmersearch.max_appearance_rate = 0.9;  -- Different from metadata (0.3)
+SET kmersearch.max_appearance_rate = 0.9;  -- Different from metadata (0.1)
+SHOW kmersearch.max_appearance_rate;
+ kmersearch.max_appearance_rate 
+--------------------------------
+ 0.9
+(1 row)
+
 SELECT kmersearch_highfreq_kmer_cache_load(
   'test_highfreq_dna2',
   'sequence'
 ) as cache_load_with_mismatch;
 ERROR:  GUC validation failed: kmersearch.max_appearance_rate mismatch
-DETAIL:  Current setting: 0.9000, Required by metadata: 0.3000
-HINT:  Set kmersearch.max_appearance_rate = 0.3000 before loading cache.
+DETAIL:  Current setting: 0.9000, Required by metadata: 0.1000
+HINT:  Set kmersearch.max_appearance_rate = 0.1000 before loading cache.
 -- Reset to correct values
-SET kmersearch.max_appearance_rate = 0.3;
+SET kmersearch.max_appearance_rate = 0.1;
+SHOW kmersearch.max_appearance_rate;
+ kmersearch.max_appearance_rate 
+--------------------------------
+ 0.1
+(1 row)
+
 -- Test 2: Cache hierarchy - Global cache
 SELECT 'Testing global cache hierarchy...' as test_substep;
            test_substep            
@@ -237,6 +300,12 @@ SELECT kmersearch_highfreq_kmer_cache_free_all() as global_freed;
 
 -- Test with only parallel cache
 SET kmersearch.force_use_parallel_highfreq_kmer_cache = true;
+SHOW kmersearch.force_use_parallel_highfreq_kmer_cache;
+ kmersearch.force_use_parallel_highfreq_kmer_cache 
+---------------------------------------------------
+ on
+(1 row)
+
 SELECT sequence =% 'ATCGATCG' as parallel_only_query FROM test_highfreq_dna2 LIMIT 1;
  parallel_only_query 
 ---------------------
@@ -247,19 +316,24 @@ SELECT sequence =% 'ATCGATCG' as parallel_only_query FROM test_highfreq_dna2 LIM
 SELECT kmersearch_parallel_highfreq_kmer_cache_free_all() as parallel_freed;
  parallel_freed 
 ----------------
-              1
+             23
 (1 row)
 
 -- Test with no cache (table lookup fallback)
 SET kmersearch.force_use_parallel_highfreq_kmer_cache = false;
+SHOW kmersearch.force_use_parallel_highfreq_kmer_cache;
+ kmersearch.force_use_parallel_highfreq_kmer_cache 
+---------------------------------------------------
+ off
+(1 row)
+
 SELECT sequence =% 'ATCGATCG' as table_fallback_query FROM test_highfreq_dna2 LIMIT 1;
  table_fallback_query 
 ----------------------
  t
 (1 row)
 
--- Clean up test data
-DELETE FROM kmersearch_highfreq_kmer WHERE detection_reason = 'regression_test';
+-- Note: No manual test data cleanup needed since we're using real analysis data
 -- Clean up analysis data
 SELECT 'Cleaning up analysis data...' as test_phase;
           test_phase          

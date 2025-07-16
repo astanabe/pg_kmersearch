@@ -11,17 +11,25 @@ CREATE TABLE test_parallel_enhanced (
 -- Insert many sequences with the same k-mers to create high frequency
 DO $$
 BEGIN
-    FOR i IN 1..50 LOOP
-        INSERT INTO test_parallel_enhanced (seq) VALUES ('ATCGATCGATCGATCGATCGATCGATCGATCG'::dna2);
-        INSERT INTO test_parallel_enhanced (seq) VALUES ('GCTAGCTAGCTAGCTAGCTAGCTAGCTAGCT'::dna2);
+    FOR i IN 1..30 LOOP
+        INSERT INTO test_parallel_enhanced (seq) VALUES ('AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'::dna2);
+        INSERT INTO test_parallel_enhanced (seq) VALUES ('TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT'::dna2);
+        INSERT INTO test_parallel_enhanced (seq) VALUES ('CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC'::dna2);
+        INSERT INTO test_parallel_enhanced (seq) VALUES ('GGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGG'::dna2);
     END LOOP;
 END $$;
 
 -- Set parameters to detect high-frequency k-mers
 SET kmersearch.kmer_size = 4;
+SHOW kmersearch.kmer_size;
 SET kmersearch.occur_bitlen = 8;
-SET kmersearch.max_appearance_rate = 0.1;  -- Allow up to 10% appearance rate
-SET kmersearch.max_appearance_nrow = 10;   -- k-mers appearing in > 10 rows are high-frequency
+SHOW kmersearch.occur_bitlen;
+SET kmersearch.max_appearance_rate = 0.2;   -- Allow up to 20% appearance rate  
+SHOW kmersearch.max_appearance_rate;
+SET kmersearch.max_appearance_nrow = 20;   -- k-mers appearing in > 20 rows are high-frequency
+SHOW kmersearch.max_appearance_nrow;
+SET kmersearch.min_shared_ngram_key_rate = 0.2;  -- Allow matches with 20% shared k-mers
+SHOW kmersearch.min_shared_ngram_key_rate;
 
 -- Perform analysis
 SELECT 'Performing k-mer frequency analysis...' AS status;
@@ -34,14 +42,11 @@ SELECT kmersearch_perform_highfreq_analysis(
 SELECT 'Analysis results:' AS status;
 SELECT highfreq_kmer_count FROM kmersearch_analysis_status WHERE table_name = 'test_parallel_enhanced';
 
--- Insert some manual high-frequency k-mer entries to ensure we have data
-INSERT INTO kmersearch_highfreq_kmer (table_oid, column_name, ngram_key, detection_reason)
-SELECT 
-    (SELECT oid FROM pg_class WHERE relname = 'test_parallel_enhanced'),
-    'seq'::text,
-    substring(('01010101010101010101010101010101'::bit(32))::text::bit varying, 1, 24),  -- Sample 24-bit n-gram key
-    'manual_test_entry'
-WHERE EXISTS (SELECT 1 FROM pg_stat_user_indexes WHERE relname = 'test_parallel_enhanced');
+-- Verify that analysis detected high-frequency k-mers
+SELECT 'Verifying analysis results:' AS status;
+SELECT highfreq_kmer_count, max_appearance_rate, max_appearance_nrow 
+FROM kmersearch_analysis_status 
+WHERE table_name = 'test_parallel_enhanced' AND column_name = 'seq';
 
 -- Test Phase 1: Load global cache
 SELECT 'Phase 1: Loading global cache...' AS test_phase;

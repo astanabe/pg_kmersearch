@@ -3,6 +3,12 @@ CREATE EXTENSION IF NOT EXISTS pg_kmersearch;
 -- Test comprehensive cache hierarchy and GUC validation functionality
 -- This test covers the enhanced kmersearch_is_kmer_highfreq implementation
 
+-- Set GUC variables for index creation (will be changed later for testing)
+SET kmersearch.kmer_size = 4;
+SET kmersearch.occur_bitlen = 8;
+SET kmersearch.max_appearance_rate = 0.2;
+SET kmersearch.max_appearance_nrow = 3;
+
 -- Clean up any existing test data
 DROP TABLE IF EXISTS test_cache_hierarchy CASCADE;
 DELETE FROM kmersearch_highfreq_kmer WHERE detection_reason LIKE 'cache_hierarchy_%';
@@ -14,33 +20,50 @@ CREATE TABLE test_cache_hierarchy (
     test_seq dna2
 );
 
--- Insert test data with repeated patterns
+-- Insert test data with repeated patterns to ensure high-frequency k-mers
 INSERT INTO test_cache_hierarchy (test_seq) VALUES 
     ('ATCGATCGATCGATCGATCGATCGATCGATCG'::dna2),
     ('ATCGATCGATCGATCGATCGATCGATCGATCG'::dna2),
     ('ATCGATCGATCGATCGATCGATCGATCGATCG'::dna2),
+    ('ATCGATCGATCGATCGATCGATCGATCGATCG'::dna2),
+    ('ATCGATCGATCGATCGATCGATCGATCGATCG'::dna2),
     ('GCTAGCTAGCTAGCTAGCTAGCTAGCTAGCT'::dna2),
-    ('GCTAGCTAGCTAGCTAGCTAGCTAGCTAGCT'::dna2);
+    ('GCTAGCTAGCTAGCTAGCTAGCTAGCTAGCT'::dna2),
+    ('GCTAGCTAGCTAGCTAGCTAGCTAGCTAGCT'::dna2),
+    ('GCTAGCTAGCTAGCTAGCTAGCTAGCTAGCT'::dna2),
+    ('AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'::dna2),
+    ('AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'::dna2),
+    ('AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'::dna2),
+    ('AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'::dna2);
 
--- Create GIN index
+-- Create GIN index (using kmer_size=4)
 CREATE INDEX test_cache_hierarchy_gin_idx ON test_cache_hierarchy USING gin (test_seq);
 
 -- Test Phase 1: No metadata scenario (should work with table fallback)
 SELECT 'Phase 1: Testing without metadata table...' as test_phase;
 SELECT test_seq =% 'ATCGATCG' as no_metadata_query FROM test_cache_hierarchy LIMIT 1;
 
--- Test Phase 2: Create metadata and test GUC validation
-SELECT 'Phase 2: Testing GUC validation...' as test_phase;
+-- Test Phase 2: Perform high-frequency k-mer analysis
+SELECT 'Phase 2: Performing high-frequency k-mer analysis...' as test_phase;
 
--- Insert metadata with specific GUC values
-INSERT INTO kmersearch_highfreq_kmer_meta (table_oid, column_name, kmer_size, occur_bitlen, max_appearance_rate, max_appearance_nrow)
-VALUES ((SELECT oid FROM pg_class WHERE relname = 'test_cache_hierarchy'), 'test_seq', 4, 8, 0.4, 3);
+-- Perform actual high-frequency k-mer analysis
+SELECT kmersearch_perform_highfreq_analysis(
+    'test_cache_hierarchy'::text,
+    'test_seq'::text
+) AS analysis_result;
+
+-- Verify analysis results
+SELECT 'Verifying analysis results:' AS status;
+SELECT highfreq_kmer_count, max_appearance_rate, max_appearance_nrow 
+FROM kmersearch_analysis_status 
+WHERE table_name = 'test_cache_hierarchy' AND column_name = 'test_seq';
 
 -- Test 2.1: Matching GUC settings (should work)
 SET kmersearch.kmer_size = 4;
 SET kmersearch.occur_bitlen = 8;
-SET kmersearch.max_appearance_rate = 0.4;
+SET kmersearch.max_appearance_rate = 0.2;
 SET kmersearch.max_appearance_nrow = 3;
+SET kmersearch.min_shared_ngram_key_rate = 0.2;  -- Allow matches with 20% shared k-mers
 SELECT test_seq =% 'ATCGATCG' as matching_guc_query FROM test_cache_hierarchy LIMIT 1;
 
 -- Test 2.2: Mismatched GUC - occur_bitlen (should fail during cache load)
@@ -70,21 +93,14 @@ SELECT kmersearch_highfreq_kmer_cache_load(
 
 -- Reset to correct values for subsequent tests
 SET kmersearch.kmer_size = 4;
-SET kmersearch.max_appearance_nrow = 3;
+SET kmersearch.max_appearance_nrow = 1;
 SET kmersearch.occur_bitlen = 8;
-SET kmersearch.max_appearance_rate = 0.4;
+SET kmersearch.max_appearance_rate = 0.01;
 
 -- Test Phase 3: Cache hierarchy testing
 SELECT 'Phase 3: Testing cache hierarchy...' as test_phase;
 
--- Insert test high-frequency k-mer data
-INSERT INTO kmersearch_highfreq_kmer (table_oid, column_name, ngram_key, detection_reason)
-VALUES (
-  (SELECT oid FROM pg_class WHERE relname = 'test_cache_hierarchy'),
-  'test_seq',
-  '01010101'::bit(16),  -- Sample n-gram key
-  'cache_hierarchy_test'
-);
+-- High-frequency k-mer data should already exist from the analysis above
 
 -- Test 3.1: Global cache loading and usage
 SELECT 'Testing global cache...' as test_substep;
@@ -124,7 +140,7 @@ SELECT test_seq =% 'ATCGATCG' as table_fallback_query FROM test_cache_hierarchy 
 SELECT 'Phase 4: Testing table lookup without high-frequency data...' as test_phase;
 
 -- Remove all high-frequency k-mer data
-DELETE FROM kmersearch_highfreq_kmer WHERE detection_reason = 'cache_hierarchy_test';
+DELETE FROM kmersearch_highfreq_kmer WHERE table_oid = (SELECT oid FROM pg_class WHERE relname = 'test_cache_hierarchy') AND column_name = 'test_seq';
 
 -- Test query (should work but find no high-frequency k-mers)
 SELECT test_seq =% 'ATCGATCG' as no_highfreq_data_query FROM test_cache_hierarchy LIMIT 1;
@@ -141,7 +157,7 @@ SELECT test_seq =% 'ATCGATCG' as no_table_query FROM test_cache_hierarchy LIMIT 
 -- Clean up test data
 SELECT 'Cleaning up test data...' as cleanup_phase;
 DROP TABLE test_cache_hierarchy CASCADE;
-DELETE FROM kmersearch_highfreq_kmer WHERE detection_reason LIKE 'cache_hierarchy_%';
+DELETE FROM kmersearch_highfreq_kmer WHERE table_oid = (SELECT oid FROM pg_class WHERE relname = 'test_cache_hierarchy') AND column_name = 'test_seq';
 DELETE FROM kmersearch_highfreq_kmer_meta WHERE column_name = 'test_seq';
 
 SELECT 'Cache hierarchy test completed successfully!' as final_result;

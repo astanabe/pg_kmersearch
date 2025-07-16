@@ -145,8 +145,8 @@ kmersearch_extract_query(PG_FUNCTION_ARGS)
     int query_len = strlen(query_string);
     Datum *keys;
     
-    if (query_len < 8)
-        ereport(ERROR, (errmsg("Query sequence must be at least 8 bases long")));
+    if (query_len < k)
+        ereport(ERROR, (errmsg("Query sequence must be at least %d bases long", k)));
     
     if (k < 4 || k > 64)
         ereport(ERROR, (errmsg("k-mer length must be between 4 and 64")));
