@@ -270,7 +270,8 @@ static int kmersearch_count_matching_kmer_fast_sve(VarBit **seq_keys, int seq_nk
 /* Scalar versions */
 static Datum *kmersearch_extract_dna2_kmer2_direct_scalar(VarBit *seq, int k, int *nkeys);
 static Datum *kmersearch_extract_dna4_kmer2_with_expansion_direct_scalar(VarBit *seq, int k, int *nkeys);
-static int kmersearch_count_matching_kmer_fast_scalar(VarBit **seq_keys, int seq_nkeys, VarBit **query_keys, int query_nkeys);
+static int kmersearch_count_matching_kmer_fast_scalar_simple(VarBit **seq_keys, int seq_nkeys, VarBit **query_keys, int query_nkeys);
+static int kmersearch_count_matching_kmer_fast_scalar_hashtable(VarBit **seq_keys, int seq_nkeys, VarBit **query_keys, int query_nkeys);
 
 static void dna2_encode_avx512(const char* input, uint8_t* output, int len);
 static void dna2_decode_avx512(const uint8_t* input, char* output, int len);
@@ -1004,6 +1005,8 @@ kmersearch_extract_dna4_kmer2_with_expansion_direct_scalar(VarBit *seq, int k, i
 static int
 kmersearch_count_matching_kmer_fast(VarBit **seq_keys, int seq_nkeys, VarBit **query_keys, int query_nkeys)
 {
+    int key_combinations;
+    
     /* Validate input parameters */
     if (!seq_keys || !query_keys) {
         return 0;
@@ -1013,30 +1016,66 @@ kmersearch_count_matching_kmer_fast(VarBit **seq_keys, int seq_nkeys, VarBit **q
         return 0;
     }
     
-    /* Use SIMD based on runtime capability */
+    key_combinations = seq_nkeys * query_nkeys;
+    
+    /* For small datasets, O(n*m) might be faster than hash table overhead */
+    if (key_combinations < 100) {
+        return kmersearch_count_matching_kmer_fast_scalar_simple(seq_keys, seq_nkeys, query_keys, query_nkeys);
+    }
+    
+    /* Use SIMD based on runtime capability and key combination thresholds */
 #ifdef __x86_64__
-    if (simd_capability >= SIMD_AVX512BW) {
+    if (simd_capability >= SIMD_AVX512BW && key_combinations >= SIMD_KEYCOMB_AVX512_THRESHOLD) {
         return kmersearch_count_matching_kmer_fast_avx512(seq_keys, seq_nkeys, query_keys, query_nkeys);
     }
-    if (simd_capability >= SIMD_AVX2) {
+    if (simd_capability >= SIMD_AVX2 && key_combinations >= SIMD_KEYCOMB_AVX2_THRESHOLD) {
         return kmersearch_count_matching_kmer_fast_avx2(seq_keys, seq_nkeys, query_keys, query_nkeys);
     }
 #elif defined(__aarch64__)
-    if (simd_capability >= SIMD_SVE) {
+    if (simd_capability >= SIMD_SVE && key_combinations >= SIMD_KEYCOMB_SVE_THRESHOLD) {
         return kmersearch_count_matching_kmer_fast_sve(seq_keys, seq_nkeys, query_keys, query_nkeys);
     }
-    if (simd_capability >= SIMD_NEON) {
+    if (simd_capability >= SIMD_NEON && key_combinations >= SIMD_KEYCOMB_NEON_THRESHOLD) {
         return kmersearch_count_matching_kmer_fast_neon(seq_keys, seq_nkeys, query_keys, query_nkeys);
     }
 #endif
-    return kmersearch_count_matching_kmer_fast_scalar(seq_keys, seq_nkeys, query_keys, query_nkeys);
+    return kmersearch_count_matching_kmer_fast_scalar_hashtable(seq_keys, seq_nkeys, query_keys, query_nkeys);
+}
+
+/*
+ * Scalar version: Simple O(n*m) comparison for small datasets
+ */
+static int
+kmersearch_count_matching_kmer_fast_scalar_simple(VarBit **seq_keys, int seq_nkeys, VarBit **query_keys, int query_nkeys)
+{
+    int match_count = 0;
+    int i, j;
+    
+    if (seq_nkeys == 0 || query_nkeys == 0)
+        return 0;
+    
+    /* Simple comparison for small datasets */
+    for (i = 0; i < seq_nkeys; i++)
+    {
+        for (j = 0; j < query_nkeys; j++)
+        {
+            if (VARBITLEN(seq_keys[i]) == VARBITLEN(query_keys[j]) &&
+                VARSIZE(seq_keys[i]) == VARSIZE(query_keys[j]) &&
+                memcmp(VARBITS(seq_keys[i]), VARBITS(query_keys[j]), VARBITBYTES(seq_keys[i])) == 0)
+            {
+                match_count++;
+                break;
+            }
+        }
+    }
+    return match_count;
 }
 
 /*
  * Scalar version: Fast k-mer matching using hash table - optimized O(n+m) implementation
  */
 static int
-kmersearch_count_matching_kmer_fast_scalar(VarBit **seq_keys, int seq_nkeys, VarBit **query_keys, int query_nkeys)
+kmersearch_count_matching_kmer_fast_scalar_hashtable(VarBit **seq_keys, int seq_nkeys, VarBit **query_keys, int query_nkeys)
 {
     int match_count = 0;
     int i;
@@ -1046,27 +1085,6 @@ kmersearch_count_matching_kmer_fast_scalar(VarBit **seq_keys, int seq_nkeys, Var
     
     if (seq_nkeys == 0 || query_nkeys == 0)
         return 0;
-    
-    /* For small datasets, O(n*m) might be faster than hash table overhead */
-    if (seq_nkeys * query_nkeys < 100)
-    {
-        /* Fall back to simple comparison for small datasets */
-        for (i = 0; i < seq_nkeys; i++)
-        {
-            int j;
-            for (j = 0; j < query_nkeys; j++)
-            {
-                if (VARBITLEN(seq_keys[i]) == VARBITLEN(query_keys[j]) &&
-                    VARSIZE(seq_keys[i]) == VARSIZE(query_keys[j]) &&
-                    memcmp(VARBITS(seq_keys[i]), VARBITS(query_keys[j]), VARBITBYTES(seq_keys[i])) == 0)
-                {
-                    match_count++;
-                    break;
-                }
-            }
-        }
-        return match_count;
-    }
     
     /* Create hash table using VarBit content as key */
     memset(&hash_ctl, 0, sizeof(hash_ctl));
@@ -4317,53 +4335,7 @@ kmersearch_count_matching_kmer_fast_avx2(VarBit **seq_keys, int seq_nkeys, VarBi
     if (seq_nkeys == 0 || query_nkeys == 0)
         return 0;
     
-    /* For small datasets, O(n*m) might be faster than hash table overhead */
-    if (seq_nkeys * query_nkeys < 100)
-    {
-        /* AVX2-optimized comparison for small datasets */
-        for (i = 0; i < seq_nkeys; i++)
-        {
-            int j;
-            int simd_batch = query_nkeys & ~7;  /* Process 8 queries at a time */
-            bool found_match = false;
-            
-            /* AVX2 batch processing for query comparison */
-            for (j = 0; j < simd_batch && !found_match; j += 8)
-            {
-                /* Check 8 queries in parallel */
-                for (int k = 0; k < 8 && (j + k) < query_nkeys; k++)
-                {
-                    int idx = j + k;
-                    if (VARBITLEN(seq_keys[i]) == VARBITLEN(query_keys[idx]) &&
-                        VARSIZE(seq_keys[i]) == VARSIZE(query_keys[idx]) &&
-                        memcmp(VARBITS(seq_keys[i]), VARBITS(query_keys[idx]), VARBITBYTES(seq_keys[i])) == 0)
-                    {
-                        match_count++;
-                        found_match = true;
-                        break;
-                    }
-                }
-            }
-            
-            /* Handle remaining queries with scalar */
-            if (!found_match)
-            {
-                for (j = simd_batch; j < query_nkeys; j++)
-                {
-                    if (VARBITLEN(seq_keys[i]) == VARBITLEN(query_keys[j]) &&
-                        VARSIZE(seq_keys[i]) == VARSIZE(query_keys[j]) &&
-                        memcmp(VARBITS(seq_keys[i]), VARBITS(query_keys[j]), VARBITBYTES(seq_keys[i])) == 0)
-                    {
-                        match_count++;
-                        break;
-                    }
-                }
-            }
-        }
-        return match_count;
-    }
-    
-    /* Use hash table for larger datasets (same as scalar version) */
+    /* AVX2 optimized hash table implementation */
     memset(&hash_ctl, 0, sizeof(hash_ctl));
     
     /* Safety check: ensure we have valid query keys */
@@ -4683,67 +4655,7 @@ kmersearch_count_matching_kmer_fast_avx512(VarBit **seq_keys, int seq_nkeys, Var
         return 0;
     }
     
-    /* For small datasets, O(n*m) might be faster than hash table overhead */
-    if (seq_nkeys * query_nkeys < 100)
-    {
-        
-        /* AVX512-optimized comparison for small datasets (16 queries at a time) */
-        for (i = 0; i < seq_nkeys; i++)
-        {
-            int j;
-            int simd_batch = query_nkeys & ~15;
-            bool found_match = false;
-            
-            /* Validate seq_keys[i] */
-            if (seq_keys[i] == NULL) {
-                continue;
-            }
-            
-            for (j = 0; j < simd_batch && !found_match; j += 16)
-            {
-                for (int k = 0; k < 16 && (j + k) < query_nkeys; k++)
-                {
-                    int idx = j + k;
-                    
-                    /* Validate query_keys[idx] */
-                    if (query_keys[idx] == NULL) {
-                        continue;
-                    }
-                    
-                    if (VARBITLEN(seq_keys[i]) == VARBITLEN(query_keys[idx]) &&
-                        VARSIZE(seq_keys[i]) == VARSIZE(query_keys[idx]) &&
-                        memcmp(VARBITS(seq_keys[i]), VARBITS(query_keys[idx]), VARBITBYTES(seq_keys[i])) == 0)
-                    {
-                        match_count++;
-                        found_match = true;
-                        break;
-                    }
-                }
-            }
-            
-            if (!found_match)
-            {
-                for (j = simd_batch; j < query_nkeys; j++)
-                {
-                    /* Validate query_keys[j] */
-                    if (query_keys[j] == NULL) {
-                        continue;
-                    }
-                    
-                    if (VARBITLEN(seq_keys[i]) == VARBITLEN(query_keys[j]) &&
-                        VARSIZE(seq_keys[i]) == VARSIZE(query_keys[j]) &&
-                        memcmp(VARBITS(seq_keys[i]), VARBITS(query_keys[j]), VARBITBYTES(seq_keys[i])) == 0)
-                    {
-                        match_count++;
-                        break;
-                    }
-                }
-            }
-        }
-        return match_count;
-    }
-    
-    /* Use hash table for larger datasets */
+    /* AVX512 optimized hash table implementation */
     memset(&hash_ctl, 0, sizeof(hash_ctl));
     
     if (query_keys[0] == NULL) {
@@ -5046,55 +4958,11 @@ kmersearch_count_matching_kmer_fast_neon(VarBit **seq_keys, int seq_nkeys, VarBi
     HTAB *query_hash;
     HASHCTL hash_ctl;
     bool found;
-    int simd_batch;
     
     if (seq_nkeys == 0 || query_nkeys == 0)
         return 0;
     
-    /* For small datasets, O(n*m) might be faster than hash table overhead */
-    if (seq_nkeys * query_nkeys < 100)
-    {
-        /* NEON-optimized comparison for small datasets (4 queries at a time) */
-        simd_batch = query_nkeys & ~3;
-        for (i = 0; i < seq_nkeys; i++)
-        {
-            int j;
-            bool found_match = false;
-            
-            for (j = 0; j < simd_batch && !found_match; j += 4)
-            {
-                for (int k = 0; k < 4 && (j + k) < query_nkeys; k++)
-                {
-                    int idx = j + k;
-                    if (VARBITLEN(seq_keys[i]) == VARBITLEN(query_keys[idx]) &&
-                        VARSIZE(seq_keys[i]) == VARSIZE(query_keys[idx]) &&
-                        memcmp(VARBITS(seq_keys[i]), VARBITS(query_keys[idx]), VARBITBYTES(seq_keys[i])) == 0)
-                    {
-                        match_count++;
-                        found_match = true;
-                        break;
-                    }
-                }
-            }
-            
-            if (!found_match)
-            {
-                for (j = simd_batch; j < query_nkeys; j++)
-                {
-                    if (VARBITLEN(seq_keys[i]) == VARBITLEN(query_keys[j]) &&
-                        VARSIZE(seq_keys[i]) == VARSIZE(query_keys[j]) &&
-                        memcmp(VARBITS(seq_keys[i]), VARBITS(query_keys[j]), VARBITBYTES(seq_keys[i])) == 0)
-                    {
-                        match_count++;
-                        break;
-                    }
-                }
-            }
-        }
-        return match_count;
-    }
-    
-    /* Use hash table for larger datasets */
+    /* NEON optimized hash table implementation */
     memset(&hash_ctl, 0, sizeof(hash_ctl));
     
     if (query_keys[0] == NULL) {
@@ -5396,55 +5264,11 @@ kmersearch_count_matching_kmer_fast_sve(VarBit **seq_keys, int seq_nkeys, VarBit
     HTAB *query_hash;
     HASHCTL hash_ctl;
     bool found;
-    int simd_batch;
     
     if (seq_nkeys == 0 || query_nkeys == 0)
         return 0;
     
-    /* For small datasets, O(n*m) might be faster than hash table overhead */
-    if (seq_nkeys * query_nkeys < 100)
-    {
-        /* SVE-optimized comparison for small datasets (8 queries at a time, conservative) */
-        simd_batch = query_nkeys & ~7;
-        for (i = 0; i < seq_nkeys; i++)
-        {
-            int j;
-            bool found_match = false;
-            
-            for (j = 0; j < simd_batch && !found_match; j += 8)
-            {
-                for (int k = 0; k < 8 && (j + k) < query_nkeys; k++)
-                {
-                    int idx = j + k;
-                    if (VARBITLEN(seq_keys[i]) == VARBITLEN(query_keys[idx]) &&
-                        VARSIZE(seq_keys[i]) == VARSIZE(query_keys[idx]) &&
-                        memcmp(VARBITS(seq_keys[i]), VARBITS(query_keys[idx]), VARBITBYTES(seq_keys[i])) == 0)
-                    {
-                        match_count++;
-                        found_match = true;
-                        break;
-                    }
-                }
-            }
-            
-            if (!found_match)
-            {
-                for (j = simd_batch; j < query_nkeys; j++)
-                {
-                    if (VARBITLEN(seq_keys[i]) == VARBITLEN(query_keys[j]) &&
-                        VARSIZE(seq_keys[i]) == VARSIZE(query_keys[j]) &&
-                        memcmp(VARBITS(seq_keys[i]), VARBITS(query_keys[j]), VARBITBYTES(seq_keys[i])) == 0)
-                    {
-                        match_count++;
-                        break;
-                    }
-                }
-            }
-        }
-        return match_count;
-    }
-    
-    /* Use hash table for larger datasets */
+    /* SVE optimized hash table implementation */
     memset(&hash_ctl, 0, sizeof(hash_ctl));
     
     if (query_keys[0] == NULL) {

@@ -113,6 +113,15 @@ typedef enum {
 #define SIMD_EXTRACT_NEON_THRESHOLD    256     /* 256 bits: Use NEON for extraction */
 #define SIMD_EXTRACT_SVE_THRESHOLD     512     /* 512 bits: Use SVE for extraction */
 
+/*
+ * SIMD k-mer matching thresholds (key combination count)
+ * These thresholds determine when to use SIMD for k-mer matching
+ */
+#define SIMD_KEYCOMB_AVX2_THRESHOLD    128     /* 128 combinations: Use AVX2 for matching */
+#define SIMD_KEYCOMB_AVX512_THRESHOLD  256     /* 256 combinations: Use AVX512 for matching */
+#define SIMD_KEYCOMB_NEON_THRESHOLD    64      /* 64 combinations: Use NEON for matching */
+#define SIMD_KEYCOMB_SVE_THRESHOLD     128     /* 128 combinations: Use SVE for matching */
+
 /* Function pointers for different SIMD implementations */
 typedef struct {
     void (*dna2_encode)(const char* input, uint8_t* output, int len);
