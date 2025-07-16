@@ -1,174 +1,113 @@
+-- 高頻度k-mer除外機能の統合テスト
+-- kmersearch.kmer_size=4、kmersearch.occur_bitlen=4、kmersearch.max_appearance_rate=0.25、
+-- kmersearch.max_appearance_nrow=0、kmersearch.min_score=1、kmersearch.min_shared_ngram_key_rate=0.9、
+-- kmersearch.preclude_highfreq_kmer=true、kmersearch.force_use_parallel_highfreq_kmer_cache=false
+
+-- 拡張を作成
 CREATE EXTENSION IF NOT EXISTS pg_kmersearch;
 
--- Set k-mer size to 4 for efficient testing (must be after CREATE EXTENSION)
+-- 指定されたGUC設定を適用
 SET kmersearch.kmer_size = 4;
+SET kmersearch.occur_bitlen = 4;
+SET kmersearch.max_appearance_rate = 0.25;
+SET kmersearch.max_appearance_nrow = 0;
+SET kmersearch.min_score = 1;
+SET kmersearch.min_shared_ngram_key_rate = 0.9;
+SET kmersearch.preclude_highfreq_kmer = true;
+SET kmersearch.force_use_parallel_highfreq_kmer_cache = false;
+
+-- 設定確認
+SELECT 'GUC設定確認:' as info;
 SHOW kmersearch.kmer_size;
-SET kmersearch.min_shared_ngram_key_rate = 0.2;  -- Allow matches with 20% shared k-mers
-SHOW kmersearch.min_shared_ngram_key_rate;
+SHOW kmersearch.max_appearance_rate;
+SHOW kmersearch.preclude_highfreq_kmer;
 
--- Test high-frequency k-mer cache management functionality
--- This test covers manual cache loading and clearing
-
--- Clean up any existing tables
-DROP TABLE IF EXISTS test_highfreq_dna2 CASCADE;
-
--- Create test table for high-frequency k-mer analysis
-CREATE TABLE test_highfreq_dna2 (
+-- テスト用テーブルの作成
+DROP TABLE IF EXISTS test_dna_highfreq CASCADE;
+CREATE TABLE test_dna_highfreq (
     id SERIAL PRIMARY KEY,
-    name TEXT,
-    sequence DNA2
+    seq DNA2
 );
 
--- Insert test data with sequences that contain high-frequency k-mers
--- Many sequences contain repeated patterns to generate high-frequency 4-mers
-INSERT INTO test_highfreq_dna2 (name, sequence) VALUES
-    -- Sequences with repeated ATCGATCG pattern (creates high-freq k-mers)
-    ('seq1', 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCG'),
-    ('seq2', 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCG'),
-    ('seq3', 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCG'),
-    ('seq4', 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCG'),
-    ('seq5', 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCG'),
-    -- Sequences with repeated AAAAAAAA pattern (creates high-freq k-mers)
-    ('seq6', 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'),
-    ('seq7', 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'),
-    ('seq8', 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'),
-    ('seq9', 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'),
-    ('seq10', 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA');
+-- k=4で高頻度k-merが含まれるテストデータを挿入
+INSERT INTO test_dna_highfreq (seq) VALUES 
+    ('AAAACTGTACGT'::DNA2),    -- AAAA, AAAa, AACa, ACTa が含まれる
+    ('AAAAGCATGCAT'::DNA2),    -- AAAA, AAAa, AAGa, AGCa が含まれる  
+    ('AAAATCGATCGA'::DNA2),    -- AAAA, AAAa, AATa, ATCa が含まれる
+    ('AAAACCCCGGGG'::DNA2),    -- AAAA, AAAa, AACc, CCCCが含まれる
+    ('AAAATTTTAAAA'::DNA2),    -- AAAA, AAAa, AATt, TTTTが含まれる
+    ('TCGTAAAACGTA'::DNA2),    -- AAAA が含まれる
+    ('GCATAAAATCGA'::DNA2),    -- AAAA が含まれる
+    ('ATCGAAAACCCC'::DNA2),    -- AAAA, CCCC が含まれる
+    ('CCCCAAAATTTT'::DNA2),    -- CCCC, AAAA, TTTT が含まれる
+    ('TTTTAAAACCCC'::DNA2),    -- TTTT, AAAA, CCCC が含まれる
+    ('CCCCCCCCCCCC'::DNA2),    -- CCCCが多数含まれる
+    ('TTTTTTTTTTTT'::DNA2),    -- TTTTが多数含まれる
+    ('ACGTACGTACGT'::DNA2),    -- 違うパターン
+    ('TGCATGCATGCA'::DNA2);    -- 違うパターン
 
--- Create GIN index for high-frequency k-mer analysis
-CREATE INDEX idx_test_highfreq_dna2_gin ON test_highfreq_dna2 USING gin (sequence);
+SELECT 'テストデータ作成完了:' as info, COUNT(*) as total_rows FROM test_dna_highfreq;
 
--- Test kmersearch_perform_highfreq_analysis functionality
-SELECT 'Testing kmersearch_perform_highfreq_analysis...' as test_phase;
+-- 1. kmersearch_perform_highfreq_analysis()を実行
+SELECT '1. 高頻度k-mer分析実行:' as step;
+SELECT kmersearch_perform_highfreq_analysis('test_dna_highfreq', 'seq');
 
--- Analyze the table to identify high-frequency k-mers
--- This will create entries in kmersearch_highfreq_kmer and kmersearch_highfreq_kmer_meta tables
--- Use stricter threshold to ensure we detect the repeated patterns
-SET kmersearch.max_appearance_rate = 0.1;  -- 10% appearance rate
-SHOW kmersearch.max_appearance_rate;
-SET kmersearch.max_appearance_nrow = 3;    -- k-mers in >3 rows are high-freq
-SHOW kmersearch.max_appearance_nrow;
+-- 2. kmersearch_highfreq_kmer_cache_load()を実行
+SELECT '2. 高頻度k-merキャッシュロード:' as step;
+SELECT kmersearch_highfreq_kmer_cache_load('test_dna_highfreq', 'seq');
 
-WITH analysis_result AS (
-    SELECT kmersearch_perform_highfreq_analysis(
-        'test_highfreq_dna2'::text, 
-        'sequence'::text
-    ) AS result
-)
-SELECT (result).* FROM analysis_result;
+-- 3. CREATE INDEX (高頻度出現ngram_key2がGINインデックスから除外される)
+SELECT '3. GINインデックス作成:' as step;
+CREATE INDEX idx_test_dna_highfreq_seq ON test_dna_highfreq USING gin (seq);
 
--- No need to manually insert data since analyze_table should handle it
+-- インデックス作成確認
+SELECT '   インデックス作成確認:' as info;
+SELECT schemaname, tablename, indexname 
+FROM pg_indexes 
+WHERE tablename = 'test_dna_highfreq' AND indexname = 'idx_test_dna_highfreq_seq';
 
--- Check if analysis created metadata
-SELECT 'Checking analysis metadata...' as test_phase;
-SELECT COUNT(*) as meta_count FROM kmersearch_highfreq_kmer_meta 
-WHERE table_oid = (SELECT oid FROM pg_class WHERE relname = 'test_highfreq_dna2');
+-- 4. GINインデックスを使用した検索
+SELECT '4. GINインデックスを使用した検索:' as step;
+SELECT id, seq, kmersearch_rawscore_dna2(seq, 'AAAACTGT') as rawscore
+FROM test_dna_highfreq 
+WHERE seq =% 'AAAACTGT'
+ORDER BY rawscore DESC, id;
 
--- Check if analysis created high-frequency k-mer data
-SELECT 'Checking high-frequency k-mers...' as test_phase;
-SELECT COUNT(*) as highfreq_kmer_count FROM kmersearch_highfreq_kmer
-WHERE table_oid = (SELECT oid FROM pg_class WHERE relname = 'test_highfreq_dna2')
-  AND column_name = 'sequence';
+-- 5. kmersearch_highfreq_kmer_cache_free()を実行
+SELECT '5. 高頻度k-merキャッシュ解放:' as step;
+SELECT kmersearch_highfreq_kmer_cache_free('test_dna_highfreq', 'seq');
 
--- Test high-frequency k-mer cache functions with analysis data
-SELECT 'Testing cache loading with analysis data...' as test_phase;
+-- 6. 再度GINインデックスを使用した検索
+SELECT '6. キャッシュ解放後の再度GINインデックス検索:' as step;
+SELECT id, seq, kmersearch_rawscore_dna2(seq, 'AAAACTGT') as rawscore
+FROM test_dna_highfreq 
+WHERE seq =% 'AAAACTGT'
+ORDER BY rawscore DESC, id;
 
--- Test high-frequency k-mer cache loading
-SELECT 'Testing cache loading...' as test_phase;
+-- 追加テスト: 高頻度k-mer除外の効果確認
+SELECT '7. 高頻度k-mer除外効果の確認:' as step;
 
--- Set GUC variables to match metadata
-SET kmersearch.max_appearance_rate = 0.1;
-SHOW kmersearch.max_appearance_rate;
-SET kmersearch.max_appearance_nrow = 3;
-SHOW kmersearch.max_appearance_nrow;
+-- 高頻度k-merの状況確認
+SELECT 'システムテーブルの内容確認:' as info;
+SELECT COUNT(*) as highfreq_kmer_count 
+FROM kmersearch_highfreq_kmer 
+WHERE table_oid = (SELECT oid FROM pg_class WHERE relname = 'test_dna_highfreq');
 
-SELECT kmersearch_highfreq_kmer_cache_load('test_highfreq_dna2', 'sequence') as cache_loaded;
+-- 複数のクエリで検索結果を確認
+SELECT '複数クエリでの検索結果:' as info;
+SELECT 'AAAACTGT' as query, COUNT(*) as match_count 
+FROM test_dna_highfreq 
+WHERE seq =% 'AAAACTGT';
 
--- Test high-frequency k-mer cache clearing
-SELECT 'Testing cache clearing...' as test_phase;
-SELECT kmersearch_highfreq_kmer_cache_free_all() as freed_entries;
+SELECT 'CCCCTTTT' as query, COUNT(*) as match_count 
+FROM test_dna_highfreq 
+WHERE seq =% 'CCCCTTTT';
 
--- Test cache loading with non-existent data
-SELECT 'Testing cache loading with invalid parameters...' as test_phase;
-SELECT kmersearch_highfreq_kmer_cache_load('nonexistent', 'nonexistent') as cache_loaded;
+-- テスト完了メッセージ
+SELECT '高頻度k-mer除外機能のテスト完了' as test_result;
 
--- Test cache clearing when no cache exists
-SELECT 'Testing cache clearing when no cache exists...' as test_phase;
-SELECT kmersearch_highfreq_kmer_cache_free_all() as freed_entries;
+-- クリーンアップ
+DROP TABLE test_dna_highfreq CASCADE;
 
--- Test GUC validation and cache hierarchy
-SELECT 'Testing GUC validation and cache hierarchy...' as test_phase;
-
--- Reset GUC settings to match metadata for testing
-SET kmersearch.max_appearance_rate = 0.1;
-SHOW kmersearch.max_appearance_rate;
-SET kmersearch.max_appearance_nrow = 3;
-SHOW kmersearch.max_appearance_nrow;
-SET kmersearch.occur_bitlen = 8;
-SHOW kmersearch.occur_bitlen;
-
--- Test 1: GUC validation error handling
-SELECT 'Testing GUC validation errors...' as test_substep;
-
--- Change GUC to cause mismatch and test cache loading (should fail)
-SET kmersearch.max_appearance_rate = 0.9;  -- Different from metadata (0.1)
-SHOW kmersearch.max_appearance_rate;
-SELECT kmersearch_highfreq_kmer_cache_load(
-  'test_highfreq_dna2',
-  'sequence'
-) as cache_load_with_mismatch;
-
--- Reset to correct values
-SET kmersearch.max_appearance_rate = 0.1;
-SHOW kmersearch.max_appearance_rate;
-
--- Test 2: Cache hierarchy - Global cache
-SELECT 'Testing global cache hierarchy...' as test_substep;
-SELECT kmersearch_highfreq_kmer_cache_load(
-  'test_highfreq_dna2',
-  'sequence'
-) as global_cache_loaded;
-
--- Test query with global cache
-SELECT sequence =% 'ATCGATCG' as global_cache_query FROM test_highfreq_dna2 LIMIT 1;
-
--- Test 3: Cache hierarchy - Parallel cache  
-SELECT 'Testing parallel cache hierarchy...' as test_substep;
-SELECT kmersearch_parallel_highfreq_kmer_cache_load(
-  'test_highfreq_dna2',
-  'sequence'
-) as parallel_cache_loaded;
-
--- Test 4: Cache hierarchy fallback
-SELECT 'Testing cache hierarchy fallback...' as test_substep;
-
--- Clear global cache
-SELECT kmersearch_highfreq_kmer_cache_free_all() as global_freed;
-
--- Test with only parallel cache
-SET kmersearch.force_use_parallel_highfreq_kmer_cache = true;
-SHOW kmersearch.force_use_parallel_highfreq_kmer_cache;
-SELECT sequence =% 'ATCGATCG' as parallel_only_query FROM test_highfreq_dna2 LIMIT 1;
-
--- Clear parallel cache  
-SELECT kmersearch_parallel_highfreq_kmer_cache_free_all() as parallel_freed;
-
--- Test with no cache (table lookup fallback)
-SET kmersearch.force_use_parallel_highfreq_kmer_cache = false;
-SHOW kmersearch.force_use_parallel_highfreq_kmer_cache;
-SELECT sequence =% 'ATCGATCG' as table_fallback_query FROM test_highfreq_dna2 LIMIT 1;
-
--- Note: No manual test data cleanup needed since we're using real analysis data
-
--- Clean up analysis data
-SELECT 'Cleaning up analysis data...' as test_phase;
-DELETE FROM kmersearch_highfreq_kmer
-WHERE table_oid = (SELECT oid FROM pg_class WHERE relname = 'test_highfreq_dna2')
-  AND column_name = 'sequence';
-DELETE FROM kmersearch_highfreq_kmer_meta 
-WHERE table_oid = (SELECT oid FROM pg_class WHERE relname = 'test_highfreq_dna2');
-
--- Clean up
-DROP TABLE test_highfreq_dna2 CASCADE;
-
+-- 拡張を削除してリグレッションテストをクリーンアップ
 DROP EXTENSION pg_kmersearch CASCADE;

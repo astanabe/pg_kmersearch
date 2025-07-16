@@ -35,15 +35,7 @@ static void kmersearch_spi_connect_or_error(void);
 static void kmersearch_handle_spi_error(int spi_result, const char *operation);
 static bool kmersearch_check_analysis_exists(Oid table_oid, const char *column_name, int k_size);
 
-/* External global variables (defined in kmersearch.c) */
-extern int kmersearch_occur_bitlen;
-extern int kmersearch_kmer_size;
-extern double kmersearch_max_appearance_rate;
-extern int kmersearch_max_appearance_nrow;
-
 /* External functions are now declared in kmersearch.h */
-extern int kmersearch_min_score;
-extern bool kmersearch_preclude_highfreq_kmer;
 extern HighfreqKmerCache global_highfreq_cache;
 
 /* External parallel cache variables (defined in kmersearch_cache.c) */
