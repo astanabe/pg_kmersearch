@@ -1311,20 +1311,77 @@ kmersearch_highfreq_kmer_cache_load_internal(Oid table_oid, const char *column_n
     }
     
     
-    /* Get high-frequency k-mers list using batch processing */
-    ereport(DEBUG1, (errmsg("kmersearch_highfreq_kmer_cache_load_internal: Starting batch loading with batch_size=%d", 
-                           kmersearch_highfreq_kmer_cache_load_batch_size)));
+    /* Count total k-mers first for hash table size initialization */
+    {
+        StringInfoData count_query;
+        char *escaped_column_name;
+        char *cp;
+        const char *sp;
+        int ret;
+        
+        /* Connect to SPI for counting */
+        if (SPI_connect() != SPI_OK_CONNECT) {
+            ereport(ERROR, (errmsg("kmersearch_highfreq_kmer_cache_load_internal: SPI_connect failed for counting")));
+        }
+        
+        /* Escape column name to prevent SQL injection */
+        escaped_column_name = SPI_palloc(strlen(column_name) * 2 + 1);
+        cp = escaped_column_name;
+        sp = column_name;
+        
+        while (*sp) {
+            if (*sp == '\'') {
+                *cp++ = '\'';
+                *cp++ = '\'';
+            } else {
+                *cp++ = *sp;
+            }
+            sp++;
+        }
+        *cp = '\0';
+        
+        /* Build count query */
+        initStringInfo(&count_query);
+        appendStringInfo(&count_query,
+            "SELECT COUNT(DISTINCT hkm.ngram_key) FROM kmersearch_highfreq_kmer hkm "
+            "WHERE hkm.table_oid = %u "
+            "AND hkm.column_name = '%s' "
+            "AND EXISTS ("
+            "    SELECT 1 FROM kmersearch_highfreq_kmer_meta hkm_meta "
+            "    WHERE hkm_meta.table_oid = %u "
+            "    AND hkm_meta.column_name = '%s' "
+            "    AND hkm_meta.kmer_size = %d"
+            ")",
+            table_oid, escaped_column_name, table_oid, escaped_column_name, k_value);
+        
+        /* Execute count query */
+        ret = SPI_execute(count_query.data, true, 0);
+        
+        if (ret == SPI_OK_SELECT && SPI_processed > 0) {
+            bool isnull;
+            Datum count_datum = SPI_getbinval(SPI_tuptable->vals[0], SPI_tuptable->tupdesc, 1, &isnull);
+            if (!isnull) {
+                highfreq_count = DatumGetInt64(count_datum);
+            } else {
+                highfreq_count = 0;
+            }
+        } else {
+            highfreq_count = 0;
+        }
+        
+        /* Cleanup */
+        pfree(count_query.data);
+        pfree(escaped_column_name);
+        SPI_finish();
+    }
     
-    highfreq_kmers = kmersearch_get_highfreq_kmer_from_table_batch(table_oid, column_name, k_value, &highfreq_count, kmersearch_highfreq_kmer_cache_load_batch_size);
-    
-    ereport(DEBUG1, (errmsg("kmersearch_highfreq_kmer_cache_load_internal: Retrieved %d high-frequency k-mers using batch processing",
-                           highfreq_count)));
-    
-    if (!highfreq_kmers || highfreq_count <= 0) {
+    if (highfreq_count <= 0) {
         ereport(DEBUG1, (errmsg("kmersearch_highfreq_kmer_cache_load_internal: No high-frequency k-mers found, cache remains invalid")));
         return false;
     }
     
+    ereport(DEBUG1, (errmsg("kmersearch_highfreq_kmer_cache_load_internal: Found %d total high-frequency k-mers, will load in batches of %d", 
+                           highfreq_count, kmersearch_highfreq_kmer_cache_load_batch_size)));
     
     /* Switch to cache context for cache storage */
     old_context = MemoryContextSwitchTo(global_highfreq_cache.cache_context);
@@ -1339,29 +1396,216 @@ kmersearch_highfreq_kmer_cache_load_internal(Oid table_oid, const char *column_n
     global_highfreq_cache.current_cache_key.max_appearance_rate = kmersearch_max_appearance_rate;
     global_highfreq_cache.current_cache_key.max_appearance_nrow = kmersearch_max_appearance_nrow;
     
-    ereport(DEBUG1, (errmsg("kmersearch_highfreq_kmer_cache_load_internal: Building cache key and copying k-mers to cache context")));
+    ereport(DEBUG1, (errmsg("kmersearch_highfreq_kmer_cache_load_internal: Building cache key and initializing hash table")));
     
-    /* Copy the k-mer array to cache context to prevent memory context issues */
-    cache_kmers = (VarBit **) palloc(highfreq_count * sizeof(VarBit *));
-    for (i = 0; i < highfreq_count; i++) {
-        if (highfreq_kmers[i]) {
-            /* Copy each k-mer to the cache context */
-            cache_kmers[i] = DatumGetVarBitPCopy(PointerGetDatum(highfreq_kmers[i]));
-        } else {
-            cache_kmers[i] = NULL;
+    /* Initialize hash table in cache context */
+    HASHCTL hash_ctl;
+    MemSet(&hash_ctl, 0, sizeof(hash_ctl));
+    hash_ctl.keysize = sizeof(uint64);  /* Use hash value as key */
+    hash_ctl.entrysize = sizeof(HighfreqKmerHashEntry);
+    hash_ctl.hash = tag_hash;
+    hash_ctl.hcxt = CurrentMemoryContext;
+    
+    global_highfreq_cache.highfreq_hash = hash_create("HighfreqKmerHash",
+                                                      highfreq_count,
+                                                      &hash_ctl,
+                                                      HASH_ELEM | HASH_FUNCTION | HASH_CONTEXT);
+    
+    if (!global_highfreq_cache.highfreq_hash) {
+        ereport(DEBUG1, (errmsg("kmersearch_highfreq_kmer_cache_load_internal: Hash table creation failed")));
+        MemoryContextSwitchTo(old_context);
+        MemoryContextDelete(global_highfreq_cache.cache_context);
+        global_highfreq_cache.cache_context = NULL;
+        global_highfreq_cache.is_valid = false;
+        return false;
+    }
+    
+    ereport(DEBUG1, (errmsg("kmersearch_highfreq_kmer_cache_load_internal: Hash table created successfully, starting batch population")));
+    
+    /* Populate hash table with k-mers using batch processing */
+    int total_inserted = 0;
+    int batch_num = 0;
+    int offset = 0;
+    
+    /* Process k-mers in batches to reduce memory usage */
+    while (offset < highfreq_count) {
+        VarBit **batch_kmers;
+        int batch_count;
+        int batch_size = kmersearch_highfreq_kmer_cache_load_batch_size;
+        
+        /* Ensure we don't exceed the total count */
+        if (offset + batch_size > highfreq_count) {
+            batch_size = highfreq_count - offset;
+        }
+        
+        ereport(DEBUG1, (errmsg("kmersearch_highfreq_kmer_cache_load_internal: Processing batch %d (offset=%d, batch_size=%d)", 
+                               batch_num, offset, batch_size)));
+        
+        /* Get batch of k-mers from table using LIMIT/OFFSET */
+        {
+            StringInfoData query;
+            char *escaped_column_name;
+            char *cp;
+            const char *sp;
+            int ret;
+            
+            /* Switch to parent context for SPI operations */
+            MemoryContextSwitchTo(old_context);
+            
+            /* Connect to SPI */
+            if (SPI_connect() != SPI_OK_CONNECT) {
+                ereport(ERROR, (errmsg("kmersearch_highfreq_kmer_cache_load_internal: SPI_connect failed for batch %d", batch_num)));
+            }
+            
+            /* Escape column name to prevent SQL injection */
+            escaped_column_name = SPI_palloc(strlen(column_name) * 2 + 1);
+            cp = escaped_column_name;
+            sp = column_name;
+            
+            while (*sp) {
+                if (*sp == '\'') {
+                    *cp++ = '\'';
+                    *cp++ = '\'';
+                } else {
+                    *cp++ = *sp;
+                }
+                sp++;
+            }
+            *cp = '\0';
+            
+            /* Build query with LIMIT/OFFSET for batch processing */
+            initStringInfo(&query);
+            appendStringInfo(&query,
+                "SELECT DISTINCT hkm.ngram_key FROM kmersearch_highfreq_kmer hkm "
+                "WHERE hkm.table_oid = %u "
+                "AND hkm.column_name = '%s' "
+                "AND EXISTS ("
+                "    SELECT 1 FROM kmersearch_highfreq_kmer_meta hkm_meta "
+                "    WHERE hkm_meta.table_oid = %u "
+                "    AND hkm_meta.column_name = '%s' "
+                "    AND hkm_meta.kmer_size = %d"
+                ") "
+                "ORDER BY hkm.ngram_key "
+                "LIMIT %d OFFSET %d",
+                table_oid, escaped_column_name, table_oid, escaped_column_name, k_value, batch_size, offset);
+            
+            /* Execute batch query */
+            ret = SPI_execute(query.data, true, 0);
+            
+            if (ret == SPI_OK_SELECT && SPI_processed > 0) {
+                batch_count = SPI_processed;
+                batch_kmers = (VarBit **) palloc(batch_count * sizeof(VarBit *));
+                
+                for (i = 0; i < batch_count; i++) {
+                    bool isnull;
+                    Datum kmer_datum;
+                    
+                    kmer_datum = SPI_getbinval(SPI_tuptable->vals[i], SPI_tuptable->tupdesc, 1, &isnull);
+                    if (!isnull) {
+                        batch_kmers[i] = DatumGetVarBitPCopy(kmer_datum);
+                    } else {
+                        batch_kmers[i] = NULL;
+                    }
+                }
+            } else {
+                batch_count = 0;
+                batch_kmers = NULL;
+            }
+            
+            /* Cleanup */
+            pfree(query.data);
+            pfree(escaped_column_name);
+            SPI_finish();
+            
+            /* Switch back to cache context */
+            MemoryContextSwitchTo(global_highfreq_cache.cache_context);
+        }
+        
+        if (!batch_kmers || batch_count <= 0) {
+            ereport(DEBUG1, (errmsg("kmersearch_highfreq_kmer_cache_load_internal: No more k-mers in batch %d", batch_num)));
+            break;
+        }
+        
+        ereport(DEBUG1, (errmsg("kmersearch_highfreq_kmer_cache_load_internal: Inserting %d k-mers from batch %d into hash table", 
+                               batch_count, batch_num)));
+        
+        /* Insert batch k-mers into hash table */
+        for (i = 0; i < batch_count; i++) {
+            uint64 kmer_hash;
+            HighfreqKmerHashEntry *entry;
+            bool found;
+            
+            /* Check for null pointer */
+            if (!batch_kmers[i]) {
+                ereport(DEBUG1, (errmsg("kmersearch_highfreq_kmer_cache_load_internal: Found null k-mer at batch %d index %d, skipping", batch_num, i)));
+                continue;
+            }
+            
+            /* Validate VarBit structure */
+            if (VARSIZE(batch_kmers[i]) <= VARHDRSZ) {
+                ereport(DEBUG1, (errmsg("kmersearch_highfreq_kmer_cache_load_internal: Invalid VarBit size at batch %d index %d, skipping", batch_num, i)));
+                continue;
+            }
+            
+            /* Calculate k-mer hash */
+            kmer_hash = kmersearch_ngram_key_to_hash(batch_kmers[i]);
+            
+            ereport(DEBUG1, (errmsg("kmersearch_highfreq_kmer_cache_load_internal: Inserting k-mer %d/%d from batch %d with hash %lu", 
+                                   i + 1, batch_count, batch_num, kmer_hash)));
+            
+            /* Insert into hash table */
+            entry = (HighfreqKmerHashEntry *) hash_search(global_highfreq_cache.highfreq_hash,
+                                                         (void *) &kmer_hash,
+                                                         HASH_ENTER,
+                                                         &found);
+            
+            if (entry && !found) {
+                entry->kmer_key = DatumGetVarBitPCopy(PointerGetDatum(batch_kmers[i]));
+                entry->hash_value = kmer_hash;
+                total_inserted++;
+                ereport(DEBUG1, (errmsg("kmersearch_highfreq_kmer_cache_load_internal: Successfully inserted k-mer %d (total: %d)", 
+                                       i + 1, total_inserted)));
+            } else if (found) {
+                ereport(DEBUG1, (errmsg("kmersearch_highfreq_kmer_cache_load_internal: K-mer %d already exists in hash table", i + 1)));
+            } else {
+                ereport(DEBUG1, (errmsg("kmersearch_highfreq_kmer_cache_load_internal: Failed to insert k-mer %d", i + 1)));
+            }
+        }
+        
+        /* Clean up batch memory in parent context */
+        MemoryContextSwitchTo(old_context);
+        if (batch_kmers) {
+            for (i = 0; i < batch_count; i++) {
+                if (batch_kmers[i])
+                    pfree(batch_kmers[i]);
+            }
+            pfree(batch_kmers);
+        }
+        MemoryContextSwitchTo(global_highfreq_cache.cache_context);
+        
+        ereport(DEBUG1, (errmsg("kmersearch_highfreq_kmer_cache_load_internal: Completed batch %d, total inserted so far: %d", 
+                               batch_num, total_inserted)));
+        
+        /* Move to next batch */
+        offset += batch_count;
+        batch_num++;
+        
+        /* Break if we got fewer results than requested (end of data) */
+        if (batch_count < batch_size) {
+            ereport(DEBUG1, (errmsg("kmersearch_highfreq_kmer_cache_load_internal: Reached end of data (batch_count=%d < batch_size=%d)", 
+                                   batch_count, batch_size)));
+            break;
         }
     }
     
-    global_highfreq_cache.highfreq_kmers = cache_kmers;
-    global_highfreq_cache.highfreq_count = highfreq_count;
+    ereport(DEBUG1, (errmsg("kmersearch_highfreq_kmer_cache_load_internal: Completed all batches, total inserted: %d/%d", 
+                           total_inserted, highfreq_count)));
     
-    ereport(DEBUG1, (errmsg("kmersearch_highfreq_kmer_cache_load_internal: Copied %d k-mers to cache context, creating hash table", 
-                           highfreq_count)));
+    /* Set cache metadata */
+    global_highfreq_cache.highfreq_kmers = NULL;  /* We don't store the array anymore */
+    global_highfreq_cache.highfreq_count = total_inserted;
     
-    /* Create hash table in cache context */
-    global_highfreq_cache.highfreq_hash = kmersearch_create_highfreq_hash_from_array(cache_kmers, highfreq_count);
-    
-    ereport(DEBUG1, (errmsg("kmersearch_highfreq_kmer_cache_load_internal: Hash table creation %s", 
+    ereport(DEBUG1, (errmsg("kmersearch_highfreq_kmer_cache_load_internal: Hash table population %s", 
                            global_highfreq_cache.highfreq_hash ? "successful" : "failed")));
     
     
@@ -2417,8 +2661,6 @@ kmersearch_parallel_highfreq_kmer_cache_load_internal(Oid table_oid, const char 
 {
     dshash_parameters params;
     Size segment_size;
-    VarBit **highfreq_kmers;
-    int highfreq_count;
     ParallelHighfreqKmerCacheEntry *entry;
     bool found;
     int i;
@@ -2429,6 +2671,11 @@ kmersearch_parallel_highfreq_kmer_cache_load_internal(Oid table_oid, const char 
     char *dsa_start;
     Size dsa_size;
     MemoryContext oldcontext;
+    int total_kmer_count = 0;
+    int total_inserted = 0;
+    int batch_num = 0;
+    int offset = 0;
+    VarBit **count_kmers;
     
     if (!column_name || k_value <= 0)
         return false;
@@ -2457,24 +2704,83 @@ kmersearch_parallel_highfreq_kmer_cache_load_internal(Oid table_oid, const char 
         }
     }
     
-    /* Get high-frequency k-mers list using batch processing */
-    ereport(LOG, (errmsg("dshash_cache_load: Starting cache load for table %u, column %s, k=%d with batch_size=%d", 
-                        table_oid, column_name, k_value, kmersearch_highfreq_kmer_cache_load_batch_size)));
+    /* Count total k-mers first for DSM segment size calculation */
+    {
+        StringInfoData count_query;
+        char *escaped_column_name;
+        char *cp;
+        const char *sp;
+        int ret;
+        
+        /* Connect to SPI for counting */
+        if (SPI_connect() != SPI_OK_CONNECT) {
+            ereport(ERROR, (errmsg("kmersearch_parallel_highfreq_kmer_cache_load_internal: SPI_connect failed for counting")));
+        }
+        
+        /* Escape column name to prevent SQL injection */
+        escaped_column_name = SPI_palloc(strlen(column_name) * 2 + 1);
+        cp = escaped_column_name;
+        sp = column_name;
+        
+        while (*sp) {
+            if (*sp == '\'') {
+                *cp++ = '\'';
+                *cp++ = '\'';
+            } else {
+                *cp++ = *sp;
+            }
+            sp++;
+        }
+        *cp = '\0';
+        
+        /* Build count query */
+        initStringInfo(&count_query);
+        appendStringInfo(&count_query,
+            "SELECT COUNT(DISTINCT hkm.ngram_key) FROM kmersearch_highfreq_kmer hkm "
+            "WHERE hkm.table_oid = %u "
+            "AND hkm.column_name = '%s' "
+            "AND EXISTS ("
+            "    SELECT 1 FROM kmersearch_highfreq_kmer_meta hkm_meta "
+            "    WHERE hkm_meta.table_oid = %u "
+            "    AND hkm_meta.column_name = '%s' "
+            "    AND hkm_meta.kmer_size = %d"
+            ")",
+            table_oid, escaped_column_name, table_oid, escaped_column_name, k_value);
+        
+        /* Execute count query */
+        ret = SPI_execute(count_query.data, true, 0);
+        
+        if (ret == SPI_OK_SELECT && SPI_processed > 0) {
+            bool isnull;
+            Datum count_datum = SPI_getbinval(SPI_tuptable->vals[0], SPI_tuptable->tupdesc, 1, &isnull);
+            if (!isnull) {
+                total_kmer_count = DatumGetInt64(count_datum);
+            } else {
+                total_kmer_count = 0;
+            }
+        } else {
+            total_kmer_count = 0;
+        }
+        
+        /* Cleanup */
+        pfree(count_query.data);
+        pfree(escaped_column_name);
+        SPI_finish();
+    }
     
-    highfreq_kmers = kmersearch_get_highfreq_kmer_from_table_batch(table_oid, column_name, k_value, &highfreq_count, kmersearch_highfreq_kmer_cache_load_batch_size);
-    
-    if (!highfreq_kmers || highfreq_count <= 0) {
+    if (total_kmer_count <= 0) {
         /* No high-frequency k-mers found */
         ereport(LOG, (errmsg("dshash_cache_load: No high-frequency k-mers found")));
         return false;
     }
     
-    ereport(LOG, (errmsg("dshash_cache_load: Found %d high-frequency k-mers", highfreq_count)));
+    ereport(LOG, (errmsg("dshash_cache_load: Found %d total high-frequency k-mers, will load in batches of %d", 
+                        total_kmer_count, kmersearch_highfreq_kmer_cache_load_batch_size)));
     
-    /* Calculate required segment size */
+    /* Calculate required segment size using total count */
     
     cache_struct_size = MAXALIGN(sizeof(ParallelHighfreqKmerCache));
-    entries_size = highfreq_count * sizeof(ParallelHighfreqKmerCacheEntry);
+    entries_size = total_kmer_count * sizeof(ParallelHighfreqKmerCacheEntry);
     dsa_min_size = 8192; /* Minimum DSA area size */
     dshash_overhead = MAXALIGN(512); /* Extra space for dshash overhead */
     
@@ -2513,7 +2819,7 @@ kmersearch_parallel_highfreq_kmer_cache_load_internal(Oid table_oid, const char 
     parallel_highfreq_cache->cache_key.max_appearance_rate = kmersearch_max_appearance_rate;
     parallel_highfreq_cache->cache_key.max_appearance_nrow = kmersearch_max_appearance_nrow;
     
-    parallel_highfreq_cache->num_entries = highfreq_count;
+    parallel_highfreq_cache->num_entries = total_kmer_count;
     parallel_highfreq_cache->segment_size = segment_size;
     parallel_highfreq_cache->dsm_handle = dsm_segment_handle(parallel_cache_segment);
     
@@ -2560,7 +2866,7 @@ kmersearch_parallel_highfreq_kmer_cache_load_internal(Oid table_oid, const char 
     params.tranche_id = LWTRANCHE_KMERSEARCH_CACHE;
     
     /* Create dshash table */
-    ereport(LOG, (errmsg("dshash_cache_load: Creating dshash table with %d entries", highfreq_count)));
+    ereport(LOG, (errmsg("dshash_cache_load: Creating dshash table with %d entries", total_kmer_count)));
     
     parallel_cache_hash = dshash_create(parallel_cache_dsa, &params, NULL);
     if (!parallel_cache_hash) {
@@ -2580,75 +2886,190 @@ kmersearch_parallel_highfreq_kmer_cache_load_internal(Oid table_oid, const char 
     parallel_highfreq_cache->hash_handle = dshash_get_hash_table_handle(parallel_cache_hash);
     parallel_highfreq_cache->is_initialized = true;
     
-    /* Populate the hash table with high-frequency k-mers */
-    ereport(LOG, (errmsg("dshash_cache_load: Starting population of %d k-mers", highfreq_count)));
+    /* Populate the hash table with high-frequency k-mers using batch processing */
+    ereport(LOG, (errmsg("dshash_cache_load: Starting batch population of %d k-mers", total_kmer_count)));
     
-    for (i = 0; i < highfreq_count; i++) {
-        uint64 kmer_hash;
+    /* Process k-mers in batches to reduce memory usage */
+    while (offset < total_kmer_count) {
+        VarBit **batch_kmers;
+        int batch_count;
+        int batch_size = kmersearch_highfreq_kmer_cache_load_batch_size;
         
-        ereport(LOG, (errmsg("dshash_cache_load: Processing k-mer %d of %d", i + 1, highfreq_count)));
-        
-        /* Check for null pointer */
-        if (!highfreq_kmers[i]) {
-            ereport(WARNING,
-                    (errmsg("Found null k-mer at index %d, skipping", i)));
-            continue;
+        /* Ensure we don't exceed the total count */
+        if (offset + batch_size > total_kmer_count) {
+            batch_size = total_kmer_count - offset;
         }
         
-        /* Validate VarBit structure */
-        if (VARSIZE(highfreq_kmers[i]) <= VARHDRSZ) {
-            ereport(WARNING,
-                    (errmsg("Invalid VarBit size at index %d, skipping", i)));
-            continue;
-        }
+        ereport(LOG, (errmsg("dshash_cache_load: Processing batch %d (offset=%d, batch_size=%d)", 
+                             batch_num, offset, batch_size)));
         
-        /* Calculate actual k-mer hash using same logic as global cache */
-        kmer_hash = kmersearch_ngram_key_to_hash(highfreq_kmers[i]);
-        
-        ereport(LOG, (errmsg("dshash_cache_load: Inserting k-mer with hash %lu", kmer_hash)));
-        
-        /* Insert into dshash table with error handling */
-        PG_TRY();
+        /* Get batch of k-mers from table using LIMIT/OFFSET */
         {
-            entry = (ParallelHighfreqKmerCacheEntry *) dshash_find_or_insert(parallel_cache_hash, 
-                                                                            &kmer_hash, 
-                                                                            &found);
-            if (entry) {
-                ereport(LOG, (errmsg("dshash_cache_load: Got entry pointer, setting values")));
-                entry->kmer_hash = kmer_hash;
-                entry->frequency_count = 1; /* Mark as high-frequency */
-                entry->cache_key.table_oid = table_oid;
-                entry->cache_key.kmer_size = k_value;
-                /* Must release lock after dshash_find_or_insert() */
-                dshash_release_lock(parallel_cache_hash, entry);
-                ereport(LOG, (errmsg("dshash_cache_load: Successfully inserted k-mer %d", i + 1)));
-            } else {
-                ereport(WARNING, (errmsg("dshash_cache_load: Got null entry pointer for k-mer %d", i + 1)));
+            StringInfoData query;
+            char *escaped_column_name;
+            char *cp;
+            const char *sp;
+            int ret;
+            
+            /* Connect to SPI */
+            if (SPI_connect() != SPI_OK_CONNECT) {
+                ereport(ERROR, (errmsg("dshash_cache_load: SPI_connect failed for batch %d", batch_num)));
             }
+            
+            /* Escape column name to prevent SQL injection */
+            escaped_column_name = SPI_palloc(strlen(column_name) * 2 + 1);
+            cp = escaped_column_name;
+            sp = column_name;
+            
+            while (*sp) {
+                if (*sp == '\'') {
+                    *cp++ = '\'';
+                    *cp++ = '\'';
+                } else {
+                    *cp++ = *sp;
+                }
+                sp++;
+            }
+            *cp = '\0';
+            
+            /* Build query with LIMIT/OFFSET for batch processing */
+            initStringInfo(&query);
+            appendStringInfo(&query,
+                "SELECT DISTINCT hkm.ngram_key FROM kmersearch_highfreq_kmer hkm "
+                "WHERE hkm.table_oid = %u "
+                "AND hkm.column_name = '%s' "
+                "AND EXISTS ("
+                "    SELECT 1 FROM kmersearch_highfreq_kmer_meta hkm_meta "
+                "    WHERE hkm_meta.table_oid = %u "
+                "    AND hkm_meta.column_name = '%s' "
+                "    AND hkm_meta.kmer_size = %d"
+                ") "
+                "ORDER BY hkm.ngram_key "
+                "LIMIT %d OFFSET %d",
+                table_oid, escaped_column_name, table_oid, escaped_column_name, k_value, batch_size, offset);
+            
+            /* Execute batch query */
+            ret = SPI_execute(query.data, true, 0);
+            
+            if (ret == SPI_OK_SELECT && SPI_processed > 0) {
+                batch_count = SPI_processed;
+                batch_kmers = (VarBit **) palloc(batch_count * sizeof(VarBit *));
+                
+                for (i = 0; i < batch_count; i++) {
+                    bool isnull;
+                    Datum kmer_datum;
+                    
+                    kmer_datum = SPI_getbinval(SPI_tuptable->vals[i], SPI_tuptable->tupdesc, 1, &isnull);
+                    if (!isnull) {
+                        batch_kmers[i] = DatumGetVarBitPCopy(kmer_datum);
+                    } else {
+                        batch_kmers[i] = NULL;
+                    }
+                }
+            } else {
+                batch_count = 0;
+                batch_kmers = NULL;
+            }
+            
+            /* Cleanup */
+            pfree(query.data);
+            pfree(escaped_column_name);
+            SPI_finish();
         }
-        PG_CATCH();
-        {
-            /* Ensure lock is released even in error cases */
-            if (entry)
-                dshash_release_lock(parallel_cache_hash, entry);
-            ereport(ERROR,
-                    (errcode(ERRCODE_INTERNAL_ERROR),
-                     errmsg("Failed to insert k-mer into dshash table at index %d", i)));
+        
+        if (!batch_kmers || batch_count <= 0) {
+            ereport(LOG, (errmsg("dshash_cache_load: No more k-mers in batch %d", batch_num)));
+            break;
         }
-        PG_END_TRY();
+        
+        ereport(LOG, (errmsg("dshash_cache_load: Inserting %d k-mers from batch %d into dshash", 
+                             batch_count, batch_num)));
+        
+        /* Insert batch k-mers into dshash */
+        for (i = 0; i < batch_count; i++) {
+            uint64 kmer_hash;
+            
+            /* Check for null pointer */
+            if (!batch_kmers[i]) {
+                ereport(DEBUG1, (errmsg("dshash_cache_load: Found null k-mer at batch %d index %d, skipping", batch_num, i)));
+                continue;
+            }
+            
+            /* Validate VarBit structure */
+            if (VARSIZE(batch_kmers[i]) <= VARHDRSZ) {
+                ereport(DEBUG1, (errmsg("dshash_cache_load: Invalid VarBit size at batch %d index %d, skipping", batch_num, i)));
+                continue;
+            }
+            
+            /* Calculate actual k-mer hash using same logic as global cache */
+            kmer_hash = kmersearch_ngram_key_to_hash(batch_kmers[i]);
+            
+            ereport(DEBUG1, (errmsg("dshash_cache_load: Inserting k-mer %d/%d from batch %d with hash %lu", 
+                                   i + 1, batch_count, batch_num, kmer_hash)));
+            
+            /* Insert into dshash table with error handling */
+            PG_TRY();
+            {
+                entry = (ParallelHighfreqKmerCacheEntry *) dshash_find_or_insert(parallel_cache_hash, 
+                                                                                &kmer_hash, 
+                                                                                &found);
+                if (entry) {
+                    entry->kmer_hash = kmer_hash;
+                    entry->frequency_count = 1; /* Mark as high-frequency */
+                    entry->cache_key.table_oid = table_oid;
+                    entry->cache_key.kmer_size = k_value;
+                    /* Must release lock after dshash_find_or_insert() */
+                    dshash_release_lock(parallel_cache_hash, entry);
+                    total_inserted++;
+                    ereport(DEBUG1, (errmsg("dshash_cache_load: Successfully inserted k-mer %d (total: %d)", 
+                                           i + 1, total_inserted)));
+                } else {
+                    ereport(DEBUG1, (errmsg("dshash_cache_load: Got null entry pointer for k-mer %d in batch %d", 
+                                           i + 1, batch_num)));
+                }
+            }
+            PG_CATCH();
+            {
+                /* Ensure lock is released even in error cases */
+                if (entry)
+                    dshash_release_lock(parallel_cache_hash, entry);
+                ereport(ERROR,
+                        (errcode(ERRCODE_INTERNAL_ERROR),
+                         errmsg("Failed to insert k-mer into dshash table at batch %d index %d", batch_num, i)));
+            }
+            PG_END_TRY();
+        }
+        
+        /* Clean up batch memory */
+        if (batch_kmers) {
+            for (i = 0; i < batch_count; i++) {
+                if (batch_kmers[i])
+                    pfree(batch_kmers[i]);
+            }
+            pfree(batch_kmers);
+        }
+        
+        ereport(LOG, (errmsg("dshash_cache_load: Completed batch %d, total inserted so far: %d", 
+                             batch_num, total_inserted)));
+        
+        /* Move to next batch */
+        offset += batch_count;
+        batch_num++;
+        
+        /* Break if we got fewer results than requested (end of data) */
+        if (batch_count < batch_size) {
+            ereport(LOG, (errmsg("dshash_cache_load: Reached end of data (batch_count=%d < batch_size=%d)", 
+                                 batch_count, batch_size)));
+            break;
+        }
     }
     
-    ereport(LOG, (errmsg("dshash_cache_load: Completed population of all k-mers")));
+    ereport(LOG, (errmsg("dshash_cache_load: Completed all batches, total inserted: %d/%d", 
+                         total_inserted, total_kmer_count)));
     
     parallel_highfreq_cache->is_initialized = true;
     
-    ereport(LOG, (errmsg("dshash_cache_load: Starting cleanup of temporary k-mer array")));
-    
-    /* Clean up temporary k-mer array - simplified approach */
-    if (highfreq_kmers) {
-        ereport(LOG, (errmsg("dshash_cache_load: Skipping individual k-mer cleanup to avoid segfault")));
-        /* Skip individual k-mer cleanup for now to avoid segfault - memory will be freed when context is destroyed */
-    }
+    ereport(LOG, (errmsg("dshash_cache_load: Batch processing completed, no additional cleanup needed")));
     
     /* Switch back to original context */
     MemoryContextSwitchTo(oldcontext);
