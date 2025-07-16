@@ -143,7 +143,9 @@ kmersearch_extract_query(PG_FUNCTION_ARGS)
     text *query_text = DatumGetTextP(query);
     char *query_string = text_to_cstring(query_text);
     int query_len = strlen(query_string);
+    VarBit **varbit_keys;
     Datum *keys;
+    int i;
     
     if (query_len < k)
         ereport(ERROR, (errmsg("Query sequence must be at least %d bases long", k)));
@@ -151,7 +153,18 @@ kmersearch_extract_query(PG_FUNCTION_ARGS)
     if (k < 4 || k > 64)
         ereport(ERROR, (errmsg("k-mer length must be between 4 and 64")));
     
-    keys = kmersearch_extract_kmers(query_string, query_len, k, nkeys);
+    /* Use kmersearch_extract_query_ngram_key2() and convert to Datum array */
+    varbit_keys = kmersearch_extract_query_ngram_key2(query_string, k, nkeys);
+    
+    if (varbit_keys == NULL || *nkeys == 0) {
+        keys = NULL;
+    } else {
+        keys = (Datum *) palloc(*nkeys * sizeof(Datum));
+        for (i = 0; i < *nkeys; i++) {
+            keys[i] = PointerGetDatum(varbit_keys[i]);
+        }
+        pfree(varbit_keys);
+    }
     
     *pmatch = NULL;
     *extra_data = NULL;

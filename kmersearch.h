@@ -559,8 +559,6 @@ KmerData kmersearch_encode_kmer_data(VarBit *kmer, int k_size);
 
 /* Functions for easy migration between files */
 Datum *kmersearch_extract_kmer_with_degenerate(const char *sequence, int seq_len, int k, int *nkeys);
-/* kmersearch_extract_kmers now in kmersearch_kmer.c */
-Datum *kmersearch_extract_kmers(const char *sequence, int seq_len, int k, int *nkeys);
 
 /* Parallel analysis functions (implemented in kmersearch.c) */
 void kmersearch_worker_analyze_blocks(KmerWorkerState *worker, Relation rel, const char *column_name, int k_size);
