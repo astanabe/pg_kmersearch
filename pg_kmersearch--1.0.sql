@@ -284,7 +284,7 @@ CREATE OPERATOR CLASS kmersearch_dna4_gin_ops
 
 -- BTree operator classes for DNA2 and DNA4
 CREATE OPERATOR CLASS kmersearch_dna2_btree_ops
-    FOR TYPE DNA2 USING btree AS
+    DEFAULT FOR TYPE DNA2 USING btree AS
         OPERATOR 1 <,
         OPERATOR 2 <=,
         OPERATOR 3 =,
@@ -293,7 +293,7 @@ CREATE OPERATOR CLASS kmersearch_dna2_btree_ops
         FUNCTION 1 kmersearch_dna2_cmp(DNA2, DNA2);
 
 CREATE OPERATOR CLASS kmersearch_dna4_btree_ops
-    FOR TYPE DNA4 USING btree AS
+    DEFAULT FOR TYPE DNA4 USING btree AS
         OPERATOR 1 <,
         OPERATOR 2 <=,
         OPERATOR 3 =,
