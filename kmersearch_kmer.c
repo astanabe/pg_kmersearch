@@ -517,54 +517,43 @@ kmersearch_expand_degenerate_sequence(const char *seq, int len, char **results, 
 
 /*
  * Get k-mer hash value for occurrence tracking
- * Uses direct bit extraction for k <= 32, PostgreSQL hash for k > 32
+ * Uses direct bit extraction for k <= 32 only
  */
 uint64_t
 kmersearch_get_kmer_hash(VarBit *seq, int start_pos, int k)
 {
     bits8 *src_data = VARBITS(seq);
     int src_bytes = VARBITBYTES(seq);
+    uint64_t kmer_value = 0;
+    int j;
     
-    /* For k <= 32, use direct bit extraction for performance and deterministic values */
-    if (k <= 32) {
-        uint64_t kmer_value = 0;
-        int j;
-        
-        for (j = 0; j < k; j++)
-        {
-            int bit_pos = (start_pos + j) * 2;
-            int byte_pos = bit_pos / 8;
-            int bit_offset = bit_pos % 8;
-            uint8 base_bits;
-            
-            /* Boundary check to prevent buffer overflow */
-            if (byte_pos >= src_bytes) {
-                return 0;  /* Invalid k-mer */
-            }
-            
-            base_bits = (src_data[byte_pos] >> (6 - bit_offset)) & 0x3;
-            kmer_value = (kmer_value << 2) | base_bits;
-        }
-        
-        return kmer_value;
+    /* Validate k-mer size limit */
+    if (k > 32) {
+        ereport(ERROR,
+                (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+                 errmsg("k-mer length must be between 4 and 32"),
+                 errdetail("Provided k-mer length: %d", k)));
     }
     
-    /* For k > 32, use PostgreSQL's hash function */
-    else {
-        int kmer_bits = k * 2;
-        int start_bit = start_pos * 2;
-        int start_byte = start_bit / 8;
-        int start_bit_offset = start_bit % 8;
-        int kmer_bytes = (kmer_bits + start_bit_offset + 7) / 8;
+    /* Use direct bit extraction for k <= 32 */
+    
+    for (j = 0; j < k; j++)
+    {
+        int bit_pos = (start_pos + j) * 2;
+        int byte_pos = bit_pos / 8;
+        int bit_offset = bit_pos % 8;
+        uint8 base_bits;
         
         /* Boundary check to prevent buffer overflow */
-        if (start_byte + kmer_bytes > src_bytes) {
+        if (byte_pos >= src_bytes) {
             return 0;  /* Invalid k-mer */
         }
         
-        /* Hash the k-mer data starting from the appropriate byte position */
-        return hash_any_extended(src_data + start_byte, kmer_bytes, start_bit_offset);
+        base_bits = (src_data[byte_pos] >> (6 - bit_offset)) & 0x3;
+        kmer_value = (kmer_value << 2) | base_bits;
     }
+    
+    return kmer_value;
 }
 
 /*
@@ -994,22 +983,11 @@ kmersearch_encode_kmer2_only_data(VarBit *kmer, int k_size)
             result.k32_data |= ((uint64)nucleotide << (2 * (k_size - 1 - i)));
         }
     } else {
-        /* For k > 32, split across high and low 64-bit values */
-        result.k64_data.high = 0;
-        result.k64_data.low = 0;
-        for (i = 0; i < k_size; i++) {
-            int byte_pos, bit_in_byte, nucleotide;
-            bit_offset = i * 2;
-            byte_pos = bit_offset / 8;
-            bit_in_byte = bit_offset % 8;
-            nucleotide = (bits[byte_pos] >> (6 - bit_in_byte)) & 0x3;
-            
-            if (i < 32) {
-                result.k64_data.high |= ((uint64)nucleotide << (2 * (31 - i)));
-            } else {
-                result.k64_data.low |= ((uint64)nucleotide << (2 * (k_size - 1 - i)));
-            }
-        }
+        /* k > 32 not supported */
+        ereport(ERROR,
+                (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+                 errmsg("k-mer length must be between 4 and 32"),
+                 errdetail("Provided k-mer length: %d", k_size)));
     }
     
     return result;
@@ -1057,21 +1035,11 @@ kmersearch_encode_kmer_data(VarBit *kmer, int k_size)
             result.k32_data |= ((uint64)nucleotide << (2 * (k_size - 1 - i)));
         }
     } else {
-        /* For k > 32, split across high and low 64-bit values */
-        result.k64_data.high = 0;
-        result.k64_data.low = 0;
-        for (i = 0; i < k_size; i++) {
-            bit_offset = i * 2;
-            byte_pos = bit_offset / 8;
-            bit_in_byte = bit_offset % 8;
-            nucleotide = (bits[byte_pos] >> (6 - bit_in_byte)) & 0x3;
-            
-            if (i < 32) {
-                result.k64_data.high |= ((uint64)nucleotide << (2 * (31 - i)));
-            } else {
-                result.k64_data.low |= ((uint64)nucleotide << (2 * (k_size - 1 - i)));
-            }
-        }
+        /* k > 32 not supported */
+        ereport(ERROR,
+                (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+                 errmsg("k-mer length must be between 4 and 32"),
+                 errdetail("Provided k-mer length: %d", k_size)));
     }
     
     return result;

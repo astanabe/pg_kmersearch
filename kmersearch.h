@@ -272,10 +272,6 @@ typedef union KmerData
     uint16      k8_data;                 /* k <= 8: 16 bits */
     uint32      k16_data;                /* k <= 16: 32 bits */  
     uint64      k32_data;                /* k <= 32: 64 bits */
-    struct {
-        uint64  high;
-        uint64  low;
-    }           k64_data;                /* k <= 64: 128 bits */
 } KmerData;
 
 /*

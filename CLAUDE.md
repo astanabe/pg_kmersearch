@@ -101,7 +101,7 @@ pg_kmersearch is a PostgreSQL extension that provides custom data types for effi
 - **Storage efficiency**: 4 bits per character
 
 ### K-mer Search Features
-- **K-mer length**: 4-64 bases (specified at index creation)
+- **K-mer length**: 4-32 bases (specified at index creation)
 - **GIN indexing**: Fast search using n-gram keys
 - **Degenerate code support**: MRWSYKVHDBN expansion for DNA4 type
 - **Occurrence tracking**: Counts k-mer occurrences within rows (default 8-bit)
@@ -114,7 +114,7 @@ pg_kmersearch is a PostgreSQL extension that provides custom data types for effi
 ## Configuration System
 
 Important GUC variables:
-- `kmersearch.kmer_size` (4-64): K-mer length for indexing (default: 16)
+- `kmersearch.kmer_size` (4-32): K-mer length for indexing (default: 16)
 - `kmersearch.occur_bitlen` (0-16): Bits for occurrence count storage (default: 8)
 - `kmersearch.max_appearance_rate` (0.0-1.0): Max k-mer appearance threshold (default: 0.5)
 - `kmersearch.max_appearance_nrow` (0-∞): Maximum rows containing k-mer (default: 0, unlimited)

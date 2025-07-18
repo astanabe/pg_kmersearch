@@ -543,71 +543,10 @@ kmersearch_perform_highfreq_analysis_parallel(Oid table_oid, const char *column_
         
         /* Phase 2: Collect n-gram keys for high-frequency k-mers using parallel processing */
         ereport(NOTICE, (errmsg("Phase 2: Collecting n-gram keys for high-frequency k-mers...")));
-        ereport(DEBUG1, (errmsg("Phase 2 started, about to get GIN index OID")));
+        ereport(DEBUG1, (errmsg("Phase 2 started, collecting n-gram keys for high-frequency k-mers using dshash")));
         
-        /* Get the GIN index OID and insert metadata */
-        {
-            StringInfoData query;
-            Oid index_oid = InvalidOid;
-            int ret;
-            
-            initStringInfo(&query);
-            appendStringInfo(&query,
-                "SELECT i.indexrelid "
-                "FROM pg_index i "
-                "JOIN pg_class c ON c.oid = i.indrelid "
-                "JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum = i.indkey[0] "
-                "WHERE i.indrelid = %u AND a.attname = %s "
-                "LIMIT 1",
-                table_oid, quote_literal_cstr(column_name));
-            
-            ret = SPI_exec(query.data, 1);
-            if (ret == SPI_OK_SELECT && SPI_processed > 0) {
-                bool isnull;
-                index_oid = DatumGetObjectId(SPI_getbinval(SPI_tuptable->vals[0], 
-                                                           SPI_tuptable->tupdesc, 1, &isnull));
-            }
-            pfree(query.data);
-            
-            /* Insert GIN index metadata only if a GIN index exists */
-            if (OidIsValid(index_oid)) {
-                int gin_ret;
-                
-                initStringInfo(&query);
-                appendStringInfo(&query,
-                    "INSERT INTO kmersearch_gin_index_meta "
-                    "(index_oid, table_oid, column_name, highfreq_filtered, highfreq_source_table, "
-                    "kmer_size, occur_bitlen, max_appearance_rate, max_appearance_nrow) "
-                    "VALUES (%u, %u, %s, true, %s, %d, %d, %f, %d) "
-                    "ON CONFLICT (index_oid) DO UPDATE SET "
-                    "highfreq_filtered = EXCLUDED.highfreq_filtered, "
-                    "highfreq_source_table = EXCLUDED.highfreq_source_table, "
-                    "kmer_size = EXCLUDED.kmer_size, "
-                    "occur_bitlen = EXCLUDED.occur_bitlen, "
-                    "max_appearance_rate = EXCLUDED.max_appearance_rate, "
-                    "max_appearance_nrow = EXCLUDED.max_appearance_nrow, "
-                    "created_at = now()",
-                    index_oid, table_oid, quote_literal_cstr(column_name), 
-                    quote_literal_cstr("dshash_analysis"), k_size,
-                    kmersearch_occur_bitlen, kmersearch_max_appearance_rate, kmersearch_max_appearance_nrow);
-                
-                gin_ret = SPI_exec(query.data, 0);
-                if (gin_ret != SPI_OK_INSERT && gin_ret != SPI_OK_UPDATE && gin_ret != SPI_OK_INSERT_RETURNING) {
-                    ereport(ERROR, 
-                            (errcode(ERRCODE_INTERNAL_ERROR),
-                             errmsg("Failed to insert/update GIN index metadata"),
-                             errdetail("SPI_exec returned %d for GIN metadata query", gin_ret),
-                             errhint("Check kmersearch_gin_index_meta table structure and permissions")));
-                } else {
-                    ereport(DEBUG1, (errmsg("Successfully inserted/updated %lu GIN index metadata records", SPI_processed)));
-                }
-                pfree(query.data);
-            }
-            
-            /* Always collect n-gram keys for high-frequency k-mers using dshash lookup */
-            ereport(DEBUG1, (errmsg("kmersearch_analyze_table_parallel: Collecting n-gram keys for high-frequency k-mers using dshash")));
-            kmersearch_collect_ngram_key2_for_highfreq_kmer(table_oid, column_name, k_size, NULL);
-        }
+        /* Collect n-gram keys for high-frequency k-mers using dshash lookup */
+        kmersearch_collect_ngram_key2_for_highfreq_kmer(table_oid, column_name, k_size, NULL);
         
         /* Insert metadata record */
         {

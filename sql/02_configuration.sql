@@ -44,7 +44,7 @@ SHOW kmersearch.query_pattern_cache_max_entries;
 SET kmersearch.kmer_size = 4;  -- minimum
 SHOW kmersearch.kmer_size;
 
-SET kmersearch.kmer_size = 64; -- maximum
+SET kmersearch.kmer_size = 32; -- maximum
 SHOW kmersearch.kmer_size;
 
 SET kmersearch.occur_bitlen = 0;  -- minimum
@@ -74,7 +74,7 @@ SHOW kmersearch.query_pattern_cache_max_entries;
 -- Test invalid values (should error)
 \set ON_ERROR_STOP off
 SET kmersearch.kmer_size = 3;   -- below minimum
-SET kmersearch.kmer_size = 65;  -- above maximum
+SET kmersearch.kmer_size = 33;  -- above maximum
 SET kmersearch.occur_bitlen = 17; -- above maximum
 SET kmersearch.max_appearance_rate = 1.1; -- above maximum
 SET kmersearch.min_shared_ngram_key_rate = -0.1;  -- below minimum

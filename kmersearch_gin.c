@@ -38,8 +38,8 @@ kmersearch_extract_value_dna2(PG_FUNCTION_ARGS)
     Datum *keys;
     int k = kmersearch_kmer_size;  /* k-mer length from GUC variable */
     
-    if (k < 4 || k > 64)
-        ereport(ERROR, (errmsg("k-mer length must be between 4 and 64")));
+    if (k < 4 || k > 32)
+        ereport(ERROR, (errmsg("k-mer length must be between 4 and 32")));
     
     /* Extract ngram_key2 (kmer2 + occurrence bits) directly from DNA2 */
     keys = kmersearch_extract_dna2_ngram_key2_direct((VarBit *)dna, k, nkeys);
@@ -89,8 +89,8 @@ kmersearch_extract_value_dna4(PG_FUNCTION_ARGS)
     Datum *keys;
     int k = kmersearch_kmer_size;  /* k-mer length from GUC variable */
     
-    if (k < 4 || k > 64)
-        ereport(ERROR, (errmsg("k-mer length must be between 4 and 64")));
+    if (k < 4 || k > 32)
+        ereport(ERROR, (errmsg("k-mer length must be between 4 and 32")));
     
     /* Extract ngram_key2 (kmer2 + occurrence bits) from DNA4 with degenerate expansion */
     keys = kmersearch_extract_dna4_ngram_key2_with_expansion_direct((VarBit *)dna, k, nkeys);
@@ -150,8 +150,8 @@ kmersearch_extract_query(PG_FUNCTION_ARGS)
     if (query_len < k)
         ereport(ERROR, (errmsg("Query sequence must be at least %d bases long", k)));
     
-    if (k < 4 || k > 64)
-        ereport(ERROR, (errmsg("k-mer length must be between 4 and 64")));
+    if (k < 4 || k > 32)
+        ereport(ERROR, (errmsg("k-mer length must be between 4 and 32")));
     
     /* Use kmersearch_extract_query_ngram_key2() and convert to Datum array */
     varbit_keys = kmersearch_extract_query_ngram_key2(query_string, k, nkeys);
