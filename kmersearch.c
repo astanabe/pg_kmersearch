@@ -1998,17 +1998,56 @@ kmersearch_flush_hash_buffer_to_table(KmerBuffer *buffer, const char *temp_table
     
     initStringInfo(&query);
     
-    /* Build bulk INSERT statement with hash values as bigint */
+    /* Aggregate duplicates in buffer before inserting */
+    HTAB *aggregation_hash = NULL;
+    HASHCTL hash_ctl;
+    typedef struct {
+        uint64_t kmer_hash;
+        int total_frequency;
+    } AggregationEntry;
+    
+    /* Create hash table for aggregation */
+    memset(&hash_ctl, 0, sizeof(hash_ctl));
+    hash_ctl.keysize = sizeof(uint64_t);
+    hash_ctl.entrysize = sizeof(AggregationEntry);
+    hash_ctl.hcxt = CurrentMemoryContext;
+    
+    aggregation_hash = hash_create("buffer_aggregation", buffer->count, &hash_ctl, 
+                                   HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
+    
+    /* Aggregate frequency counts for duplicate k-mers */
+    for (i = 0; i < buffer->count; i++) {
+        uint64_t kmer_hash = buffer->entries[i].kmer_data.k32_data;
+        bool found;
+        AggregationEntry *entry = (AggregationEntry *) hash_search(aggregation_hash, 
+                                                                   (void *) &kmer_hash, 
+                                                                   HASH_ENTER, &found);
+        if (!found) {
+            entry->kmer_hash = kmer_hash;
+            entry->total_frequency = buffer->entries[i].frequency_count;
+        } else {
+            entry->total_frequency += buffer->entries[i].frequency_count;
+        }
+    }
+    
+    /* Build bulk INSERT statement with aggregated values */
     appendStringInfo(&query, "INSERT INTO %s (kmer_data, frequency_count) VALUES ", temp_table_name);
     
-    for (i = 0; i < buffer->count; i++) {
-        if (i > 0) appendStringInfoString(&query, ", ");
+    /* Iterate through aggregated entries */
+    HASH_SEQ_STATUS status;
+    AggregationEntry *entry;
+    bool first = true;
+    
+    hash_seq_init(&status, aggregation_hash);
+    while ((entry = (AggregationEntry *) hash_seq_search(&status)) != NULL) {
+        if (!first) appendStringInfoString(&query, ", ");
         
-        /* Always store as bigint (uint64_t hash value) */
-        appendStringInfo(&query, "(%lu, %d)", 
-                       buffer->entries[i].kmer_data.k32_data,  /* This contains the hash value */
-                       buffer->entries[i].frequency_count);
+        appendStringInfo(&query, "(%lu, %d)", entry->kmer_hash, entry->total_frequency);
+        first = false;
     }
+    
+    /* Clean up aggregation hash */
+    hash_destroy(aggregation_hash);
     
     appendStringInfo(&query, " ON CONFLICT (kmer_data) DO UPDATE SET frequency_count = %s.frequency_count + EXCLUDED.frequency_count", temp_table_name);
     
@@ -2053,26 +2092,14 @@ kmersearch_add_hash_to_buffer(KmerBuffer *buffer, uint64_t kmer_hash, const char
     CompactKmerFreq *entry;
     int i;
     
-    /* Check if this hash already exists in the buffer */
-    for (i = 0; i < buffer->count; i++) {
-        if (buffer->entries[i].kmer_data.k32_data == kmer_hash) {
-            /* Hash already exists, increment frequency */
-            buffer->entries[i].frequency_count++;
-            return;
-        }
-    }
+    /* No buffer-level deduplication - each row contribution should be counted */
+    /* Row-level deduplication is already handled in the calling function */
     
     /* Check if buffer is full */
     if (buffer->count >= buffer->capacity) {
         kmersearch_flush_hash_buffer_to_table(buffer, temp_table_name);
         
-        /* Check again after flush in case the same hash was flushed */
-        for (i = 0; i < buffer->count; i++) {
-            if (buffer->entries[i].kmer_data.k32_data == kmer_hash) {
-                buffer->entries[i].frequency_count++;
-                return;
-            }
-        }
+        /* After flush, continue to add the new entry */
     }
     
     /* Add new entry using k32_data field to store uint64_t hash */
@@ -2179,21 +2206,50 @@ kmersearch_worker_analyze_blocks(KmerWorkerState *worker, Relation rel,
     worker->temp_table_name = kmersearch_generate_unique_temp_table_name("temp_kmer_worker", worker->worker_id);
     kmersearch_create_worker_temp_table(worker->temp_table_name, k_size);
     
-    /* Scan assigned blocks */
-    scan = heap_beginscan(rel, GetTransactionSnapshot(), 0, NULL, NULL, 0);
+    /* Scan assigned blocks only */
+    BlockNumber current_block;
     
-    while ((tuple = heap_getnext(scan, ForwardScanDirection)) != NULL) {
-        bool isnull;
-        Datum value;
-        VarBit *sequence;
-        VarBit **kmers;
-        int nkeys;
-        int j;
+    for (current_block = worker->start_block; current_block < worker->end_block; current_block++) {
+        Buffer buffer;
+        Page page;
+        OffsetNumber max_offset;
+        OffsetNumber offset;
         
-        worker->rows_processed++;
+        /* Read the block */
+        buffer = ReadBufferExtended(rel, MAIN_FORKNUM, current_block, RBM_NORMAL, NULL);
+        LockBuffer(buffer, BUFFER_LOCK_SHARE);
+        page = BufferGetPage(buffer);
+        max_offset = PageGetMaxOffsetNumber(page);
         
-        /* Extract the DNA sequence value */
-        value = heap_getattr(tuple, target_attno, tupdesc, &isnull);
+        /* Process all tuples in this block */
+        for (offset = FirstOffsetNumber; offset <= max_offset; offset = OffsetNumberNext(offset)) {
+            ItemId item_id;
+            HeapTupleData tuple_data;
+            HeapTuple tuple = &tuple_data;
+            
+            /* Get the tuple */
+            item_id = PageGetItemId(page, offset);
+            if (!ItemIdIsNormal(item_id))
+                continue;
+                
+            tuple->t_len = ItemIdGetLength(item_id);
+            tuple->t_data = (HeapTupleHeader) PageGetItem(page, item_id);
+            tuple->t_tableOid = RelationGetRelid(rel);
+            tuple->t_self.ip_blkid.bi_hi = current_block >> 16;
+            tuple->t_self.ip_blkid.bi_lo = current_block & 0xFFFF;
+            tuple->t_self.ip_posid = offset;
+            
+            bool isnull;
+            Datum value;
+            VarBit *sequence;
+            VarBit **kmers;
+            int nkeys;
+            int j;
+            
+            worker->rows_processed++;
+            
+            /* Extract the DNA sequence value */
+            value = heap_getattr(tuple, target_attno, tupdesc, &isnull);
         if (isnull) {
             continue;  /* Skip NULL values */
         }
@@ -2257,12 +2313,14 @@ kmersearch_worker_analyze_blocks(KmerWorkerState *worker, Relation rel,
         if (kmer_datums) {
             pfree(kmer_datums);
         }
+        }
+        
+        /* Release buffer and lock */
+        UnlockReleaseBuffer(buffer);
     }
     
     /* Flush any remaining buffer contents */
     kmersearch_flush_hash_buffer_to_table(&worker->buffer, worker->temp_table_name);
-    
-    heap_endscan(scan);
     
     /* Cleanup buffer */
     if (worker->buffer.entries) {
@@ -2328,7 +2386,7 @@ kmersearch_merge_worker_results_sql(KmerWorkerState *workers, int num_workers,
                         workers[i].temp_table_name);
     }
     
-    appendStringInfo(&query, ") AS combined GROUP BY kmer_data HAVING sum(frequency_count) >= %d", 
+    appendStringInfo(&query, ") AS combined GROUP BY kmer_data HAVING sum(frequency_count) > %d", 
                     threshold_rows);
     
     /* Execute aggregation query with detailed error handling */

@@ -76,7 +76,7 @@ SELECT '1. High-frequency k-mer analysis execution:' as step;
 SELECT kmersearch_perform_highfreq_analysis('test_dna_highfreq', 'seq');
  kmersearch_perform_highfreq_analysis 
 --------------------------------------
- (14,23,2,0,0.25,3)
+ (14,6,2,0,0.25,3)
 (1 row)
 
 -- 2. Execute kmersearch_highfreq_kmer_cache_load()
@@ -141,7 +141,7 @@ SELECT '5. High-frequency k-mer cache release:' as step;
 SELECT kmersearch_highfreq_kmer_cache_free('test_dna_highfreq', 'seq');
  kmersearch_highfreq_kmer_cache_free 
 -------------------------------------
-                                  36
+                                   6
 (1 row)
 
 -- 6. GIN index-based search after cache release
@@ -179,7 +179,7 @@ FROM kmersearch_highfreq_kmer
 WHERE table_oid = (SELECT oid FROM pg_class WHERE relname = 'test_dna_highfreq');
  highfreq_kmer_count 
 ---------------------
-                  36
+                   6
 (1 row)
 
 -- Multiple queries search result verification

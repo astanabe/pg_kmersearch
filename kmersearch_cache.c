@@ -1506,7 +1506,8 @@ kmersearch_highfreq_kmer_cache_load_internal(Oid table_oid, const char *column_n
                             batch_kmers[i] = DatumGetInt64(kmer_datum);
                         }
                     } else {
-                        batch_kmers[i] = 0;  /* Use 0 as null marker */
+                        /* This should never happen - kmersearch_highfreq_kmer should not contain NULL values */
+                        ereport(ERROR, (errmsg("Unexpected NULL k-mer value in kmersearch_highfreq_kmer table")));
                     }
                 }
             } else {
@@ -1537,11 +1538,7 @@ kmersearch_highfreq_kmer_cache_load_internal(Oid table_oid, const char *column_n
             HighfreqKmerHashEntry *entry;
             bool found;
             
-            /* Check for null/zero value (used as null marker) */
-            if (batch_kmers[i] == 0) {
-                ereport(DEBUG1, (errmsg("kmersearch_highfreq_kmer_cache_load_internal: Found null k-mer at batch %d index %d, skipping", batch_num, i)));
-                continue;
-            }
+            /* All k-mer values are valid, including 0 (which represents "AAAA") */
             
             /* Use kmer2_as_uint value directly */
             kmer2_as_uint = batch_kmers[i];
@@ -2556,7 +2553,7 @@ kmersearch_parallel_highfreq_kmer_cache_load_internal(Oid table_oid, const char 
     parallel_highfreq_cache->cache_key.max_appearance_rate = kmersearch_max_appearance_rate;
     parallel_highfreq_cache->cache_key.max_appearance_nrow = kmersearch_max_appearance_nrow;
     
-    parallel_highfreq_cache->num_entries = total_kmer_count;
+    /* num_entries will be set after batch processing */
     parallel_highfreq_cache->segment_size = segment_size;
     parallel_highfreq_cache->dsm_handle = dsm_segment_handle(parallel_cache_segment);
     
@@ -2707,7 +2704,8 @@ kmersearch_parallel_highfreq_kmer_cache_load_internal(Oid table_oid, const char 
                             batch_kmers[i] = DatumGetInt64(kmer_datum);
                         }
                     } else {
-                        batch_kmers[i] = 0;  /* Use 0 as null marker */
+                        /* This should never happen - kmersearch_highfreq_kmer should not contain NULL values */
+                        ereport(ERROR, (errmsg("Unexpected NULL k-mer value in kmersearch_highfreq_kmer table")));
                     }
                 }
             } else {
@@ -2733,17 +2731,9 @@ kmersearch_parallel_highfreq_kmer_cache_load_internal(Oid table_oid, const char 
         for (i = 0; i < batch_count; i++) {
             uint64 kmer_hash;
             
-            /* Check for null pointer */
-            if (!batch_kmers[i]) {
-                ereport(DEBUG1, (errmsg("dshash_cache_load: Found null k-mer at batch %d index %d, skipping", batch_num, i)));
-                continue;
-            }
+            /* All k-mer values from the database are valid */
             
-            /* Validate kmer2_as_uint value */
-            if (batch_kmers[i] == 0) {
-                ereport(DEBUG1, (errmsg("dshash_cache_load: Invalid kmer2_as_uint value at batch %d index %d, skipping", batch_num, i)));
-                continue;
-            }
+            /* All k-mer values are valid, including 0 (which represents "AAAA") */
             
             /* Use kmer2_as_uint value directly as hash */
             kmer_hash = batch_kmers[i];
@@ -2808,6 +2798,8 @@ kmersearch_parallel_highfreq_kmer_cache_load_internal(Oid table_oid, const char 
     ereport(LOG, (errmsg("dshash_cache_load: Completed all batches, total inserted: %d/%d", 
                          total_inserted, total_kmer_count)));
     
+    /* Set the actual number of entries that were successfully inserted */
+    parallel_highfreq_cache->num_entries = total_inserted;
     parallel_highfreq_cache->is_initialized = true;
     
     ereport(LOG, (errmsg("dshash_cache_load: Batch processing completed, no additional cleanup needed")));

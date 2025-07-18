@@ -113,7 +113,7 @@ FROM kmersearch_undo_highfreq_analysis(
 );
  dropped_analyses | dropped_highfreq_kmers | storage_freed 
 ------------------+------------------------+---------------
-                1 |                     22 | t
+                1 |                     21 | t
 (1 row)
 
 -- Verify analysis was dropped

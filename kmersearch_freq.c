@@ -1185,7 +1185,7 @@ kmersearch_populate_analysis_dshash_from_workers(KmerWorkerState *workers, int n
         first_table = false;
     }
     
-    appendStringInfo(&query, ") AS combined GROUP BY kmer_data HAVING sum(frequency_count) >= %d", 
+    appendStringInfo(&query, ") AS combined GROUP BY kmer_data HAVING sum(frequency_count) > %d", 
                     threshold_rows);
     
     /* Execute SQL aggregation query */
