@@ -559,16 +559,7 @@ VarBit **kmersearch_extract_kmer_from_query(const char *query, int k, int *nkeys
 VarBit **kmersearch_extract_query_ngram_key2(const char *query, int k, int *nkeys);
 uint8 kmersearch_get_bit_at(bits8 *data, int bit_pos);
 bool kmersearch_will_exceed_degenerate_limit(const char *seq, int len);
-VarBit **kmersearch_extract_query_kmer_with_degenerate(const char *query, int k, int *nkeys);
-char *kmersearch_varbit_to_hex_string(VarBit *varbit);
-Datum *kmersearch_extract_dna2_kmer2_only(VarBit *seq, int k, int *nkeys);
-KmerData kmersearch_encode_kmer2_only_data(VarBit *kmer, int k_size);
-KmerData kmersearch_encode_kmer_data(VarBit *kmer, int k_size);
 
-/* Functions for easy migration between files */
-Datum *kmersearch_extract_kmer_with_degenerate(const char *sequence, int seq_len, int k, int *nkeys);
-/* kmersearch_extract_kmers now in kmersearch_kmer.c */
-Datum *kmersearch_extract_kmers(const char *sequence, int seq_len, int k, int *nkeys);
 
 /* Parallel analysis functions (implemented in kmersearch.c) */
 void kmersearch_worker_analyze_blocks(KmerWorkerState *worker, Relation rel, const char *column_name, int k_size, int target_attno, bool is_dna4_type);

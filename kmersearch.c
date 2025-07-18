@@ -81,7 +81,6 @@ RawscoreCacheManager *rawscore_cache_manager = NULL;
 
 /* Forward declarations */
 /* Functions moved to other modules - declarations remain for compatibility */
-static int kmersearch_calculate_raw_score(VarBit *seq1, VarBit *seq2, text *query_text);
 
 /* Helper function declarations */
 Oid get_dna2_type_oid(void);
@@ -1237,44 +1236,6 @@ kmersearch_dna4_match(PG_FUNCTION_ARGS)
     PG_RETURN_BOOL(result.valid ? result.match_result : false);
 }
 
-/*
- * Calculate raw score between two DNA sequences
- */
-static int
-kmersearch_calculate_raw_score(VarBit *seq1, VarBit *seq2, text *query_text)
-{
-    char *query_string = text_to_cstring(query_text);
-    int query_len = strlen(query_string);
-    int k = kmersearch_kmer_size;  /* k-mer length from GUC variable */
-    int score = 0;
-    VarBit **seq1_keys, **seq2_keys;
-    int seq1_nkeys, seq2_nkeys;
-    int i, j;
-    
-    /* Extract k-mers from both sequences */
-    seq1_keys = kmersearch_extract_kmer_from_varbit(seq1, k, &seq1_nkeys);
-    seq2_keys = kmersearch_extract_kmer_from_query(query_string, k, &seq2_nkeys);
-    
-    /* Count matching k-mers using optimized function */
-    score = kmersearch_count_matching_kmer_fast(seq1_keys, seq1_nkeys, seq2_keys, seq2_nkeys);
-    
-    /* Cleanup */
-    if (seq1_keys)
-    {
-        for (i = 0; i < seq1_nkeys; i++)
-            if (seq1_keys[i]) pfree(seq1_keys[i]);
-        pfree(seq1_keys);
-    }
-    if (seq2_keys)
-    {
-        for (j = 0; j < seq2_nkeys; j++)
-            if (seq2_keys[j]) pfree(seq2_keys[j]);
-        pfree(seq2_keys);
-    }
-    
-    pfree(query_string);
-    return score;
-}
 /*
  * Raw score calculation function for DNA2
  */
