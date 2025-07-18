@@ -326,7 +326,7 @@ typedef struct HighfreqKmerCache
     HighfreqCacheKey current_cache_key;   /* Current cache key */
     MemoryContext cache_context;          /* Memory context for cache data */
     HTAB       *highfreq_hash;           /* Hash table for fast lookup */
-    VarBit    **highfreq_kmers;          /* Array of high-frequency k-mers */
+    uint64     *highfreq_kmers;          /* Array of high-frequency k-mers as kmer2_as_uint */
     int         highfreq_count;          /* Number of high-frequency k-mers */
     bool        is_valid;                /* Cache validity flag */
 } HighfreqKmerCache;
@@ -336,7 +336,7 @@ typedef struct HighfreqKmerCache
  */
 typedef struct ParallelHighfreqKmerCacheEntry
 {
-    uint64      kmer_hash;               /* k-mer hash value (key) */
+    uint64      kmer2_as_uint;           /* Direct kmer2 as kmer2_as_uint (key) */
     int32       frequency_count;         /* frequency count */
     HighfreqCacheKey cache_key;          /* cache key for validation */
 } ParallelHighfreqKmerCacheEntry;

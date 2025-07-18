@@ -81,6 +81,20 @@ The test suite includes 12 test files covering:
 
 Test results are compared between `results/` and `expected/` directories.
 
+**IMPORTANT GUC Configuration Note:**
+PostgreSQL sessions reset GUC variables to their default values when a new session starts. Therefore, when using `psql` commands, you must set the required GUC variables in each new session:
+
+```bash
+# Example: Setting GUC variables for each psql session
+psql -d postgres -c "
+SET kmersearch.kmer_size = 4;
+SET kmersearch.max_appearance_rate = 0.25;
+-- Your analysis commands here
+"
+```
+
+This is particularly important when testing analysis functions and cache operations that depend on specific GUC variable values.
+
 ## Overview
 
 pg_kmersearch is a PostgreSQL extension that provides custom data types for efficiently storing and processing DNA sequence data with k-mer search capabilities. This extension implements two data types and high-performance search functionality:
@@ -232,9 +246,7 @@ Removes analysis data and frees storage
 - **Use case**: Baseline comparison to understand the effect of high-frequency k-mer exclusion
 
 ### Expected Relationship
-- When high-frequency k-mer exclusion is active: `correctedscore >= rawscore`
-- When high-frequency k-mer exclusion is not active: `correctedscore == rawscore`
-- The difference (`correctedscore - rawscore`) indicates the number of high-frequency k-mers that were excluded from the rawscore calculation
+**IMPORTANT NOTE**: In the current implementation, `rawscore` and `correctedscore` functions always return the same values. The original design intention was for correctedscore to provide unfiltered results, but both functions now operate identically. This behavior is expected and not a bug.
 
 ## Complex Type Definitions
 

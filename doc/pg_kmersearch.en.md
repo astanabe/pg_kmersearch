@@ -29,7 +29,7 @@ pg_kmersearch is a PostgreSQL extension that provides custom data types for effi
 - **Scoring search**: Retrieve top matches by similarity, not just exact matches
 - **High-frequency k-mer exclusion**: Automatically excludes overly common k-mers during index creation
 - **Score-based filtering**: Minimum score thresholds with automatic adjustment for excluded k-mers
-- **Score calculation functions**: `kmersearch_rawscore()` and `kmersearch_correctedscore()` for individual sequence scoring
+- **Score calculation functions**: `kmersearch_rawscore()` and `kmersearch_correctedscore()` for individual sequence scoring (both functions return identical values in current implementation)
 - **High-frequency k-mer management**: `kmersearch_perform_highfreq_analysis()` for high-frequency k-mer analysis and `kmersearch_highfreq_kmer_cache_load()` and `kmersearch_highfreq_kmer_cache_free()` for cache management
 
 ## Installation
@@ -54,9 +54,25 @@ make
 sudo make install
 ```
 
-3. Install the extension in your database:
+3. Configure shared_preload_libraries (required for GUC variables):
+```bash
+# Add to postgresql.conf
+shared_preload_libraries = 'pg_kmersearch'
+```
+
+4. Restart PostgreSQL and install the extension in your database:
 ```sql
 CREATE EXTENSION pg_kmersearch;
+```
+
+**Important Note on GUC Variables:**
+PostgreSQL sessions reset GUC variables to default values when a new session starts. Always set required GUC variables at the beginning of each session:
+
+```sql
+-- Example: Setting GUC variables
+SET kmersearch.kmer_size = 4;
+SET kmersearch.max_appearance_rate = 0.25;
+-- Your analysis commands here
 ```
 
 ## Usage

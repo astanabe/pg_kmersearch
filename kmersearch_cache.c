@@ -1346,7 +1346,7 @@ kmersearch_highfreq_kmer_cache_load_internal(Oid table_oid, const char *column_n
         /* Build count query */
         initStringInfo(&count_query);
         appendStringInfo(&count_query,
-            "SELECT COUNT(DISTINCT hkm.ngram_key) FROM kmersearch_highfreq_kmer hkm "
+            "SELECT COUNT(DISTINCT hkm.kmer2_as_uint) FROM kmersearch_highfreq_kmer hkm "
             "WHERE hkm.table_oid = %u "
             "AND hkm.column_name = '%s' "
             "AND EXISTS ("
@@ -1431,7 +1431,7 @@ kmersearch_highfreq_kmer_cache_load_internal(Oid table_oid, const char *column_n
     
     /* Process k-mers in batches to reduce memory usage */
     while (offset < highfreq_count) {
-        VarBit **batch_kmers;
+        uint64 *batch_kmers;
         int batch_count;
         int batch_size = kmersearch_highfreq_kmer_cache_load_batch_size;
         
@@ -1478,7 +1478,7 @@ kmersearch_highfreq_kmer_cache_load_internal(Oid table_oid, const char *column_n
             /* Build query with LIMIT/OFFSET for batch processing */
             initStringInfo(&query);
             appendStringInfo(&query,
-                "SELECT DISTINCT hkm.ngram_key FROM kmersearch_highfreq_kmer hkm "
+                "SELECT DISTINCT hkm.kmer2_as_uint FROM kmersearch_highfreq_kmer hkm "
                 "WHERE hkm.table_oid = %u "
                 "AND hkm.column_name = '%s' "
                 "AND EXISTS ("
@@ -1487,7 +1487,7 @@ kmersearch_highfreq_kmer_cache_load_internal(Oid table_oid, const char *column_n
                 "    AND hkm_meta.column_name = '%s' "
                 "    AND hkm_meta.kmer_size = %d"
                 ") "
-                "ORDER BY hkm.ngram_key "
+                "ORDER BY hkm.kmer2_as_uint "
                 "LIMIT %d OFFSET %d",
                 table_oid, escaped_column_name, table_oid, escaped_column_name, k_value, batch_size, offset);
             
@@ -1496,7 +1496,7 @@ kmersearch_highfreq_kmer_cache_load_internal(Oid table_oid, const char *column_n
             
             if (ret == SPI_OK_SELECT && SPI_processed > 0) {
                 batch_count = SPI_processed;
-                batch_kmers = (VarBit **) palloc(batch_count * sizeof(VarBit *));
+                batch_kmers = (uint64 *) palloc(batch_count * sizeof(uint64));
                 
                 for (i = 0; i < batch_count; i++) {
                     bool isnull;
@@ -1504,9 +1504,16 @@ kmersearch_highfreq_kmer_cache_load_internal(Oid table_oid, const char *column_n
                     
                     kmer_datum = SPI_getbinval(SPI_tuptable->vals[i], SPI_tuptable->tupdesc, 1, &isnull);
                     if (!isnull) {
-                        batch_kmers[i] = DatumGetVarBitPCopy(kmer_datum);
+                        /* Convert based on k_value size */
+                        if (k_value <= 8) {
+                            batch_kmers[i] = (uint64)DatumGetInt16(kmer_datum);
+                        } else if (k_value <= 16) {
+                            batch_kmers[i] = (uint64)DatumGetInt32(kmer_datum);
+                        } else {
+                            batch_kmers[i] = DatumGetInt64(kmer_datum);
+                        }
                     } else {
-                        batch_kmers[i] = NULL;
+                        batch_kmers[i] = 0;  /* Use 0 as null marker */
                     }
                 }
             } else {
@@ -1533,37 +1540,31 @@ kmersearch_highfreq_kmer_cache_load_internal(Oid table_oid, const char *column_n
         
         /* Insert batch k-mers into hash table */
         for (i = 0; i < batch_count; i++) {
-            uint64 kmer_hash;
+            uint64 kmer2_as_uint;
             HighfreqKmerHashEntry *entry;
             bool found;
             
-            /* Check for null pointer */
-            if (!batch_kmers[i]) {
+            /* Check for null/zero value (used as null marker) */
+            if (batch_kmers[i] == 0) {
                 ereport(DEBUG1, (errmsg("kmersearch_highfreq_kmer_cache_load_internal: Found null k-mer at batch %d index %d, skipping", batch_num, i)));
                 continue;
             }
             
-            /* Validate VarBit structure */
-            if (VARSIZE(batch_kmers[i]) <= VARHDRSZ) {
-                ereport(DEBUG1, (errmsg("kmersearch_highfreq_kmer_cache_load_internal: Invalid VarBit size at batch %d index %d, skipping", batch_num, i)));
-                continue;
-            }
+            /* Use kmer2_as_uint value directly */
+            kmer2_as_uint = batch_kmers[i];
             
-            /* Calculate k-mer hash */
-            kmer_hash = kmersearch_ngram_key_to_hash(batch_kmers[i]);
+            ereport(DEBUG1, (errmsg("kmersearch_highfreq_kmer_cache_load_internal: Inserting k-mer %d/%d from batch %d with kmer2_as_uint %lu", 
+                                   i + 1, batch_count, batch_num, kmer2_as_uint)));
             
-            ereport(DEBUG1, (errmsg("kmersearch_highfreq_kmer_cache_load_internal: Inserting k-mer %d/%d from batch %d with hash %lu", 
-                                   i + 1, batch_count, batch_num, kmer_hash)));
-            
-            /* Insert into hash table */
+            /* Insert into hash table using kmer2_as_uint as both key and value */
             entry = (HighfreqKmerHashEntry *) hash_search(global_highfreq_cache.highfreq_hash,
-                                                         (void *) &kmer_hash,
+                                                         (void *) &kmer2_as_uint,
                                                          HASH_ENTER,
                                                          &found);
             
             if (entry && !found) {
-                entry->kmer_key = DatumGetVarBitPCopy(PointerGetDatum(batch_kmers[i]));
-                entry->hash_value = kmer_hash;
+                entry->kmer_key = NULL;  /* No longer storing VarBit */
+                entry->hash_value = kmer2_as_uint;
                 total_inserted++;
                 ereport(DEBUG1, (errmsg("kmersearch_highfreq_kmer_cache_load_internal: Successfully inserted k-mer %d (total: %d)", 
                                        i + 1, total_inserted)));
@@ -1577,10 +1578,7 @@ kmersearch_highfreq_kmer_cache_load_internal(Oid table_oid, const char *column_n
         /* Clean up batch memory in parent context */
         MemoryContextSwitchTo(old_context);
         if (batch_kmers) {
-            for (i = 0; i < batch_count; i++) {
-                if (batch_kmers[i])
-                    pfree(batch_kmers[i]);
-            }
+            /* uint64 arrays don't need individual pfree calls */
             pfree(batch_kmers);
         }
         MemoryContextSwitchTo(global_highfreq_cache.cache_context);
@@ -2482,7 +2480,7 @@ kmersearch_parallel_highfreq_kmer_cache_load_internal(Oid table_oid, const char 
         /* Build count query */
         initStringInfo(&count_query);
         appendStringInfo(&count_query,
-            "SELECT COUNT(DISTINCT hkm.ngram_key) FROM kmersearch_highfreq_kmer hkm "
+            "SELECT COUNT(DISTINCT hkm.kmer2_as_uint) FROM kmersearch_highfreq_kmer hkm "
             "WHERE hkm.table_oid = %u "
             "AND hkm.column_name = '%s' "
             "AND EXISTS ("
@@ -2637,7 +2635,7 @@ kmersearch_parallel_highfreq_kmer_cache_load_internal(Oid table_oid, const char 
     
     /* Process k-mers in batches to reduce memory usage */
     while (offset < total_kmer_count) {
-        VarBit **batch_kmers;
+        uint64 *batch_kmers;
         int batch_count;
         int batch_size = kmersearch_highfreq_kmer_cache_load_batch_size;
         
@@ -2681,7 +2679,7 @@ kmersearch_parallel_highfreq_kmer_cache_load_internal(Oid table_oid, const char 
             /* Build query with LIMIT/OFFSET for batch processing */
             initStringInfo(&query);
             appendStringInfo(&query,
-                "SELECT DISTINCT hkm.ngram_key FROM kmersearch_highfreq_kmer hkm "
+                "SELECT DISTINCT hkm.kmer2_as_uint FROM kmersearch_highfreq_kmer hkm "
                 "WHERE hkm.table_oid = %u "
                 "AND hkm.column_name = '%s' "
                 "AND EXISTS ("
@@ -2690,7 +2688,7 @@ kmersearch_parallel_highfreq_kmer_cache_load_internal(Oid table_oid, const char 
                 "    AND hkm_meta.column_name = '%s' "
                 "    AND hkm_meta.kmer_size = %d"
                 ") "
-                "ORDER BY hkm.ngram_key "
+                "ORDER BY hkm.kmer2_as_uint "
                 "LIMIT %d OFFSET %d",
                 table_oid, escaped_column_name, table_oid, escaped_column_name, k_value, batch_size, offset);
             
@@ -2699,7 +2697,7 @@ kmersearch_parallel_highfreq_kmer_cache_load_internal(Oid table_oid, const char 
             
             if (ret == SPI_OK_SELECT && SPI_processed > 0) {
                 batch_count = SPI_processed;
-                batch_kmers = (VarBit **) palloc(batch_count * sizeof(VarBit *));
+                batch_kmers = (uint64 *) palloc(batch_count * sizeof(uint64));
                 
                 for (i = 0; i < batch_count; i++) {
                     bool isnull;
@@ -2707,9 +2705,16 @@ kmersearch_parallel_highfreq_kmer_cache_load_internal(Oid table_oid, const char 
                     
                     kmer_datum = SPI_getbinval(SPI_tuptable->vals[i], SPI_tuptable->tupdesc, 1, &isnull);
                     if (!isnull) {
-                        batch_kmers[i] = DatumGetVarBitPCopy(kmer_datum);
+                        /* Convert based on k_value size */
+                        if (k_value <= 8) {
+                            batch_kmers[i] = (uint64)DatumGetInt16(kmer_datum);
+                        } else if (k_value <= 16) {
+                            batch_kmers[i] = (uint64)DatumGetInt32(kmer_datum);
+                        } else {
+                            batch_kmers[i] = DatumGetInt64(kmer_datum);
+                        }
                     } else {
-                        batch_kmers[i] = NULL;
+                        batch_kmers[i] = 0;  /* Use 0 as null marker */
                     }
                 }
             } else {
@@ -2741,14 +2746,14 @@ kmersearch_parallel_highfreq_kmer_cache_load_internal(Oid table_oid, const char 
                 continue;
             }
             
-            /* Validate VarBit structure */
-            if (VARSIZE(batch_kmers[i]) <= VARHDRSZ) {
-                ereport(DEBUG1, (errmsg("dshash_cache_load: Invalid VarBit size at batch %d index %d, skipping", batch_num, i)));
+            /* Validate kmer2_as_uint value */
+            if (batch_kmers[i] == 0) {
+                ereport(DEBUG1, (errmsg("dshash_cache_load: Invalid kmer2_as_uint value at batch %d index %d, skipping", batch_num, i)));
                 continue;
             }
             
-            /* Calculate actual k-mer hash using same logic as global cache */
-            kmer_hash = kmersearch_ngram_key_to_hash(batch_kmers[i]);
+            /* Use kmer2_as_uint value directly as hash */
+            kmer_hash = batch_kmers[i];
             
             ereport(DEBUG1, (errmsg("dshash_cache_load: Inserting k-mer %d/%d from batch %d with hash %lu", 
                                    i + 1, batch_count, batch_num, kmer_hash)));
@@ -2760,7 +2765,7 @@ kmersearch_parallel_highfreq_kmer_cache_load_internal(Oid table_oid, const char 
                                                                                 &kmer_hash, 
                                                                                 &found);
                 if (entry) {
-                    entry->kmer_hash = kmer_hash;
+                    entry->kmer2_as_uint = kmer_hash;
                     entry->frequency_count = 1; /* Mark as high-frequency */
                     entry->cache_key.table_oid = table_oid;
                     entry->cache_key.kmer_size = k_value;
@@ -2788,10 +2793,7 @@ kmersearch_parallel_highfreq_kmer_cache_load_internal(Oid table_oid, const char 
         
         /* Clean up batch memory */
         if (batch_kmers) {
-            for (i = 0; i < batch_count; i++) {
-                if (batch_kmers[i])
-                    pfree(batch_kmers[i]);
-            }
+            /* uint64 arrays don't need individual pfree calls */
             pfree(batch_kmers);
         }
         

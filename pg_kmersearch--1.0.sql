@@ -305,10 +305,10 @@ CREATE OPERATOR CLASS kmersearch_dna4_btree_ops
 CREATE TABLE kmersearch_highfreq_kmer (
     table_oid oid NOT NULL,
     column_name name NOT NULL,
-    ngram_key varbit NOT NULL,
+    kmer2_as_uint bigint NOT NULL,
     detection_reason text,
     created_at timestamp with time zone DEFAULT now(),
-    PRIMARY KEY (table_oid, column_name, ngram_key)
+    PRIMARY KEY (table_oid, column_name, kmer2_as_uint)
 );
 
 -- High-frequency k-mers metadata table
@@ -559,9 +559,8 @@ CREATE FUNCTION kmersearch_parallel_highfreq_kmer_cache_free_all()
     LANGUAGE C VOLATILE;
 
 -- Performance optimization: Add indexes on system tables
--- Note: varbit type doesn't have a default GIN operator class, so we use btree instead
 CREATE INDEX kmersearch_highfreq_kmer_idx 
-    ON kmersearch_highfreq_kmer(table_oid, column_name, ngram_key);
+    ON kmersearch_highfreq_kmer(table_oid, column_name, kmer2_as_uint);
 
 CREATE INDEX kmersearch_highfreq_kmer_meta_idx 
     ON kmersearch_highfreq_kmer_meta(table_oid, column_name);
@@ -616,7 +615,7 @@ SELECT
     m.max_appearance_rate,
     m.max_appearance_nrow,
     m.analysis_timestamp,
-    COUNT(DISTINCT h.ngram_key) as highfreq_kmer_count
+    COUNT(DISTINCT h.kmer2_as_uint) as highfreq_kmer_count
 FROM kmersearch_highfreq_kmer_meta m
 LEFT JOIN pg_class ON pg_class.oid = m.table_oid
 LEFT JOIN kmersearch_highfreq_kmer h ON (

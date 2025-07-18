@@ -29,7 +29,7 @@ pg_kmersearchは、PostgreSQL用のDNA配列データを効率的に格納・処
 - **スコアリング検索**: 完全一致だけでなく、類似度による上位結果取得
 - **高頻出k-mer除外**: インデックス作成時に過度に頻出するk-merを自動除外
 - **スコアベースフィルタリング**: 除外k-merに応じて自動調整される最小スコア閾値
-- **スコア計算関数**: 個別配列のスコア算出用の`kmersearch_rawscore()`と`kmersearch_correctedscore()`関数
+- **スコア計算関数**: 個別配列のスコア算出用の`kmersearch_rawscore()`と`kmersearch_correctedscore()`関数（現在の実装では両関数は同一の値を返します）
 - **高頻出k-mer管理**: `kmersearch_perform_highfreq_analysis()`による高頻出k-mer解析と`kmersearch_undo_highfreq_analysis()`による解析データ削除、`kmersearch_highfreq_kmer_cache_load()`および`kmersearch_highfreq_kmer_cache_free()`によるキャッシュ管理
 
 ## インストール
@@ -54,9 +54,25 @@ make
 sudo make install
 ```
 
-3. データベースに拡張をインストール：
+3. shared_preload_librariesの設定（GUC変数に必要）：
+```bash
+# postgresql.confに追加
+shared_preload_libraries = 'pg_kmersearch'
+```
+
+4. PostgreSQLを再起動し、データベースに拡張をインストール：
 ```sql
 CREATE EXTENSION pg_kmersearch;
+```
+
+**重要：GUC変数に関する注意事項**
+PostgreSQLは新しいセッションが開始されるたびにGUC変数をデフォルト値にリセットします。各セッションの開始時に必要なGUC変数を設定してください：
+
+```sql
+-- 例：GUC変数の設定
+SET kmersearch.kmer_size = 4;
+SET kmersearch.max_appearance_rate = 0.25;
+-- 解析コマンドをここに記述
 ```
 
 ## 使用方法

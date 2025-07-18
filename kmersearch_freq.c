@@ -38,6 +38,7 @@ static void kmersearch_cleanup_analysis_dshash(void);
 /* kmersearch_is_kmer_hash_in_analysis_dshash is now extern and declared in kmersearch.h */
 static void kmersearch_populate_analysis_dshash_from_workers(KmerWorkerState *workers, int num_workers, int threshold_rows);
 static int kmersearch_get_analysis_dshash_count(void);
+static void kmersearch_insert_kmer2_as_uint_from_dshash(Oid table_oid, const char *column_name, int k_size);
 
 /* External functions are now declared in kmersearch.h */
 extern HighfreqKmerCache global_highfreq_cache;
@@ -576,12 +577,12 @@ kmersearch_perform_highfreq_analysis_parallel(Oid table_oid, const char *column_
         ereport(DEBUG1, (errmsg("kmersearch_analyze_table_parallel: Found %d high-frequency k-mers in dshash", 
                                result.highfreq_kmers_count)));
         
-        /* Phase 2: Collect n-gram keys for high-frequency k-mers using parallel processing */
-        ereport(NOTICE, (errmsg("Phase 2: Collecting n-gram keys for high-frequency k-mers...")));
-        ereport(DEBUG1, (errmsg("Phase 2 started, collecting n-gram keys for high-frequency k-mers using dshash")));
+        /* Direct storage: Insert kmer2_as_uint values directly into kmersearch_highfreq_kmer table */
+        ereport(NOTICE, (errmsg("Direct storage: Inserting kmer2_as_uint values from dshash into kmersearch_highfreq_kmer table...")));
+        ereport(DEBUG1, (errmsg("Direct storage started, inserting kmer2_as_uint values from dshash")));
         
-        /* Collect n-gram keys for high-frequency k-mers using dshash lookup */
-        kmersearch_collect_ngram_key2_for_highfreq_kmer(table_oid, column_name, k_size, NULL);
+        /* Insert kmer2_as_uint values directly from dshash into kmersearch_highfreq_kmer table */
+        kmersearch_insert_kmer2_as_uint_from_dshash(table_oid, column_name, k_size);
         
         /* Insert metadata record */
         {
@@ -1291,6 +1292,78 @@ kmersearch_get_analysis_dshash_count(void)
     dshash_seq_term(&status);
     
     return count;
+}
+
+/*
+ * Insert kmer2_as_uint values directly from dshash into kmersearch_highfreq_kmer table
+ */
+static void
+kmersearch_insert_kmer2_as_uint_from_dshash(Oid table_oid, const char *column_name, int k_size)
+{
+    dshash_seq_status status;
+    AnalysisHighfreqKmerEntry *entry;
+    StringInfoData query;
+    int processed_entries = 0;
+    bool first_entry = true;
+    
+    if (analysis_highfreq_hash == NULL) {
+        ereport(ERROR, (errmsg("Analysis dshash table not initialized")));
+    }
+    
+    ereport(DEBUG1, (errmsg("kmersearch_insert_kmer2_as_uint_from_dshash: Starting direct insertion")));
+    
+    /* Build base insert query */
+    initStringInfo(&query);
+    appendStringInfo(&query,
+        "INSERT INTO kmersearch_highfreq_kmer (table_oid, column_name, kmer2_as_uint, detection_reason) VALUES ");
+    
+    /* Iterate through all entries in the dshash table */
+    dshash_seq_init(&status, analysis_highfreq_hash, false);
+    
+    while ((entry = (AnalysisHighfreqKmerEntry *) dshash_seq_next(&status)) != NULL) {
+        uint64 kmer2_as_uint = entry->kmer_hash;
+        
+        if (!first_entry) {
+            appendStringInfoString(&query, ", ");
+        }
+        
+        /* Add entry to batch insert */
+        appendStringInfo(&query, "(%u, %s, %ld, 'frequency_analysis')",
+            table_oid, 
+            quote_literal_cstr(column_name),
+            (int64)kmer2_as_uint);
+        
+        processed_entries++;
+        first_entry = false;
+        
+        /* Execute batch insert every 1000 entries to avoid query length limits */
+        if (processed_entries % 1000 == 0) {
+            int ret = SPI_exec(query.data, 0);
+            if (ret != SPI_OK_INSERT) {
+                ereport(ERROR, (errmsg("Failed to insert batch of kmer2_as_uint values")));
+            }
+            
+            /* Reset query for next batch */
+            pfree(query.data);
+            initStringInfo(&query);
+            appendStringInfo(&query,
+                "INSERT INTO kmersearch_highfreq_kmer (table_oid, column_name, kmer2_as_uint, detection_reason) VALUES ");
+            first_entry = true;
+        }
+    }
+    
+    /* Execute final batch if there are remaining entries */
+    if (!first_entry) {
+        int ret = SPI_exec(query.data, 0);
+        if (ret != SPI_OK_INSERT) {
+            ereport(ERROR, (errmsg("Failed to insert final batch of kmer2_as_uint values")));
+        }
+    }
+    
+    dshash_seq_term(&status);
+    pfree(query.data);
+    
+    ereport(NOTICE, (errmsg("Direct storage completed: inserted %d kmer2_as_uint values into kmersearch_highfreq_kmer table", processed_entries)));
 }
 
 /*
