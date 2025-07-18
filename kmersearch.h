@@ -64,6 +64,7 @@
 #include <ctype.h>
 #include <string.h>
 #include <math.h>
+#include <sys/time.h>
 
 /* SIMD intrinsics headers */
 #ifdef __x86_64__

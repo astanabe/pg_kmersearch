@@ -9,7 +9,6 @@
  */
 
 #include "kmersearch.h"
-#include <sys/time.h>
 
 /* PostgreSQL function info declarations for frequency functions */
 PG_FUNCTION_INFO_V1(kmersearch_perform_highfreq_analysis);
