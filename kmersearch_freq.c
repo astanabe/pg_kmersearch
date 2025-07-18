@@ -365,6 +365,10 @@ kmersearch_perform_highfreq_analysis_parallel(Oid table_oid, const char *column_
     int threshold_rows;
     int rate_threshold;
     int i;
+    bool is_dna4_type = false;
+    int target_attno = -1;
+    TupleDesc tupdesc;
+    int col_idx;
     
     /* Initialize result structure */
     ereport(DEBUG1, (errmsg("kmersearch_perform_highfreq_analysis_parallel: Initializing result structure")));
@@ -381,6 +385,38 @@ kmersearch_perform_highfreq_analysis_parallel(Oid table_oid, const char *column_
     ereport(DEBUG1, (errmsg("kmersearch_analyze_table_parallel: Opening table with OID %u", table_oid)));
     rel = table_open(table_oid, AccessShareLock);
     ereport(DEBUG1, (errmsg("kmersearch_analyze_table_parallel: Table opened successfully")));
+    
+    /* Determine data type once for all workers */
+    tupdesc = RelationGetDescr(rel);
+    
+    for (col_idx = 0; col_idx < tupdesc->natts; col_idx++) {
+        Form_pg_attribute attr = TupleDescAttr(tupdesc, col_idx);
+        if (strcmp(NameStr(attr->attname), column_name) == 0) {
+            target_attno = attr->attnum;
+            /* Strict DNA type checking: DNA2, DNA4, or error */
+            if (attr->atttypid == get_dna4_type_oid()) {
+                is_dna4_type = true;
+            } else if (attr->atttypid == get_dna2_type_oid()) {
+                is_dna4_type = false;
+            } else {
+                table_close(rel, AccessShareLock);
+                ereport(ERROR,
+                        (errcode(ERRCODE_DATATYPE_MISMATCH),
+                         errmsg("Column '%s' must be DNA2 or DNA4 type", column_name),
+                         errdetail("Found type OID: %u", attr->atttypid),
+                         errhint("Use a column with DNA2 or DNA4 data type for k-mer analysis.")));
+            }
+            break;
+        }
+    }
+    
+    if (target_attno == -1) {
+        table_close(rel, AccessShareLock);
+        ereport(ERROR, (errmsg("Column '%s' not found in relation", column_name)));
+    }
+    
+    ereport(DEBUG1, (errmsg("kmersearch_analyze_table_parallel: Column '%s' detected as %s type", 
+                           column_name, is_dna4_type ? "DNA4" : "DNA2")));
     
     /* Determine number of parallel workers */
     ereport(DEBUG1, (errmsg("kmersearch_analyze_table_parallel: Determining parallel workers")));
@@ -494,7 +530,7 @@ kmersearch_perform_highfreq_analysis_parallel(Oid table_oid, const char *column_
         
         /* Process assigned blocks */
         ereport(DEBUG1, (errmsg("kmersearch_analyze_table_parallel: Processing blocks for worker %d", i)));
-        kmersearch_worker_analyze_blocks(&workers[i], rel, column_name, k_size);
+        kmersearch_worker_analyze_blocks(&workers[i], rel, column_name, k_size, target_attno, is_dna4_type);
         ereport(DEBUG1, (errmsg("kmersearch_analyze_table_parallel: Worker %d processing complete", i)));
     }
     

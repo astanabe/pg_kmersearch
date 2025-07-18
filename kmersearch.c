@@ -85,8 +85,8 @@ RawscoreCacheManager *rawscore_cache_manager = NULL;
 static int kmersearch_calculate_raw_score(VarBit *seq1, VarBit *seq2, text *query_text);
 
 /* Phase 2 helper function declarations */
-static Oid get_dna2_type_oid(void);
-static Oid get_dna4_type_oid(void);
+Oid get_dna2_type_oid(void);
+Oid get_dna4_type_oid(void);
 static bool tuple_in_worker_range(HeapTuple tuple, KmerWorkerState *worker);
 static VarBit *extract_sequence_from_tuple(HeapTuple tuple, int attno, TupleDesc tupdesc);
 static void create_worker_ngram_temp_table(const char *table_name);
@@ -123,7 +123,7 @@ static bool kmersearch_evaluate_match_conditions(int shared_count, int query_tot
 static bool evaluate_optimized_match_condition(VarBit **query_keys, int nkeys, int shared_count, const char *query_string, int query_total_kmers);
 
 /* New parallel analysis functions */
-void kmersearch_worker_analyze_blocks(KmerWorkerState *worker, Relation rel, const char *column_name, int k_size);
+void kmersearch_worker_analyze_blocks(KmerWorkerState *worker, Relation rel, const char *column_name, int k_size, int target_attno, bool is_dna4_type);
 void kmersearch_merge_worker_results_sql(KmerWorkerState *workers, int num_workers, const char *final_table_name, int k_size, int threshold_rows);
 static void kmersearch_persist_highfreq_kmers_from_temp(Oid table_oid, const char *column_name, int k_size, const char *temp_table_name);
 
@@ -2211,32 +2211,16 @@ kmersearch_determine_parallel_workers(int requested_workers, Relation target_rel
  */
 void
 kmersearch_worker_analyze_blocks(KmerWorkerState *worker, Relation rel, 
-                                const char *column_name, int k_size)
+                                const char *column_name, int k_size, int target_attno, bool is_dna4_type)
 {
     TableScanDesc scan;
     HeapTuple tuple;
     TupleDesc tupdesc;
-    int target_attno = -1;
     int i;
     Datum *kmer_datums;
-    bool is_dna4_type = false;
     
-    /* Find the target column and detect DNA type */
+    /* Use passed parameters instead of determining them again */
     tupdesc = RelationGetDescr(rel);
-    
-    for (i = 0; i < tupdesc->natts; i++) {
-        Form_pg_attribute attr = TupleDescAttr(tupdesc, i);
-        if (strcmp(NameStr(attr->attname), column_name) == 0) {
-            target_attno = attr->attnum;
-            /* Detect DNA type (DNA2 or DNA4) */
-            is_dna4_type = (attr->atttypid == get_dna4_type_oid());
-            break;
-        }
-    }
-    
-    if (target_attno == -1) {
-        ereport(ERROR, (errmsg("Column '%s' not found in relation", column_name)));
-    }
     
     /* Initialize buffer */
     kmersearch_init_buffer(&worker->buffer, k_size);
@@ -2793,7 +2777,7 @@ kmersearch_worker_collect_ngram_key2(KmerWorkerState *worker, Relation rel, cons
 /*
  * Get DNA2 type OID
  */
-static Oid
+Oid
 get_dna2_type_oid(void)
 {
     return TypenameGetTypid("dna2");
@@ -2802,7 +2786,7 @@ get_dna2_type_oid(void)
 /*
  * Get DNA4 type OID  
  */
-static Oid
+Oid
 get_dna4_type_oid(void)
 {
     return TypenameGetTypid("dna4");

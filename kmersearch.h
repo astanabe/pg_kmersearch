@@ -573,10 +573,14 @@ Datum *kmersearch_extract_kmer_with_degenerate(const char *sequence, int seq_len
 Datum *kmersearch_extract_kmers(const char *sequence, int seq_len, int k, int *nkeys);
 
 /* Parallel analysis functions (implemented in kmersearch.c) */
-void kmersearch_worker_analyze_blocks(KmerWorkerState *worker, Relation rel, const char *column_name, int k_size);
+void kmersearch_worker_analyze_blocks(KmerWorkerState *worker, Relation rel, const char *column_name, int k_size, int target_attno, bool is_dna4_type);
 void kmersearch_merge_worker_results_sql(KmerWorkerState *workers, int num_workers, const char *final_table_name, int k_size, int threshold_rows);
 void kmersearch_collect_ngram_key2_for_highfreq_kmer(Oid table_oid, const char *column_name, int k_size, const char *final_table_name);
 void kmersearch_persist_highfreq_kmers_metadata(Oid table_oid, const char *column_name, int k_size);
+
+/* Type OID helper functions */
+Oid get_dna2_type_oid(void);
+Oid get_dna4_type_oid(void);
 
 /* Cache management functions (implemented in kmersearch_cache.c) */
 int calculate_actual_min_score(VarBit **query_keys, int nkeys, int query_total_kmers);
