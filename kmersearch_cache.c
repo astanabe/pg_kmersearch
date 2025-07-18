@@ -3036,5 +3036,62 @@ kmersearch_lookup_in_parallel_cache(VarBit *kmer_key)
     return found;
 }
 
+/*
+ * Check if uint k-mer exists in global high-frequency cache
+ */
+bool
+kmersearch_lookup_kmer2_as_uint_in_global_cache(uint64 kmer2_as_uint, const char *table_name, const char *column_name)
+{
+    bool found;
+    
+    if (!global_highfreq_cache.is_valid || global_highfreq_cache.highfreq_count == 0)
+        return false;
+    
+    hash_search(global_highfreq_cache.highfreq_hash, &kmer2_as_uint, HASH_FIND, &found);
+    
+    return found;
+}
+
+/*
+ * Check if uint k-mer exists in parallel high-frequency cache
+ */
+bool
+kmersearch_lookup_kmer2_as_uint_in_parallel_cache(uint64 kmer2_as_uint, const char *table_name, const char *column_name)
+{
+    MemoryContext oldcontext;
+    ParallelHighfreqKmerCacheEntry *entry = NULL;
+    bool found = false;
+    
+    if (!parallel_highfreq_cache || !parallel_highfreq_cache->is_initialized || 
+        parallel_highfreq_cache->num_entries == 0)
+        return false;
+    
+    if (!parallel_cache_hash)
+        return false;
+    
+    oldcontext = MemoryContextSwitchTo(TopMemoryContext);
+    
+    PG_TRY();
+    {
+        entry = (ParallelHighfreqKmerCacheEntry *) dshash_find(parallel_cache_hash, &kmer2_as_uint, false);
+        
+        if (entry != NULL) {
+            found = true;
+            dshash_release_lock(parallel_cache_hash, entry);
+        }
+    }
+    PG_CATCH();
+    {
+        if (entry)
+            dshash_release_lock(parallel_cache_hash, entry);
+        MemoryContextSwitchTo(oldcontext);
+        PG_RE_THROW();
+    }
+    PG_END_TRY();
+    
+    MemoryContextSwitchTo(oldcontext);
+    return found;
+}
+
 
 

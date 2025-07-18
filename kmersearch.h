@@ -499,6 +499,8 @@ HTAB *kmersearch_create_highfreq_hash_from_array(VarBit **kmers, int nkeys);
 uint64 kmersearch_ngram_key_to_hash(VarBit *ngram_key);
 bool kmersearch_is_global_highfreq_cache_loaded(void);
 bool kmersearch_lookup_in_global_cache(VarBit *kmer_key);
+bool kmersearch_lookup_kmer2_as_uint_in_global_cache(uint64 kmer2_as_uint, const char *table_name, const char *column_name);
+bool kmersearch_lookup_kmer2_as_uint_in_parallel_cache(uint64 kmer2_as_uint, const char *table_name, const char *column_name);
 void kmersearch_highfreq_kmer_cache_init(void);
 bool kmersearch_highfreq_kmer_cache_load_internal(Oid table_oid, const char *column_name, int k_value);
 void kmersearch_highfreq_kmer_cache_free_internal(void);
@@ -535,6 +537,8 @@ bool kmersearch_is_kmer_hash_in_analysis_dshash(uint64 kmer_hash);
 /* K-mer utility functions */
 void kmersearch_expand_degenerate_sequence(const char *kmer, int k, char **expanded, int *expand_count);
 VarBit *kmersearch_create_ngram_key2(const char *kmer, int k, int occurrence);
+VarBit *kmersearch_kmer2_as_uint_to_kmer2(uint64 kmer2_as_uint, int kmer_size);
+VarBit *kmersearch_create_ngram_key2_from_kmer2_as_uint(uint64 kmer2_as_uint, int kmer_size, int occurrence);
 Datum *kmersearch_extract_dna2_kmer2_direct(VarBit *dna, int k, int *nkeys);
 Datum *kmersearch_extract_dna4_kmer2_with_expansion_direct(VarBit *dna, int k, int *nkeys);
 Datum *kmersearch_extract_dna2_ngram_key2_direct(VarBit *dna, int k, int *nkeys);
@@ -623,8 +627,8 @@ void kmersearch_validate_analysis_parameters(Oid table_oid, const char *column_n
 char *kmersearch_generate_unique_temp_table_name(const char *prefix, int additional_id);
 
 /* Native uint k-mer extraction functions */
-void *kmersearch_extract_dna2_kmer2_as_uint_direct(VarBit *seq, int k, void **output, int *nkeys);
-void *kmersearch_extract_dna4_kmer2_as_uint_with_expansion_direct(VarBit *seq, int k, void **output, int *nkeys);
+void kmersearch_extract_dna2_kmer2_as_uint_direct(VarBit *seq, int k, void **output, int *nkeys);
+void kmersearch_extract_dna4_kmer2_as_uint_with_expansion_direct(VarBit *seq, int k, void **output, int *nkeys);
 
 /* Direct bit manipulation helper functions */
 size_t kmersearch_get_kmer_uint_size(int k);

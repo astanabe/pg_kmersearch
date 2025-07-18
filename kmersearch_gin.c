@@ -36,37 +36,93 @@ kmersearch_extract_value_dna2(PG_FUNCTION_ARGS)
     int32 *nkeys = (int32 *) PG_GETARG_POINTER(1);
     
     Datum *keys;
-    int k = kmersearch_kmer_size;  /* k-mer length from GUC variable */
+    int k = kmersearch_kmer_size;
+    void *kmer_uint_array;
+    int kmer_uint_count;
+    KmerOccurrence *occurrences;
+    int max_occurrences;
+    int final_count = 0;
+    int i;
     
     if (k < 4 || k > 32)
         ereport(ERROR, (errmsg("k-mer length must be between 4 and 32")));
     
-    /* Extract ngram_key2 (kmer2 + occurrence bits) directly from DNA2 */
-    keys = kmersearch_extract_dna2_ngram_key2_direct((VarBit *)dna, k, nkeys);
-    
-    /* Apply high-frequency k-mer filtering using ngram_key2 direct comparison */
-    if (keys && *nkeys > 0 && kmersearch_preclude_highfreq_kmer) {
-        if (kmersearch_force_use_parallel_highfreq_kmer_cache || IsParallelWorker()) {
-            /* Use parallel cache for worker processes or when forcing dshash */
-            if (parallel_highfreq_cache && parallel_highfreq_cache->is_initialized) {
-                keys = kmersearch_filter_highfreq_ngram_key2_parallel(keys, nkeys, k);
+    if (kmersearch_preclude_highfreq_kmer) {
+        /* New optimized flow: extract uint k-mers and filter before VarBit creation */
+        kmersearch_extract_dna2_kmer2_as_uint_direct((VarBit *)dna, k, &kmer_uint_array, &kmer_uint_count);
+        
+        if (kmer_uint_count == 0) {
+            *nkeys = 0;
+            PG_RETURN_POINTER(NULL);
+        }
+        
+        /* Initialize occurrence tracking */
+        max_occurrences = kmer_uint_count;
+        occurrences = (KmerOccurrence *) palloc(max_occurrences * sizeof(KmerOccurrence));
+        
+        /* Process each uint k-mer */
+        for (i = 0; i < kmer_uint_count; i++) {
+            uint64 kmer_uint;
+            bool is_high_frequency = false;
+            
+            /* Extract k-mer based on size */
+            if (k <= 8) {
+                kmer_uint = ((uint16 *)kmer_uint_array)[i];
+            } else if (k <= 16) {
+                kmer_uint = ((uint32 *)kmer_uint_array)[i];
             } else {
-                ereport(ERROR,
-                        (errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-                         errmsg("parallel high-frequency k-mer cache is not initialized"),
-                         errhint("Use kmersearch_parallel_highfreq_kmers_cache_load() to create the cache first.")));
+                kmer_uint = ((uint64 *)kmer_uint_array)[i];
+            }
+            
+            /* Check cache */
+            if (kmersearch_force_use_parallel_highfreq_kmer_cache || IsParallelWorker()) {
+                if (parallel_highfreq_cache && parallel_highfreq_cache->is_initialized) {
+                    is_high_frequency = kmersearch_lookup_kmer2_as_uint_in_parallel_cache(kmer_uint, NULL, NULL);
+                } else {
+                    ereport(ERROR,
+                            (errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+                             errmsg("parallel high-frequency k-mer cache is not initialized"),
+                             errhint("Use kmersearch_parallel_highfreq_kmers_cache_load() to create the cache first.")));
+                }
+            } else {
+                if (global_highfreq_cache.is_valid) {
+                    is_high_frequency = kmersearch_lookup_kmer2_as_uint_in_global_cache(kmer_uint, NULL, NULL);
+                } else {
+                    ereport(ERROR,
+                            (errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+                             errmsg("global high-frequency k-mer cache is not initialized"),
+                             errhint("Use kmersearch_highfreq_kmers_cache_load() to create the cache first.")));
+                }
+            }
+            
+            /* Skip high-frequency k-mers */
+            if (is_high_frequency)
+                continue;
+            
+            /* Track occurrence count */
+            kmersearch_find_or_add_kmer_occurrence(occurrences, &final_count, kmer_uint, max_occurrences);
+        }
+        
+        /* Create final ngram_key2 array */
+        if (final_count > 0) {
+            keys = (Datum *) palloc(final_count * sizeof(Datum));
+            for (i = 0; i < final_count; i++) {
+                VarBit *ngram_key = kmersearch_create_ngram_key2_from_kmer2_as_uint(
+                    occurrences[i].kmer_value, k, occurrences[i].count);
+                keys[i] = PointerGetDatum(ngram_key);
             }
         } else {
-            /* Use global cache for main process */
-            if (global_highfreq_cache.is_valid) {
-                keys = kmersearch_filter_highfreq_ngram_key2(keys, nkeys, global_highfreq_cache.highfreq_hash, k);
-            } else {
-                ereport(ERROR,
-                        (errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-                         errmsg("global high-frequency k-mer cache is not initialized"),
-                         errhint("Use kmersearch_highfreq_kmers_cache_load() to create the cache first.")));
-            }
+            keys = NULL;
         }
+        
+        /* Cleanup */
+        pfree(kmer_uint_array);
+        pfree(occurrences);
+        
+        *nkeys = final_count;
+    } else {
+        /* Original flow: extract ngram_key2 directly without filtering */
+        keys = kmersearch_extract_dna2_ngram_key2_direct((VarBit *)dna, k, nkeys);
     }
     
     if (*nkeys == 0)
@@ -87,37 +143,93 @@ kmersearch_extract_value_dna4(PG_FUNCTION_ARGS)
     int32 *nkeys = (int32 *) PG_GETARG_POINTER(1);
     
     Datum *keys;
-    int k = kmersearch_kmer_size;  /* k-mer length from GUC variable */
+    int k = kmersearch_kmer_size;
+    void *kmer_uint_array;
+    int kmer_uint_count;
+    KmerOccurrence *occurrences;
+    int max_occurrences;
+    int final_count = 0;
+    int i;
     
     if (k < 4 || k > 32)
         ereport(ERROR, (errmsg("k-mer length must be between 4 and 32")));
     
-    /* Extract ngram_key2 (kmer2 + occurrence bits) from DNA4 with degenerate expansion */
-    keys = kmersearch_extract_dna4_ngram_key2_with_expansion_direct((VarBit *)dna, k, nkeys);
-    
-    /* Apply high-frequency k-mer filtering using ngram_key2 direct comparison */
-    if (keys && *nkeys > 0 && kmersearch_preclude_highfreq_kmer) {
-        if (kmersearch_force_use_parallel_highfreq_kmer_cache || IsParallelWorker()) {
-            /* Use parallel cache for worker processes or when forcing dshash */
-            if (parallel_highfreq_cache && parallel_highfreq_cache->is_initialized) {
-                keys = kmersearch_filter_highfreq_ngram_key2_parallel(keys, nkeys, k);
+    if (kmersearch_preclude_highfreq_kmer) {
+        /* New optimized flow: extract uint k-mers and filter before VarBit creation */
+        kmersearch_extract_dna4_kmer2_as_uint_with_expansion_direct((VarBit *)dna, k, &kmer_uint_array, &kmer_uint_count);
+        
+        if (kmer_uint_count == 0) {
+            *nkeys = 0;
+            PG_RETURN_POINTER(NULL);
+        }
+        
+        /* Initialize occurrence tracking */
+        max_occurrences = kmer_uint_count;
+        occurrences = (KmerOccurrence *) palloc(max_occurrences * sizeof(KmerOccurrence));
+        
+        /* Process each expanded uint k-mer */
+        for (i = 0; i < kmer_uint_count; i++) {
+            uint64 kmer_uint;
+            bool is_high_frequency = false;
+            
+            /* Extract k-mer based on size */
+            if (k <= 8) {
+                kmer_uint = ((uint16 *)kmer_uint_array)[i];
+            } else if (k <= 16) {
+                kmer_uint = ((uint32 *)kmer_uint_array)[i];
             } else {
-                ereport(ERROR,
-                        (errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-                         errmsg("parallel high-frequency k-mer cache is not initialized"),
-                         errhint("Use kmersearch_parallel_highfreq_kmers_cache_load() to create the cache first.")));
+                kmer_uint = ((uint64 *)kmer_uint_array)[i];
+            }
+            
+            /* Check cache */
+            if (kmersearch_force_use_parallel_highfreq_kmer_cache || IsParallelWorker()) {
+                if (parallel_highfreq_cache && parallel_highfreq_cache->is_initialized) {
+                    is_high_frequency = kmersearch_lookup_kmer2_as_uint_in_parallel_cache(kmer_uint, NULL, NULL);
+                } else {
+                    ereport(ERROR,
+                            (errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+                             errmsg("parallel high-frequency k-mer cache is not initialized"),
+                             errhint("Use kmersearch_parallel_highfreq_kmers_cache_load() to create the cache first.")));
+                }
+            } else {
+                if (global_highfreq_cache.is_valid) {
+                    is_high_frequency = kmersearch_lookup_kmer2_as_uint_in_global_cache(kmer_uint, NULL, NULL);
+                } else {
+                    ereport(ERROR,
+                            (errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+                             errmsg("global high-frequency k-mer cache is not initialized"),
+                             errhint("Use kmersearch_highfreq_kmers_cache_load() to create the cache first.")));
+                }
+            }
+            
+            /* Skip high-frequency k-mers */
+            if (is_high_frequency)
+                continue;
+            
+            /* Track occurrence count */
+            kmersearch_find_or_add_kmer_occurrence(occurrences, &final_count, kmer_uint, max_occurrences);
+        }
+        
+        /* Create final ngram_key2 array */
+        if (final_count > 0) {
+            keys = (Datum *) palloc(final_count * sizeof(Datum));
+            for (i = 0; i < final_count; i++) {
+                VarBit *ngram_key = kmersearch_create_ngram_key2_from_kmer2_as_uint(
+                    occurrences[i].kmer_value, k, occurrences[i].count);
+                keys[i] = PointerGetDatum(ngram_key);
             }
         } else {
-            /* Use global cache for main process */
-            if (global_highfreq_cache.is_valid) {
-                keys = kmersearch_filter_highfreq_ngram_key2(keys, nkeys, global_highfreq_cache.highfreq_hash, k);
-            } else {
-                ereport(ERROR,
-                        (errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-                         errmsg("global high-frequency k-mer cache is not initialized"),
-                         errhint("Use kmersearch_highfreq_kmers_cache_load() to create the cache first.")));
-            }
+            keys = NULL;
         }
+        
+        /* Cleanup */
+        pfree(kmer_uint_array);
+        pfree(occurrences);
+        
+        *nkeys = final_count;
+    } else {
+        /* Original flow: extract ngram_key2 directly without filtering */
+        keys = kmersearch_extract_dna4_ngram_key2_with_expansion_direct((VarBit *)dna, k, nkeys);
     }
     
     if (*nkeys == 0)

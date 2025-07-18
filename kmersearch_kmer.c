@@ -1045,4 +1045,100 @@ kmersearch_encode_kmer_data(VarBit *kmer, int k_size)
     return result;
 }
 
+/*
+ * Convert uint-based k-mer to VarBit k-mer format
+ */
+VarBit *
+kmersearch_kmer2_as_uint_to_kmer2(uint64 kmer2_as_uint, int kmer_size)
+{
+    int kmer_bits = kmer_size * 2;
+    int total_bytes = (kmer_bits + 7) / 8;
+    VarBit *result;
+    bits8 *data_ptr;
+    int i;
+    
+    if (kmer_size < 4 || kmer_size > 32) {
+        ereport(ERROR,
+                (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+                 errmsg("k-mer length must be between 4 and 32"),
+                 errdetail("Provided k-mer length: %d", kmer_size)));
+    }
+    
+    result = (VarBit *) palloc0(VARHDRSZ + sizeof(int32) + total_bytes);
+    SET_VARSIZE(result, VARHDRSZ + sizeof(int32) + total_bytes);
+    VARBITLEN(result) = kmer_bits;
+    
+    data_ptr = VARBITS(result);
+    
+    for (i = 0; i < kmer_size; i++) {
+        int shift = (kmer_size - 1 - i) * 2;
+        uint8 nucleotide = (kmer2_as_uint >> shift) & 0x3;
+        int bit_pos = i * 2;
+        int byte_pos = bit_pos / 8;
+        int bit_offset = bit_pos % 8;
+        
+        data_ptr[byte_pos] |= (nucleotide << (6 - bit_offset));
+    }
+    
+    return result;
+}
+
+/*
+ * Create complete ngram_key2 from uint k-mer with occurrence count
+ */
+VarBit *
+kmersearch_create_ngram_key2_from_kmer2_as_uint(uint64 kmer2_as_uint, int kmer_size, int occurrence)
+{
+    int kmer_bits = kmer_size * 2;
+    int occur_bits = kmersearch_occur_bitlen;
+    int total_bits = kmer_bits + occur_bits;
+    int total_bytes = (total_bits + 7) / 8;
+    int adj_occurrence = occurrence - 1;
+    VarBit *result;
+    bits8 *data_ptr;
+    int i;
+    int alloc_size;
+    
+    if (kmer_size < 4 || kmer_size > 32) {
+        ereport(ERROR,
+                (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+                 errmsg("k-mer length must be between 4 and 32"),
+                 errdetail("Provided k-mer length: %d", kmer_size)));
+    }
+    
+    if (adj_occurrence < 0)
+        adj_occurrence = 0;
+    if (adj_occurrence >= (1 << occur_bits))
+        adj_occurrence = (1 << occur_bits) - 1;
+    
+    alloc_size = VARHDRSZ + VARBITHDRSZ + total_bytes;
+    
+    result = (VarBit *) palloc0(alloc_size);
+    SET_VARSIZE(result, alloc_size);
+    VARBITLEN(result) = total_bits;
+    
+    data_ptr = VARBITS(result);
+    
+    for (i = 0; i < kmer_size; i++) {
+        int shift = (kmer_size - 1 - i) * 2;
+        uint8 nucleotide = (kmer2_as_uint >> shift) & 0x3;
+        int bit_pos = i * 2;
+        int byte_pos = bit_pos / 8;
+        int bit_offset = bit_pos % 8;
+        
+        data_ptr[byte_pos] |= (nucleotide << (6 - bit_offset));
+    }
+    
+    for (i = 0; i < occur_bits; i++) {
+        int bit_pos = kmer_bits + i;
+        int byte_pos = bit_pos / 8;
+        int bit_offset = bit_pos % 8;
+        
+        if (adj_occurrence & (1 << (occur_bits - 1 - i)))
+            data_ptr[byte_pos] |= (1 << (7 - bit_offset));
+    }
+    
+    return result;
+}
+
 

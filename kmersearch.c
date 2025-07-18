@@ -5063,6 +5063,8 @@ kmersearch_count_matching_kmer_fast_sve(VarBit **seq_keys, int seq_nkeys, VarBit
     return match_count;
 }
 
+#endif
+
 /*
  * Get appropriate uint size for k-mer length
  */
@@ -5211,7 +5213,7 @@ kmersearch_expand_dna4_kmer2_as_uint_to_dna2_direct(VarBit *dna4_seq, int start_
  */
 #ifdef __x86_64__
 __attribute__((target("avx2")))
-static void *
+static void
 kmersearch_extract_dna2_kmer2_as_uint_direct_avx2(VarBit *seq, int k, void **output, int *nkeys)
 {
     int seq_bits = VARBITLEN(seq);
@@ -5225,7 +5227,7 @@ kmersearch_extract_dna2_kmer2_as_uint_direct_avx2(VarBit *seq, int k, void **out
     *nkeys = 0;
     if (max_kmers <= 0) {
         *output = NULL;
-        return NULL;
+        return;
     }
     
     result = palloc(max_kmers * element_size);
@@ -5349,15 +5351,13 @@ kmersearch_extract_dna2_kmer2_as_uint_direct_avx2(VarBit *seq, int k, void **out
             (*nkeys)++;
         }
     }
-    
-    return result;
 }
 
 /*
  * DNA2 AVX512 implementation - DIRECT BIT MANIPULATION
  */
 __attribute__((target("avx512bw")))
-static void *
+static void
 kmersearch_extract_dna2_kmer2_as_uint_direct_avx512(VarBit *seq, int k, void **output, int *nkeys)
 {
     int seq_bits = VARBITLEN(seq);
@@ -5371,7 +5371,7 @@ kmersearch_extract_dna2_kmer2_as_uint_direct_avx512(VarBit *seq, int k, void **o
     *nkeys = 0;
     if (max_kmers <= 0) {
         *output = NULL;
-        return NULL;
+        return;
     }
     
     result = palloc(max_kmers * element_size);
@@ -5493,8 +5493,6 @@ kmersearch_extract_dna2_kmer2_as_uint_direct_avx512(VarBit *seq, int k, void **o
             (*nkeys)++;
         }
     }
-    
-    return result;
 }
 #endif
 
@@ -5503,7 +5501,7 @@ kmersearch_extract_dna2_kmer2_as_uint_direct_avx512(VarBit *seq, int k, void **o
  */
 #ifdef __aarch64__
 __attribute__((target("neon")))
-static void *
+static void
 kmersearch_extract_dna2_kmer2_as_uint_direct_neon(VarBit *seq, int k, void **output, int *nkeys)
 {
     int seq_bits = VARBITLEN(seq);
@@ -5517,7 +5515,7 @@ kmersearch_extract_dna2_kmer2_as_uint_direct_neon(VarBit *seq, int k, void **out
     *nkeys = 0;
     if (max_kmers <= 0) {
         *output = NULL;
-        return NULL;
+        return;
     }
     
     result = palloc(max_kmers * element_size);
@@ -5639,15 +5637,13 @@ kmersearch_extract_dna2_kmer2_as_uint_direct_neon(VarBit *seq, int k, void **out
             (*nkeys)++;
         }
     }
-    
-    return result;
 }
 
 /*
  * DNA2 SVE implementation - DIRECT BIT MANIPULATION
  */
 __attribute__((target("sve")))
-static void *
+static void
 kmersearch_extract_dna2_kmer2_as_uint_direct_sve(VarBit *seq, int k, void **output, int *nkeys)
 {
     int seq_bits = VARBITLEN(seq);
@@ -5661,7 +5657,7 @@ kmersearch_extract_dna2_kmer2_as_uint_direct_sve(VarBit *seq, int k, void **outp
     *nkeys = 0;
     if (max_kmers <= 0) {
         *output = NULL;
-        return NULL;
+        return;
     }
     
     result = palloc(max_kmers * element_size);
@@ -5783,15 +5779,13 @@ kmersearch_extract_dna2_kmer2_as_uint_direct_sve(VarBit *seq, int k, void **outp
             (*nkeys)++;
         }
     }
-    
-    return result;
 }
 #endif
 
 /*
  * DNA2 scalar implementation - DIRECT BIT MANIPULATION
  */
-static void *
+static void
 kmersearch_extract_dna2_kmer2_as_uint_direct_scalar(VarBit *seq, int k, void **output, int *nkeys)
 {
     int seq_bits = VARBITLEN(seq);
@@ -5805,7 +5799,7 @@ kmersearch_extract_dna2_kmer2_as_uint_direct_scalar(VarBit *seq, int k, void **o
     *nkeys = 0;
     if (max_kmers <= 0) {
         *output = NULL;
-        return NULL;
+        return;
     }
     
     result = palloc(max_kmers * element_size);
@@ -5867,8 +5861,6 @@ kmersearch_extract_dna2_kmer2_as_uint_direct_scalar(VarBit *seq, int k, void **o
             (*nkeys)++;
         }
     }
-    
-    return result;
 }
 
 /*
@@ -5876,7 +5868,7 @@ kmersearch_extract_dna2_kmer2_as_uint_direct_scalar(VarBit *seq, int k, void **o
  */
 #ifdef __x86_64__
 __attribute__((target("avx2")))
-static void *
+static void
 kmersearch_extract_dna4_kmer2_as_uint_with_expansion_direct_avx2(VarBit *seq, int k, void **output, int *nkeys)
 {
     int seq_bits = VARBITLEN(seq);
@@ -5890,7 +5882,7 @@ kmersearch_extract_dna4_kmer2_as_uint_with_expansion_direct_avx2(VarBit *seq, in
     *nkeys = 0;
     if (max_kmers <= 0) {
         *output = NULL;
-        return NULL;
+        return;
     }
     
     /* Allocate result array with room for expansions (max 10 expansions per k-mer position) */
@@ -5974,14 +5966,13 @@ kmersearch_extract_dna4_kmer2_as_uint_with_expansion_direct_avx2(VarBit *seq, in
     }
     
     *nkeys = key_count;
-    return result;
 }
 
 /*
  * DNA4 AVX512 implementation - DIRECT DEGENERATE EXPANSION
  */
 __attribute__((target("avx512bw")))
-static void *
+static void
 kmersearch_extract_dna4_kmer2_as_uint_with_expansion_direct_avx512(VarBit *seq, int k, void **output, int *nkeys)
 {
     int seq_bits = VARBITLEN(seq);
@@ -5995,7 +5986,7 @@ kmersearch_extract_dna4_kmer2_as_uint_with_expansion_direct_avx512(VarBit *seq, 
     *nkeys = 0;
     if (max_kmers <= 0) {
         *output = NULL;
-        return NULL;
+        return;
     }
     
     /* Allocate result array with room for expansions (max 10 expansions per k-mer position) */
@@ -6079,7 +6070,6 @@ kmersearch_extract_dna4_kmer2_as_uint_with_expansion_direct_avx512(VarBit *seq, 
     }
     
     *nkeys = key_count;
-    return result;
 }
 #endif
 
@@ -6088,7 +6078,7 @@ kmersearch_extract_dna4_kmer2_as_uint_with_expansion_direct_avx512(VarBit *seq, 
  */
 #ifdef __aarch64__
 __attribute__((target("neon")))
-static void *
+static void
 kmersearch_extract_dna4_kmer2_as_uint_with_expansion_direct_neon(VarBit *seq, int k, void **output, int *nkeys)
 {
     int seq_bits = VARBITLEN(seq);
@@ -6102,7 +6092,7 @@ kmersearch_extract_dna4_kmer2_as_uint_with_expansion_direct_neon(VarBit *seq, in
     *nkeys = 0;
     if (max_kmers <= 0) {
         *output = NULL;
-        return NULL;
+        return;
     }
     
     /* Allocate result array with room for expansions (max 10 expansions per k-mer position) */
@@ -6186,14 +6176,13 @@ kmersearch_extract_dna4_kmer2_as_uint_with_expansion_direct_neon(VarBit *seq, in
     }
     
     *nkeys = key_count;
-    return result;
 }
 
 /*
  * DNA4 SVE implementation - DIRECT DEGENERATE EXPANSION
  */
 __attribute__((target("sve")))
-static void *
+static void
 kmersearch_extract_dna4_kmer2_as_uint_with_expansion_direct_sve(VarBit *seq, int k, void **output, int *nkeys)
 {
     int seq_bits = VARBITLEN(seq);
@@ -6207,7 +6196,7 @@ kmersearch_extract_dna4_kmer2_as_uint_with_expansion_direct_sve(VarBit *seq, int
     *nkeys = 0;
     if (max_kmers <= 0) {
         *output = NULL;
-        return NULL;
+        return;
     }
     
     /* Allocate result array with room for expansions (max 10 expansions per k-mer position) */
@@ -6291,7 +6280,6 @@ kmersearch_extract_dna4_kmer2_as_uint_with_expansion_direct_sve(VarBit *seq, int
     }
     
     *nkeys = key_count;
-    return result;
 }
 #endif
 
@@ -6299,7 +6287,7 @@ kmersearch_extract_dna4_kmer2_as_uint_with_expansion_direct_sve(VarBit *seq, int
  * DNA4 scalar implementation - DIRECT DEGENERATE EXPANSION
  * Now using kmersearch_expand_dna4_kmer2_as_uint_to_dna2_direct() for direct uint output
  */
-static void *
+static void
 kmersearch_extract_dna4_kmer2_as_uint_with_expansion_direct_scalar(VarBit *seq, int k, void **output, int *nkeys)
 {
     int seq_bits = VARBITLEN(seq);
@@ -6313,7 +6301,7 @@ kmersearch_extract_dna4_kmer2_as_uint_with_expansion_direct_scalar(VarBit *seq, 
     *nkeys = 0;
     if (max_kmers <= 0) {
         *output = NULL;
-        return NULL;
+        return;
     }
     
     /* Allocate result array with room for expansions (max 10 expansions per k-mer position) */
@@ -6359,13 +6347,12 @@ kmersearch_extract_dna4_kmer2_as_uint_with_expansion_direct_scalar(VarBit *seq, 
     }
     
     *nkeys = key_count;
-    return result;
 }
 
 /*
  * DNA2 function dispatch
  */
-void *
+void
 kmersearch_extract_dna2_kmer2_as_uint_direct(VarBit *seq, int k, void **output, int *nkeys)
 {
     int seq_bits = VARBITLEN(seq);
@@ -6373,29 +6360,33 @@ kmersearch_extract_dna2_kmer2_as_uint_direct(VarBit *seq, int k, void **output, 
 #ifdef __x86_64__
     if (simd_capability >= SIMD_AVX512BW && seq_bits >= SIMD_EXTRACT_AVX512_THRESHOLD) {
         /* AVX512 implementation */
-        return kmersearch_extract_dna2_kmer2_as_uint_direct_avx512(seq, k, output, nkeys);
+        kmersearch_extract_dna2_kmer2_as_uint_direct_avx512(seq, k, output, nkeys);
+        return;
     }
     if (simd_capability >= SIMD_AVX2 && seq_bits >= SIMD_EXTRACT_AVX2_THRESHOLD) {
         /* AVX2 implementation */
-        return kmersearch_extract_dna2_kmer2_as_uint_direct_avx2(seq, k, output, nkeys);
+        kmersearch_extract_dna2_kmer2_as_uint_direct_avx2(seq, k, output, nkeys);
+        return;
     }
 #elif defined(__aarch64__)
     if (simd_capability >= SIMD_SVE && seq_bits >= SIMD_EXTRACT_SVE_THRESHOLD) {
         /* SVE implementation */
-        return kmersearch_extract_dna2_kmer2_as_uint_direct_sve(seq, k, output, nkeys);
+        kmersearch_extract_dna2_kmer2_as_uint_direct_sve(seq, k, output, nkeys);
+        return;
     }
     if (simd_capability >= SIMD_NEON && seq_bits >= SIMD_EXTRACT_NEON_THRESHOLD) {
         /* NEON implementation */
-        return kmersearch_extract_dna2_kmer2_as_uint_direct_neon(seq, k, output, nkeys);
+        kmersearch_extract_dna2_kmer2_as_uint_direct_neon(seq, k, output, nkeys);
+        return;
     }
 #endif
-    return kmersearch_extract_dna2_kmer2_as_uint_direct_scalar(seq, k, output, nkeys);
+    kmersearch_extract_dna2_kmer2_as_uint_direct_scalar(seq, k, output, nkeys);
 }
 
 /*
  * DNA4 function dispatch
  */
-void *
+void
 kmersearch_extract_dna4_kmer2_as_uint_with_expansion_direct(VarBit *seq, int k, void **output, int *nkeys)
 {
     int seq_bits = VARBITLEN(seq);
@@ -6403,23 +6394,25 @@ kmersearch_extract_dna4_kmer2_as_uint_with_expansion_direct(VarBit *seq, int k, 
 #ifdef __x86_64__
     if (simd_capability >= SIMD_AVX512BW && seq_bits >= SIMD_EXTRACT_AVX512_THRESHOLD) {
         /* AVX512 implementation */
-        return kmersearch_extract_dna4_kmer2_as_uint_with_expansion_direct_avx512(seq, k, output, nkeys);
+        kmersearch_extract_dna4_kmer2_as_uint_with_expansion_direct_avx512(seq, k, output, nkeys);
+        return;
     }
     if (simd_capability >= SIMD_AVX2 && seq_bits >= SIMD_EXTRACT_AVX2_THRESHOLD) {
         /* AVX2 implementation */
-        return kmersearch_extract_dna4_kmer2_as_uint_with_expansion_direct_avx2(seq, k, output, nkeys);
+        kmersearch_extract_dna4_kmer2_as_uint_with_expansion_direct_avx2(seq, k, output, nkeys);
+        return;
     }
 #elif defined(__aarch64__)
     if (simd_capability >= SIMD_SVE && seq_bits >= SIMD_EXTRACT_SVE_THRESHOLD) {
         /* SVE implementation */
-        return kmersearch_extract_dna4_kmer2_as_uint_with_expansion_direct_sve(seq, k, output, nkeys);
+        kmersearch_extract_dna4_kmer2_as_uint_with_expansion_direct_sve(seq, k, output, nkeys);
+        return;
     }
     if (simd_capability >= SIMD_NEON && seq_bits >= SIMD_EXTRACT_NEON_THRESHOLD) {
         /* NEON implementation */
-        return kmersearch_extract_dna4_kmer2_as_uint_with_expansion_direct_neon(seq, k, output, nkeys);
+        kmersearch_extract_dna4_kmer2_as_uint_with_expansion_direct_neon(seq, k, output, nkeys);
+        return;
     }
 #endif
-    return kmersearch_extract_dna4_kmer2_as_uint_with_expansion_direct_scalar(seq, k, output, nkeys);
+    kmersearch_extract_dna4_kmer2_as_uint_with_expansion_direct_scalar(seq, k, output, nkeys);
 }
-
-#endif
