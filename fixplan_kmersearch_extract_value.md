@@ -1,304 +1,212 @@
-# Fix Plan: kmersearch_extract_value Functions for kmer2_as_uint Integration
+# Fix Plan: Optimize GIN Index Construction with Cache-Based High-Frequency K-mer Filtering
 
 ## Overview
 
-The current implementation of `kmersearch_extract_value_dna2()` and `kmersearch_extract_value_dna4()` functions in `kmersearch_gin.c` uses the old approach of creating ngram_key2 first and then filtering high-frequency k-mers. This needs to be updated to align with the new kmer2_as_uint-based architecture.
+This plan outlines the modification of GIN index construction functions to use uint-based k-mer extraction with in-memory cache lookup for high-frequency k-mer filtering, replacing the current VarBit-based ngram_key2 extraction approach.
 
-## Current Implementation Issues
+## Current Implementation Analysis
 
-### 1. Outdated Workflow
-**Current workflow:**
-1. Extract ngram_key2 (kmer2 + occurrence count) from DNA data
-2. Filter high-frequency k-mers using ngram_key2 comparison
-3. Return filtered ngram_key2 array
-
-**Required new workflow:**
-1. Extract kmer2_as_uint from DNA data using existing functions
-2. Filter high-frequency k-mers using kmer2_as_uint comparison with cache
-3. Convert remaining kmer2_as_uint back to VarBit kmer2 format
-4. Add occurrence count to create ngram_key2
-5. Return ngram_key2 array for GIN index
-
-### 2. Missing Utility Functions
-The following utility functions are required but not implemented:
-- `kmersearch_kmer2_as_uint_to_kmer2()` - Convert kmer2_as_uint to VarBit kmer2
-- `kmersearch_create_ngram_key2_from_kmer2_as_uint()` - Create ngram_key2 from kmer2_as_uint
-- `kmersearch_lookup_kmer2_as_uint_in_global_cache()` - Global cache lookup
-- `kmersearch_lookup_kmer2_as_uint_in_parallel_cache()` - Parallel cache lookup
-
-### 3. Existing Functions to Utilize
-The following functions are already implemented and ready for use:
-- `kmersearch_extract_dna2_kmer2_as_uint_direct()` - Extract kmer2_as_uint from DNA2
-- `kmersearch_extract_dna4_kmer2_as_uint_with_expansion_direct()` - Extract kmer2_as_uint from DNA4
-
-## Required Changes
-
-### 1. Implement Utility Functions
-
-#### 1.1 kmersearch_kmer2_as_uint_to_kmer2()
-**Location**: `kmersearch_kmer.c`
-**Purpose**: Convert kmer2_as_uint to VarBit kmer2 format (1 nucleotide = 2 bits)
-
-```c
-VarBit *kmersearch_kmer2_as_uint_to_kmer2(uint64 kmer2_as_uint, int kmer_size)
-{
-    VarBit *result;
-    int total_bits = kmer_size * 2;  // 2 bits per nucleotide
-    int byte_size = (total_bits + 7) / 8;
-    int varbit_size = VARHDRSZ + byte_size;
-    
-    result = (VarBit *) palloc0(varbit_size);
-    SET_VARSIZE(result, varbit_size);
-    VARBITTOTALLEN(result) = total_bits;
-    
-    unsigned char *data = VARBITS(result);
-    
-    // Convert kmer2_as_uint to VarBit representation
-    for (int i = 0; i < total_bits; i++) {
-        if (kmer2_as_uint & (1ULL << (total_bits - 1 - i))) {
-            int byte_idx = i / 8;
-            int bit_idx = 7 - (i % 8);
-            data[byte_idx] |= (1 << bit_idx);
-        }
-    }
-    
-    return result;
-}
+### Current Flow
+```
+kmersearch_extract_value_dna2/4() [GIN functions]
+    ↓
+kmersearch_extract_dna2/4_ngram_key2_direct() [VarBit extraction]
+    ↓
+kmersearch_create_ngram_key2_with_occurrence_from_dna2/4() [VarBit creation]
+    ↓
+High-frequency filtering with hash-based cache lookup
 ```
 
-#### 1.2 kmersearch_create_ngram_key2_from_kmer2_as_uint()
-**Location**: `kmersearch_kmer.c`
-**Purpose**: Create ngram_key2 from kmer2_as_uint with occurrence count
+### Performance Issues
+- Multiple VarBit allocations and conversions
+- Hash calculation overhead for each ngram_key2
+- Inefficient memory usage during extraction
 
-```c
-VarBit *kmersearch_create_ngram_key2_from_kmer2_as_uint(uint64 kmer2_as_uint, int kmer_size, int occurrence_count)
-{
-    // Convert kmer2_as_uint to VarBit kmer2 format
-    VarBit *kmer2_varbit = kmersearch_kmer2_as_uint_to_kmer2(kmer2_as_uint, kmer_size);
-    
-    // Create ngram_key2 with occurrence count using existing function
-    VarBit *ngram_key2 = kmersearch_create_ngram_key2(kmer2_varbit, occurrence_count);
-    
-    pfree(kmer2_varbit);
-    return ngram_key2;
-}
+## Proposed Optimized Flow
+
+### New Flow
+```
+kmersearch_extract_value_dna2/4() [GIN functions]
+    ↓
+kmersearch_extract_dna2/4_kmer2_as_uint_direct() [SIMD optimized uint extraction]
+    ↓
+kmersearch_lookup_kmer2_as_uint_in_*_cache() [Direct uint cache lookup]
+    ↓
+kmersearch_create_ngram_key2_from_kmer2_as_uint() [Filtered VarBit creation]
 ```
 
-#### 1.3 Cache Lookup Functions
-**Location**: `kmersearch_cache.c`
-**Purpose**: Lookup kmer2_as_uint in cache structures
+### Performance Benefits
+- Direct uint-based cache lookup (no hash calculation needed)
+- Reduced memory allocations
+- SIMD optimization utilization
+- Early filtering before VarBit creation
 
-```c
-bool kmersearch_lookup_kmer2_as_uint_in_global_cache(uint64 kmer2_as_uint)
-{
-    if (!global_highfreq_cache.is_valid || global_highfreq_cache.highfreq_count == 0)
-        return false;
-    
-    bool found;
-    HighfreqKmerHashEntry *entry = (HighfreqKmerHashEntry *) hash_search(
-        global_highfreq_cache.highfreq_hash, 
-        &kmer2_as_uint, 
-        HASH_FIND, 
-        &found
-    );
-    
-    return found;
-}
+## Implementation Plan
 
-bool kmersearch_lookup_kmer2_as_uint_in_parallel_cache(uint64 kmer2_as_uint)
-{
-    if (!parallel_highfreq_cache || !parallel_highfreq_cache->is_initialized)
-        return false;
-    
-    ParallelHighfreqKmerCacheEntry *entry = dshash_find(
-        parallel_highfreq_cache->hash, 
-        &kmer2_as_uint, 
-        false
-    );
-    
-    return (entry != NULL);
-}
-```
+### 1. Core Conversion Function Implementation
 
-### 2. Update GIN Extract Value Functions
+#### Function: `kmersearch_kmer2_as_uint_to_kmer2()`
+- **Purpose**: Convert uint-based k-mer to VarBit k-mer format
+- **Parameters**: 
+  - `uint16/uint32/uint64 kmer2_as_uint`: Input k-mer as uint
+  - `int kmer_size`: K-mer length (4-32)
+- **Return**: `VarBit*` containing 2k bits k-mer data
+- **Implementation**:
+  - Allocate VarBit with `(kmer_size * 2)` bits
+  - Extract 2-bit nucleotides using bit masks and shifts
+  - Pack into VarBit format with proper bit alignment
+  - Handle different uint sizes (16/32/64) based on k-mer length
 
-#### 2.1 kmersearch_extract_value_dna2()
-**Location**: `kmersearch_gin.c`
+#### Function: `kmersearch_create_ngram_key2_from_kmer2_as_uint()`
+- **Purpose**: Create complete ngram_key2 from uint k-mer with occurrence count
+- **Parameters**:
+  - `uint16/uint32/uint64 kmer2_as_uint`: Input k-mer as uint
+  - `int kmer_size`: K-mer length
+  - `int occurrence`: Occurrence count (0 to max_occurrence)
+- **Return**: `VarBit*` containing complete ngram_key2 structure
+- **Implementation**:
+  - Call `kmersearch_kmer2_as_uint_to_kmer2()` to get k-mer VarBit
+  - Append occurrence count bits using existing occurrence handling logic
+  - Return complete ngram_key2 structure
+  - Handle occurrence count capping based on `kmersearch_occur_bitlen`
 
-**New implementation approach:**
-```c
-Datum kmersearch_extract_value_dna2(PG_FUNCTION_ARGS)
-{
-    kmersearch_dna2 *dna = (kmersearch_dna2 *) PG_DETOAST_DATUM(PG_GETARG_DATUM(0));
-    int32 *nkeys = (int32 *) PG_GETARG_POINTER(1);
-    
-    Datum *keys;
-    int k = kmersearch_kmer_size;
-    
-    if (k < 4 || k > 32)
-        ereport(ERROR, (errmsg("k-mer length must be between 4 and 32")));
-    
-    // Step 1: Extract kmer2_as_uint values from DNA2 data using existing function
-    uint64 *kmer2_as_uint_array;
-    int total_kmers;
-    void *output;
-    
-    kmersearch_extract_dna2_kmer2_as_uint_direct((VarBit *)dna, k, &output, &total_kmers);
-    kmer2_as_uint_array = (uint64 *)output;
-    
-    if (!kmer2_as_uint_array || total_kmers == 0) {
-        *nkeys = 0;
-        PG_RETURN_POINTER(NULL);
-    }
-    
-    // Step 2: Filter high-frequency k-mers using kmer2_as_uint comparison
-    uint64 *filtered_kmer2_array;
-    int filtered_count;
-    
-    if (kmersearch_preclude_highfreq_kmer) {
-        filtered_kmer2_array = kmersearch_filter_highfreq_kmer2_as_uint(
-            kmer2_as_uint_array, total_kmers, &filtered_count, k);
-    } else {
-        filtered_kmer2_array = kmer2_as_uint_array;
-        filtered_count = total_kmers;
-    }
-    
-    // Step 3: Convert filtered kmer2_as_uint back to ngram_key2 format
-    keys = (Datum *) palloc(filtered_count * sizeof(Datum));
-    
-    for (int i = 0; i < filtered_count; i++) {
-        VarBit *ngram_key2 = kmersearch_create_ngram_key2_from_kmer2_as_uint(
-            filtered_kmer2_array[i], k, 0);  // occurrence_count = 0 for GIN index
-        keys[i] = PointerGetDatum(ngram_key2);
-    }
-    
-    *nkeys = filtered_count;
-    
-    // Cleanup
-    if (filtered_kmer2_array != kmer2_as_uint_array)
-        pfree(filtered_kmer2_array);
-    pfree(kmer2_as_uint_array);
-    
-    PG_RETURN_POINTER(keys);
-}
-```
+### 2. Cache Lookup Functions Implementation
 
-#### 2.2 kmersearch_extract_value_dna4()
-**Location**: `kmersearch_gin.c`
+#### Function: `kmersearch_lookup_kmer2_as_uint_in_global_cache()`
+- **Purpose**: Check if uint k-mer exists in global high-frequency cache
+- **Parameters**:
+  - `uint16/uint32/uint64 kmer2_as_uint`: K-mer to lookup
+  - `char *table_name`: Target table name
+  - `char *column_name`: Target column name
+- **Return**: `bool` - true if k-mer is high-frequency (should be excluded)
+- **Implementation**:
+  - Use `kmer2_as_uint` directly as hash key (no conversion needed)
+  - Search in global cache HTAB structure
+  - Return lookup result without VarBit conversion overhead
 
-**Similar implementation with DNA4-specific k-mer extraction:**
-```c
-Datum kmersearch_extract_value_dna4(PG_FUNCTION_ARGS)
-{
-    kmersearch_dna4 *dna = (kmersearch_dna4 *) PG_DETOAST_DATUM(PG_GETARG_DATUM(0));
-    int32 *nkeys = (int32 *) PG_GETARG_POINTER(1);
-    
-    Datum *keys;
-    int k = kmersearch_kmer_size;
-    
-    if (k < 4 || k > 32)
-        ereport(ERROR, (errmsg("k-mer length must be between 4 and 32")));
-    
-    // Step 1: Extract kmer2_as_uint values from DNA4 data with degenerate expansion
-    uint64 *kmer2_as_uint_array;
-    int total_kmers;
-    void *output;
-    
-    kmersearch_extract_dna4_kmer2_as_uint_with_expansion_direct((VarBit *)dna, k, &output, &total_kmers);
-    kmer2_as_uint_array = (uint64 *)output;
-    
-    if (!kmer2_as_uint_array || total_kmers == 0) {
-        *nkeys = 0;
-        PG_RETURN_POINTER(NULL);
-    }
-    
-    // Step 2: Filter high-frequency k-mers using kmer2_as_uint comparison
-    uint64 *filtered_kmer2_array;
-    int filtered_count;
-    
-    if (kmersearch_preclude_highfreq_kmer) {
-        filtered_kmer2_array = kmersearch_filter_highfreq_kmer2_as_uint(
-            kmer2_as_uint_array, total_kmers, &filtered_count, k);
-    } else {
-        filtered_kmer2_array = kmer2_as_uint_array;
-        filtered_count = total_kmers;
-    }
-    
-    // Step 3: Convert filtered kmer2_as_uint back to ngram_key2 format
-    keys = (Datum *) palloc(filtered_count * sizeof(Datum));
-    
-    for (int i = 0; i < filtered_count; i++) {
-        VarBit *ngram_key2 = kmersearch_create_ngram_key2_from_kmer2_as_uint(
-            filtered_kmer2_array[i], k, 0);  // occurrence_count = 0 for GIN index
-        keys[i] = PointerGetDatum(ngram_key2);
-    }
-    
-    *nkeys = filtered_count;
-    
-    // Cleanup
-    if (filtered_kmer2_array != kmer2_as_uint_array)
-        pfree(filtered_kmer2_array);
-    pfree(kmer2_as_uint_array);
-    
-    PG_RETURN_POINTER(keys);
-}
-```
+#### Function: `kmersearch_lookup_kmer2_as_uint_in_parallel_cache()`
+- **Purpose**: Check if uint k-mer exists in parallel high-frequency cache
+- **Parameters**: Same as global cache function
+- **Return**: `bool` - true if k-mer is high-frequency (should be excluded)
+- **Implementation**:
+  - Use `kmer2_as_uint` directly as dshash key
+  - Proper lock management for dshash operations
+  - Handle DSM segment access and error conditions
 
-### 3. Required Supporting Functions
+### 3. GIN Extract Value Functions Modification
 
-#### 3.1 kmersearch_filter_highfreq_kmer2_as_uint()
-**Location**: `kmersearch_gin.c`
-**Purpose**: Filter high-frequency k-mers using kmer2_as_uint comparison
+#### Function: `kmersearch_extract_value_dna2()` Modifications
+- **New Implementation**:
+  1. Call `kmersearch_extract_dna2_kmer2_as_uint_direct()` to get uint k-mer array
+  2. Initialize `KmerOccurrence` tracking structure for deduplication
+  3. For each extracted uint k-mer:
+     - Check cache using `kmersearch_lookup_kmer2_as_uint_in_*_cache()`
+     - Skip if high-frequency (excluded)
+     - Track occurrence count using binary search
+  4. Create final ngram_key2 array using `kmersearch_create_ngram_key2_from_kmer2_as_uint()`
+  5. Return filtered `Datum` array
 
-```c
-uint64 *kmersearch_filter_highfreq_kmer2_as_uint(uint64 *original_array, int original_count, 
-                                                int *filtered_count, int k)
-{
-    uint64 *filtered_array;
-    int count = 0;
-    
-    filtered_array = (uint64 *) palloc(original_count * sizeof(uint64));
-    
-    for (int i = 0; i < original_count; i++) {
-        bool is_highfreq = false;
-        
-        // Check against global cache
-        if (global_highfreq_cache.is_valid) {
-            is_highfreq = kmersearch_lookup_kmer2_as_uint_in_global_cache(original_array[i]);
-        }
-        
-        // Check against parallel cache if needed
-        if (!is_highfreq && (kmersearch_force_use_parallel_highfreq_kmer_cache || IsParallelWorker())) {
-            is_highfreq = kmersearch_lookup_kmer2_as_uint_in_parallel_cache(original_array[i]);
-        }
-        
-        if (!is_highfreq) {
-            filtered_array[count++] = original_array[i];
-        }
-    }
-    
-    *filtered_count = count;
-    return filtered_array;
-}
-```
+#### Function: `kmersearch_extract_value_dna4()` Modifications
+- **New Implementation**:
+  1. Call `kmersearch_extract_dna4_kmer2_as_uint_with_expansion_direct()` to get uint k-mer array
+  2. Handle degenerate expansion results (multiple uint k-mers per position)
+  3. Initialize `KmerOccurrence` tracking for deduplication
+  4. For each expanded uint k-mer:
+     - Check cache using `kmersearch_lookup_kmer2_as_uint_in_*_cache()`
+     - Skip if high-frequency (excluded)
+     - Track occurrence count using binary search
+  5. Create final ngram_key2 array using `kmersearch_create_ngram_key2_from_kmer2_as_uint()`
+  6. Return filtered `Datum` array
 
-## Implementation Priority
+### 4. Cache Key Format Adaptation
 
-1. **High Priority**: Implement utility functions for kmer2_as_uint to VarBit conversion
-2. **High Priority**: Update GIN extract_value functions to use new workflow
-3. **Medium Priority**: Implement cache lookup functions for kmer2_as_uint
-4. **Medium Priority**: Update filtering functions to work with kmer2_as_uint arrays
+#### Current Cache Key Format
+- **Storage**: `uint64` hash values calculated from complete ngram_key2 VarBit
+- **Generation**: Uses PostgreSQL's `hash_any()` function
 
-## Testing Requirements
+#### New Cache Key Format
+- **Storage**: Direct `uint16/uint32/uint64` k-mer values
+- **Benefits**: No hash calculation overhead, direct comparison
+- **Compatibility**: Requires cache rebuilding or dual-format support
 
-1. Verify that GIN index creation works correctly with new extract_value functions
-2. Test high-frequency k-mer filtering during index creation
-3. Ensure compatibility with existing search operations
-4. Validate that occurrence count handling is correct
+### 5. Integration Points
 
-## Notes
+#### Occurrence Count Handling
+- **Reference Implementation**: Use existing logic from `kmersearch_extract_dna2_ngram_key2_direct()`
+- **Key Features**:
+  - `KmerOccurrence` structure for deduplication
+  - Binary search for efficient insertion
+  - Occurrence count capping based on `kmersearch_occur_bitlen`
+  - Memory-efficient processing
 
-- The occurrence count for GIN index entries is typically 0 (first occurrence)
-- Multiple occurrences of the same k-mer within a sequence should be handled appropriately
-- Memory management must be careful to avoid leaks with the new VarBit creation functions
-- All new functions should have proper error handling and validation
+#### SIMD Optimization Integration
+- **Utilize**: Existing SIMD dispatch in `kmersearch_extract_dna2/4_kmer2_as_uint_direct()`
+- **Benefits**: Platform-specific optimizations (AVX2, AVX512, NEON, SVE)
+- **Compatibility**: Maintain scalar fallback implementation
+
+#### Error Handling
+- **Memory Management**: Proper cleanup of intermediate uint arrays
+- **Validation**: Parameter bounds checking and GUC validation
+- **Cache Errors**: Graceful fallback to system table lookup
+
+## Implementation Phases
+
+### Phase 1: Core Conversion Functions
+1. Implement `kmersearch_kmer2_as_uint_to_kmer2()`
+2. Implement `kmersearch_create_ngram_key2_from_kmer2_as_uint()`
+3. Add unit tests for conversion accuracy
+
+### Phase 2: Cache Lookup Functions
+1. Implement `kmersearch_lookup_kmer2_as_uint_in_global_cache()`
+2. Implement `kmersearch_lookup_kmer2_as_uint_in_parallel_cache()`
+3. Add cache key format adaptation logic
+
+### Phase 3: GIN Function Modifications
+1. Modify `kmersearch_extract_value_dna2()` to use new flow
+2. Modify `kmersearch_extract_value_dna4()` to use new flow
+3. Update occurrence count handling integration
+
+### Phase 4: Testing and Validation
+1. Run regression tests to ensure correctness
+2. Performance benchmarking against current implementation
+3. Memory usage analysis and optimization
+
+## Expected Benefits
+
+### Performance Improvements
+- **Reduced Memory Allocations**: Fewer VarBit objects created
+- **Faster Cache Lookups**: Direct uint comparison vs hash calculation
+- **SIMD Utilization**: Better use of optimized extraction functions
+- **Early Filtering**: Exclude high-frequency k-mers before VarBit creation
+
+### Code Quality
+- **Reduced Duplication**: Unified uint-based processing
+- **Better Maintainability**: Clearer separation of concerns
+- **Optimized Memory Usage**: More efficient intermediate representations
+
+## Compatibility Considerations
+
+### Cache Format Migration
+- **Current**: Hash-based cache keys
+- **New**: Direct uint-based cache keys
+- **Solution**: Implement dual-format support or cache rebuilding
+
+### API Compatibility
+- **External APIs**: No changes to public function signatures
+- **Internal APIs**: Modified internal function interfaces
+- **Testing**: Comprehensive regression testing required
+
+## Risk Mitigation
+
+### Testing Strategy
+- **Unit Tests**: Individual function validation
+- **Integration Tests**: Full GIN index construction testing
+- **Performance Tests**: Benchmarking against current implementation
+- **Regression Tests**: Ensure no functionality breaks
+
+### Rollback Plan
+- **Conditional Compilation**: Feature flags for easy rollback
+- **Comprehensive Testing**: Validate all edge cases
+- **Performance Monitoring**: Track memory usage and query performance
+
+This plan provides a comprehensive approach to optimizing GIN index construction while maintaining functionality and improving performance through better cache utilization and reduced memory overhead.
