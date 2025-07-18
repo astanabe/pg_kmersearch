@@ -41,11 +41,6 @@ static int kmersearch_get_analysis_dshash_count(void);
 static void kmersearch_insert_kmer2_as_uint_from_dshash(Oid table_oid, const char *column_name, int k_size);
 
 /* External functions are now declared in kmersearch.h */
-extern HighfreqKmerCache global_highfreq_cache;
-
-/* External parallel cache variables (defined in kmersearch_cache.c) */
-extern ParallelHighfreqKmerCache *parallel_highfreq_cache;
-extern dshash_table *parallel_cache_hash;
 
 /* Analysis-specific dshash resources for temp_kmer_final replacement */
 static dsm_segment *analysis_dsm_segment = NULL;

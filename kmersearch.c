@@ -99,7 +99,6 @@ static int get_processed_row_count(KmerWorkerState *worker);
 static bool kmersearch_parallel_highfreq_kmer_cache_is_valid(Oid table_oid, const char *column_name, int k_value);
 
 /* Analysis dshash functions (defined in kmersearch_freq.c) */
-extern bool kmersearch_is_kmer_hash_in_analysis_dshash(uint64 kmer_hash);
 /* High-frequency k-mer analysis functions - Phase 2 */
 void kmersearch_collect_ngram_key2_for_highfreq_kmer(Oid table_oid, const char *column_name, int k_size, const char *highfreq_table_name);
 static void kmersearch_worker_collect_ngram_key2(KmerWorkerState *worker, Relation rel, const char *column_name, int k_size, const char *highfreq_table_name);

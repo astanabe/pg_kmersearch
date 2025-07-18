@@ -492,12 +492,6 @@ void kmersearch_free_query_pattern_cache_internal(void);
 void kmersearch_free_actual_min_score_cache_internal(void);
 
 /* High-frequency k-mer cache global variables (defined in kmersearch_cache.c) */
-extern HighfreqKmerCache global_highfreq_cache;
-extern bool kmersearch_force_use_parallel_highfreq_kmer_cache;
-extern ParallelHighfreqKmerCache *parallel_highfreq_cache;
-extern dsm_segment *parallel_cache_segment;
-extern dsa_area *parallel_cache_dsa;
-extern dshash_table *parallel_cache_hash;
 
 /* High-frequency k-mer cache internal functions */
 bool kmersearch_validate_guc_against_metadata(Oid table_oid, const char *column_name, int k_value);
@@ -562,7 +556,6 @@ VarBit **kmersearch_extract_query_ngram_key2(const char *query, int k, int *nkey
 uint8 kmersearch_get_bit_at(bits8 *data, int bit_pos);
 bool kmersearch_will_exceed_degenerate_limit(const char *seq, int len);
 VarBit **kmersearch_extract_query_kmer_with_degenerate(const char *query, int k, int *nkeys);
-VarBit **kmersearch_extract_query_ngram_key2_with_expansion(const char *query, int k, int *nkeys);
 char *kmersearch_varbit_to_hex_string(VarBit *varbit);
 Datum *kmersearch_extract_dna2_kmer2_only(VarBit *seq, int k, int *nkeys);
 KmerData kmersearch_encode_kmer2_only_data(VarBit *kmer, int k_size);
@@ -588,7 +581,6 @@ int calculate_actual_min_score(VarBit **query_keys, int nkeys, int query_total_k
 
 /* Query pattern cache functions (implemented in kmersearch_cache.c) */
 VarBit **get_cached_query_kmer(const char *query_string, int k_size, int *nkeys);
-void lru_evict_oldest_query_pattern_cache(QueryPatternCacheManager *manager);
 
 /* Actual min score cache functions (implemented in kmersearch_cache.c) */  
 int get_cached_actual_min_score(VarBit **query_keys, int nkeys);
