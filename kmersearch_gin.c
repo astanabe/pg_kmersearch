@@ -201,7 +201,7 @@ kmersearch_consistent(PG_FUNCTION_ARGS)
     
     /* High-frequency k-mer cache checking is not needed during search operations */
     
-    *recheck = true;  /* Always recheck for scoring */
+    *recheck = false;  /* No recheck needed - actual_min_score accounts for high-frequency k-mer exclusion */
     
     /* Count matching keys */
     for (i = 0; i < nkeys; i++)
