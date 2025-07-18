@@ -668,8 +668,7 @@ static void init_simd_dispatch_table(void)
             simd_dispatch.dna4_encode = dna4_encode_avx2;
             simd_dispatch.dna4_decode = dna4_decode_avx2;
             break;
-#endif
-#ifdef __aarch64__
+#elif defined(__aarch64__)
 #ifdef __ARM_FEATURE_SVE
         case SIMD_SVE:
             simd_dispatch.dna2_encode = dna2_encode_sve;
