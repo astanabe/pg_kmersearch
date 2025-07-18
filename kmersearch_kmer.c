@@ -730,7 +730,7 @@ kmersearch_extract_query_ngram_key2(const char *query, int k, int *nkeys)
     simd_dispatch.dna4_encode(query, (uint8_t*)data_ptr, query_len);
     
     /* Extract k-mers using SIMD optimized function */
-    datum_keys = kmersearch_extract_dna4_kmer2_with_expansion_direct(dna4_seq, k, nkeys);
+    datum_keys = kmersearch_extract_dna4_ngram_key2_with_expansion_direct(dna4_seq, k, nkeys);
     
     if (datum_keys == NULL || *nkeys == 0) {
         pfree(dna4_seq);
@@ -912,7 +912,7 @@ kmersearch_varbit_to_hex_string(VarBit *varbit)
     return hex_string;
 }
 
-/* Note: kmersearch_extract_dna2_kmer2_direct kept in kmersearch.c due to SIMD dependencies */
+/* Note: kmersearch_extract_dna2_ngram_key2_direct kept in kmersearch.c due to SIMD dependencies */
 
 /*
  * Extract k-mers from DNA2 sequence without occurrence count (internal function)

@@ -546,6 +546,8 @@ void kmersearch_expand_degenerate_sequence(const char *kmer, int k, char **expan
 VarBit *kmersearch_create_ngram_key2(const char *kmer, int k, int occurrence);
 Datum *kmersearch_extract_dna2_kmer2_direct(VarBit *dna, int k, int *nkeys);
 Datum *kmersearch_extract_dna4_kmer2_with_expansion_direct(VarBit *dna, int k, int *nkeys);
+Datum *kmersearch_extract_dna2_ngram_key2_direct(VarBit *dna, int k, int *nkeys);
+Datum *kmersearch_extract_dna4_ngram_key2_with_expansion_direct(VarBit *dna, int k, int *nkeys);
 int kmersearch_count_degenerate_combinations(const char *kmer, int k);
 void kmersearch_set_bit_at(bits8 *data, int bit_pos, int value);
 bool kmersearch_will_exceed_degenerate_limit_dna4_bits(VarBit *seq, int start_pos, int k);
