@@ -629,4 +629,13 @@ void kmersearch_validate_analysis_parameters(Oid table_oid, const char *column_n
 /* Utility functions for unique temporary table name generation */
 char *kmersearch_generate_unique_temp_table_name(const char *prefix, int additional_id);
 
+/* Native uint k-mer extraction functions */
+void *kmersearch_extract_dna2_kmer2_as_uint_direct(VarBit *seq, int k, void **output, int *nkeys);
+void *kmersearch_extract_dna4_kmer2_as_uint_with_expansion_direct(VarBit *seq, int k, void **output, int *nkeys);
+
+/* Direct bit manipulation helper functions */
+size_t kmersearch_get_kmer_uint_size(int k);
+void kmersearch_extract_dna4_kmer_expansions_direct_bits(VarBit *seq, int start_pos, int k, uint64 *output, int *count);
+void *kmersearch_expand_dna4_kmer2_as_uint_to_dna2_direct(VarBit *dna4_seq, int start_pos, int k, int *expansion_count);
+
 #endif   /* KMERSEARCH_H */

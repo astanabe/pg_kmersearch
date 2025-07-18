@@ -5065,4 +5065,358 @@ kmersearch_count_matching_kmer_fast_sve(VarBit **seq_keys, int seq_nkeys, VarBit
     
     return match_count;
 }
+
+/*
+ * Get appropriate uint size for k-mer length
+ */
+size_t
+kmersearch_get_kmer_uint_size(int k)
+{
+    if (k <= 8) return sizeof(uint16);
+    if (k <= 16) return sizeof(uint32);
+    if (k <= 32) return sizeof(uint64);
+    ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+                   errmsg("k-mer length must be between 4 and 32")));
+}
+
+
+/*
+ * Extract DNA4 base and get all possible expansions directly as uint values
+ */
+static void
+kmersearch_expand_dna4_base_direct(uint8 dna4_base, uint64 *expansions, int *count)
+{
+    /* DNA4 base expansion mapping - direct to 2-bit values */
+    static const uint8 dna4_expansions[][4] = {
+        {0},           /* A=0001 -> A(00) */
+        {1},           /* C=0010 -> C(01) */
+        {0, 1},        /* M=0011 -> A(00), C(01) */
+        {2},           /* G=0100 -> G(10) */
+        {0, 2},        /* R=0101 -> A(00), G(10) */
+        {1, 2},        /* S=0110 -> C(01), G(10) */
+        {0, 1, 2},     /* V=0111 -> A(00), C(01), G(10) */
+        {3},           /* T=1000 -> T(11) */
+        {0, 3},        /* W=1001 -> A(00), T(11) */
+        {1, 3},        /* Y=1010 -> C(01), T(11) */
+        {0, 1, 3},     /* H=1011 -> A(00), C(01), T(11) */
+        {2, 3},        /* K=1100 -> G(10), T(11) */
+        {0, 2, 3},     /* D=1101 -> A(00), G(10), T(11) */
+        {1, 2, 3},     /* B=1110 -> C(01), G(10), T(11) */
+        {0, 1, 2, 3}   /* N=1111 -> A(00), C(01), G(10), T(11) */
+    };
+    
+    static const int dna4_expansion_counts[] = {1, 1, 2, 1, 2, 2, 3, 1, 2, 2, 3, 2, 3, 3, 4};
+    
+    if (dna4_base == 0 || dna4_base > 15) {
+        *count = 0;
+        return;
+    }
+    
+    *count = dna4_expansion_counts[dna4_base - 1];
+    for (int i = 0; i < *count; i++) {
+        expansions[i] = dna4_expansions[dna4_base - 1][i];
+    }
+}
+
+/*
+ * Expand DNA4 k-mer to DNA2 k-mers directly as uint values
+ * Based on kmersearch_expand_dna4_kmer2_to_dna2_direct() but returns uint arrays
+ */
+void *
+kmersearch_expand_dna4_kmer2_as_uint_to_dna2_direct(VarBit *dna4_seq, int start_pos, int k, int *expansion_count)
+{
+    bits8 *data = VARBITS(dna4_seq);
+    uint8 base_expansions[32][4];  /* Max k=32, max 4 expansions per base */
+    int base_counts[32];
+    int total_combinations = 1;
+    void *results;
+    size_t element_size = kmersearch_get_kmer_uint_size(k);
+    int i, combo;
+    
+    *expansion_count = 0;
+    
+    /* Check if expansion will exceed limit */
+    if (kmersearch_will_exceed_degenerate_limit_dna4_bits(dna4_seq, start_pos, k))
+        return NULL;
+    
+    /* Extract expansion info for each base using the same logic as the original function */
+    for (i = 0; i < k; i++)
+    {
+        int bit_pos = (start_pos + i) * 4;
+        int byte_pos = bit_pos / 8;
+        int bit_offset = bit_pos % 8;
+        uint8 encoded;
+        int exp_count;
+        int j;
+        
+        /* Extract 4 bits */
+        if (bit_offset <= 4)
+        {
+            encoded = (data[byte_pos] >> (4 - bit_offset)) & 0xF;
+        }
+        else
+        {
+            encoded = ((data[byte_pos] << (bit_offset - 4)) & 0xF);
+            if (byte_pos + 1 < VARBITBYTES(dna4_seq))
+                encoded |= (data[byte_pos + 1] >> (12 - bit_offset));
+            encoded &= 0xF;
+        }
+        
+        /* Get expansion from table */
+        exp_count = kmersearch_dna4_to_dna2_table[encoded][0];
+        base_counts[i] = exp_count;
+        
+        for (j = 0; j < exp_count; j++)
+        {
+            base_expansions[i][j] = kmersearch_dna4_to_dna2_table[encoded][j + 1];
+        }
+        
+        total_combinations *= exp_count;
+    }
+    
+    /* Allocate result array for the appropriate uint type */
+    results = palloc(total_combinations * element_size);
+    
+    /* Generate all combinations directly as uint values */
+    for (combo = 0; combo < total_combinations; combo++)
+    {
+        uint64 kmer_value = 0;
+        int temp_combo = combo;
+        
+        /* Generate this combination */
+        for (i = 0; i < k; i++)
+        {
+            int base_idx = temp_combo % base_counts[i];
+            uint8 dna2_base = base_expansions[i][base_idx];
+            kmer_value = (kmer_value << 2) | dna2_base;
+            temp_combo /= base_counts[i];
+        }
+        
+        /* Store in appropriate uint type */
+        if (k <= 8) {
+            uint16 *uint_results = (uint16 *) results;
+            uint_results[combo] = (uint16) kmer_value;
+        } else if (k <= 16) {
+            uint32 *uint_results = (uint32 *) results;
+            uint_results[combo] = (uint32) kmer_value;
+        } else {
+            uint64 *uint_results = (uint64 *) results;
+            uint_results[combo] = kmer_value;
+        }
+    }
+    
+    *expansion_count = total_combinations;
+    return results;
+}
+
+/*
+ * DNA2 scalar implementation - DIRECT BIT MANIPULATION
+ */
+static void *
+kmersearch_extract_dna2_kmer2_as_uint_direct_scalar(VarBit *seq, int k, void **output, int *nkeys)
+{
+    int seq_bits = VARBITLEN(seq);
+    int seq_bases = seq_bits / 2;
+    int max_kmers = (seq_bases >= k) ? (seq_bases - k + 1) : 0;
+    size_t element_size = kmersearch_get_kmer_uint_size(k);
+    void *result;
+    bits8 *src_data = VARBITS(seq);
+    int i;
+    
+    *nkeys = 0;
+    if (max_kmers <= 0) {
+        *output = NULL;
+        return NULL;
+    }
+    
+    result = palloc(max_kmers * element_size);
+    *output = result;
+    
+    /* CRITICAL: Direct bit manipulation - NO VarBit intermediate objects */
+    if (k <= 8) {
+        uint16 *output_array = (uint16 *) result;
+        for (i = 0; i <= seq_bases - k; i++) {
+            uint64 kmer_value = 0;
+            int j;
+            
+            /* Extract k-mer directly from VarBit data */
+            for (j = 0; j < k; j++) {
+                int bit_pos = (i + j) * 2;
+                int byte_pos = bit_pos / 8;
+                int bit_offset = bit_pos % 8;
+                uint8 base_bits = (src_data[byte_pos] >> (6 - bit_offset)) & 0x3;
+                kmer_value = (kmer_value << 2) | base_bits;
+            }
+            
+            output_array[*nkeys] = (uint16) kmer_value;
+            (*nkeys)++;
+        }
+    } else if (k <= 16) {
+        uint32 *output_array = (uint32 *) result;
+        for (i = 0; i <= seq_bases - k; i++) {
+            uint64 kmer_value = 0;
+            int j;
+            
+            /* Extract k-mer directly from VarBit data */
+            for (j = 0; j < k; j++) {
+                int bit_pos = (i + j) * 2;
+                int byte_pos = bit_pos / 8;
+                int bit_offset = bit_pos % 8;
+                uint8 base_bits = (src_data[byte_pos] >> (6 - bit_offset)) & 0x3;
+                kmer_value = (kmer_value << 2) | base_bits;
+            }
+            
+            output_array[*nkeys] = (uint32) kmer_value;
+            (*nkeys)++;
+        }
+    } else {
+        uint64 *output_array = (uint64 *) result;
+        for (i = 0; i <= seq_bases - k; i++) {
+            uint64 kmer_value = 0;
+            int j;
+            
+            /* Extract k-mer directly from VarBit data */
+            for (j = 0; j < k; j++) {
+                int bit_pos = (i + j) * 2;
+                int byte_pos = bit_pos / 8;
+                int bit_offset = bit_pos % 8;
+                uint8 base_bits = (src_data[byte_pos] >> (6 - bit_offset)) & 0x3;
+                kmer_value = (kmer_value << 2) | base_bits;
+            }
+            
+            output_array[*nkeys] = kmer_value;
+            (*nkeys)++;
+        }
+    }
+    
+    return result;
+}
+
+/*
+ * DNA4 scalar implementation - DIRECT DEGENERATE EXPANSION
+ * Now using kmersearch_expand_dna4_kmer2_as_uint_to_dna2_direct() for direct uint output
+ */
+static void *
+kmersearch_extract_dna4_kmer2_as_uint_with_expansion_direct_scalar(VarBit *seq, int k, void **output, int *nkeys)
+{
+    int seq_bits = VARBITLEN(seq);
+    int seq_bases = seq_bits / 4;
+    int max_kmers = (seq_bases >= k) ? (seq_bases - k + 1) : 0;
+    size_t element_size = kmersearch_get_kmer_uint_size(k);
+    void *result;
+    int key_count = 0;
+    int i;
+    
+    *nkeys = 0;
+    if (max_kmers <= 0) {
+        *output = NULL;
+        return NULL;
+    }
+    
+    /* Allocate result array with room for expansions (max 10 expansions per k-mer position) */
+    result = palloc(max_kmers * 10 * element_size);
+    *output = result;
+    
+    /* Extract k-mers using direct uint expansion */
+    for (i = 0; i <= seq_bases - k; i++)
+    {
+        void *expanded_uints;
+        int expansion_count;
+        int j;
+        
+        /* Expand DNA4 k-mer to DNA2 k-mers directly as uint values */
+        expanded_uints = kmersearch_expand_dna4_kmer2_as_uint_to_dna2_direct(seq, i, k, &expansion_count);
+        
+        if (!expanded_uints || expansion_count == 0)
+            continue;
+        
+        /* Copy expanded uint values to result array */
+        if (k <= 8) {
+            uint16 *src_array = (uint16 *) expanded_uints;
+            uint16 *dst_array = (uint16 *) result;
+            for (j = 0; j < expansion_count; j++) {
+                dst_array[key_count++] = src_array[j];
+            }
+        } else if (k <= 16) {
+            uint32 *src_array = (uint32 *) expanded_uints;
+            uint32 *dst_array = (uint32 *) result;
+            for (j = 0; j < expansion_count; j++) {
+                dst_array[key_count++] = src_array[j];
+            }
+        } else {
+            uint64 *src_array = (uint64 *) expanded_uints;
+            uint64 *dst_array = (uint64 *) result;
+            for (j = 0; j < expansion_count; j++) {
+                dst_array[key_count++] = src_array[j];
+            }
+        }
+        
+        /* Free the expanded uint array */
+        pfree(expanded_uints);
+    }
+    
+    *nkeys = key_count;
+    return result;
+}
+
+/*
+ * DNA2 function dispatch
+ */
+void *
+kmersearch_extract_dna2_kmer2_as_uint_direct(VarBit *seq, int k, void **output, int *nkeys)
+{
+    int seq_bits = VARBITLEN(seq);
+    
+#ifdef __x86_64__
+    if (simd_capability >= SIMD_AVX512BW && seq_bits >= SIMD_EXTRACT_AVX512_THRESHOLD) {
+        /* AVX512 implementation - for now fallback to scalar */
+        return kmersearch_extract_dna2_kmer2_as_uint_direct_scalar(seq, k, output, nkeys);
+    }
+    if (simd_capability >= SIMD_AVX2 && seq_bits >= SIMD_EXTRACT_AVX2_THRESHOLD) {
+        /* AVX2 implementation - for now fallback to scalar */
+        return kmersearch_extract_dna2_kmer2_as_uint_direct_scalar(seq, k, output, nkeys);
+    }
+#elif defined(__aarch64__)
+    if (simd_capability >= SIMD_SVE && seq_bits >= SIMD_EXTRACT_SVE_THRESHOLD) {
+        /* SVE implementation - for now fallback to scalar */
+        return kmersearch_extract_dna2_kmer2_as_uint_direct_scalar(seq, k, output, nkeys);
+    }
+    if (simd_capability >= SIMD_NEON && seq_bits >= SIMD_EXTRACT_NEON_THRESHOLD) {
+        /* NEON implementation - for now fallback to scalar */
+        return kmersearch_extract_dna2_kmer2_as_uint_direct_scalar(seq, k, output, nkeys);
+    }
+#endif
+    return kmersearch_extract_dna2_kmer2_as_uint_direct_scalar(seq, k, output, nkeys);
+}
+
+/*
+ * DNA4 function dispatch
+ */
+void *
+kmersearch_extract_dna4_kmer2_as_uint_with_expansion_direct(VarBit *seq, int k, void **output, int *nkeys)
+{
+    int seq_bits = VARBITLEN(seq);
+    
+#ifdef __x86_64__
+    if (simd_capability >= SIMD_AVX512BW && seq_bits >= SIMD_EXTRACT_AVX512_THRESHOLD) {
+        /* AVX512 implementation - for now fallback to scalar */
+        return kmersearch_extract_dna4_kmer2_as_uint_with_expansion_direct_scalar(seq, k, output, nkeys);
+    }
+    if (simd_capability >= SIMD_AVX2 && seq_bits >= SIMD_EXTRACT_AVX2_THRESHOLD) {
+        /* AVX2 implementation - for now fallback to scalar */
+        return kmersearch_extract_dna4_kmer2_as_uint_with_expansion_direct_scalar(seq, k, output, nkeys);
+    }
+#elif defined(__aarch64__)
+    if (simd_capability >= SIMD_SVE && seq_bits >= SIMD_EXTRACT_SVE_THRESHOLD) {
+        /* SVE implementation - for now fallback to scalar */
+        return kmersearch_extract_dna4_kmer2_as_uint_with_expansion_direct_scalar(seq, k, output, nkeys);
+    }
+    if (simd_capability >= SIMD_NEON && seq_bits >= SIMD_EXTRACT_NEON_THRESHOLD) {
+        /* NEON implementation - for now fallback to scalar */
+        return kmersearch_extract_dna4_kmer2_as_uint_with_expansion_direct_scalar(seq, k, output, nkeys);
+    }
+#endif
+    return kmersearch_extract_dna4_kmer2_as_uint_with_expansion_direct_scalar(seq, k, output, nkeys);
+}
+
 #endif
