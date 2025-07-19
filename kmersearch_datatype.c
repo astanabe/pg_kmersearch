@@ -28,6 +28,8 @@ PG_FUNCTION_INFO_V1(kmersearch_dna2_eq);
 PG_FUNCTION_INFO_V1(kmersearch_dna4_eq);
 PG_FUNCTION_INFO_V1(kmersearch_dna2_char_length);
 PG_FUNCTION_INFO_V1(kmersearch_dna4_char_length);
+PG_FUNCTION_INFO_V1(kmersearch_dna2_to_bytea);
+PG_FUNCTION_INFO_V1(kmersearch_dna4_to_bytea);
 
 /* BTree comparison functions */
 PG_FUNCTION_INFO_V1(kmersearch_dna2_cmp);
@@ -613,6 +615,62 @@ kmersearch_dna4_cmp(PG_FUNCTION_ARGS)
     /* Same bit length, compare bit data using SIMD */
     result = dna_compare_simd(VARBITS(a), VARBITS(b), bit_len_a);
     PG_RETURN_INT32(result);
+}
+
+/*
+ * DNA2 to BYTEA conversion (bit length + bit data for hash uniqueness)
+ */
+Datum
+kmersearch_dna2_to_bytea(PG_FUNCTION_ARGS)
+{
+    VarBit *dna = PG_GETARG_VARBIT_P(0);
+    int32 bit_len = VARBITLEN(dna);
+    int byte_len = (bit_len + 7) / 8;
+    bytea *result;
+    int32 net_bit_len;
+    
+    /* Allocate space for bit length (4 bytes) + bit data */
+    result = (bytea *) palloc(VARHDRSZ + 4 + byte_len);
+    SET_VARSIZE(result, VARHDRSZ + 4 + byte_len);
+    
+    /* Store bit length in network byte order for consistency */
+    net_bit_len = htonl(bit_len);
+    memcpy(VARDATA(result), &net_bit_len, 4);
+    
+    /* Store bit data */
+    if (byte_len > 0) {
+        memcpy(VARDATA(result) + 4, VARBITS(dna), byte_len);
+    }
+    
+    PG_RETURN_BYTEA_P(result);
+}
+
+/*
+ * DNA4 to BYTEA conversion (bit length + bit data for consistency)
+ */
+Datum
+kmersearch_dna4_to_bytea(PG_FUNCTION_ARGS)
+{
+    VarBit *dna = PG_GETARG_VARBIT_P(0);
+    int32 bit_len = VARBITLEN(dna);
+    int byte_len = (bit_len + 7) / 8;
+    bytea *result;
+    int32 net_bit_len;
+    
+    /* Allocate space for bit length (4 bytes) + bit data */
+    result = (bytea *) palloc(VARHDRSZ + 4 + byte_len);
+    SET_VARSIZE(result, VARHDRSZ + 4 + byte_len);
+    
+    /* Store bit length in network byte order for consistency */
+    net_bit_len = htonl(bit_len);
+    memcpy(VARDATA(result), &net_bit_len, 4);
+    
+    /* Store bit data */
+    if (byte_len > 0) {
+        memcpy(VARDATA(result) + 4, VARBITS(dna), byte_len);
+    }
+    
+    PG_RETURN_BYTEA_P(result);
 }
 
 /*

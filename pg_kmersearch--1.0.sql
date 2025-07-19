@@ -442,6 +442,15 @@ CREATE FUNCTION length(DNA4)
     AS 'MODULE_PATHNAME', 'kmersearch_dna4_nuc_length'
     LANGUAGE C IMMUTABLE STRICT;
 
+-- BYTEA conversion functions for hash compatibility
+CREATE FUNCTION kmersearch_dna2_to_bytea(DNA2) RETURNS bytea
+    AS 'MODULE_PATHNAME', 'kmersearch_dna2_to_bytea'
+    LANGUAGE C IMMUTABLE STRICT;
+
+CREATE FUNCTION kmersearch_dna4_to_bytea(DNA4) RETURNS bytea
+    AS 'MODULE_PATHNAME', 'kmersearch_dna4_to_bytea'
+    LANGUAGE C IMMUTABLE STRICT;
+
 -- Complex types for function return values
 CREATE TYPE kmersearch_analysis_result AS (
     total_rows bigint,

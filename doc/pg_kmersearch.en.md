@@ -245,6 +245,13 @@ pg_kmersearch provides several length functions for DNA2 and DNA4 types that cor
 - **`char_length(DNA2/DNA4)`**: Same as `nuc_length()` (character count)
 - **`length(DNA2/DNA4)`**: Same as `nuc_length()` (standard length function)
 
+### BYTEA Conversion Functions
+
+- **`kmersearch_dna2_to_bytea(DNA2)`**: Converts DNA2 to BYTEA format suitable for hashing (includes bit length prefix)
+- **`kmersearch_dna4_to_bytea(DNA4)`**: Converts DNA4 to BYTEA format suitable for hashing (includes bit length prefix)
+
+These functions are optimized for use with cryptographic hash functions like pgcrypto's `digest()`. They include a 4-byte bit length prefix in network byte order, followed by the actual bit data, ensuring unique hash values even for sequences that differ only in padding.
+
 ### Function Relationships
 
 - **DNA2**: `nuc_length() = bit_length() / 2` (2 bits per nucleotide)
@@ -265,6 +272,16 @@ SELECT
 SELECT 
     bit_length('ATCGMRWSYKN'::DNA4) AS bits,  -- Returns: 44
     nuc_length('ATCGMRWSYKN'::DNA4) AS nucs;  -- Returns: 11
+
+-- BYTEA conversion for hashing (requires pgcrypto extension)
+SELECT digest(kmersearch_dna2_to_bytea('ATCG'::DNA2), 'sha256');
+SELECT digest(kmersearch_dna4_to_bytea('ATCGN'::DNA4), 'sha256');
+
+-- Verifying padding collision avoidance
+SELECT 
+    digest(kmersearch_dna2_to_bytea('ATG'::DNA2), 'sha256') AS hash_atg,
+    digest(kmersearch_dna2_to_bytea('ATGA'::DNA2), 'sha256') AS hash_atga;
+-- These will produce different hash values despite similar padding
 
 -- Padding verification (non-multiples of 4/8)
 SELECT 

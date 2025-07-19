@@ -245,6 +245,13 @@ pg_kmersearchは、DNA2型およびDNA4型に対してパディングを正し�
 - **`char_length(DNA2/DNA4)`**: `nuc_length()`と同じ（文字数）
 - **`length(DNA2/DNA4)`**: `nuc_length()`と同じ（標準の長さ関数）
 
+### BYTEA変換関数
+
+- **`kmersearch_dna2_to_bytea(DNA2)`**: DNA2をハッシュ化に適したBYTEA形式に変換（ビット長プレフィックス付き）
+- **`kmersearch_dna4_to_bytea(DNA4)`**: DNA4をハッシュ化に適したBYTEA形式に変換（ビット長プレフィックス付き）
+
+これらの関数は、pgcryptoの`digest()`などの暗号学的ハッシュ関数での使用に最適化されています。ネットワークバイトオーダーで4バイトのビット長プレフィックスを含み、その後に実際のビットデータが続くため、パディングのみが異なる配列でもユニークなハッシュ値を保証します。
+
 ### 関数の関係性
 
 - **DNA2**: `nuc_length() = bit_length() / 2` (1塩基あたり2ビット)
@@ -265,6 +272,16 @@ SELECT
 SELECT 
     bit_length('ATCGMRWSYKN'::DNA4) AS bits,  -- 戻り値: 44
     nuc_length('ATCGMRWSYKN'::DNA4) AS nucs;  -- 戻り値: 11
+
+-- ハッシュ化のためのBYTEA変換（pgcrypto拡張が必要）
+SELECT digest(kmersearch_dna2_to_bytea('ATCG'::DNA2), 'sha256');
+SELECT digest(kmersearch_dna4_to_bytea('ATCGN'::DNA4), 'sha256');
+
+-- パディング衝突回避の確認
+SELECT 
+    digest(kmersearch_dna2_to_bytea('ATG'::DNA2), 'sha256') AS hash_atg,
+    digest(kmersearch_dna2_to_bytea('ATGA'::DNA2), 'sha256') AS hash_atga;
+-- 類似したパディングにも関わらず異なるハッシュ値が生成される
 
 -- パディング検証（4/8の倍数でない場合）
 SELECT 
