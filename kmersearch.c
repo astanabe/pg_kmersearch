@@ -641,11 +641,11 @@ static void init_simd_dispatch_table(void)
     switch (simd_capability) {
 #ifdef __x86_64__
         case SIMD_AVX512BW:
-            /* DISABLED FOR TESTING: simd_dispatch.dna2_encode = dna2_encode_avx512; */
-            /* DISABLED FOR TESTING: simd_dispatch.dna2_decode = dna2_decode_avx512; */
-            /* DISABLED FOR TESTING: simd_dispatch.dna4_encode = dna4_encode_avx512; */
-            /* DISABLED FOR TESTING: simd_dispatch.dna4_decode = dna4_decode_avx512; */
-            /* Fall through to use AVX2 instead */
+            simd_dispatch.dna2_encode = dna2_encode_avx512;
+            simd_dispatch.dna2_decode = dna2_decode_avx512;
+            simd_dispatch.dna4_encode = dna4_encode_avx512;
+            simd_dispatch.dna4_decode = dna4_decode_avx512;
+            break;
         case SIMD_AVX512F:
             /* AVX512F without BW - use AVX2 fallback for encode/decode */
             simd_dispatch.dna2_encode = dna2_encode_avx2;
@@ -3250,35 +3250,30 @@ static void dna2_encode_avx512(const char* input, uint8_t* output, int len)
     for (int i = 0; i < simd_len; i += 64) {
         __m512i chars = _mm512_loadu_si512((__m512i*)(input + i));
         
-        /* Create comparison masks for each DNA base */
-        __mmask64 mask_A = _mm512_cmpeq_epi8_mask(chars, _mm512_set1_epi8('A')) |
-                          _mm512_cmpeq_epi8_mask(chars, _mm512_set1_epi8('a'));
-        __mmask64 mask_C = _mm512_cmpeq_epi8_mask(chars, _mm512_set1_epi8('C')) |
-                          _mm512_cmpeq_epi8_mask(chars, _mm512_set1_epi8('c'));
-        __mmask64 mask_G = _mm512_cmpeq_epi8_mask(chars, _mm512_set1_epi8('G')) |
-                          _mm512_cmpeq_epi8_mask(chars, _mm512_set1_epi8('g'));
-        __mmask64 mask_T = _mm512_cmpeq_epi8_mask(chars, _mm512_set1_epi8('T')) |
-                          _mm512_cmpeq_epi8_mask(chars, _mm512_set1_epi8('t')) |
-                          _mm512_cmpeq_epi8_mask(chars, _mm512_set1_epi8('U')) |
-                          _mm512_cmpeq_epi8_mask(chars, _mm512_set1_epi8('u'));
-        
-        /* Generate 2-bit encoded values using mask operations */
-        __m512i encoded;
+        /* Generate 2-bit encoded values using lookup table approach */
         uint8_t temp[64];
+        _mm512_storeu_si512((__m512i*)temp, chars);
         
-        encoded = _mm512_setzero_si512();
-        encoded = _mm512_mask_or_epi32(encoded, mask_C, encoded, _mm512_set1_epi8(1));
-        encoded = _mm512_mask_or_epi32(encoded, mask_G, encoded, _mm512_set1_epi8(2));
-        encoded = _mm512_mask_or_epi32(encoded, mask_T, encoded, _mm512_set1_epi8(3));
-        
-        /* Store and pack bits */
-        _mm512_storeu_si512((__m512i*)temp, encoded);
+        /* Encode each character using lookup table */
+        for (int j = 0; j < 64; j++) {
+            temp[j] = kmersearch_dna2_encode_table[(unsigned char)temp[j]];
+        }
         
         for (int j = 0; j < 64; j++) {
+            uint8_t encoded = temp[j];
             int bit_pos = (i + j) * 2;
             int byte_pos = bit_pos / 8;
             int bit_offset = bit_pos % 8;
-            output[byte_pos] |= (temp[j] << (6 - bit_offset));
+            
+            if (bit_offset <= 6) {
+                output[byte_pos] |= (encoded << (6 - bit_offset));
+            } else {
+                /* bit_offset == 7: handle byte boundary crossing */
+                output[byte_pos] |= (encoded >> 1);
+                if (byte_pos + 1 < byte_len) {
+                    output[byte_pos + 1] |= (encoded & 0x1) << 7;
+                }
+            }
         }
     }
     
@@ -3289,7 +3284,15 @@ static void dna2_encode_avx512(const char* input, uint8_t* output, int len)
         int byte_pos = bit_pos / 8;
         int bit_offset = bit_pos % 8;
         
-        output[byte_pos] |= (encoded << (6 - bit_offset));
+        if (bit_offset <= 6) {
+            output[byte_pos] |= (encoded << (6 - bit_offset));
+        } else {
+            /* bit_offset == 7: handle byte boundary crossing */
+            output[byte_pos] |= (encoded >> 1);
+            if (byte_pos + 1 < byte_len) {
+                output[byte_pos + 1] |= (encoded & 0x1) << 7;
+            }
+        }
     }
 }
 
@@ -3300,18 +3303,39 @@ static void dna2_decode_avx512(const uint8_t* input, char* output, int len)
     int simd_len = len & ~63;  /* Round down to multiple of 64 */
     
     for (int i = 0; i < simd_len; i += 64) {
-        /* Load 32 bytes to process 64 characters */
-        __m256i data = _mm256_loadu_si256((__m256i*)(input + i/4));
+        /* 64 characters need 128 bits = 16 bytes */
+        int bytes_needed = 16;
+        uint8_t temp[16];
         
-        uint8_t temp[32];
-        _mm256_storeu_si256((__m256i*)temp, data);
+        /* Clear temp array first */
+        memset(temp, 0, bytes_needed);
         
-        /* Decode each 2-bit pair */
+        /* Load required bytes from correct position */
+        for (int b = 0; b < bytes_needed && (i * 2 / 8 + b) < (len * 2 + 7) / 8; b++) {
+            temp[b] = input[i * 2 / 8 + b];
+        }
+        
+        /* Decode each 2-bit pair using relative positioning */
         for (int j = 0; j < 64; j++) {
-            int bit_pos = (i + j) * 2;
-            int byte_pos = bit_pos / 8;
-            int bit_offset = bit_pos % 8;
-            uint8_t encoded = (temp[byte_pos] >> (6 - bit_offset)) & 0x3;
+            int rel_bit_pos = j * 2;  /* Relative bit position in temp array */
+            int byte_pos = rel_bit_pos / 8;
+            int bit_offset = rel_bit_pos % 8;
+            uint8_t encoded = 0;
+            
+            if (bit_offset <= 6) {
+                encoded = (temp[byte_pos] >> (6 - bit_offset)) & 0x3;
+            } else {
+                /* bit_offset == 7: handle byte boundary crossing */
+                encoded = (temp[byte_pos] & 0x1) << 1;
+                if (byte_pos + 1 < bytes_needed) {
+                    encoded |= (temp[byte_pos + 1] >> 7) & 0x1;
+                }
+            }
+            
+            if (encoded >= 4) {
+                encoded = 0; /* Default to 'A' */
+            }
+            
             output[i + j] = kmersearch_dna2_decode_table[encoded];
         }
     }
@@ -3321,7 +3345,22 @@ static void dna2_decode_avx512(const uint8_t* input, char* output, int len)
         int bit_pos = i * 2;
         int byte_pos = bit_pos / 8;
         int bit_offset = bit_pos % 8;
-        uint8_t encoded = (input[byte_pos] >> (6 - bit_offset)) & 0x3;
+        uint8_t encoded = 0;
+        
+        if (bit_offset <= 6) {
+            encoded = (input[byte_pos] >> (6 - bit_offset)) & 0x3;
+        } else {
+            /* bit_offset == 7: handle byte boundary crossing */
+            encoded = (input[byte_pos] & 0x1) << 1;
+            if (byte_pos + 1 < (len * 2 + 7) / 8) {
+                encoded |= (input[byte_pos + 1] >> 7) & 0x1;
+            }
+        }
+        
+        if (encoded >= 4) {
+            encoded = 0; /* Default to 'A' */
+        }
+        
         output[i] = kmersearch_dna2_decode_table[encoded];
     }
     output[len] = '\0';
@@ -3354,9 +3393,12 @@ static void dna4_encode_avx512(const char* input, uint8_t* output, int len)
             if (bit_offset <= 4) {
                 output[byte_pos] |= (encoded << (4 - bit_offset));
             } else {
-                output[byte_pos] |= (encoded >> (bit_offset - 4));
-                if (byte_pos + 1 < byte_len)
-                    output[byte_pos + 1] |= (encoded << (12 - bit_offset));
+                /* bit_offset > 4: handle byte boundary crossing */
+                int remaining_bits = 8 - bit_offset;
+                output[byte_pos] |= (encoded >> (4 - remaining_bits));
+                if (byte_pos + 1 < byte_len) {
+                    output[byte_pos + 1] |= (encoded << (4 + remaining_bits));
+                }
             }
         }
     }
@@ -3371,9 +3413,12 @@ static void dna4_encode_avx512(const char* input, uint8_t* output, int len)
         if (bit_offset <= 4) {
             output[byte_pos] |= (encoded << (4 - bit_offset));
         } else {
-            output[byte_pos] |= (encoded >> (bit_offset - 4));
-            if (byte_pos + 1 < byte_len)
-                output[byte_pos + 1] |= (encoded << (12 - bit_offset));
+            /* bit_offset > 4: handle byte boundary crossing */
+            int remaining_bits = 8 - bit_offset;
+            output[byte_pos] |= (encoded >> (4 - remaining_bits));
+            if (byte_pos + 1 < byte_len) {
+                output[byte_pos + 1] |= (encoded << (4 + remaining_bits));
+            }
         }
     }
 }
@@ -3387,25 +3432,35 @@ static void dna4_decode_avx512(const uint8_t* input, char* output, int len)
     int simd_len = len & ~63;  /* Round down to multiple of 64 */
     
     for (int i = 0; i < simd_len; i += 64) {
-        /* Load 32 bytes to process 64 characters */
-        __m256i data = _mm256_loadu_si256((__m256i*)(input + i/2));
+        /* 64 characters need 256 bits = 32 bytes */
+        int bytes_needed = 32;
         uint8_t temp[32];
-        _mm256_storeu_si256((__m256i*)temp, data);
         
-        /* Decode each 4-bit nibble */
+        /* Load required bytes from correct position */
+        for (int b = 0; b < bytes_needed && (i * 4 / 8 + b) < (len * 4 + 7) / 8; b++) {
+            temp[b] = input[i * 4 / 8 + b];
+        }
+        
+        /* Decode each 4-bit nibble using relative positioning */
         for (int j = 0; j < 64; j++) {
-            int bit_pos = (i + j) * 4;
-            int byte_pos = bit_pos / 8;
-            int bit_offset = bit_pos % 8;
-            uint8_t encoded;
+            int rel_bit_pos = j * 4;  /* Relative bit position in temp array */
+            int byte_pos = rel_bit_pos / 8;
+            int bit_offset = rel_bit_pos % 8;
+            uint8_t encoded = 0;
             
             if (bit_offset <= 4) {
                 encoded = (temp[byte_pos] >> (4 - bit_offset)) & 0xF;
             } else {
-                encoded = ((temp[byte_pos] << (bit_offset - 4)) & 0xF);
-                if (byte_pos + 1 < (bit_len + 7) / 8)
-                    encoded |= (temp[byte_pos + 1] >> (12 - bit_offset));
-                encoded &= 0xF;
+                /* bit_offset > 4: handle byte boundary crossing */
+                int remaining_bits = 8 - bit_offset;
+                encoded = (temp[byte_pos] & ((1 << remaining_bits) - 1)) << (4 - remaining_bits);
+                if (byte_pos + 1 < bytes_needed) {
+                    encoded |= (temp[byte_pos + 1] >> (4 + remaining_bits)) & 0xF;
+                }
+            }
+            
+            if (encoded >= 16) {
+                encoded = 0; /* Default to '?' */
             }
             
             output[i + j] = kmersearch_dna4_decode_table[encoded];
@@ -3417,15 +3472,21 @@ static void dna4_decode_avx512(const uint8_t* input, char* output, int len)
         int bit_pos = i * 4;
         int byte_pos = bit_pos / 8;
         int bit_offset = bit_pos % 8;
-        uint8_t encoded;
+        uint8_t encoded = 0;
         
         if (bit_offset <= 4) {
             encoded = (input[byte_pos] >> (4 - bit_offset)) & 0xF;
         } else {
-            encoded = ((input[byte_pos] << (bit_offset - 4)) & 0xF);
-            if (byte_pos + 1 < (bit_len + 7) / 8)
-                encoded |= (input[byte_pos + 1] >> (12 - bit_offset));
-            encoded &= 0xF;
+            /* bit_offset > 4: handle byte boundary crossing */
+            int remaining_bits = 8 - bit_offset;
+            encoded = (input[byte_pos] & ((1 << remaining_bits) - 1)) << (4 - remaining_bits);
+            if (byte_pos + 1 < (len * 4 + 7) / 8) {
+                encoded |= (input[byte_pos + 1] >> (4 + remaining_bits)) & 0xF;
+            }
+        }
+        
+        if (encoded >= 16) {
+            encoded = 0; /* Default to '?' */
         }
         
         output[i] = kmersearch_dna4_decode_table[encoded];

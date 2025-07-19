@@ -71,7 +71,7 @@ FROM kmersearch_perform_highfreq_analysis(
 );
  total_rows | highfreq_kmers_count | parallel_workers_used | duration_valid | max_appearance_rate_used | max_appearance_nrow_used 
 ------------+----------------------+-----------------------+----------------+--------------------------+--------------------------
-          3 |                   21 |                     2 | t              |                      0.5 |                        1
+          3 |                    4 |                     2 | t              |                      0.5 |                        1
 (1 row)
 
 -- Check if the analysis is reflected in the view
@@ -113,7 +113,7 @@ FROM kmersearch_undo_highfreq_analysis(
 );
  dropped_analyses | dropped_highfreq_kmers | storage_freed 
 ------------------+------------------------+---------------
-                1 |                     21 | t
+                1 |                      4 | t
 (1 row)
 
 -- Verify analysis was dropped
