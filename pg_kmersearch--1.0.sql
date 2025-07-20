@@ -301,6 +301,37 @@ CREATE OPERATOR CLASS kmersearch_dna4_btree_ops
         OPERATOR 5 >,
         FUNCTION 1 kmersearch_dna4_cmp(DNA4, DNA4);
 
+-- Hash functions for GROUP BY and hash-based operations
+CREATE FUNCTION kmersearch_dna2_hash(DNA2) RETURNS integer
+    AS 'MODULE_PATHNAME', 'kmersearch_dna2_hash'
+    LANGUAGE C IMMUTABLE STRICT;
+
+CREATE FUNCTION kmersearch_dna4_hash(DNA4) RETURNS integer
+    AS 'MODULE_PATHNAME', 'kmersearch_dna4_hash'
+    LANGUAGE C IMMUTABLE STRICT;
+
+-- Extended hash functions for improved collision resistance
+CREATE FUNCTION kmersearch_dna2_hash_extended(DNA2, bigint) RETURNS bigint
+    AS 'MODULE_PATHNAME', 'kmersearch_dna2_hash_extended'
+    LANGUAGE C IMMUTABLE STRICT;
+
+CREATE FUNCTION kmersearch_dna4_hash_extended(DNA4, bigint) RETURNS bigint
+    AS 'MODULE_PATHNAME', 'kmersearch_dna4_hash_extended'
+    LANGUAGE C IMMUTABLE STRICT;
+
+-- Hash operator classes for DNA2 and DNA4
+CREATE OPERATOR CLASS kmersearch_dna2_hash_ops
+    DEFAULT FOR TYPE DNA2 USING hash AS
+        OPERATOR 1 =,
+        FUNCTION 1 kmersearch_dna2_hash(DNA2),
+        FUNCTION 2 kmersearch_dna2_hash_extended(DNA2, bigint);
+
+CREATE OPERATOR CLASS kmersearch_dna4_hash_ops
+    DEFAULT FOR TYPE DNA4 USING hash AS
+        OPERATOR 1 =,
+        FUNCTION 1 kmersearch_dna4_hash(DNA4),
+        FUNCTION 2 kmersearch_dna4_hash_extended(DNA4, bigint);
+
 -- System table for storing highly frequent k-mers
 CREATE TABLE kmersearch_highfreq_kmer (
     table_oid oid NOT NULL,

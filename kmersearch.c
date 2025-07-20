@@ -1994,6 +1994,15 @@ kmersearch_flush_hash_buffer_to_table(KmerBuffer *buffer, const char *temp_table
 {
     StringInfoData query;
     int i;
+    HTAB *aggregation_hash = NULL;
+    HASHCTL hash_ctl;
+    HASH_SEQ_STATUS status;
+    bool first;
+    typedef struct {
+        uint64_t kmer_hash;
+        int total_frequency;
+    } AggregationEntry;
+    AggregationEntry *entry;
     
     if (buffer->count == 0) {
         return;
@@ -2002,12 +2011,6 @@ kmersearch_flush_hash_buffer_to_table(KmerBuffer *buffer, const char *temp_table
     initStringInfo(&query);
     
     /* Aggregate duplicates in buffer before inserting */
-    HTAB *aggregation_hash = NULL;
-    HASHCTL hash_ctl;
-    typedef struct {
-        uint64_t kmer_hash;
-        int total_frequency;
-    } AggregationEntry;
     
     /* Create hash table for aggregation */
     memset(&hash_ctl, 0, sizeof(hash_ctl));
@@ -2022,14 +2025,14 @@ kmersearch_flush_hash_buffer_to_table(KmerBuffer *buffer, const char *temp_table
     for (i = 0; i < buffer->count; i++) {
         uint64_t kmer_hash = buffer->entries[i].kmer_data.k32_data;
         bool found;
-        AggregationEntry *entry = (AggregationEntry *) hash_search(aggregation_hash, 
-                                                                   (void *) &kmer_hash, 
-                                                                   HASH_ENTER, &found);
+        AggregationEntry *hash_entry = (AggregationEntry *) hash_search(aggregation_hash, 
+                                                                        (void *) &kmer_hash, 
+                                                                        HASH_ENTER, &found);
         if (!found) {
-            entry->kmer_hash = kmer_hash;
-            entry->total_frequency = buffer->entries[i].frequency_count;
+            hash_entry->kmer_hash = kmer_hash;
+            hash_entry->total_frequency = buffer->entries[i].frequency_count;
         } else {
-            entry->total_frequency += buffer->entries[i].frequency_count;
+            hash_entry->total_frequency += buffer->entries[i].frequency_count;
         }
     }
     
@@ -2037,9 +2040,7 @@ kmersearch_flush_hash_buffer_to_table(KmerBuffer *buffer, const char *temp_table
     appendStringInfo(&query, "INSERT INTO %s (kmer_data, frequency_count) VALUES ", temp_table_name);
     
     /* Iterate through aggregated entries */
-    HASH_SEQ_STATUS status;
-    AggregationEntry *entry;
-    bool first = true;
+    first = true;
     
     hash_seq_init(&status, aggregation_hash);
     while ((entry = (AggregationEntry *) hash_seq_search(&status)) != NULL) {
@@ -2198,6 +2199,13 @@ kmersearch_worker_analyze_blocks(KmerWorkerState *worker, Relation rel,
     TupleDesc tupdesc;
     int i;
     Datum *kmer_datums;
+    BlockNumber current_block;
+    bool isnull;
+    Datum value;
+    VarBit *sequence;
+    VarBit **kmers;
+    int nkeys;
+    int j;
     
     /* Use passed parameters instead of determining them again */
     tupdesc = RelationGetDescr(rel);
@@ -2210,7 +2218,6 @@ kmersearch_worker_analyze_blocks(KmerWorkerState *worker, Relation rel,
     kmersearch_create_worker_temp_table(worker->temp_table_name, k_size);
     
     /* Scan assigned blocks only */
-    BlockNumber current_block;
     
     for (current_block = worker->start_block; current_block < worker->end_block; current_block++) {
         Buffer buffer;
@@ -2228,31 +2235,24 @@ kmersearch_worker_analyze_blocks(KmerWorkerState *worker, Relation rel,
         for (offset = FirstOffsetNumber; offset <= max_offset; offset = OffsetNumberNext(offset)) {
             ItemId item_id;
             HeapTupleData tuple_data;
-            HeapTuple tuple = &tuple_data;
+            HeapTuple block_tuple = &tuple_data;
             
             /* Get the tuple */
             item_id = PageGetItemId(page, offset);
             if (!ItemIdIsNormal(item_id))
                 continue;
                 
-            tuple->t_len = ItemIdGetLength(item_id);
-            tuple->t_data = (HeapTupleHeader) PageGetItem(page, item_id);
-            tuple->t_tableOid = RelationGetRelid(rel);
-            tuple->t_self.ip_blkid.bi_hi = current_block >> 16;
-            tuple->t_self.ip_blkid.bi_lo = current_block & 0xFFFF;
-            tuple->t_self.ip_posid = offset;
-            
-            bool isnull;
-            Datum value;
-            VarBit *sequence;
-            VarBit **kmers;
-            int nkeys;
-            int j;
+            block_tuple->t_len = ItemIdGetLength(item_id);
+            block_tuple->t_data = (HeapTupleHeader) PageGetItem(page, item_id);
+            block_tuple->t_tableOid = RelationGetRelid(rel);
+            block_tuple->t_self.ip_blkid.bi_hi = current_block >> 16;
+            block_tuple->t_self.ip_blkid.bi_lo = current_block & 0xFFFF;
+            block_tuple->t_self.ip_posid = offset;
             
             worker->rows_processed++;
             
             /* Extract the DNA sequence value */
-            value = heap_getattr(tuple, target_attno, tupdesc, &isnull);
+            value = heap_getattr(block_tuple, target_attno, tupdesc, &isnull);
         if (isnull) {
             continue;  /* Skip NULL values */
         }
@@ -4735,7 +4735,7 @@ kmersearch_count_matching_kmer_fast_neon(VarBit **seq_keys, int seq_nkeys, VarBi
 
 #ifdef __aarch64__
 /* SVE optimized version of kmersearch_extract_dna2_kmer2_direct */
-__attribute__((target("sve")))
+__attribute__((target("+sve")))
 static Datum *
 kmersearch_extract_dna2_kmer2_direct_sve(VarBit *seq, int k, int *nkeys)
 {
@@ -4807,7 +4807,7 @@ kmersearch_extract_dna2_kmer2_direct_sve(VarBit *seq, int k, int *nkeys)
 }
 
 /* SVE optimized version of kmersearch_extract_dna4_kmer2_with_expansion_direct */
-__attribute__((target("sve")))
+__attribute__((target("+sve")))
 static Datum *
 kmersearch_extract_dna4_kmer2_with_expansion_direct_sve(VarBit *seq, int k, int *nkeys)
 {
@@ -4895,7 +4895,7 @@ kmersearch_extract_dna4_kmer2_with_expansion_direct_sve(VarBit *seq, int k, int 
 }
 
 /* SVE optimized version of kmersearch_count_matching_kmer_fast */
-__attribute__((target("sve")))
+__attribute__((target("+sve")))
 static int
 kmersearch_count_matching_kmer_fast_sve(VarBit **seq_keys, int seq_nkeys, VarBit **query_keys, int query_nkeys)
 {
@@ -5531,7 +5531,7 @@ kmersearch_extract_dna2_kmer2_as_uint_direct_neon(VarBit *seq, int k, void **out
 /*
  * DNA2 SVE implementation - DIRECT BIT MANIPULATION
  */
-__attribute__((target("sve")))
+__attribute__((target("+sve")))
 static void
 kmersearch_extract_dna2_kmer2_as_uint_direct_sve(VarBit *seq, int k, void **output, int *nkeys)
 {
@@ -5767,6 +5767,7 @@ kmersearch_extract_dna4_kmer2_as_uint_with_expansion_direct_avx2(VarBit *seq, in
     void *result;
     int key_count = 0;
     int i;
+    int simd_batch;
     
     *nkeys = 0;
     if (max_kmers <= 0) {
@@ -5779,7 +5780,7 @@ kmersearch_extract_dna4_kmer2_as_uint_with_expansion_direct_avx2(VarBit *seq, in
     *output = result;
     
     /* AVX2 optimized k-mer extraction with expansion */
-    int simd_batch = max_kmers & ~7;  /* Process 8 k-mers at a time */
+    simd_batch = max_kmers & ~7;  /* Process 8 k-mers at a time */
     
     /* AVX2 batch processing */
     for (i = 0; i < simd_batch; i += 8) {
@@ -5871,6 +5872,7 @@ kmersearch_extract_dna4_kmer2_as_uint_with_expansion_direct_avx512(VarBit *seq, 
     void *result;
     int key_count = 0;
     int i;
+    int simd_batch;
     
     *nkeys = 0;
     if (max_kmers <= 0) {
@@ -5883,7 +5885,7 @@ kmersearch_extract_dna4_kmer2_as_uint_with_expansion_direct_avx512(VarBit *seq, 
     *output = result;
     
     /* AVX512 optimized k-mer extraction with expansion */
-    int simd_batch = max_kmers & ~15;  /* Process 16 k-mers at a time */
+    simd_batch = max_kmers & ~15;  /* Process 16 k-mers at a time */
     
     /* AVX512 batch processing */
     for (i = 0; i < simd_batch; i += 16) {
@@ -6070,7 +6072,7 @@ kmersearch_extract_dna4_kmer2_as_uint_with_expansion_direct_neon(VarBit *seq, in
 /*
  * DNA4 SVE implementation - DIRECT DEGENERATE EXPANSION
  */
-__attribute__((target("sve")))
+__attribute__((target("+sve")))
 static void
 kmersearch_extract_dna4_kmer2_as_uint_with_expansion_direct_sve(VarBit *seq, int k, void **output, int *nkeys)
 {

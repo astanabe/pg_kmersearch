@@ -447,6 +447,12 @@ Datum kmersearch_dna4_send(PG_FUNCTION_ARGS);
 Datum kmersearch_dna2_eq(PG_FUNCTION_ARGS);
 Datum kmersearch_dna4_eq(PG_FUNCTION_ARGS);
 
+/* DNA datatype hash functions */
+Datum kmersearch_dna2_hash(PG_FUNCTION_ARGS);
+Datum kmersearch_dna4_hash(PG_FUNCTION_ARGS);
+Datum kmersearch_dna2_hash_extended(PG_FUNCTION_ARGS);
+Datum kmersearch_dna4_hash_extended(PG_FUNCTION_ARGS);
+
 /* DNA datatype length functions */
 Datum kmersearch_dna2_bit_length(PG_FUNCTION_ARGS);
 Datum kmersearch_dna4_bit_length(PG_FUNCTION_ARGS);

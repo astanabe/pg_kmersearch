@@ -278,16 +278,20 @@ kmersearch_dna4_send(PG_FUNCTION_ARGS)
 Datum
 kmersearch_dna2_eq(PG_FUNCTION_ARGS)
 {
-    kmersearch_dna2 *a = (kmersearch_dna2 *) PG_GETARG_POINTER(0);
-    kmersearch_dna2 *b = (kmersearch_dna2 *) PG_GETARG_POINTER(1);
-    int32 len_a = VARSIZE(a);
-    int32 len_b = VARSIZE(b);
+    VarBit *a = PG_GETARG_VARBIT_P(0);
+    VarBit *b = PG_GETARG_VARBIT_P(1);
+    int32 bit_len_a = VARBITLEN(a);
+    int32 bit_len_b = VARBITLEN(b);
+    int32 byte_len;
     bool result;
     
-    if (len_a != len_b)
+    /* Compare bit lengths first */
+    if (bit_len_a != bit_len_b)
         PG_RETURN_BOOL(false);
     
-    result = (memcmp(a, b, len_a) == 0);
+    /* Compare actual bit data, not the entire varbit structure */
+    byte_len = (bit_len_a + 7) / 8;
+    result = (byte_len == 0) || (memcmp(VARBITS(a), VARBITS(b), byte_len) == 0);
     PG_RETURN_BOOL(result);
 }
 
@@ -297,16 +301,20 @@ kmersearch_dna2_eq(PG_FUNCTION_ARGS)
 Datum
 kmersearch_dna4_eq(PG_FUNCTION_ARGS)
 {
-    kmersearch_dna4 *a = (kmersearch_dna4 *) PG_GETARG_POINTER(0);
-    kmersearch_dna4 *b = (kmersearch_dna4 *) PG_GETARG_POINTER(1);
-    int32 len_a = VARSIZE(a);
-    int32 len_b = VARSIZE(b);
+    VarBit *a = PG_GETARG_VARBIT_P(0);
+    VarBit *b = PG_GETARG_VARBIT_P(1);
+    int32 bit_len_a = VARBITLEN(a);
+    int32 bit_len_b = VARBITLEN(b);
+    int32 byte_len;
     bool result;
     
-    if (len_a != len_b)
+    /* Compare bit lengths first */
+    if (bit_len_a != bit_len_b)
         PG_RETURN_BOOL(false);
     
-    result = (memcmp(a, b, len_a) == 0);
+    /* Compare actual bit data, not the entire varbit structure */
+    byte_len = (bit_len_a + 7) / 8;
+    result = (byte_len == 0) || (memcmp(VARBITS(a), VARBITS(b), byte_len) == 0);
     PG_RETURN_BOOL(result);
 }
 
@@ -767,4 +775,72 @@ kmersearch_dna4_ne(PG_FUNCTION_ARGS)
                                                   PG_GETARG_DATUM(0),
                                                   PG_GETARG_DATUM(1)));
     PG_RETURN_BOOL(cmp != 0);
+}
+
+/*
+ * Hash functions for DNA2 and DNA4 types
+ * Required for hash-based operations like GROUP BY
+ */
+
+PG_FUNCTION_INFO_V1(kmersearch_dna2_hash);
+PG_FUNCTION_INFO_V1(kmersearch_dna4_hash);
+PG_FUNCTION_INFO_V1(kmersearch_dna2_hash_extended);
+PG_FUNCTION_INFO_V1(kmersearch_dna4_hash_extended);
+
+Datum
+kmersearch_dna2_hash(PG_FUNCTION_ARGS)
+{
+    VarBit *data = PG_GETARG_VARBIT_P(0);
+    int32 bit_len = VARBITLEN(data);
+    int32 byte_len = (bit_len + 7) / 8;
+    uint32 hash;
+    
+    /* Use PostgreSQL's hash_any function for consistent hashing */
+    hash = DatumGetUInt32(hash_any(VARBITS(data), byte_len));
+    
+    PG_RETURN_INT32(hash);
+}
+
+Datum
+kmersearch_dna4_hash(PG_FUNCTION_ARGS)
+{
+    VarBit *data = PG_GETARG_VARBIT_P(0);
+    int32 bit_len = VARBITLEN(data);
+    int32 byte_len = (bit_len + 7) / 8;
+    uint32 hash;
+    
+    /* Use PostgreSQL's hash_any function for consistent hashing */
+    hash = DatumGetUInt32(hash_any(VARBITS(data), byte_len));
+    
+    PG_RETURN_INT32(hash);
+}
+
+Datum
+kmersearch_dna2_hash_extended(PG_FUNCTION_ARGS)
+{
+    VarBit *data = PG_GETARG_VARBIT_P(0);
+    uint64 seed = PG_GETARG_INT64(1);
+    int32 bit_len = VARBITLEN(data);
+    int32 byte_len = (bit_len + 7) / 8;
+    uint64 hash;
+    
+    /* Use PostgreSQL's hash_any_extended function for 64-bit hashing with seed */
+    hash = DatumGetUInt64(hash_any_extended(VARBITS(data), byte_len, seed));
+    
+    PG_RETURN_INT64(hash);
+}
+
+Datum
+kmersearch_dna4_hash_extended(PG_FUNCTION_ARGS)
+{
+    VarBit *data = PG_GETARG_VARBIT_P(0);
+    uint64 seed = PG_GETARG_INT64(1);
+    int32 bit_len = VARBITLEN(data);
+    int32 byte_len = (bit_len + 7) / 8;
+    uint64 hash;
+    
+    /* Use PostgreSQL's hash_any_extended function for 64-bit hashing with seed */
+    hash = DatumGetUInt64(hash_any_extended(VARBITS(data), byte_len, seed));
+    
+    PG_RETURN_INT64(hash);
 }
