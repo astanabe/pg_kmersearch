@@ -236,6 +236,12 @@ static void dna2_decode_scalar(const uint8_t* input, char* output, int len);
 static void dna4_encode_scalar(const char* input, uint8_t* output, int len);
 static void dna4_decode_scalar(const uint8_t* input, char* output, int len);
 
+/* Scalar versions */
+static Datum *kmersearch_extract_dna2_kmer2_direct_scalar(VarBit *seq, int k, int *nkeys);
+static Datum *kmersearch_extract_dna4_kmer2_with_expansion_direct_scalar(VarBit *seq, int k, int *nkeys);
+static int kmersearch_count_matching_kmer_fast_scalar_simple(VarBit **seq_keys, int seq_nkeys, VarBit **query_keys, int query_nkeys);
+static int kmersearch_count_matching_kmer_fast_scalar_hashtable(VarBit **seq_keys, int seq_nkeys, VarBit **query_keys, int query_nkeys);
+
 #ifdef __x86_64__
 static void dna2_encode_avx2(const char* input, uint8_t* output, int len);
 static void dna2_decode_avx2(const uint8_t* input, char* output, int len);
@@ -251,20 +257,6 @@ static Datum *kmersearch_extract_dna2_kmer2_direct_avx512(VarBit *seq, int k, in
 static Datum *kmersearch_extract_dna4_kmer2_with_expansion_direct_avx512(VarBit *seq, int k, int *nkeys);
 static int kmersearch_count_matching_kmer_fast_avx512(VarBit **seq_keys, int seq_nkeys, VarBit **query_keys, int query_nkeys);
 
-static Datum *kmersearch_extract_dna2_kmer2_direct_neon(VarBit *seq, int k, int *nkeys);
-static Datum *kmersearch_extract_dna4_kmer2_with_expansion_direct_neon(VarBit *seq, int k, int *nkeys);
-static int kmersearch_count_matching_kmer_fast_neon(VarBit **seq_keys, int seq_nkeys, VarBit **query_keys, int query_nkeys);
-
-static Datum *kmersearch_extract_dna2_kmer2_direct_sve(VarBit *seq, int k, int *nkeys);
-static Datum *kmersearch_extract_dna4_kmer2_with_expansion_direct_sve(VarBit *seq, int k, int *nkeys);
-static int kmersearch_count_matching_kmer_fast_sve(VarBit **seq_keys, int seq_nkeys, VarBit **query_keys, int query_nkeys);
-
-/* Scalar versions */
-static Datum *kmersearch_extract_dna2_kmer2_direct_scalar(VarBit *seq, int k, int *nkeys);
-static Datum *kmersearch_extract_dna4_kmer2_with_expansion_direct_scalar(VarBit *seq, int k, int *nkeys);
-static int kmersearch_count_matching_kmer_fast_scalar_simple(VarBit **seq_keys, int seq_nkeys, VarBit **query_keys, int query_nkeys);
-static int kmersearch_count_matching_kmer_fast_scalar_hashtable(VarBit **seq_keys, int seq_nkeys, VarBit **query_keys, int query_nkeys);
-
 static void dna2_encode_avx512(const char* input, uint8_t* output, int len);
 static void dna2_decode_avx512(const uint8_t* input, char* output, int len);
 static void dna4_encode_avx512(const char* input, uint8_t* output, int len);
@@ -276,6 +268,14 @@ static void dna2_encode_neon(const char* input, uint8_t* output, int len);
 static void dna2_decode_neon(const uint8_t* input, char* output, int len);
 static void dna4_encode_neon(const char* input, uint8_t* output, int len);
 static void dna4_decode_neon(const uint8_t* input, char* output, int len);
+
+static Datum *kmersearch_extract_dna2_kmer2_direct_neon(VarBit *seq, int k, int *nkeys);
+static Datum *kmersearch_extract_dna4_kmer2_with_expansion_direct_neon(VarBit *seq, int k, int *nkeys);
+static int kmersearch_count_matching_kmer_fast_neon(VarBit **seq_keys, int seq_nkeys, VarBit **query_keys, int query_nkeys);
+
+static Datum *kmersearch_extract_dna2_kmer2_direct_sve(VarBit *seq, int k, int *nkeys);
+static Datum *kmersearch_extract_dna4_kmer2_with_expansion_direct_sve(VarBit *seq, int k, int *nkeys);
+static int kmersearch_count_matching_kmer_fast_sve(VarBit **seq_keys, int seq_nkeys, VarBit **query_keys, int query_nkeys);
 
 #ifdef __ARM_FEATURE_SVE
 static void dna2_encode_sve(const char* input, uint8_t* output, int len);
@@ -4516,7 +4516,6 @@ kmersearch_count_matching_kmer_fast_avx512(VarBit **seq_keys, int seq_nkeys, Var
 
 #ifdef __aarch64__
 /* NEON optimized version of kmersearch_extract_dna2_kmer2_direct */
-__attribute__((target("neon")))
 static Datum *
 kmersearch_extract_dna2_kmer2_direct_neon(VarBit *seq, int k, int *nkeys)
 {
@@ -4587,7 +4586,6 @@ kmersearch_extract_dna2_kmer2_direct_neon(VarBit *seq, int k, int *nkeys)
 }
 
 /* NEON optimized version of kmersearch_extract_dna4_kmer2_with_expansion_direct */
-__attribute__((target("neon")))
 static Datum *
 kmersearch_extract_dna4_kmer2_with_expansion_direct_neon(VarBit *seq, int k, int *nkeys)
 {
@@ -4675,7 +4673,6 @@ kmersearch_extract_dna4_kmer2_with_expansion_direct_neon(VarBit *seq, int k, int
 }
 
 /* NEON optimized version of kmersearch_count_matching_kmer_fast */
-__attribute__((target("neon")))
 static int
 kmersearch_count_matching_kmer_fast_neon(VarBit **seq_keys, int seq_nkeys, VarBit **query_keys, int query_nkeys)
 {
@@ -5389,7 +5386,6 @@ kmersearch_extract_dna2_kmer2_as_uint_direct_avx512(VarBit *seq, int k, void **o
  * DNA2 NEON implementation - DIRECT BIT MANIPULATION
  */
 #ifdef __aarch64__
-__attribute__((target("neon")))
 static void
 kmersearch_extract_dna2_kmer2_as_uint_direct_neon(VarBit *seq, int k, void **output, int *nkeys)
 {
@@ -5968,7 +5964,6 @@ kmersearch_extract_dna4_kmer2_as_uint_with_expansion_direct_avx512(VarBit *seq, 
  * DNA4 NEON implementation - DIRECT DEGENERATE EXPANSION
  */
 #ifdef __aarch64__
-__attribute__((target("neon")))
 static void
 kmersearch_extract_dna4_kmer2_as_uint_with_expansion_direct_neon(VarBit *seq, int k, void **output, int *nkeys)
 {
