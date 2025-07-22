@@ -11,7 +11,8 @@ PG_CONFIG = pg_config
 PGXS := $(shell $(PG_CONFIG) --pgxs)
 include $(PGXS)
 
-override CPPFLAGS += -Wno-unused-variable -Wno-unused-function
+override CPPFLAGS += -Wno-unused-variable -Wno-unused-function -std=c99
+override CFLAGS := $(filter-out -Werror=vla, $(CFLAGS))
 
 # SIMD Optimization Support
 # To enable SIMD optimizations for DNA comparison functions, uncomment the

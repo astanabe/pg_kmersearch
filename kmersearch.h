@@ -71,10 +71,11 @@
 #include <cpuid.h>
 #include <immintrin.h>
 #elif defined(__aarch64__)
+#include <stdio.h>
+#include <signal.h>
+#include <setjmp.h>
 #include <arm_neon.h>
-#ifdef __ARM_FEATURE_SVE
 #include <arm_sve.h>
-#endif
 #endif
 #include <unistd.h>
 

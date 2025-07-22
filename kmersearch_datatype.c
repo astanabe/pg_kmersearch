@@ -486,6 +486,7 @@ dna_compare_avx512(const uint8_t* a, const uint8_t* b, int bit_len)
 
 #ifdef __aarch64__
 /* NEON comparison function */
+__attribute__((target("+simd")))
 static int
 dna_compare_neon(const uint8_t* a, const uint8_t* b, int bit_len)
 {
@@ -520,7 +521,6 @@ dna_compare_neon(const uint8_t* a, const uint8_t* b, int bit_len)
     return 0;
 }
 
-#ifdef __ARM_FEATURE_SVE
 /* SVE comparison function */
 __attribute__((target("+sve")))
 static int
@@ -549,7 +549,6 @@ dna_compare_sve(const uint8_t* a, const uint8_t* b, int bit_len)
     return 0;
 }
 #endif
-#endif
 
 /* Main SIMD dispatch function */
 static int
@@ -564,11 +563,9 @@ dna_compare_simd(const uint8_t* a, const uint8_t* b, int bit_len)
         return dna_compare_avx2(a, b, bit_len);
     }
 #elif defined(__aarch64__)
-#ifdef __ARM_FEATURE_SVE
     if (simd_capability >= SIMD_SVE) {
         return dna_compare_sve(a, b, bit_len);
     }
-#endif
     if (simd_capability >= SIMD_NEON) {
         return dna_compare_neon(a, b, bit_len);
     }
