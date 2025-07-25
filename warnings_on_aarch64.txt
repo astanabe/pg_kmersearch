@@ -1,0 +1,7 @@
+kmersearch.c: In function ‘dna2_encode_sve’:
+kmersearch.c:3811:5: warning: ISO C90 forbids mixed declarations and code [-Wdeclaration-after-statement]
+ 3811 |     int sve_len = svcntb();
+      |     ^~~
+kmersearch.c:3814:18: warning: variable ‘mask_A’ set but not used [-Wunused-but-set-variable]
+ 3814 |     svbool_t pg, mask_A, mask_C, mask_G, mask_T, mask_U;
+      |                  ^~~~~~
