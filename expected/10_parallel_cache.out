@@ -76,7 +76,7 @@ SELECT '1. High-frequency k-mer analysis execution:' as step;
 SELECT kmersearch_perform_highfreq_analysis('test_dna_highfreq', 'seq');
  kmersearch_perform_highfreq_analysis 
 --------------------------------------
- (14,6,2,0,0.25,3)
+ (14,6,2,0.25,3)
 (1 row)
 
 -- 2. Execute kmersearch_parallel_highfreq_kmer_cache_load()

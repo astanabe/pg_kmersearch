@@ -487,7 +487,6 @@ CREATE TYPE kmersearch_analysis_result AS (
     total_rows bigint,
     highfreq_kmers_count integer,
     parallel_workers_used integer,
-    analysis_duration real,
     max_appearance_rate_used real,
     max_appearance_nrow_used integer
 );

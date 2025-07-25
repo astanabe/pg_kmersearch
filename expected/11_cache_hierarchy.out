@@ -58,9 +58,9 @@ SELECT kmersearch_perform_highfreq_analysis(
     'test_cache_hierarchy'::text,
     'test_seq'::text
 ) AS analysis_result;
- analysis_result  
-------------------
- (13,9,2,0,0.2,2)
+ analysis_result 
+-----------------
+ (13,9,2,0.2,2)
 (1 row)
 
 -- Verify analysis results

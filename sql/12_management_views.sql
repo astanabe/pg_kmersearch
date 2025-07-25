@@ -38,7 +38,6 @@ SELECT
     total_rows,
     highfreq_kmers_count,
     parallel_workers_used,
-    analysis_duration >= 0 as duration_valid,
     max_appearance_rate_used,
     max_appearance_nrow_used
 FROM kmersearch_perform_highfreq_analysis(

@@ -427,7 +427,6 @@ SELECT kmersearch_perform_highfreq_analysis(
 SELECT (result).total_rows,
        (result).highfreq_kmers_count,
        (result).parallel_workers_used,
-       (result).analysis_duration,
        (result).max_appearance_rate_used
 FROM (
     SELECT kmersearch_perform_highfreq_analysis('sequences', 'dna_seq') as result
@@ -626,7 +625,6 @@ pg_kmersearchは、関数の戻り値用にカスタム複合型を定義しま�
 --     total_rows bigint,
 --     highfreq_kmers_count integer,
 --     parallel_workers_used integer,
---     analysis_duration real,
 --     max_appearance_rate_used real,
 --     max_appearance_nrow_used integer
 -- );
@@ -634,7 +632,7 @@ pg_kmersearchは、関数の戻り値用にカスタム複合型を定義しま�
 -- 使用例:
 SELECT (result).total_rows,
        (result).highfreq_kmers_count,
-       ROUND((result).analysis_duration, 2) as duration_seconds
+       (result).max_appearance_rate_used
 FROM (
     SELECT kmersearch_perform_highfreq_analysis('sequences', 'dna_seq') as result
 ) t;

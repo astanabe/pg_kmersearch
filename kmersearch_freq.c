@@ -118,7 +118,6 @@ kmersearch_perform_highfreq_analysis(PG_FUNCTION_ARGS)
     values[0] = Int64GetDatum(result.total_rows);
     values[1] = Int32GetDatum(result.highfreq_kmers_count);
     values[2] = Int32GetDatum(result.parallel_workers_used);
-    values[3] = Float4GetDatum((float4)result.analysis_duration);  /* real type = 4-byte float */
     
     /* Extra validation for max_appearance_rate_used before conversion */
     if (result.max_appearance_rate_used < 0.0 || result.max_appearance_rate_used != result.max_appearance_rate_used) {
@@ -126,10 +125,10 @@ kmersearch_perform_highfreq_analysis(PG_FUNCTION_ARGS)
         result.max_appearance_rate_used = 0.5;
     }
     
-    values[4] = Float4GetDatum((float4)result.max_appearance_rate_used);  /* real type = 4-byte float */
+    values[3] = Float4GetDatum((float4)result.max_appearance_rate_used);  /* real type = 4-byte float */
     ereport(DEBUG1, (errmsg("kmersearch_perform_highfreq_analysis: Float4GetDatum conversion completed")));
     
-    values[5] = Int32GetDatum(result.max_appearance_nrow_used);
+    values[4] = Int32GetDatum(result.max_appearance_nrow_used);
     
     tuple = heap_form_tuple(tupdesc, values, nulls);
     

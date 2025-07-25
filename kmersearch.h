@@ -195,7 +195,6 @@ typedef struct KmerAnalysisResult
     int64       total_rows;                /* Total number of rows analyzed */
     int         highfreq_kmers_count;      /* Number of highly frequent k-mers */
     int         parallel_workers_used;     /* Number of parallel workers used */
-    double      analysis_duration;        /* Analysis duration in seconds */
     double      max_appearance_rate_used; /* Max appearance rate used */
     int         max_appearance_nrow_used;  /* Max appearance nrow used */
 } KmerAnalysisResult;
