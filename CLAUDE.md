@@ -2,6 +2,17 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Implementation Constraints
+
+**IMPORTANT**: The following implementations are PROHIBITED:
+- Stub implementations are forbidden
+- Dummy data generation code is forbidden
+- Incomplete function implementations are forbidden
+- Unnecessary wrapper functions or helper functions are forbidden
+- Workaround implementations are forbidden
+- Implementing functions, structures, or variables with the same functionality as existing ones is forbidden
+- When GUC variables exist, use them directly - assigning GUC variables to local variables is forbidden
+
 ## Important Development Assumptions
 
 **Extension Version Management:**
