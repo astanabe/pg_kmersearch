@@ -1,4 +1,4 @@
-# DNA2/DNA4型GINインデックス並列作成機能実装計画
+# DNA2/DNA4型GINインデックス並列作成機能実装計画 [COMPLETED]
 
 ## 実装制約事項
 
@@ -643,3 +643,287 @@ static void cleanup(void)
 ```
 
 これらのガイドラインに従うことで、PostgreSQL拡張における並列処理実装の一般的な落とし穴を回避し、安定した高性能な実装を実現できる。
+
+## 補助関数: kmersearch_partition_table [COMPLETED]
+
+### 概要
+
+既存の非パーティションテーブルをハッシュパーティションテーブルに変換する関数。DNA2/DNA4型カラムを基準にハッシュ分割を行い、データを保持したままテーブル構造を変換する。
+
+### 関数仕様
+
+#### 関数シグネチャ
+```sql
+kmersearch_partition_table(
+    table_name text,         -- 対象テーブル名（OIDも可）
+    partition_count int      -- 分割数
+) RETURNS void
+```
+
+#### パラメータ
+- `table_name`: 変換対象の非パーティションテーブル名（regclass型でOID指定も可能）
+- `partition_count`: ハッシュパーティションの分割数（1以上の整数）
+
+### 実行条件
+
+以下のすべての条件を満たす必要がある：
+1. 対象テーブルがパーティションテーブルではない（`relkind != 'p'`）
+2. 対象テーブルにDNA2型またはDNA4型カラムがちょうど1つ存在する
+3. 対象テーブルが存在し、アクセス権限がある
+
+条件を満たさない場合はエラーで停止する。
+
+### 処理フロー
+
+#### 1. 事前検証
+```sql
+-- パーティションテーブルかどうかを確認
+SELECT relkind FROM pg_class WHERE oid = table_oid;
+-- エラー: "Table '%s' is already a partitioned table"
+
+-- DNA2/DNA4型カラムの検出
+SELECT attname, atttypid 
+FROM pg_attribute 
+WHERE attrelid = table_oid 
+  AND NOT attisdropped 
+  AND atttypid IN (dna2_type_oid, dna4_type_oid);
+-- エラー: "Table must have exactly one DNA2 or DNA4 column"
+```
+
+#### 2. 一時パーティションテーブル作成
+```sql
+-- タイムスタンプを含む一時テーブル名生成
+temp_table_name = sprintf("%s_temp%ld", table_name, time(NULL));
+
+-- 同一テーブルスペースに親テーブル作成
+CREATE TABLE {temp_table_name} (
+    LIKE {table_name} INCLUDING ALL
+) PARTITION BY HASH ({dna_column_name})
+TABLESPACE {original_tablespace};
+```
+
+#### 3. パーティション（子テーブル）作成
+```sql
+-- 各パーティションを作成（N = 0 から partition_count-1）
+CREATE TABLE {table_name}_{N} 
+PARTITION OF {temp_table_name} 
+FOR VALUES WITH (modulus {partition_count}, remainder {N})
+TABLESPACE {original_tablespace};
+```
+
+#### 4. データ移行（バッチ処理）
+```c
+/* maintenance_work_memに基づいてバッチサイズを動的に決定 */
+static int calculate_partition_batch_size(Oid table_oid, AttrNumber attnum)
+{
+    int64 maintenance_work_mem_bytes = maintenance_work_mem * 1024L;
+    int64 avg_row_size;
+    int batch_size;
+    
+    /* 平均行サイズを推定（統計情報から） */
+    avg_row_size = estimate_avg_row_size(table_oid);
+    if (avg_row_size <= 0)
+        avg_row_size = 1024;  /* デフォルト1KB */
+    
+    /* maintenance_work_memの1/4をバッチに使用 */
+    batch_size = (maintenance_work_mem_bytes / 4) / avg_row_size;
+    
+    /* 最小1,000行、最大100,000行に制限 */
+    if (batch_size < 1000)
+        batch_size = 1000;
+    else if (batch_size > 100000)
+        batch_size = 100000;
+        
+    elog(NOTICE, "Using batch size %d based on maintenance_work_mem=%dMB",
+         batch_size, maintenance_work_mem);
+         
+    return batch_size;
+}
+
+/* バッチ単位でのデータ移行 */
+int batch_size = calculate_partition_batch_size(table_oid, attnum);
+
+while (true) {
+    /* トランザクション開始 */
+    SPI_execute("BEGIN", false, 0);
+    
+    /* バッチデータ取得 */
+    snprintf(query, sizeof(query),
+        "SELECT * FROM %s LIMIT %d FOR UPDATE",
+        table_name, batch_size);
+    SPI_execute(query, false, 0);
+    
+    if (SPI_processed == 0) {
+        /* 全データ移行完了 */
+        SPI_execute("COMMIT", false, 0);
+        break;
+    }
+    
+    /* パーティションテーブルへの挿入 */
+    for (i = 0; i < SPI_processed; i++) {
+        /* 各行をINSERT */
+        insert_into_partition_table(temp_table_name, SPI_tuptable->vals[i]);
+    }
+    
+    /* 元テーブルから削除 */
+    snprintf(query, sizeof(query),
+        "DELETE FROM %s WHERE ctid IN (SELECT ctid FROM %s LIMIT %d)",
+        table_name, table_name, BATCH_SIZE);
+    SPI_execute(query, false, 0);
+    
+    /* トランザクションコミット */
+    SPI_execute("COMMIT", false, 0);
+    
+    /* メモリ解放とVACUUM考慮 */
+    if (total_rows_processed % (BATCH_SIZE * 10) == 0) {
+        /* 定期的なVACUUMの検討（オプション） */
+        check_vacuum_threshold(table_oid);
+    }
+}
+```
+
+#### 5. テーブル置換
+```sql
+-- 元テーブルが空であることを確認
+SELECT COUNT(*) FROM {table_name};
+-- COUNT = 0でなければエラー
+
+-- 元テーブルを削除
+DROP TABLE {table_name};
+
+-- パーティションテーブルを元の名前に変更
+ALTER TABLE {temp_table_name} RENAME TO {table_name};
+
+-- 各パーティションの名前も調整（オプション）
+-- {temp_table_name}_N → {table_name}_N
+```
+
+### エラーハンドリング
+
+#### トランザクション管理
+- バッチ処理の各イテレーションは独立したトランザクションで実行
+- エラー発生時は現在のバッチのみロールバック
+- 全体的な整合性は一時テーブルの存在により保証
+
+#### リカバリ処理
+```c
+/* エラー時のクリーンアップ */
+PG_CATCH();
+{
+    /* 一時テーブルとパーティションの削除 */
+    cleanup_temp_partitions(temp_table_name, partition_count);
+    
+    /* エラーを再スロー */
+    PG_RE_THROW();
+}
+PG_END_TRY();
+```
+
+### パフォーマンス考慮事項
+
+#### ストレージ使用量
+- 移行中の最大ストレージ使用量: 元のテーブルサイズ + 現在のバッチサイズ
+- バッチ処理により、完全な2倍のストレージを必要としない
+
+#### ロック戦略
+- 元テーブル: バッチ単位でのFOR UPDATE行ロック
+- パーティションテーブル: 通常のINSERTロック
+- 長時間の排他ロックを回避
+
+#### 最適化オプション
+```c
+/* PostgreSQL標準のmaintenance_work_memを使用 */
+/* バッチサイズは動的に計算され、追加のGUC変数は不要 */
+
+/* オプション: VACUUM制御用GUC変数 */
+bool kmersearch_partition_vacuum_enabled = true;  /* 自動VACUUM有効/無効 */
+int kmersearch_partition_vacuum_threshold = 100000;  /* VACUUM実行閾値 */
+```
+
+### 実装例
+
+```c
+Datum
+kmersearch_partition_table(PG_FUNCTION_ARGS)
+{
+    text *table_name_text = PG_GETARG_TEXT_PP(0);
+    int32 partition_count = PG_GETARG_INT32(1);
+    char *table_name;
+    Oid table_oid;
+    Oid dna_column_type;
+    char *dna_column_name;
+    char temp_table_name[NAMEDATALEN];
+    
+    /* パラメータ検証 */
+    if (partition_count < 1)
+        ereport(ERROR,
+                (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+                 errmsg("partition_count must be at least 1")));
+    
+    /* テーブル名/OID解決 */
+    table_name = text_to_cstring(table_name_text);
+    table_oid = get_table_oid(table_name, false);
+    
+    /* 事前検証 */
+    validate_table_for_partitioning(table_oid, &dna_column_name, &dna_column_type);
+    
+    /* 一時テーブル名生成 */
+    snprintf(temp_table_name, sizeof(temp_table_name), 
+             "%s_temp%ld", table_name, (long)time(NULL));
+    
+    /* パーティションテーブル作成 */
+    create_partition_table(temp_table_name, table_name, dna_column_name, partition_count);
+    
+    /* データ移行（バッチサイズは自動計算） */
+    migrate_data_in_batches(table_name, temp_table_name, table_oid);
+    
+    /* テーブル置換 */
+    replace_table_with_partition(table_name, temp_table_name);
+    
+    PG_RETURN_VOID();
+}
+```
+
+### 使用例
+
+```sql
+-- 単純な使用例
+SELECT kmersearch_partition_table('sequences', 4);
+
+-- OIDを使用した例
+SELECT kmersearch_partition_table(16384::regclass, 8);
+
+-- 大規模テーブルの場合（maintenance_work_memを調整）
+SET maintenance_work_mem = '256MB';  -- より大きなバッチサイズが自動計算される
+SELECT kmersearch_partition_table('large_sequences', 16);
+```
+
+### 制限事項と注意点
+
+1. **実行時間**: 大規模テーブルの場合、データ量に比例した時間が必要
+2. **ディスク容量**: 移行中は追加のディスク容量が必要（最大でバッチサイズ分）
+3. **外部キー制約**: 外部キー制約は自動的に再作成されない
+4. **トリガー**: LIKE INCLUDING ALLにより基本的なトリガーは複製される
+5. **同時アクセス**: 移行中のテーブルへの同時アクセスは制限される
+6. **インデックス**: 既存のインデックスは削除され、パーティション化後に再作成が必要
+
+### 後続作業
+
+パーティション化完了後、以下の作業が推奨される：
+
+1. **インデックス再作成**: 
+   ```sql
+   SELECT kmersearch_parallel_create_index('sequences', 'dna_sequence');
+   ```
+
+2. **統計情報更新**:
+   ```sql
+   ANALYZE sequences;
+   ```
+
+3. **高頻度k-mer分析**（必要に応じて）:
+   ```sql
+   SELECT kmersearch_perform_highfreq_analysis('sequences', 'dna_sequence');
+   ```
+
+この補助関数により、既存の非パーティションテーブルを効率的にパーティション化し、`kmersearch_parallel_create_index()`関数と組み合わせることで、大規模データセットでの高速なk-mer検索インフラストラクチャを構築できる。

@@ -8,6 +8,8 @@ A PostgreSQL extension for DNA sequence similarity search using k-mer indexing.
 - **GIN index** support for fast k-mer based similarity search
 - **Configurable parameters** for k-mer size and search thresholds
 - **Similarity scoring** functions for sequence comparison
+- **Table partitioning** support for large-scale sequence databases
+- **Parallel index creation** for partitioned tables
 
 ## Quick Start
 

@@ -1,0 +1,201 @@
+-- Test partitioning support functions
+SET client_min_messages = WARNING;
+CREATE EXTENSION IF NOT EXISTS pg_kmersearch;
+-- Test 1: Create test table with DNA2 column
+CREATE TABLE test_sequences (
+    id serial PRIMARY KEY,
+    sequence dna2 NOT NULL,
+    description text
+);
+-- Insert test data
+INSERT INTO test_sequences (sequence, description) VALUES
+    ('ATCGATCGATCGATCG', 'Test sequence 1'),
+    ('GCTAGCTAGCTAGCTA', 'Test sequence 2'),
+    ('TTTTTTTTTTTTTTTT', 'Test sequence 3'),
+    ('AAAAAAAAAAAAAAAA', 'Test sequence 4'),
+    ('ATCGATCGATCGATCG', 'Test sequence 5'),
+    ('GCTAGCTAGCTAGCTA', 'Test sequence 6'),
+    ('CCCCCCCCCCCCCCCC', 'Test sequence 7'),
+    ('GGGGGGGGGGGGGGGG', 'Test sequence 8');
+-- Test 2: Verify table is not partitioned
+SELECT c.relname, c.relkind 
+FROM pg_class c 
+WHERE c.oid = 'test_sequences'::regclass;
+    relname     | relkind 
+----------------+---------
+ test_sequences | r
+(1 row)
+
+-- Test 3: Convert table to partitioned table with 4 partitions
+SET client_min_messages = NOTICE;
+SELECT kmersearch_partition_table('test_sequences', 4);
+NOTICE:  Data migration completed: 8 rows migrated
+ kmersearch_partition_table 
+----------------------------
+ 
+(1 row)
+
+SET client_min_messages = WARNING;
+-- Test 4: Verify table is now partitioned
+SELECT c.relname, c.relkind 
+FROM pg_class c 
+WHERE c.oid = 'test_sequences'::regclass;
+    relname     | relkind 
+----------------+---------
+ test_sequences | p
+(1 row)
+
+-- Test 5: List partitions
+SELECT c.relname as partition_name
+FROM pg_inherits i
+JOIN pg_class c ON i.inhrelid = c.oid
+WHERE i.inhparent = 'test_sequences'::regclass
+ORDER BY c.relname;
+  partition_name  
+------------------
+ test_sequences_0
+ test_sequences_1
+ test_sequences_2
+ test_sequences_3
+(4 rows)
+
+-- Test 6: Verify data was migrated correctly
+SELECT COUNT(*) as total_rows FROM test_sequences;
+ total_rows 
+------------
+          8
+(1 row)
+
+SELECT sequence, description FROM test_sequences ORDER BY id;
+     sequence     |   description   
+------------------+-----------------
+ ATCGATCGATCGATCG | Test sequence 1
+ GCTAGCTAGCTAGCTA | Test sequence 2
+ TTTTTTTTTTTTTTTT | Test sequence 3
+ AAAAAAAAAAAAAAAA | Test sequence 4
+ ATCGATCGATCGATCG | Test sequence 5
+ GCTAGCTAGCTAGCTA | Test sequence 6
+ CCCCCCCCCCCCCCCC | Test sequence 7
+ GGGGGGGGGGGGGGGG | Test sequence 8
+(8 rows)
+
+-- Test 7: Error case - try to partition already partitioned table
+SELECT kmersearch_partition_table('test_sequences', 4);
+ERROR:  table "test_sequences" is already a partitioned table
+-- Test 8: Create GIN indexes on all partitions
+SET kmersearch.kmer_size = 4;
+SET kmersearch.preclude_highfreq_kmer = false;
+SET client_min_messages = NOTICE;
+SELECT * FROM kmersearch_parallel_create_index('test_sequences', 'sequence');
+NOTICE:  High-frequency k-mer exclusion disabled (kmersearch.preclude_highfreq_kmer = false)
+NOTICE:  Created index test_sequences_0_sequence_gin_idx on partition test_sequences_0
+NOTICE:  Created index test_sequences_1_sequence_gin_idx on partition test_sequences_1
+NOTICE:  Created index test_sequences_2_sequence_gin_idx on partition test_sequences_2
+NOTICE:  Created index test_sequences_3_sequence_gin_idx on partition test_sequences_3
+NOTICE:  Index creation completed: 4 successful, 0 failed
+ partition_name |    index_name    | rows_processed | execution_time_ms | worker_pid | success |          error_message          
+----------------+------------------+----------------+-------------------+------------+---------+---------------------------------
+ [Summary]      | [All partitions] |              0 |                 0 |          0 | t       | Created indexes on 4 partitions
+(1 row)
+
+SET client_min_messages = WARNING;
+-- Test 9: Verify indexes were created
+SELECT i.indexrelid::regclass as index_name, 
+       c.relname as table_name
+FROM pg_index i
+JOIN pg_class c ON i.indrelid = c.oid
+WHERE c.relname LIKE 'test_sequences_%'
+  AND i.indrelid IN (
+    SELECT inhrelid FROM pg_inherits WHERE inhparent = 'test_sequences'::regclass
+  )
+ORDER BY c.relname;
+            index_name             |    table_name    
+-----------------------------------+------------------
+ test_sequences_0_sequence_gin_idx | test_sequences_0
+ test_sequences_1_sequence_gin_idx | test_sequences_1
+ test_sequences_2_sequence_gin_idx | test_sequences_2
+ test_sequences_3_sequence_gin_idx | test_sequences_3
+(4 rows)
+
+-- Test 10: Test search functionality on partitioned table
+SELECT COUNT(*) FROM test_sequences WHERE sequence =% 'ATCGATCG';
+ count 
+-------
+     2
+(1 row)
+
+-- Test 11: Create test table with DNA4 column
+CREATE TABLE test_sequences_dna4 (
+    id serial PRIMARY KEY,
+    sequence dna4 NOT NULL
+);
+INSERT INTO test_sequences_dna4 (sequence) VALUES
+    ('ATCGATCGATCGATCG'),
+    ('GCTAGCTAGCTAGCTA'),
+    ('MMMMMMMMMMMMMMMM'),
+    ('NNNNNNNNNNNNNNNN');
+-- Test 12: Convert DNA4 table to partitioned
+SET client_min_messages = NOTICE;
+SELECT kmersearch_partition_table('test_sequences_dna4', 2);
+NOTICE:  Data migration completed: 4 rows migrated
+ kmersearch_partition_table 
+----------------------------
+ 
+(1 row)
+
+SET client_min_messages = WARNING;
+-- Test 13: Create indexes on DNA4 partitioned table
+SET client_min_messages = NOTICE;
+SELECT * FROM kmersearch_parallel_create_index('test_sequences_dna4', 'sequence');
+NOTICE:  High-frequency k-mer exclusion disabled (kmersearch.preclude_highfreq_kmer = false)
+NOTICE:  Created index test_sequences_dna4_0_sequence_gin_idx on partition test_sequences_dna4_0
+NOTICE:  Created index test_sequences_dna4_1_sequence_gin_idx on partition test_sequences_dna4_1
+NOTICE:  Index creation completed: 2 successful, 0 failed
+ partition_name |    index_name    | rows_processed | execution_time_ms | worker_pid | success |          error_message          
+----------------+------------------+----------------+-------------------+------------+---------+---------------------------------
+ [Summary]      | [All partitions] |              0 |                 0 |          0 | t       | Created indexes on 2 partitions
+(1 row)
+
+SET client_min_messages = WARNING;
+-- Test 14: Error case - non-partitioned table
+CREATE TABLE test_regular_table (
+    id serial PRIMARY KEY,
+    sequence dna2
+);
+SELECT * FROM kmersearch_parallel_create_index('test_regular_table', 'sequence');
+ERROR:  table "test_regular_table" is not a partitioned table
+-- Test 15: Error case - table without DNA column
+CREATE TABLE test_no_dna_table (
+    id serial PRIMARY KEY,
+    name text
+);
+SELECT kmersearch_partition_table('test_no_dna_table', 2);
+ERROR:  table must have at least one DNA2 or DNA4 column
+-- Test 16: Error case - table with multiple DNA columns
+CREATE TABLE test_multi_dna_table (
+    id serial PRIMARY KEY,
+    seq1 dna2,
+    seq2 dna4
+);
+SELECT kmersearch_partition_table('test_multi_dna_table', 2);
+ERROR:  table has 2 DNA2/DNA4 columns, but exactly one is required
+-- Test 17: Test with high-frequency k-mer exclusion
+SET kmersearch.preclude_highfreq_kmer = true;
+SET kmersearch.force_use_parallel_highfreq_kmer_cache = false;
+-- This should fail because force_use_parallel_highfreq_kmer_cache must be true
+SELECT * FROM kmersearch_parallel_create_index('test_sequences', 'sequence');
+ERROR:  kmersearch.force_use_parallel_highfreq_kmer_cache must be true when kmersearch.preclude_highfreq_kmer is true
+HINT:  Set kmersearch.force_use_parallel_highfreq_kmer_cache = true
+-- Test 18: Test partition_count validation
+SELECT kmersearch_partition_table('test_regular_table', 0);
+ERROR:  partition_count must be at least 1
+SELECT kmersearch_partition_table('test_regular_table', -1);
+ERROR:  partition_count must be at least 1
+-- Cleanup
+DROP TABLE IF EXISTS test_sequences CASCADE;
+DROP TABLE IF EXISTS test_sequences_dna4 CASCADE;
+DROP TABLE IF EXISTS test_regular_table CASCADE;
+DROP TABLE IF EXISTS test_no_dna_table CASCADE;
+DROP TABLE IF EXISTS test_multi_dna_table CASCADE;
+DROP EXTENSION pg_kmersearch CASCADE;
+SET client_min_messages = NOTICE;

@@ -461,6 +461,49 @@ FROM (
 ) t;
 ```
 
+### Table Partitioning Functions
+
+#### kmersearch_partition_table()
+Converts a non-partitioned table to a hash-partitioned table based on DNA2/DNA4 column:
+
+```sql
+-- Convert a table to partitioned table with 4 partitions
+SELECT kmersearch_partition_table(
+    'sequences',        -- table name
+    4                  -- number of partitions
+);
+
+-- Example: Converting a large sequence table
+-- Note: This preserves all data during conversion
+SELECT kmersearch_partition_table('large_sequences', 16);
+```
+
+Requirements:
+- Table must have exactly one DNA2 or DNA4 column
+- Table must not already be partitioned
+- Sufficient disk space for temporary data during migration
+
+#### kmersearch_parallel_create_index()
+Creates GIN indexes on all partitions of a partitioned table:
+
+```sql
+-- Create indexes on all partitions
+SELECT * FROM kmersearch_parallel_create_index(
+    'sequences',        -- partitioned table name
+    'dna_seq'          -- DNA2/DNA4 column name
+);
+
+-- Example output:
+--  partition_name | index_name | rows_processed | execution_time_ms | worker_pid | success | error_message
+-- ----------------+------------+----------------+-------------------+------------+---------+---------------
+--  [Summary]      | [All partitions] |        0 |                 0 |          0 | t       | Created indexes on 4 partitions
+```
+
+Requirements:
+- Table must be a partitioned table
+- Column must be DNA2 or DNA4 type
+- When using high-frequency k-mer exclusion, appropriate GUC settings must be configured
+
 ### High-Frequency K-mer Cache Management
 
 #### Global Cache Functions

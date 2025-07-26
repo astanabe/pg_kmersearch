@@ -664,3 +664,22 @@ LEFT JOIN kmersearch_highfreq_kmer h ON (
 GROUP BY m.table_oid, pg_class.relname, m.column_name, m.kmer_size, 
          m.occur_bitlen, m.max_appearance_rate, m.max_appearance_nrow, 
          m.analysis_timestamp;
+
+-- Partitioning support functions
+CREATE FUNCTION kmersearch_partition_table(table_name text, partition_count int)
+RETURNS void
+AS 'MODULE_PATHNAME', 'kmersearch_partition_table'
+LANGUAGE C STRICT;
+
+CREATE FUNCTION kmersearch_parallel_create_index(table_name text, column_name text)
+RETURNS TABLE(
+    partition_name text,
+    index_name text,
+    rows_processed bigint,
+    execution_time_ms bigint,
+    worker_pid int,
+    success boolean,
+    error_message text
+)
+AS 'MODULE_PATHNAME', 'kmersearch_parallel_create_index'
+LANGUAGE C STRICT;

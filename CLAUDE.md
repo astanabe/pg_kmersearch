@@ -76,7 +76,7 @@ Running `make installcheck` after source code modifications without executing `s
 4. `sudo systemctl start postgresql` (Start PostgreSQL)
 5. `make installcheck` (Run tests)
 
-The test suite includes 12 test files covering:
+The test suite includes 13 test files covering:
 - Basic DNA2/DNA4 data types (01_basic_types.sql)
 - Configuration management (02_configuration.sql) 
 - Table and index operations (03_tables_indexes.sql)
@@ -89,6 +89,7 @@ The test suite includes 12 test files covering:
 - Parallel cache operations (10_parallel_cache.sql)
 - Cache hierarchy (11_cache_hierarchy.sql)
 - Management views (12_management_views.sql)
+- Partition functions (13_partition_functions.sql)
 
 Test results are compared between `results/` and `expected/` directories.
 
@@ -216,6 +217,22 @@ Performs parallel k-mer frequency analysis on a table
 
 #### kmersearch_undo_highfreq_analysis()
 Removes analysis data and frees storage
+
+### Table Partitioning Functions
+
+#### kmersearch_partition_table(table_name text, partition_count int)
+Converts a non-partitioned table to a hash-partitioned table based on DNA2/DNA4 column
+- Requires exactly one DNA2 or DNA4 column in the table
+- Creates hash partitions based on the DNA column
+- Preserves all data during conversion
+- Handles SERIAL column dependencies with CASCADE
+
+#### kmersearch_parallel_create_index(table_name text, column_name text)
+Creates GIN indexes on all partitions of a partitioned table
+- Table must be a partitioned table
+- Column must be DNA2 or DNA4 type
+- Currently creates indexes sequentially (parallel execution planned for future)
+- Returns detailed results for each partition
 
 ### High-Frequency K-mer Cache Management
 
