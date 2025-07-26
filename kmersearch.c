@@ -45,6 +45,7 @@ int kmersearch_rawscore_cache_max_entries = 50000;  /* Default max rawscore cach
 int kmersearch_query_pattern_cache_max_entries = 50000;  /* Default max query pattern cache entries */
 int kmersearch_actual_min_score_cache_max_entries = 50000;  /* Default max actual min score cache entries */
 int kmersearch_highfreq_kmer_cache_load_batch_size = 10000;  /* Default batch size for loading high-frequency k-mers */
+int kmersearch_highfreq_analysis_batch_size = 10000;  /* Default batch size for high-frequency k-mer analysis */
 
 /* Global cache managers */
 ActualMinScoreCacheManager *actual_min_score_cache_manager = NULL;
@@ -566,6 +567,19 @@ _PG_init(void)
                            "Batch size for loading high-frequency k-mers into cache",
                            "Controls the number of k-mers loaded in each batch to reduce memory usage",
                            &kmersearch_highfreq_kmer_cache_load_batch_size,
+                           10000,
+                           1000,
+                           1000000,
+                           PGC_USERSET,
+                           0,
+                           NULL,
+                           NULL,
+                           NULL);
+
+    DefineCustomIntVariable("kmersearch.highfreq_analysis_batch_size",
+                           "Batch size for high-frequency k-mer analysis",
+                           "Controls the number of rows processed in each batch during analysis",
+                           &kmersearch_highfreq_analysis_batch_size,
                            10000,
                            1000,
                            1000000,
@@ -5717,6 +5731,10 @@ kmersearch_extract_dna2_kmer2_as_uint_direct_scalar(VarBit *seq, int k, void **o
     bits8 *src_data = VARBITS(seq);
     int i;
     
+    /* Debug logging */
+    elog(DEBUG3, "kmersearch_extract_dna2_kmer2_as_uint_direct_scalar: seq_bits=%d, seq_bases=%d, k=%d, max_kmers=%d",
+         seq_bits, seq_bases, k, max_kmers);
+    
     *nkeys = 0;
     if (max_kmers <= 0) {
         *output = NULL;
@@ -5729,6 +5747,12 @@ kmersearch_extract_dna2_kmer2_as_uint_direct_scalar(VarBit *seq, int k, void **o
     /* CRITICAL: Direct bit manipulation - NO VarBit intermediate objects */
     if (k <= 8) {
         uint16 *output_array = (uint16 *) result;
+        /* Debug first few bytes of data */
+        if (seq_bases > 0) {
+            elog(DEBUG3, "kmersearch_extract_dna2: First 4 bytes of src_data: %02x %02x %02x %02x",
+                 src_data[0], src_data[1], src_data[2], src_data[3]);
+        }
+        
         for (i = 0; i <= seq_bases - k; i++) {
             uint64 kmer_value = 0;
             int j;
@@ -5740,6 +5764,17 @@ kmersearch_extract_dna2_kmer2_as_uint_direct_scalar(VarBit *seq, int k, void **o
                 int bit_offset = bit_pos % 8;
                 uint8 base_bits = (src_data[byte_pos] >> (6 - bit_offset)) & 0x3;
                 kmer_value = (kmer_value << 2) | base_bits;
+                
+                /* Debug first k-mer extraction */
+                if (i == 0 && j < k) {
+                    elog(DEBUG3, "kmersearch_extract_dna2: pos %d, byte_pos=%d, bit_offset=%d, src_byte=0x%02x, base_bits=%u, kmer_value=%lu",
+                         j, byte_pos, bit_offset, src_data[byte_pos], base_bits, (unsigned long)kmer_value);
+                }
+            }
+            
+            /* Debug first few k-mers */
+            if (i < 3) {
+                elog(DEBUG3, "kmersearch_extract_dna2: k-mer[%d] = %u", i, (uint16)kmer_value);
             }
             
             output_array[*nkeys] = (uint16) kmer_value;

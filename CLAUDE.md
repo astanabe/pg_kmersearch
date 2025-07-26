@@ -438,6 +438,189 @@ Use `make clean` to remove build artifacts before committing changes. Always ver
 - High-frequency k-mer exclusion requires full table scan during index creation
 - Tables with GIN k-mer indexes have restricted INSERT/UPDATE/DELETE operations
 
+## PostgreSQL Parallel Processing Guidelines
+
+### Critical Lessons Learned
+
+Based on extensive debugging of parallel processing issues in `kmersearch_perform_highfreq_analysis()`, the following guidelines must be followed when implementing parallel processing in PostgreSQL extensions:
+
+#### 1. Avoid PG_TRY/PG_CATCH in Parallel Workers
+**Problem**: PG_TRY/PG_CATCH blocks in parallel workers can interfere with PostgreSQL's parallel execution context, causing unexpected behavior including attempts to execute SQL operations during cleanup.
+
+**Solution**: Remove all PG_TRY/PG_CATCH blocks from parallel worker code. Use simple error checking with elog(ERROR) instead.
+
+```c
+/* BAD - Don't use in parallel workers */
+PG_TRY();
+{
+    /* worker code */
+}
+PG_CATCH();
+{
+    /* cleanup that might trigger SQL */
+    PG_RE_THROW();
+}
+PG_END_TRY();
+
+/* GOOD - Simple error handling */
+if (!condition)
+    elog(ERROR, "Error message");
+```
+
+#### 2. Parallel Worker Restrictions
+Parallel workers CANNOT:
+- Execute SQL commands (INSERT, UPDATE, DELETE, SELECT)
+- Use SPI (Server Programming Interface)
+- Perform transaction control operations
+- Access certain global variables safely
+
+Always check IsParallelWorker() before any potentially restricted operation:
+```c
+if (IsParallelWorker())
+    return;  /* or error out */
+```
+
+#### 3. TOAST Data Handling
+**Problem**: Large data (>2KB) may be TOAST-compressed. Parallel workers crash when accessing TOAST pointers directly.
+
+**Solution**: Always detoast data in parallel workers:
+```c
+/* Get properly detoasted sequence */
+seq = DatumGetVarBitP(sequence_datum);
+
+/* Use the detoasted data */
+process_sequence(seq);
+
+/* Free if a copy was made */
+if ((void *)seq != DatumGetPointer(sequence_datum))
+    pfree(seq);
+```
+
+#### 4. Global Variable Management
+**Problem**: Static global variables can be inherited by parallel workers but should not be used.
+
+**Solution**: 
+- Mark globals as main-process only with comments
+- Set to NULL at worker startup
+- Add IsParallelWorker() checks before access
+
+```c
+/* IMPORTANT: These are only valid in the main process, NOT in parallel workers */
+static dsm_segment *analysis_dsm_segment = NULL;
+
+/* In worker function */
+if (!IsParallelWorker())
+{
+    /* Access global variables */
+}
+```
+
+#### 5. DSM/DSA/dshash Architecture
+**Correct Pattern**:
+1. Create DSM/DSA/dshash resources BEFORE EnterParallelMode()
+2. Pass handles through shm_toc
+3. Workers only attach and read, never create or modify structure
+
+```c
+/* Parent process - before EnterParallelMode() */
+create_dshash_resources(&ctx);
+
+/* After InitializeParallelDSM() */
+handles->dsm_handle = ctx.dsm_handle;
+shm_toc_insert(toc, KEY, handles);
+
+/* Worker - read only */
+handles = shm_toc_lookup(toc, KEY, false);
+dsm_attach(handles->dsm_handle);
+```
+
+#### 6. Resource Cleanup
+**Problem**: Cleanup functions may execute SQL or other restricted operations.
+
+**Solution**: Guard all cleanup with IsParallelWorker() checks:
+```c
+static void cleanup_resources(void)
+{
+    /* Never perform cleanup in parallel workers */
+    if (IsParallelWorker())
+        return;
+    
+    /* Cleanup code */
+}
+```
+
+#### 7. Error Handling Best Practices
+- Use simple NULL checks and elog(ERROR) in workers
+- Avoid complex error handling that might trigger SQL
+- Let PostgreSQL handle worker errors through shared state
+
+#### 8. Parallel Mode Exit Timing
+**Critical Issue**: PostgreSQL remains in parallel mode until ExitParallelMode() is called, even after WaitForParallelWorkersToFinish().
+
+**Problem**: Attempting SQL operations after workers finish but before ExitParallelMode() causes "cannot execute INSERT during a parallel operation" errors.
+
+**Solution**: Always exit parallel mode BEFORE executing any SQL operations:
+```c
+/* BAD - SQL operations while still in parallel mode */
+WaitForParallelWorkersToFinish(pcxt);
+SPI_connect();
+SPI_execute("INSERT ...", false, 0);  /* ERROR! */
+DestroyParallelContext(pcxt);
+ExitParallelMode();
+
+/* GOOD - Exit parallel mode first */
+WaitForParallelWorkersToFinish(pcxt);
+DestroyParallelContext(pcxt);
+ExitParallelMode();
+/* Now safe to execute SQL */
+SPI_connect();
+SPI_execute("INSERT ...", false, 0);
+```
+
+This is a common pitfall because IsParallelWorker() returns false in the main process, but PostgreSQL still considers it to be in parallel mode until ExitParallelMode() is called.
+
+#### 9. Common Parallel Processing Patterns
+
+**Correct Parallel Execution Flow**:
+```c
+/* 1. Create shared resources (before parallel mode) */
+create_shared_resources();
+
+/* 2. Enter parallel mode */
+EnterParallelMode();
+
+/* 3. Create and configure parallel context */
+pcxt = CreateParallelContext("worker_function", nworkers);
+InitializeParallelDSM(pcxt);
+
+/* 4. Launch workers */
+LaunchParallelWorkers(pcxt);
+
+/* 5. Wait for completion */
+WaitForParallelWorkersToFinish(pcxt);
+
+/* 6. Exit parallel mode BEFORE any SQL operations */
+DestroyParallelContext(pcxt);
+ExitParallelMode();
+
+/* 7. Now safe to perform SQL operations */
+SPI_connect();
+/* SQL operations */
+SPI_finish();
+
+/* 8. Clean up shared resources */
+cleanup_shared_resources();
+```
+
+#### 10. Testing Parallel Code
+Always test with:
+- Small data (non-TOAST)
+- Large data (TOAST-compressed)
+- Multiple workers
+- Worker failures
+- Check PostgreSQL logs for warnings about DSM leaks or SQL execution attempts
+- Verify no "cannot execute ... during a parallel operation" errors
+
 ## License
 
 This project is released under the MIT License.

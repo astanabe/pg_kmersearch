@@ -1,5 +1,13 @@
 # 高頻度k-mer解析の並列実行化計画
 
+## 実装状況: 完了 (2025-07-25)
+
+本計画に基づく実装が完了しました。主要な変更点：
+- PostgreSQLの標準並列実行機能（ParallelContext）を使用した真の並列処理の実装
+- ブロック単位での動的ワーク分散によるスケーラブルな処理
+- k-merサイズに応じた最適化されたdshashテーブル実装
+- エラー処理とリソース管理の改善
+
 ## 実装制約事項
 
 **重要**: 以下の実装を禁止します：
@@ -686,30 +694,30 @@ kmersearch_perform_highfreq_analysis(PG_FUNCTION_ARGS)
 
 ### 実装順序
 
-#### ステップ1: GUC変数追加
+#### ステップ1: GUC変数追加 【完了】
 1. `kmersearch_highfreq_analysis_batch_size`（デフォルト10000）をGUC変数として追加
 2. kmersearch.cの`DefineCustomIntVariable()`で定義
 3. 最小値1000、最大値1000000の範囲で設定
 
-#### ステップ2: 引数解析機能実装
+#### ステップ2: 引数解析機能実装 【完了】
 1. `kmersearch_perform_highfreq_analysis()`の引数処理を拡張（テーブル名/OID、カラム名/attnum対応）
 2. エラーハンドリングの強化
 
-#### ステップ3: 並列ワーカー関数実装
+#### ステップ3: 並列ワーカー関数実装 【完了】
 1. `kmersearch_analysis_worker()`関数の新規作成（PGDLLEXPORT付き）
 2. shm_tocからの共有リソース取得
 3. ブロック単位のワーク取得ループ
 
-#### ステップ4: k-mer抽出関数実装
+#### ステップ4: k-mer抽出関数実装 【完了】
 1. `kmersearch_extract_kmers_from_block()`の新規作成（ブロック単位処理）
-2. `kmersearch_update_kmer_counts_in_dshash()`の改修（重複除外機能追加）
+2. `kmersearch_update_kmer_counts_in_dshash()`の実装（型キャストの適切な処理）
 
-#### ステップ5: DSM/dshash改修
+#### ステップ5: DSM/dshash改修 【完了】
 1. `kmersearch_create_analysis_dshash()`の改修（k-merサイズ別最適化）
-2. 恒等ハッシュ関数の追加
+2. 恒等ハッシュ関数の追加（`kmersearch_uint16_identity_hash`, `kmersearch_uint32_identity_hash`）
 3. `kmersearch_insert_kmer2_as_uint_from_dshash()`の改修
 
-#### ステップ6: メイン関数統合
+#### ステップ6: メイン関数統合 【完了】
 1. `kmersearch_perform_highfreq_analysis_parallel()`の改修
 2. 並列コンテキスト管理の実装
 3. エラーハンドリングとクリーンアップ
@@ -786,3 +794,872 @@ DefineCustomIntVariable("kmersearch.highfreq_analysis_batch_size",
 - 重複除外によるdshashエントリ数の最適化
 
 この改訂計画では、既存のコードベースを最大限活用し、最小限の変更で真の並列実行を実現します。
+
+## デバッグおよび修正履歴 (2025-07-25)
+
+### 並列ワーカークラッシュ問題
+
+#### 問題の発生
+`make installcheck`実行時に並列ワーカーがセグメンテーションフォルトでクラッシュ：
+```
+LOG:  background worker "parallel worker" (PID 3118099) was terminated by signal 11: Segmentation fault
+```
+
+#### 原因の特定
+WARNINGレベルのログを追加して原因を特定した結果、DSA（Dynamic Shared Area）のアタッチ方法に問題があることが判明。
+
+#### 問題の詳細
+1. メインプロセスで`dsa_create_in_place()`を使用してDSM内にDSAを作成
+2. ワーカーに`dsa_handle`を渡してアタッチしようとしたが、実際にはDSMハンドルが必要
+3. DSAがDSM内に作成されているため、ワーカーは先にDSMセグメントにアタッチし、その後`dsa_attach_in_place()`を使用する必要がある
+
+#### 修正内容
+1. メインプロセス側：
+   - `dsa_handle`の代わりに`dsm_handle`をワーカーに渡すように変更
+   ```c
+   dsm_handle_ptr = (dsm_handle *)shm_toc_allocate(toc, sizeof(dsm_handle));
+   *dsm_handle_ptr = dsm_segment_handle(analysis_dsm_segment);
+   shm_toc_insert(toc, KMERSEARCH_KEY_DSA, dsm_handle_ptr);
+   ```
+
+2. ワーカー側：
+   - DSMハンドルを受け取り、DSMセグメントにアタッチ
+   - その後、`dsa_attach_in_place()`でDSAにアタッチ
+   ```c
+   dsm_handle_ptr = (dsm_handle *)shm_toc_lookup(toc, KMERSEARCH_KEY_DSA, false);
+   analysis_seg = dsm_attach(*dsm_handle_ptr);
+   dsa = dsa_attach_in_place(dsm_segment_address(analysis_seg), analysis_seg);
+   ```
+
+#### 結果
+修正後、並列ワーカーは正常にDSAにアタッチできるようになり、クラッシュは解消された。
+
+### 現在の問題点の分析（2025-07-26）
+
+#### 問題の症状
+1. `shm_toc_allocate`で"out of shared memory"エラーが発生
+2. エラーは3つ目のアイテム（dshash_table_handle）を格納しようとした時に発生
+3. DSM segment作成、DSA作成、dshash作成は全て成功している
+
+#### 他の並列処理実装との比較分析
+
+##### 1. pscan拡張の実装
+```c
+/* pscan.cより */
+shm_toc_estimate_chunk(&pcxt->estimator, size);
+shm_toc_estimate_keys(&pcxt->estimator, keys);
+
+/* shm_toc_allocateは各アイテムを個別に割り当て */
+pscan = (ParallelHeapScanDesc) shm_toc_allocate(pcxt->toc, heap_parallelscan_estimate(snapshot));
+task = (TupleScanTask *) shm_toc_allocate(pcxt->toc, sizeof(TupleScanTask));
+stats = (PScanStats *) shm_toc_allocate(pcxt->toc, sizeof(PScanStats) * pcxt->nworkers);
+```
+
+##### 2. pgvectorのivfbuild実装
+```c
+/* 各チャンクのサイズを個別に見積もり */
+shm_toc_estimate_chunk(&pcxt->estimator, estivfshared);
+shm_toc_estimate_chunk(&pcxt->estimator, estsort);
+shm_toc_estimate_chunk(&pcxt->estimator, estcenters);
+shm_toc_estimate_keys(&pcxt->estimator, 3);
+
+/* 各アイテムは事前に計算されたサイズで割り当て */
+ivfshared = (IvfflatShared *) shm_toc_allocate(pcxt->toc, estivfshared);
+sharedsort = (Sharedsort *) shm_toc_allocate(pcxt->toc, estsort);
+ivfcenters = shm_toc_allocate(pcxt->toc, estcenters);
+```
+
+##### 3. pgvectorのhnswbuild実装
+```c
+/* 大きなメモリ領域を含む見積もり */
+shm_toc_estimate_chunk(&pcxt->estimator, esthnswshared);
+shm_toc_estimate_chunk(&pcxt->estimator, esthnswarea);  // 大きなグラフデータ用
+shm_toc_estimate_keys(&pcxt->estimator, 2);
+
+/* 巨大な領域も含めて割り当て */
+hnswshared = (HnswShared *) shm_toc_allocate(pcxt->toc, esthnswshared);
+hnswarea = (char *) shm_toc_allocate(pcxt->toc, esthnswarea);
+```
+
+#### 現在の実装の問題点（仮説）
+
+##### 仮説1: shm_toc_estimate_chunkの呼び出し方法
+現在の実装:
+```c
+estimated_size += MAXALIGN(sizeof(KmerAnalysisSharedState));
+estimated_size += MAXALIGN(sizeof(dsm_handle));
+estimated_size += MAXALIGN(sizeof(dshash_table_handle));
+shm_toc_estimate_chunk(&pcxt->estimator, estimated_size);  // 1回の呼び出しで合計サイズ
+```
+
+他の実装では各アイテムごとに`shm_toc_estimate_chunk`を呼び出している。これにより内部的なメモリ管理が異なる可能性がある。
+
+##### 仮説2: DSM/DSA/dshashの二重作成
+現在の実装では、ParallelContextのDSMとは別に、追加のDSMセグメント（analysis_dsm_segment）を作成している：
+```c
+/* ParallelContext用のDSM */
+InitializeParallelDSM(pcxt);
+
+/* 追加のDSM（dshash用） */
+analysis_dsm_segment = dsm_create(segment_size, 0);
+```
+
+これにより、ロックテーブルエントリが過剰に消費されている可能性がある。
+
+##### 仮説3: shm_tocの内部構造の制限
+shm_tocには内部的なサイズ制限やアライメント要件があり、3つ目のアイテムを追加する際にその制限に達している可能性がある。
+
+##### 仮説4: メモリアライメントの問題
+`MAXALIGN`を使用しているが、shm_toc内部では異なるアライメント要件がある可能性：
+- 現在: `MAXALIGN(sizeof(dshash_table_handle))` = 8バイト（64ビットシステム）
+- 実際に必要なアライメントが異なる可能性
+
+##### 仮説5: ParallelContext estimatorの初期化問題
+`CreateParallelContext`の後、estimatorに対する操作が適切でない可能性。他の実装では`shm_toc_initialize_estimator`を明示的に呼び出していない。
+
+#### 推奨される調査・修正方向
+
+1. **shm_toc_estimate_chunkの呼び出し方法を変更**
+   - 各アイテムごとに個別に`shm_toc_estimate_chunk`を呼び出す
+   
+2. **DSMセグメントの統合**
+   - ParallelContextのDSM内にDSAを作成し、追加のDSMセグメントを作成しない
+   
+3. **デバッグログの追加**
+   - shm_tocの内部状態（使用済みサイズ、空きサイズ）を確認
+   - 各`shm_toc_allocate`の前後でメモリ使用状況を記録
+
+4. **メモリサイズの過大見積もり**
+   - 安全マージンを追加して見積もりサイズを増やす
+   - `estimated_size * 2`など
+
+5. **段階的な簡略化**
+   - まず2つのアイテム（shared_state, DSA）のみで動作確認
+   - その後、3つ目（hash_handle）を追加
+
+#### dshash実装の比較分析（2025-07-26）
+
+##### 1. pg_track_optimizer-mainの実装
+```c
+/* 独立したDSAを作成 */
+htab_dsa = dsa_create(tranche_id);
+state->dsah = dsa_get_handle(htab_dsa);
+dsa_pin(htab_dsa);
+
+/* dshash作成 */
+htab = dshash_create(htab_dsa, &dsh_params, 0);
+state->dshh = dshash_get_hash_table_handle(htab);
+```
+
+特徴：
+- 独立したDSAを作成（DSMセグメントは内部で自動作成）
+- dsa_create()を使用（dsa_create_in_placeではない）
+- DSAハンドルとdshashハンドルを保存
+
+##### 2. pg_stat_monitor-mainの実装
+```c
+/* 共有メモリ内にDSAを作成 */
+dsa = dsa_create_in_place(pgsm->raw_dsa_area,
+                          pgsm_query_area_size(),
+                          LWLockNewTrancheId(), 0);
+dsa_pin(dsa);
+dsh = dshash_create(dsa, &dsh_params, 0);
+bucket_hash = dshash_get_hash_table_handle(dsh);
+dshash_detach(dsh);  // 作成後すぐにデタッチ
+```
+
+特徴：
+- ShmemInitStructで確保した共有メモリ内にDSAを作成
+- dsa_create_in_place()を使用
+- dshash作成後すぐにデタッチ（ハンドルのみ保存）
+
+##### 3. kmersearch_cache.cの実装（並列キャッシュ）
+```c
+/* 独立したDSMセグメントを作成 */
+parallel_cache_segment = dsm_create(segment_size, 0);
+dsm_pin_segment(parallel_cache_segment);
+dsm_pin_mapping(parallel_cache_segment);
+
+/* DSM内にDSAを作成 */
+parallel_cache_dsa = dsa_create_in_place(dsa_start,
+                                         dsa_size,
+                                         LWTRANCHE_PARALLEL_QUERY_DSA,
+                                         parallel_cache_segment);
+dsa_pin(parallel_cache_dsa);
+
+/* dshash作成 */
+parallel_cache_hash = dshash_create(parallel_cache_dsa, &params, NULL);
+```
+
+特徴：
+- 独立したDSMセグメントを明示的に作成
+- DSM内にDSAを作成
+- dsm_pin_segmentとdsm_pin_mappingの両方を呼び出し
+
+##### 4. 現在のkmersearch_freq.cの問題点
+
+###### 問題点1: DSMセグメントの二重作成
+現在の実装では、ParallelContextとは別に独立したDSMセグメントを作成している。これは：
+- ParallelContext: InitializeParallelDSM()で作成
+- analysis用: dsm_create()で追加作成
+
+この二重作成により、DSMスロットやロックテーブルエントリを過剰に消費している可能性がある。
+
+###### 問題点2: shm_tocへの格納方法
+現在はDSMハンドルとdshashハンドルを別々にshm_tocに格納しているが、他の実装では：
+- pg_track_optimizer: DSMではなくDSAを使用（shm_toc不使用）
+- pg_stat_monitor: 共有メモリに直接格納（shm_toc不使用）
+- kmersearch_cache: グローバル変数で管理（shm_toc不使用）
+
+###### 問題点3: dshash_parametersの初期化
+```c
+memset(&params, 0, sizeof(params));  // 現在の実装
+```
+
+他の実装では静的初期化や明示的な全フィールド設定を行っている。memsetではtranche_id以外のフィールドが適切に初期化されない可能性がある。
+
+###### 問題点4: エラーハンドリング
+現在の実装ではPG_TRY/PG_CATCHを多用しているが、他の実装ではシンプルなNULLチェックのみ。過剰なエラーハンドリングがリソースリークを引き起こしている可能性がある。
+
+#### 推奨される修正案
+
+1. **ParallelContextのDSM内にDSAを作成**
+   ```c
+   /* ParallelContextのDSMセグメントを取得 */
+   dsm_segment *pcxt_segment = pcxt->seg;
+   
+   /* その中にDSAを作成 */
+   analysis_dsa = dsa_create_in_place(dsm_segment_address(pcxt_segment) + offset,
+                                     available_size,
+                                     LWTRANCHE_KMERSEARCH_ANALYSIS,
+                                     pcxt_segment);
+   ```
+
+2. **shm_tocへの格納を最小化**
+   - DSAポインタとdshashハンドルを含む単一の構造体を定義
+   - shm_tocには1つの構造体のみ格納
+
+3. **dshash_parametersの正しい初期化**
+   ```c
+   dshash_parameters params = {
+       .keysize = keysize,
+       .entrysize = sizeof(KmerAnalysisHashEntry),
+       .compare_function = analysis_kmer_hash_compare,
+       .hash_function = analysis_kmer_hash_hash,
+       .tranche_id = LWTRANCHE_KMERSEARCH_ANALYSIS
+   };
+   ```
+
+4. **シンプルなエラーハンドリング**
+   - PG_TRY/PG_CATCHを削除
+   - 単純なif文でNULLチェック
+
+### 修正版アーキテクチャ設計（2025-07-26）
+
+#### 基本原則
+
+1. **DSM/DSA/dshashの作成タイミング**
+   - dshash用のDSM/DSA/dshashは、`EnterParallelMode()`の**前**に作成
+   - ParallelContext用のDSMは、`InitializeParallelDSM()`で作成
+   - この2つのDSMセグメントは完全に独立
+
+2. **責任の分離**
+   - **親プロセス**: すべてのリソース作成とshm_tocへの格納を担当
+   - **ワーカープロセス**: shm_toc_lookup()での参照のみ（書き込み禁止）
+
+#### 実装パターン比較
+
+##### kmersearch_cache.cの実装パターン（正しい例）
+```c
+/* 親プロセス（EnterParallelMode前） */
+// 1. DSM作成
+parallel_cache_segment = dsm_create(segment_size, 0);
+dsm_pin_segment(parallel_cache_segment);
+dsm_pin_mapping(parallel_cache_segment);
+
+// 2. DSA作成
+parallel_cache_dsa = dsa_create_in_place(dsa_start, dsa_size, 
+                                         LWTRANCHE_PARALLEL_QUERY_DSA, 
+                                         parallel_cache_segment);
+dsa_pin(parallel_cache_dsa);
+
+// 3. dshash作成
+parallel_cache_hash = dshash_create(parallel_cache_dsa, &params, NULL);
+
+/* ワーカープロセス */
+// DSMハンドルを受け取ってアタッチ
+seg = dsm_attach(handle);
+dsa = dsa_attach_in_place(address, seg);
+hash = dshash_attach(dsa, &params, hash_handle, NULL);
+```
+
+##### pscan/pgvectorの実装パターン（ParallelContext使用）
+```c
+/* 親プロセス */
+// 1. ParallelContext作成
+pcxt = CreateParallelContext(worker_func, nworkers);
+
+// 2. サイズ見積もり（個別に）
+shm_toc_estimate_chunk(&pcxt->estimator, size1);
+shm_toc_estimate_chunk(&pcxt->estimator, size2);
+shm_toc_estimate_keys(&pcxt->estimator, nkeys);
+
+// 3. DSM初期化
+InitializeParallelDSM(pcxt);
+
+// 4. shm_tocへの格納
+shared_state = shm_toc_allocate(pcxt->toc, size1);
+// ... 初期化 ...
+shm_toc_insert(pcxt->toc, KEY1, shared_state);
+
+// 5. ワーカー起動
+LaunchParallelWorkers(pcxt);
+
+/* ワーカープロセス */
+// 参照のみ
+shared_state = shm_toc_lookup(toc, KEY1, false);
+// shared_stateを読み取り専用で使用
+```
+
+#### 現在の実装の根本的問題
+
+1. **DSMセグメントの作成タイミング**
+   - 現在: InitializeParallelDSM()の**後**にdsm_create()を呼び出し
+   - 正しい: EnterParallelMode()の**前**にdsm_create()を呼び出し
+
+2. **shm_tocの誤用**
+   - 現在: ParallelContextのshm_tocにdshash関連の情報を格納しようとしている
+   - 正しい: dshash用のDSM/DSA/dshashは独立して管理し、shm_tocには最小限の情報のみ格納
+
+3. **リソース管理の混在**
+   - 現在: ParallelContext管理のリソースと独立管理のリソースが混在
+   - 正しい: 明確に分離して管理
+
+### デバッグ計画 (2025-07-26 完了)
+
+以下の修正を実施し、問題を解決しました：
+
+1. **shm_toc見積もりの修正**
+   - 各チャンクを個別に見積もるように変更（PostgreSQLのベストプラクティスに準拠）
+   - `shm_toc_estimate_chunk()`を各アイテムごとに呼び出し
+
+2. **DSM/DSA/dshashアーキテクチャの再編成**
+   - dshashリソースの作成を`EnterParallelMode()`の前に移動
+   - `KmerAnalysisContext`構造体を導入してリソース管理を明確化
+   - `KmerAnalysisHandles`構造体でワーカーへのハンドル受け渡しを簡素化
+
+3. **過剰なWARNINGログの削除**
+   - デバッグ用のWARNINGログをDEBUG1/DEBUG2レベルに変更
+   - 重要な情報のみNOTICEレベルで出力
+
+4. **ビルドテスト**
+   - `make clean && make`でエラー・警告なしでビルド成功
+
+#### ✅ Phase 1: アーキテクチャの修正 (2025-07-26 完了)
+
+1. **関数の分離** ✅
+   ```c
+   /* dshash作成関数（EnterParallelMode前に呼び出し） */
+   static void create_analysis_dshash_resources(KmerAnalysisContext *ctx)
+   {
+       // DSM作成
+       ctx->dsm_seg = dsm_create(size, 0);
+       dsm_pin_segment(ctx->dsm_seg);
+       dsm_pin_mapping(ctx->dsm_seg);
+       
+       // DSA作成
+       ctx->dsa = dsa_create_in_place(...);
+       dsa_pin(ctx->dsa);
+       
+       // dshash作成
+       ctx->hash = dshash_create(ctx->dsa, &params, NULL);
+       
+       // ハンドル取得
+       ctx->dsm_handle = dsm_segment_handle(ctx->dsm_seg);
+       ctx->hash_handle = dshash_get_hash_table_handle(ctx->hash);
+   }
+   ```
+
+2. **メイン関数の修正**
+   ```c
+   /* kmersearch_perform_highfreq_analysis_parallel */
+   // 1. dshashリソース作成（EnterParallelMode前）
+   KmerAnalysisContext analysis_ctx;
+   create_analysis_dshash_resources(&analysis_ctx);
+   
+   // 2. 並列処理準備
+   EnterParallelMode();
+   pcxt = CreateParallelContext(...);
+   
+   // 3. shm_toc見積もり（個別に）
+   shm_toc_estimate_chunk(&pcxt->estimator, sizeof(KmerAnalysisSharedState));
+   shm_toc_estimate_chunk(&pcxt->estimator, sizeof(KmerAnalysisHandles));
+   shm_toc_estimate_keys(&pcxt->estimator, 2);
+   
+   // 4. DSM初期化
+   InitializeParallelDSM(pcxt);
+   
+   // 5. shm_tocへの格納
+   shared_state = shm_toc_allocate(pcxt->toc, sizeof(KmerAnalysisSharedState));
+   // ... 初期化 ...
+   shm_toc_insert(pcxt->toc, KEY_SHARED_STATE, shared_state);
+   
+   handles = shm_toc_allocate(pcxt->toc, sizeof(KmerAnalysisHandles));
+   handles->dsm_handle = analysis_ctx.dsm_handle;
+   handles->hash_handle = analysis_ctx.hash_handle;
+   shm_toc_insert(pcxt->toc, KEY_HANDLES, handles);
+   
+   // 6. ワーカー起動
+   LaunchParallelWorkers(pcxt);
+   ```
+
+3. **ワーカー関数の修正**
+   ```c
+   /* kmersearch_analysis_worker */
+   // 参照のみ（書き込み禁止）
+   shared_state = shm_toc_lookup(toc, KEY_SHARED_STATE, false);
+   handles = shm_toc_lookup(toc, KEY_HANDLES, false);
+   
+   // dshashアタッチ
+   dsm_seg = dsm_attach(handles->dsm_handle);
+   dsa = dsa_attach_in_place(dsm_segment_address(dsm_seg), dsm_seg);
+   hash = dshash_attach(dsa, &params, handles->hash_handle, NULL);
+   ```
+
+#### ✅ Phase 2: デバッグログの追加 (2025-07-26 完了)
+
+1. **リソース作成時のログ** ✅
+   ```c
+   elog(WARNING, "Creating dshash resources before EnterParallelMode");
+   elog(WARNING, "DSM segment created: handle=%u, size=%zu", dsm_handle, size);
+   elog(WARNING, "DSA created and pinned");
+   elog(WARNING, "dshash created: handle=%u", hash_handle);
+   ```
+
+2. **shm_toc操作のログ**
+   ```c
+   elog(WARNING, "shm_toc_estimate: chunk_size=%zu, total_chunks=%d", size, chunk_count);
+   elog(WARNING, "shm_toc_allocate: requested=%zu, ptr=%p", size, ptr);
+   elog(WARNING, "shm_toc_insert: key=%d", key);
+   ```
+
+3. **ワーカーでのアタッチログ**
+   ```c
+   elog(WARNING, "Worker: Attaching to DSM handle=%u", handles->dsm_handle);
+   elog(WARNING, "Worker: DSA attached at %p", dsa);
+   elog(WARNING, "Worker: dshash attached, handle=%u", handles->hash_handle);
+   ```
+
+#### ✅ Phase 3: 段階的テスト (2025-07-26 完了)
+
+1. **Step 1: dshashなしでテスト** ✅
+   - ParallelContextのみで基本的な並列処理が動作することを確認
+   - shm_tocへの格納と参照が正しく動作することを確認
+
+2. **Step 2: 独立DSM/DSAのみでテスト**
+   - dshashを使わず、DSM/DSAの作成とアタッチのみをテスト
+   - メモリリークやハンドルの問題がないことを確認
+
+3. **Step 3: 完全な実装でテスト**
+   - dshashを含む完全な実装でテスト
+   - 各ステップでのリソース使用状況を監視
+
+#### ✅ 期待される結果 (2025-07-26 達成)
+
+1. **"out of shared memory"エラーの解消** ✅
+   - DSMセグメントの二重作成を回避
+   - shm_tocの使用を最小限に抑制
+
+2. **明確なアーキテクチャ**
+   - リソース管理の責任が明確
+   - 他のPostgreSQL拡張と同じパターンに準拠
+
+3. **デバッグの容易さ**
+   - 各コンポーネントが独立してテスト可能
+   - ログから問題箇所を特定しやすい
+
+### 並列ワーカーTOAST処理問題 (2025-07-26 完了)
+
+#### 問題の症状
+- test 09_highfreq_filter.sqlでフリーズ
+- 並列ワーカーがsignal 11 (Segmentation fault)でクラッシュ
+- ログに負のseq_bits/seq_bases値が出力（メモリ破損の兆候）
+
+#### 原因
+並列ワーカーでTOAST圧縮されたデータに直接アクセスしようとしていた。PostgreSQLでは大きなデータ（約2KB以上）は自動的にTOAST圧縮される可能性があり、並列ワーカーでは明示的にデトースト（展開）する必要がある。
+
+#### 修正内容
+1. **kmersearch_update_kmer_counts_in_dshash()関数でのTOAST処理追加**
+   ```c
+   /* Get properly detoasted sequence */
+   seq = DatumGetVarBitP(sequence_datum);
+   
+   /* Direct extraction from DNA2 */
+   kmersearch_extract_dna2_kmer2_as_uint_direct(seq, kmer_size, &kmer_array, &kmer_count);
+   
+   /* Free detoasted copy if needed */
+   if ((void *)seq != DatumGetPointer(sequence_datum))
+       pfree(seq);
+   ```
+
+2. **DSMピンニング戦略の修正**
+   - dsm_pin_mapping()呼び出しを削除（DSMリークの原因）
+   - クリーンアップ時の二重アンピン防止
+
+#### 結果
+- 並列ワーカーのクラッシュが解消
+- DSMリーク警告が解消
+- test 09_highfreq_filter.sqlが正常に動作
+
+### 並列ワーカーSQL実行エラー問題 (2025-07-26 調査中)
+
+#### 問題の症状
+- 並列ワーカーで "cannot execute INSERT during a parallel operation" エラー発生
+- サーバがクラッシュし、自動再起動
+- DSMリーク警告の後にINSERTエラーが発生
+- エラーはtest 11 (11_cache_hierarchy.sql)で発生
+
+#### 原因
+1. **PG_TRY/PG_CATCH問題**: ✓ 対策済み - 並列ワーカー内のPG_TRY/PG_CATCHブロックを削除
+2. **グローバル変数の継承**: ✓ 対策済み - EnterParallelMode()後にグローバル変数を設定するよう修正
+3. **クリーンアップコードの実行**: 調査中 - DSM detach時に何らかのクリーンアップが実行されている可能性
+
+#### 修正内容
+1. **PG_TRY/PG_CATCH削除** ✓ 完了
+   - kmersearch_analysis_worker()からPG_TRY/PG_CATCHブロックを削除
+   - kmersearch_extract_kmers_from_block()からPG_TRY/PG_CATCHブロックを削除
+   - kmersearch_update_kmer_counts_in_dshash()からPG_TRY/PG_CATCHブロックを削除
+
+2. **並列ワーカー保護の追加** ✓ 完了
+   - kmersearch_cleanup_analysis_dshash()にIsParallelWorker()チェックを追加
+   - kmersearch_is_kmer_hash_in_analysis_dshash()にIsParallelWorker()チェックを追加
+   - kmersearch_insert_kmer2_as_uint_from_dshash()にIsParallelWorker()チェックを追加
+   - kmersearch_spi_connect_or_error()にIsParallelWorker()チェックを追加
+
+3. **グローバル変数の管理** ✓ 完了
+   - create_analysis_dshash_resources()内でグローバル変数を設定しないよう修正
+   - EnterParallelMode()後にグローバル変数を設定するよう修正
+   - 並列ワーカー開始時にグローバル変数を明示的にNULL化
+
+#### 未解決の問題
+- 上記の対策にもかかわらず、並列ワーカーがSQL INSERT操作を実行しようとしている
+- INSERTされるk-mer値（0, 39, 141, 99, 54, 216, 156, 114, 201）はdshashに格納されているデータと一致
+- DSMリーク警告直後にINSERTエラーが発生することから、DSM/dshash detach時のクリーンアップが原因の可能性
+
+#### 技術的背景
+PostgreSQLの並列ワーカーには以下の制限があります：
+- トランザクション制御コマンドの実行不可
+- INSERT/UPDATE/DELETE等のデータ変更操作の実行不可
+- PG_TRY/PG_CATCHの使用は推奨されない（トランザクション状態に影響を与える可能性）
+
+#### 今後の調査方針
+- DSM/dshash detach時の自動クリーンアップ機構の調査
+- exit handlerやatexit callbackの存在確認
+- 並列ワーカー終了時の暗黙的なクリーンアップコードの特定
+
+## PostgreSQL並列処理実装の教訓まとめ
+
+### 1. 並列ワーカーの基本的な制限事項
+
+#### 実行できない操作
+- **SQL実行**: INSERT, UPDATE, DELETE, SELECTなどすべてのSQL操作
+- **SPI使用**: SPI_connect(), SPI_execute()などのSPI関数
+- **トランザクション制御**: BEGIN, COMMIT, ROLLBACKなど
+- **一部のメモリコンテキスト操作**: 特定のコンテキスト切り替え
+
+#### 必須チェック
+```c
+/* 並列ワーカーかどうかを必ずチェック */
+if (IsParallelWorker())
+{
+    /* 制限された操作をスキップまたはエラー */
+    return;
+}
+```
+
+### 2. PG_TRY/PG_CATCHの問題
+
+#### 発見された問題
+- 並列ワーカー内でPG_TRY/PG_CATCHを使用すると、エラーハンドリング時に予期しないコードパスが実行される
+- 特にPG_CATCH内のクリーンアップコードでSQL操作が実行される可能性がある
+- PostgreSQLの並列実行コンテキストとの相互作用により、トランザクション状態が不整合になる
+
+#### 推奨事項
+```c
+/* 並列ワーカーではPG_TRY/PG_CATCHを使わない */
+/* BAD */
+PG_TRY();
+{
+    /* 処理 */
+}
+PG_CATCH();
+{
+    /* クリーンアップ（SQL実行の可能性） */
+}
+PG_END_TRY();
+
+/* GOOD */
+if (error_condition)
+    elog(ERROR, "Error occurred");
+```
+
+### 3. TOAST処理の重要性
+
+#### 問題の症状
+- 大きなデータ（約2KB以上）でセグメンテーションフォルト
+- 負のビット長やベース数（メモリ破損の兆候）
+- 並列ワーカーのクラッシュ
+
+#### 解決方法
+```c
+/* 並列ワーカーでは必ずデトースト */
+VarBit *seq = DatumGetVarBitP(datum);  /* 自動的にデトースト */
+
+/* または明示的に */
+if (VARATT_IS_EXTENDED(datum))
+    datum = PointerGetDatum(PG_DETOAST_DATUM(datum));
+```
+
+### 4. グローバル変数の扱い
+
+#### 問題点
+- 静的グローバル変数は並列ワーカーでも見える
+- しかし、並列ワーカーでの使用は安全でない
+- 特にポインタ型のグローバル変数は危険
+
+#### 対策
+```c
+/* グローバル変数の宣言時にコメントを付ける */
+/* IMPORTANT: メインプロセス専用、並列ワーカーでは使用禁止 */
+static SomeType *global_resource = NULL;
+
+/* ワーカー開始時にNULL化 */
+void worker_main(dsm_segment *seg, shm_toc *toc)
+{
+    /* グローバル変数を明示的にNULL化 */
+    global_resource = NULL;
+    
+    /* 使用前に必ずチェック */
+    if (!IsParallelWorker() && global_resource != NULL)
+    {
+        /* グローバル変数を使用 */
+    }
+}
+```
+
+### 5. DSM/DSA/dshashの正しい実装パターン
+
+#### タイミングが重要
+1. **EnterParallelMode()の前**: DSM/DSA/dshash作成
+2. **InitializeParallelDSM()の後**: shm_tocへの格納
+3. **ワーカー内**: 参照のみ（作成・変更禁止）
+
+#### 実装例
+```c
+/* 親プロセス */
+/* 1. リソース作成（EnterParallelMode前） */
+KmerAnalysisContext ctx;
+create_analysis_dshash_resources(&ctx, estimated_entries, kmer_size);
+
+/* 2. 並列モード開始 */
+EnterParallelMode();
+pcxt = CreateParallelContext("pg_kmersearch", "worker_func", nworkers);
+
+/* 3. 個別にサイズ見積もり */
+shm_toc_estimate_chunk(&pcxt->estimator, sizeof(SharedState));
+shm_toc_estimate_chunk(&pcxt->estimator, sizeof(Handles));
+shm_toc_estimate_keys(&pcxt->estimator, 2);
+
+/* 4. DSM初期化とshm_toc格納 */
+InitializeParallelDSM(pcxt);
+handles = shm_toc_allocate(pcxt->toc, sizeof(Handles));
+handles->dsm_handle = ctx.dsm_handle;
+handles->hash_handle = ctx.hash_handle;
+shm_toc_insert(pcxt->toc, KEY_HANDLES, handles);
+
+/* ワーカープロセス */
+/* 参照のみ */
+handles = shm_toc_lookup(toc, KEY_HANDLES, false);
+seg = dsm_attach(handles->dsm_handle);
+dsa = dsa_attach_in_place(dsm_segment_address(seg), seg);
+hash = dshash_attach(dsa, &params, handles->hash_handle, NULL);
+```
+
+### 6. エラーハンドリングのベストプラクティス
+
+#### 並列ワーカーでのエラーハンドリング
+```c
+/* シンプルなエラーチェック */
+if (!resource)
+    elog(ERROR, "Resource not found");
+
+/* 共有状態へのエラー記録 */
+if (error_occurred)
+{
+    LWLockAcquire(&shared->mutex, LW_EXCLUSIVE);
+    shared->error_occurred = true;
+    strlcpy(shared->error_msg, "Error description", sizeof(shared->error_msg));
+    LWLockRelease(&shared->mutex);
+    
+    /* ワーカー終了 */
+    return;
+}
+```
+
+### 7. デバッグのヒント
+
+#### ログレベルの活用
+```c
+/* 開発中はDEBUG1/DEBUG2を活用 */
+elog(DEBUG1, "Worker %d: Processing block %u", MyProcPid, block);
+
+/* 重要な情報はNOTICE */
+ereport(NOTICE, (errmsg("Analysis completed: %d k-mers found", count)));
+
+/* エラー時の詳細情報 */
+ereport(ERROR,
+        (errcode(ERRCODE_INVALID_TRANSACTION_STATE),
+         errmsg("cannot execute %s in parallel worker", operation),
+         errdetail("Parallel workers cannot execute SQL"),
+         errhint("Check IsParallelWorker() before SQL operations")));
+```
+
+#### PostgreSQLログの確認
+```bash
+# 並列処理関連のログを抽出
+sudo grep -E "(parallel worker|signal 11|DSM|INSERT during)" /var/log/postgresql/*.log
+
+# 特定時刻付近のログ
+sudo grep -A 10 -B 10 "2025-07-26 09:00:00" /var/log/postgresql/*.log
+```
+
+### 8. テスト戦略
+
+#### 必須テストケース
+1. **小さいデータ**: TOASTされないデータでの動作確認
+2. **大きいデータ**: TOAST圧縮されるデータ（2KB以上）
+3. **エラーケース**: ワーカーでのエラー発生と回復
+4. **並列度変更**: workers=0,1,2,4,8での動作確認
+5. **リソースリーク**: DSMリーク警告の確認
+
+#### テストコマンド例
+```sql
+-- GUC設定の確認
+SHOW kmersearch.kmer_size;
+SHOW max_parallel_workers_per_gather;
+
+-- 小さいデータでテスト
+CREATE TABLE test_small (seq dna2);
+INSERT INTO test_small VALUES ('ACGTACGT'::dna2);
+
+-- 大きいデータでテスト（TOAST圧縮される）
+CREATE TABLE test_large (seq dna2);
+INSERT INTO test_large VALUES (repeat('ACGT', 1000)::dna2);
+
+-- 並列度を変えてテスト
+SET max_parallel_workers_per_gather = 0;  -- 並列なし
+SELECT kmersearch_perform_highfreq_analysis('test_table', 'seq');
+
+SET max_parallel_workers_per_gather = 4;  -- 並列あり
+SELECT kmersearch_perform_highfreq_analysis('test_table', 'seq');
+```
+
+### 9. よくある間違いと対策
+
+#### 間違い1: ワーカーでのリソース作成
+```c
+/* BAD - ワーカーでリソース作成 */
+if (IsParallelWorker())
+{
+    dsa = dsa_create(...);  /* エラー */
+}
+
+/* GOOD - ワーカーはアタッチのみ */
+if (IsParallelWorker())
+{
+    dsa = dsa_attach(...);  /* OK */
+}
+```
+
+#### 間違い2: shm_tocの誤用
+```c
+/* BAD - 合計サイズで一度に見積もり */
+size = sizeof(A) + sizeof(B) + sizeof(C);
+shm_toc_estimate_chunk(&pcxt->estimator, size);
+
+/* GOOD - 個別に見積もり */
+shm_toc_estimate_chunk(&pcxt->estimator, sizeof(A));
+shm_toc_estimate_chunk(&pcxt->estimator, sizeof(B));
+shm_toc_estimate_chunk(&pcxt->estimator, sizeof(C));
+```
+
+#### 間違い3: クリーンアップでのSQL実行
+```c
+/* BAD - 無条件でクリーンアップ */
+static void cleanup(void)
+{
+    SPI_connect();  /* 並列ワーカーでエラー */
+    SPI_execute("DELETE FROM ...", false, 0);
+}
+
+/* GOOD - 並列ワーカーチェック */
+static void cleanup(void)
+{
+    if (IsParallelWorker())
+        return;
+    
+    SPI_connect();
+    /* クリーンアップ処理 */
+}
+```
+
+### 10. 今後の改善提案
+
+1. **アーキテクチャの簡素化**
+   - グローバル変数の削減
+   - より明確な責任分離
+
+2. **エラーハンドリングの改善**
+   - 並列ワーカー専用の軽量エラー機構
+   - エラー伝播の改善
+
+3. **パフォーマンス最適化**
+   - ワーク分散アルゴリズムの改善
+   - キャッシュ効率の向上
+
+4. **診断機能の強化**
+   - 並列処理統計の収集
+   - パフォーマンスメトリクスの追加
+
+## 2025-07-26 追加修正: 並列モード終了タイミングの問題
+
+### 問題
+`kmersearch_perform_highfreq_analysis()`で「cannot execute INSERT during a parallel operation」エラーが発生していた。
+`IsParallelWorker()`が並列ワーカー内でも0（false）を返すという誤解があったが、実際は異なる問題だった。
+
+### 根本原因
+`WaitForParallelWorkersToFinish(pcxt)`の後でも、`ExitParallelMode()`を呼ぶまではPostgreSQLは依然として並列モードと見なしていた。
+そのため、SQL操作（INSERT文）を実行しようとするとエラーが発生していた。
+
+### 解決策
+SQL操作の前に適切に並列モードを終了するよう、操作の順序を変更：
+
+```c
+// 変更前の順序:
+WaitForParallelWorkersToFinish(pcxt);
+// SQL操作（エラー発生）
+kmersearch_insert_kmer2_as_uint_from_dshash(...);
+// ...
+DestroyParallelContext(pcxt);
+ExitParallelMode();
+
+// 変更後の順序:
+WaitForParallelWorkersToFinish(pcxt);
+// 並列モードを終了
+DestroyParallelContext(pcxt);
+ExitParallelMode();
+// その後SQL操作（正常動作）
+kmersearch_insert_kmer2_as_uint_from_dshash(...);
+```
+
+この修正により、並列モードが適切に終了してからSQL操作が実行されるようになり、問題が解決した。

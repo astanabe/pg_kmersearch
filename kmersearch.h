@@ -56,6 +56,7 @@
 #include "nodes/pg_list.h"
 #include "access/parallel.h"
 #include "storage/dsm.h"
+#include "storage/lmgr.h"
 #include "utils/dsa.h"
 #include "lib/dshash.h"
 #include "storage/ipc.h"
@@ -208,6 +209,48 @@ typedef struct DropAnalysisResult
     int         dropped_highfreq_kmers;    /* Number of dropped highly frequent k-mers */
     int64       freed_storage_bytes;       /* Freed storage in bytes */
 } DropAnalysisResult;
+
+/*
+ * Shared state for parallel k-mer analysis
+ */
+typedef struct KmerAnalysisSharedState
+{
+    LWLockPadded mutex;                   /* Exclusive control mutex */
+    int         num_workers;              /* Number of parallel workers */
+    Oid         table_oid;                /* Target table OID */
+    AttrNumber  column_attnum;            /* Target column attnum */
+    Oid         column_type_oid;          /* Target column data type OID */
+    int         kmer_size;                /* K-mer size (kmersearch_kmer_size) */
+    int         batch_size;               /* Batch size (kmersearch_highfreq_analysis_batch_size) */
+    bool        all_processed;            /* All rows processed flag */
+    BlockNumber next_block;               /* Next block number to process */
+    BlockNumber total_blocks;             /* Total number of blocks in table */
+    bool        worker_error_occurred;    /* Parallel worker error flag */
+    char        error_message[256];       /* Error message buffer */
+} KmerAnalysisSharedState;
+
+/* K-mer entry structures for different sizes */
+typedef struct KmerEntry16
+{
+    uint16      kmer;                     /* kmer2_as_uint (key) */
+    int         count;                    /* Number of rows containing this k-mer */
+} KmerEntry16;
+
+typedef struct KmerEntry32
+{
+    uint32      kmer;                     /* kmer2_as_uint (key) */
+    int         count;                    /* Number of rows containing this k-mer */
+} KmerEntry32;
+
+typedef struct KmerEntry64
+{
+    uint64      kmer;                     /* kmer2_as_uint (key) */
+    int         count;                    /* Number of rows containing this k-mer */
+} KmerEntry64;
+
+/* Shared memory keys for parallel processing */
+#define KMERSEARCH_KEY_SHARED_STATE  1
+#define KMERSEARCH_KEY_HANDLES       2  /* Combined DSM and hash handles */
 
 /*
  * Rawscore cache entry
@@ -401,6 +444,7 @@ extern int kmersearch_rawscore_cache_max_entries;
 extern int kmersearch_query_pattern_cache_max_entries;
 extern int kmersearch_actual_min_score_cache_max_entries;
 extern int kmersearch_highfreq_kmer_cache_load_batch_size;
+extern int kmersearch_highfreq_analysis_batch_size;
 
 /* Global cache managers */
 extern ActualMinScoreCacheManager *actual_min_score_cache_manager;
@@ -570,6 +614,9 @@ bool kmersearch_will_exceed_degenerate_limit(const char *seq, int len);
 /* Parallel analysis functions (implemented in kmersearch.c) */
 void kmersearch_worker_analyze_blocks(KmerWorkerState *worker, Relation rel, const char *column_name, int k_size, int target_attno, bool is_dna4_type);
 void kmersearch_merge_worker_results_sql(KmerWorkerState *workers, int num_workers, const char *final_table_name, int k_size, int threshold_rows);
+
+/* Parallel worker function for k-mer analysis */
+PGDLLEXPORT void kmersearch_analysis_worker(dsm_segment *seg, shm_toc *toc);
 
 /* Type OID helper functions */
 Oid get_dna2_type_oid(void);
