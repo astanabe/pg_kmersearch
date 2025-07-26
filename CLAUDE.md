@@ -151,6 +151,7 @@ Important GUC variables:
 - `kmersearch.preclude_highfreq_kmer` (true/false): Enable high-frequency k-mer exclusion during GIN index construction (default: false)
 - `kmersearch.force_use_parallel_highfreq_kmer_cache` (true/false): Force use of dshash parallel cache for high-frequency k-mer lookups (default: false)
 - `kmersearch.highfreq_kmer_cache_load_batch_size` (1000-1000000): Batch size for loading high-frequency k-mers into cache (default: 10000)
+- `kmersearch.highfreq_analysis_batch_size` (1000-1000000): Batch size for high-frequency k-mer analysis (default: 10000)
 
 ## Architecture Overview
 
@@ -208,6 +209,10 @@ Shows high-frequency k-mer analysis status for all analyzed tables
 
 #### kmersearch_perform_highfreq_analysis()
 Performs parallel k-mer frequency analysis on a table
+- Supports table name or OID as first argument
+- Supports column name or attnum as second argument
+- Uses PostgreSQL's standard parallel execution framework
+- Dynamically distributes work across multiple parallel workers
 
 #### kmersearch_undo_highfreq_analysis()
 Removes analysis data and frees storage
@@ -342,14 +347,15 @@ pg_kmersearch provides three types of high-performance cache systems to improve 
 - **N-gram keys**: k-mer (2k bits) + occurrence count (8-16 bits)
 - **Degenerate expansion**: Automatic expansion up to 10 combinations
 - **Parallel index creation**: Supports max_parallel_maintenance_workers
-- **High-frequency exclusion**: Full table scan before index creation
+- **High-frequency exclusion**: Parallel table scan using multiple workers
+- **Parallel k-mer analysis**: True parallel processing with PostgreSQL's ParallelContext
 - **System tables**: Metadata storage for excluded k-mers and index statistics (`kmersearch_highfreq_kmer`, `kmersearch_highfreq_kmer_meta`)
 - **Cache system**: TopMemoryContext-based high-performance caching
 - Binary input/output support
 
 ### K-mer Search Mechanism
-1. **Frequency analysis**: Full table scan to identify high-frequency k-mers
-2. **K-mer extraction**: Sliding window with specified k-length
+1. **Frequency analysis**: Parallel table scan using multiple workers to identify high-frequency k-mers
+2. **K-mer extraction**: Sliding window with specified k-length (parallel processing)
 3. **High-frequency filtering**: Exclude k-mers exceeding appearance thresholds
 4. **N-gram key generation**: Binary encoding of k-mer + occurrence count
 5. **Degenerate processing**: Expansion of MRWSYKVHDBN to standard bases

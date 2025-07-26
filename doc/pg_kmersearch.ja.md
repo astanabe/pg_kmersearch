@@ -159,6 +159,7 @@ pg_kmersearchは、PostgreSQLの`SET`コマンドで設定可能な複数の設�
 | `kmersearch.preclude_highfreq_kmer` | false | true/false | GINインデックス構築時の高頻出k-mer除外の有効化 |
 | `kmersearch.force_use_parallel_highfreq_kmer_cache` | false | true/false | 高頻出k-mer検索での並列dshashキャッシュの強制使用 |
 | `kmersearch.highfreq_kmer_cache_load_batch_size` | 10000 | 1000-1000000 | 高頻出k-merをキャッシュに読み込む際のバッチサイズ |
+| `kmersearch.highfreq_analysis_batch_size` | 10000 | 1000-1000000 | 高頻出k-mer解析のバッチサイズ |
 
 ### 高頻出k-mer除外機能
 
@@ -419,8 +420,14 @@ WHERE table_name = 'sequences';
 ```sql
 -- テーブル名とカラム名を使用した基本解析
 SELECT kmersearch_perform_highfreq_analysis(
-    'sequences',                   -- テーブル名
-    'dna_seq'                     -- カラム名
+    'sequences',                   -- テーブル名またはOID
+    'dna_seq'                     -- カラム名またはattnum
+);
+
+-- OIDとattnumを使用した解析
+SELECT kmersearch_perform_highfreq_analysis(
+    '16384'::text,                -- テーブルOIDをテキストとして
+    '3'::text                     -- カラムattnumをテキストとして
 );
 
 -- 結果の解釈例
@@ -432,6 +439,8 @@ FROM (
     SELECT kmersearch_perform_highfreq_analysis('sequences', 'dna_seq') as result
 ) t;
 ```
+
+この関数はPostgreSQLの標準並列実行フレームワークを使用して、k-mer抽出とカウント処理を複数のCPUコアに分散して実行します。
 
 #### kmersearch_undo_highfreq_analysis()
 解析データを削除してストレージを解放：
@@ -672,14 +681,15 @@ FROM (
 - **n-gramキー**: k-mer（2k bit）+ 出現回数（8-16 bit）
 - **縮重コード展開**: 最大10組み合わせまで自動展開
 - **並列インデックス作成**: max_parallel_maintenance_workersに対応
-- **高頻出除外**: インデックス作成前の全テーブルスキャン
+- **高頻出除外**: 複数ワーカーによる並列テーブルスキャン
+- **並列k-mer解析**: PostgreSQLのParallelContextによる真の並列処理
 - **システムテーブル**: 除外k-merとインデックス統計のメタデータ格納（`kmersearch_highfreq_kmer`, `kmersearch_highfreq_kmer_meta`）
 - **キャッシュシステム**: TopMemoryContext-based高速キャッシュ
 - バイナリ入出力サポート
 
 ### k-mer検索の仕組み
-1. **頻度解析**: 高頻出k-mer特定のための全テーブルスキャン
-2. **k-mer抽出**: 指定されたk長でスライディングウィンドウ
+1. **頻度解析**: 複数ワーカーによる並列テーブルスキャンで高頻出k-merを特定
+2. **k-mer抽出**: 指定されたk長でスライディングウィンドウ（並列処理）
 3. **高頻出フィルタリング**: 出現閾値を超えるk-merの除外
 4. **n-gramキー生成**: k-mer + 出現回数をバイナリエンコード
 5. **縮重コード処理**: MRWSYKVHDBN を標準塩基に展開
