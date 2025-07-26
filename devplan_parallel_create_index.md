@@ -1,4 +1,4 @@
-# DNA2/DNA4型GINインデックス並列作成機能実装計画 [COMPLETED]
+# DNA2/DNA4型GINインデックス並列作成機能実装計画 [PARTIALLY COMPLETED - Sequential execution only]
 
 ## 実装制約事項
 
@@ -21,7 +21,8 @@
 ```sql
 kmersearch_parallel_create_index(
     table_name text,
-    column_name text
+    column_name text,
+    tablespace_name text DEFAULT NULL
 ) RETURNS TABLE(
     partition_name text,
     index_name text,
@@ -36,6 +37,7 @@ kmersearch_parallel_create_index(
 ### パラメータ
 - `table_name`: 対象パーティションテーブル名
 - `column_name`: DNA2/DNA4型の対象カラム名
+- `tablespace_name`: インデックス作成先のテーブルスペース名（省略可能、デフォルト: 対象テーブルと同一のテーブルスペース）
 
 ### 戻り値
 各パーティションのインデックス作成結果を返すテーブル形式
@@ -221,6 +223,7 @@ static void parallel_index_worker_main(Datum main_arg)
 {
     // 1. パーティションでのGINインデックス作成（CONCURRENTLYなし）
     //    - CREATE INDEXが自動的にACCESS EXCLUSIVE LOCKを取得
+    //    - tablespace_nameが指定されている場合はTABLESPACE句を追加
     // 2. 高頻度k-mer除外処理（自動実行、既存キャッシュ利用）
     // 3. 実行結果の共有メモリへの書き込み
 }
@@ -267,7 +270,25 @@ typedef struct ParallelIndexPartitionResult {
 ```
 例: `sales_2023_q1_dna_sequence_gin_idx`
 
-### 4. 実行シーケンス
+### 4. テーブルスペース処理
+
+インデックス作成時のテーブルスペース決定ロジック：
+```c
+/* テーブルスペース名の決定 */
+if (tablespace_name != NULL && strlen(tablespace_name) > 0) {
+    /* 明示的に指定されたテーブルスペースを使用 */
+    snprintf(create_index_sql, sizeof(create_index_sql),
+        "CREATE INDEX %s ON %s USING gin (%s) TABLESPACE %s",
+        index_name, partition_name, column_name, tablespace_name);
+} else {
+    /* テーブルスペース句なし（パーティションと同じ場所に作成） */
+    snprintf(create_index_sql, sizeof(create_index_sql),
+        "CREATE INDEX %s ON %s USING gin (%s)",
+        index_name, partition_name, column_name);
+}
+```
+
+### 5. 実行シーケンス
 
 1. **前処理**
    - パラメータ検証
@@ -385,6 +406,81 @@ typedef struct ParallelIndexPartitionResult {
 - 大規模データセットでの実用的なインデックス構築時間実現
 
 この実装により、パーティション化されたDNA2/DNA4型の大規模テーブルに対して効率的なGINインデックス作成が可能となり、k-mer検索システムでのパーティショニング戦略を活用した高性能データ処理基盤の構築が実現される。
+
+## 実装状況 - 2025年7月現在
+
+### 実装済み機能（約60-70%完了）
+
+1. **kmersearch_partition_table関数**
+   - 第3引数として`tablespace_name`を追加（省略可能）
+   - 省略時は元のテーブルと同じテーブルスペースを使用
+   - 指定時は指定されたテーブルスペースにパーティションを作成
+
+2. **kmersearch_parallel_create_index関数**
+   - 第3引数として`tablespace_name`を追加（省略可能）
+   - 省略時はパーティションと同じテーブルスペースを使用
+   - 指定時は指定されたテーブルスペースにインデックスを作成
+
+### 未実装機能（主要機能）
+
+1. **並列実行機能** - 核心機能が未実装
+   - 現在は順次実行のみ（`create_partition_indexes()`内のコメント参照）
+   - バックグラウンドワーカーAPIの使用は未実装
+   - パーティション-ワーカー割り当てロジックなし
+   - 並列実行制御機構が存在しない
+
+2. **詳細な実行結果追跡**
+   - 個別パーティションの実行時間、処理行数などは未追跡
+   - worker_pidは常に0（プレースホルダー）
+   - 実際の並列実行統計情報なし
+
+3. **高度な機能**
+   - 動的ワーカー数調整
+   - 共有メモリを使用した進捗監視
+   - 詳細なパフォーマンス統計収集
+
+### 実装の相違点
+
+1. **データ移行方式（kmersearch_partition_table）**
+   - 計画：maintenance_work_memベースの動的バッチサイズ計算
+   - 実装：シンプルなINSERT SELECT + TRUNCATE（一括処理）
+
+2. **並列インデックス作成（kmersearch_parallel_create_index）**
+   - 計画：PostgreSQLの標準並列実行機能で複数ワーカー起動
+   - 実装：単一プロセスでの順次実行
+
+3. **エラーハンドリング**
+   - 計画：パーティション単位の詳細な失敗処理
+   - 実装：基本的なエラーハンドリングのみ
+
+### 使用例
+
+```sql
+-- デフォルトテーブルスペース（元のテーブルと同じ）
+SELECT kmersearch_partition_table('my_table', 4);
+
+-- 明示的なテーブルスペース指定
+SELECT kmersearch_partition_table('my_table', 4, 'fast_ssd');
+
+-- インデックス作成（デフォルト）
+SELECT kmersearch_parallel_create_index('my_table', 'sequence');
+
+-- インデックス作成（テーブルスペース指定）
+SELECT kmersearch_parallel_create_index('my_table', 'sequence', 'fast_nvme');
+```
+
+### 注意事項
+
+PostgreSQLの制約により、パーティションテーブル作成時に`pg_default`テーブルスペースを明示的に指定することはできません。`pg_default`を使用したい場合は、テーブルスペースパラメータを省略するか、NULLを指定してください。
+
+```sql
+-- 正しい使い方（pg_defaultを使用）
+SELECT kmersearch_partition_table('my_table', 4);        -- 省略
+SELECT kmersearch_partition_table('my_table', 4, NULL);  -- NULL指定
+
+-- エラーになる使い方
+SELECT kmersearch_partition_table('my_table', 4, 'pg_default');  -- ERROR
+```
 
 ## PostgreSQL並列処理実装ガイドライン
 
@@ -655,14 +751,16 @@ static void cleanup(void)
 #### 関数シグネチャ
 ```sql
 kmersearch_partition_table(
-    table_name text,         -- 対象テーブル名（OIDも可）
-    partition_count int      -- 分割数
+    table_name text,             -- 対象テーブル名（OIDも可）
+    partition_count int,         -- 分割数
+    tablespace_name text DEFAULT NULL  -- テーブルスペース名（省略可能）
 ) RETURNS void
 ```
 
 #### パラメータ
 - `table_name`: 変換対象の非パーティションテーブル名（regclass型でOID指定も可能）
 - `partition_count`: ハッシュパーティションの分割数（1以上の整数）
+- `tablespace_name`: パーティションテーブル作成先のテーブルスペース名（省略可能、デフォルト: 元のテーブルと同一のテーブルスペース）
 
 ### 実行条件
 
@@ -695,11 +793,20 @@ WHERE attrelid = table_oid
 -- タイムスタンプを含む一時テーブル名生成
 temp_table_name = sprintf("%s_temp%ld", table_name, time(NULL));
 
--- 同一テーブルスペースに親テーブル作成
+-- テーブルスペースの決定
+if (tablespace_name != NULL && strlen(tablespace_name) > 0) {
+    /* 指定されたテーブルスペースを使用 */
+    target_tablespace = tablespace_name;
+} else {
+    /* 元のテーブルと同じテーブルスペースを使用 */
+    target_tablespace = get_table_tablespace(table_oid);
+}
+
+-- 親テーブル作成
 CREATE TABLE {temp_table_name} (
     LIKE {table_name} INCLUDING ALL
 ) PARTITION BY HASH ({dna_column_name})
-TABLESPACE {original_tablespace};
+TABLESPACE {target_tablespace};
 ```
 
 #### 3. パーティション（子テーブル）作成
@@ -708,7 +815,7 @@ TABLESPACE {original_tablespace};
 CREATE TABLE {table_name}_{N} 
 PARTITION OF {temp_table_name} 
 FOR VALUES WITH (modulus {partition_count}, remainder {N})
-TABLESPACE {original_tablespace};
+TABLESPACE {target_tablespace};
 ```
 
 #### 4. データ移行（バッチ処理）
@@ -848,7 +955,9 @@ kmersearch_partition_table(PG_FUNCTION_ARGS)
 {
     text *table_name_text = PG_GETARG_TEXT_PP(0);
     int32 partition_count = PG_GETARG_INT32(1);
+    text *tablespace_name_text = PG_ARGISNULL(2) ? NULL : PG_GETARG_TEXT_PP(2);
     char *table_name;
+    char *tablespace_name = NULL;
     Oid table_oid;
     Oid dna_column_type;
     char *dna_column_name;
@@ -864,6 +973,10 @@ kmersearch_partition_table(PG_FUNCTION_ARGS)
     table_name = text_to_cstring(table_name_text);
     table_oid = get_table_oid(table_name, false);
     
+    /* テーブルスペース名取得 */
+    if (tablespace_name_text != NULL)
+        tablespace_name = text_to_cstring(tablespace_name_text);
+    
     /* 事前検証 */
     validate_table_for_partitioning(table_oid, &dna_column_name, &dna_column_type);
     
@@ -872,7 +985,8 @@ kmersearch_partition_table(PG_FUNCTION_ARGS)
              "%s_temp%ld", table_name, (long)time(NULL));
     
     /* パーティションテーブル作成 */
-    create_partition_table(temp_table_name, table_name, dna_column_name, partition_count);
+    create_partition_table(temp_table_name, table_name, dna_column_name, 
+                          partition_count, tablespace_name);
     
     /* データ移行（バッチサイズは自動計算） */
     migrate_data_in_batches(table_name, temp_table_name, table_oid);
@@ -887,15 +1001,18 @@ kmersearch_partition_table(PG_FUNCTION_ARGS)
 ### 使用例
 
 ```sql
--- 単純な使用例
+-- 単純な使用例（デフォルトテーブルスペース）
 SELECT kmersearch_partition_table('sequences', 4);
 
+-- テーブルスペースを指定した例
+SELECT kmersearch_partition_table('sequences', 4, 'fast_ssd');
+
 -- OIDを使用した例
-SELECT kmersearch_partition_table(16384::regclass, 8);
+SELECT kmersearch_partition_table(16384::regclass, 8, 'large_storage');
 
 -- 大規模テーブルの場合（maintenance_work_memを調整）
 SET maintenance_work_mem = '256MB';  -- より大きなバッチサイズが自動計算される
-SELECT kmersearch_partition_table('large_sequences', 16);
+SELECT kmersearch_partition_table('large_sequences', 16, 'fast_nvme');
 ```
 
 ### 制限事項と注意点
