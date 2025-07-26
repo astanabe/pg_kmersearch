@@ -1,5 +1,16 @@
 # DNA2/DNA4型GINインデックス並列作成機能実装計画
 
+## 実装制約事項
+
+**重要**: 以下の実装を禁止します：
+- スタブ実装禁止
+- ダミーデータ生成コード実装禁止
+- 不完全な関数実装禁止
+- 無駄なラッパー関数やヘルパー関数の実装禁止
+- ワークアラウンドの実装禁止
+- 既存の関数や構造体や変数と同一機能のものを実装することを禁止
+- GUC変数がある場合は直接GUC変数を使用し、ローカル変数にGUC変数を代入することを禁止
+
 ## 概要
 
 既存のパーティションテーブル（DNA2型またはDNA4型カラムを含む）の各パーティションに対してCREATE INDEXをPostgreSQLの標準並列実行機能で並列ワーカーを起動して実行する`kmersearch_parallel_create_index()`関数の実装計画。
@@ -374,3 +385,261 @@ typedef struct ParallelIndexPartitionResult {
 - 大規模データセットでの実用的なインデックス構築時間実現
 
 この実装により、パーティション化されたDNA2/DNA4型の大規模テーブルに対して効率的なGINインデックス作成が可能となり、k-mer検索システムでのパーティショニング戦略を活用した高性能データ処理基盤の構築が実現される。
+
+## PostgreSQL並列処理実装ガイドライン
+
+`kmersearch_perform_highfreq_analysis()`の実装経験から得られた、PostgreSQL拡張で並列処理を実装する際に従うべきガイドライン：
+
+### 1. 並列ワーカーの基本的な制限事項
+
+#### 実行できない操作
+- **SQL実行**: INSERT, UPDATE, DELETE, SELECTなどすべてのSQL操作
+- **SPI使用**: SPI_connect(), SPI_execute()などのSPI関数
+- **トランザクション制御**: BEGIN, COMMIT, ROLLBACKなど
+- **一部のメモリコンテキスト操作**: 特定のコンテキスト切り替え
+
+#### 必須チェック
+```c
+/* 並列ワーカーかどうかを必ずチェック */
+if (IsParallelWorker())
+{
+    /* 制限された操作をスキップまたはエラー */
+    return;
+}
+```
+
+### 2. PG_TRY/PG_CATCHの問題
+
+#### 発見された問題
+- 並列ワーカー内でPG_TRY/PG_CATCHを使用すると、エラーハンドリング時に予期しないコードパスが実行される
+- 特にPG_CATCH内のクリーンアップコードでSQL操作が実行される可能性がある
+- PostgreSQLの並列実行コンテキストとの相互作用により、トランザクション状態が不整合になる
+
+#### 推奨事項
+```c
+/* 並列ワーカーではPG_TRY/PG_CATCHを使わない */
+/* BAD */
+PG_TRY();
+{
+    /* 処理 */
+}
+PG_CATCH();
+{
+    /* クリーンアップ（SQL実行の可能性） */
+}
+PG_END_TRY();
+
+/* GOOD */
+if (error_condition)
+    elog(ERROR, "Error occurred");
+```
+
+### 3. TOAST処理の重要性
+
+#### 問題の症状
+- 大きなデータ（約2KB以上）でセグメンテーションフォルト
+- 負のビット長やベース数（メモリ破損の兆候）
+- 並列ワーカーのクラッシュ
+
+#### 解決方法
+```c
+/* 並列ワーカーでは必ずデトースト */
+VarBit *seq = DatumGetVarBitP(datum);  /* 自動的にデトースト */
+
+/* または明示的に */
+if (VARATT_IS_EXTENDED(datum))
+    datum = PointerGetDatum(PG_DETOAST_DATUM(datum));
+```
+
+### 4. グローバル変数の扱い
+
+#### 問題点
+- 静的グローバル変数は並列ワーカーでも見える
+- しかし、並列ワーカーでの使用は安全でない
+- 特にポインタ型のグローバル変数は危険
+
+#### 対策
+```c
+/* グローバル変数の宣言時にコメントを付ける */
+/* IMPORTANT: メインプロセス専用、並列ワーカーでは使用禁止 */
+static SomeType *global_resource = NULL;
+
+/* ワーカー開始時にNULL化 */
+void worker_main(dsm_segment *seg, shm_toc *toc)
+{
+    /* グローバル変数を明示的にNULL化 */
+    global_resource = NULL;
+    
+    /* 使用前に必ずチェック */
+    if (!IsParallelWorker() && global_resource != NULL)
+    {
+        /* グローバル変数を使用 */
+    }
+}
+```
+
+### 5. DSM/DSA/dshashアーキテクチャ
+
+#### 正しいパターン
+1. DSM/DSA/dshash資源をEnterParallelMode()の**前**に作成
+2. shm_tocを通じてハンドルを渡す
+3. ワーカーはアタッチと読み取りのみ、作成や構造変更は禁止
+
+```c
+/* 親プロセス - EnterParallelMode()前 */
+create_dshash_resources(&ctx);
+
+/* InitializeParallelDSM()後 */
+handles->dsm_handle = ctx.dsm_handle;
+shm_toc_insert(toc, KEY, handles);
+
+/* ワーカー - 読み取り専用 */
+handles = shm_toc_lookup(toc, KEY, false);
+dsm_attach(handles->dsm_handle);
+```
+
+### 6. リソースクリーンアップ
+
+#### 問題
+クリーンアップ関数がSQLやその他の制限された操作を実行する可能性がある。
+
+#### 解決策
+すべてのクリーンアップをIsParallelWorker()チェックでガード：
+```c
+static void cleanup_resources(void)
+{
+    /* 並列ワーカーでは決してクリーンアップを実行しない */
+    if (IsParallelWorker())
+        return;
+    
+    /* クリーンアップコード */
+}
+```
+
+### 7. エラーハンドリングのベストプラクティス
+- ワーカーでは単純なNULLチェックとelog(ERROR)を使用
+- SQLをトリガーする可能性のある複雑なエラーハンドリングを避ける
+- 共有状態を通じてPostgreSQLにワーカーエラーを処理させる
+
+### 8. 並列モード終了タイミング
+
+#### 重大な問題
+PostgreSQLは、WaitForParallelWorkersToFinish()の後でもExitParallelMode()が呼ばれるまで並列モードのままである。
+
+#### 問題
+ワーカーが終了してもExitParallelMode()前にSQL操作を試みると「cannot execute INSERT during a parallel operation」エラーが発生。
+
+#### 解決策
+SQL操作を実行する前に必ず並列モードを終了：
+```c
+/* BAD - 並列モードのままSQL操作 */
+WaitForParallelWorkersToFinish(pcxt);
+SPI_connect();
+SPI_execute("INSERT ...", false, 0);  /* エラー！ */
+DestroyParallelContext(pcxt);
+ExitParallelMode();
+
+/* GOOD - 先に並列モードを終了 */
+WaitForParallelWorkersToFinish(pcxt);
+DestroyParallelContext(pcxt);
+ExitParallelMode();
+/* これでSQL操作が安全に実行可能 */
+SPI_connect();
+SPI_execute("INSERT ...", false, 0);
+```
+
+これはよくある落とし穴で、メインプロセスでIsParallelWorker()がfalseを返しても、ExitParallelMode()が呼ばれるまでPostgreSQLは依然として並列モードと見なすためである。
+
+### 9. 一般的な並列処理パターン
+
+#### 正しい並列実行フロー
+```c
+/* 1. 共有リソースを作成（並列モード前） */
+create_shared_resources();
+
+/* 2. 並列モードに入る */
+EnterParallelMode();
+
+/* 3. 並列コンテキストを作成・設定 */
+pcxt = CreateParallelContext("worker_function", nworkers);
+InitializeParallelDSM(pcxt);
+
+/* 4. ワーカーを起動 */
+LaunchParallelWorkers(pcxt);
+
+/* 5. 完了を待つ */
+WaitForParallelWorkersToFinish(pcxt);
+
+/* 6. SQL操作の前に並列モードを終了 */
+DestroyParallelContext(pcxt);
+ExitParallelMode();
+
+/* 7. これでSQL操作が安全に実行可能 */
+SPI_connect();
+/* SQL操作 */
+SPI_finish();
+
+/* 8. 共有リソースをクリーンアップ */
+cleanup_shared_resources();
+```
+
+### 10. 並列コードのテスト
+
+以下の条件で必ずテスト：
+- 小さいデータ（非TOAST）
+- 大きいデータ（TOAST圧縮）
+- 複数ワーカー
+- ワーカー障害
+- PostgreSQLログでDSMリークやSQL実行試行の警告をチェック
+- 「cannot execute ... during a parallel operation」エラーが発生しないことを確認
+
+### 11. よくある間違いと対策
+
+#### 間違い1: ワーカーでのリソース作成
+```c
+/* BAD - ワーカーでリソース作成 */
+if (IsParallelWorker())
+{
+    dsa = dsa_create(...);  /* エラー */
+}
+
+/* GOOD - ワーカーはアタッチのみ */
+if (IsParallelWorker())
+{
+    dsa = dsa_attach(...);  /* OK */
+}
+```
+
+#### 間違い2: shm_tocの誤用
+```c
+/* BAD - 合計サイズで一度に見積もり */
+size = sizeof(A) + sizeof(B) + sizeof(C);
+shm_toc_estimate_chunk(&pcxt->estimator, size);
+
+/* GOOD - 個別に見積もり */
+shm_toc_estimate_chunk(&pcxt->estimator, sizeof(A));
+shm_toc_estimate_chunk(&pcxt->estimator, sizeof(B));
+shm_toc_estimate_chunk(&pcxt->estimator, sizeof(C));
+```
+
+#### 間違い3: クリーンアップでのSQL実行
+```c
+/* BAD - 無条件でクリーンアップ */
+static void cleanup(void)
+{
+    SPI_connect();  /* 並列ワーカーでエラー */
+    SPI_execute("DELETE FROM ...", false, 0);
+}
+
+/* GOOD - 並列ワーカーチェック */
+static void cleanup(void)
+{
+    if (IsParallelWorker())
+        return;
+    
+    SPI_connect();
+    /* クリーンアップ処理 */
+}
+```
+
+これらのガイドラインに従うことで、PostgreSQL拡張における並列処理実装の一般的な落とし穴を回避し、安定した高性能な実装を実現できる。
