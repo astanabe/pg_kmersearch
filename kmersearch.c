@@ -611,6 +611,7 @@ static void init_simd_dispatch_table(void)
     simd_dispatch.dna2_decode = dna2_decode_scalar;
     simd_dispatch.dna4_encode = dna4_encode_scalar;
     simd_dispatch.dna4_decode = dna4_decode_scalar;
+    simd_dispatch.dna_compare = dna_compare_scalar;
     
     /* Override with SIMD implementations if available */
     /* Enable only AVX2 implementations for testing */
@@ -621,6 +622,7 @@ static void init_simd_dispatch_table(void)
             simd_dispatch.dna2_decode = dna2_decode_avx512;
             simd_dispatch.dna4_encode = dna4_encode_avx512;
             simd_dispatch.dna4_decode = dna4_decode_avx512;
+            simd_dispatch.dna_compare = dna_compare_avx512;
             break;
         case SIMD_AVX512F:
             /* AVX512F without BW - use AVX2 fallback for encode/decode */
@@ -628,12 +630,14 @@ static void init_simd_dispatch_table(void)
             simd_dispatch.dna2_decode = dna2_decode_avx2;
             simd_dispatch.dna4_encode = dna4_encode_avx2;
             simd_dispatch.dna4_decode = dna4_decode_avx2;
+            simd_dispatch.dna_compare = dna_compare_avx512;
             break;
         case SIMD_AVX2:
             simd_dispatch.dna2_encode = dna2_encode_avx2;
             simd_dispatch.dna2_decode = dna2_decode_avx2;
             simd_dispatch.dna4_encode = dna4_encode_avx2;
             simd_dispatch.dna4_decode = dna4_decode_avx2;
+            simd_dispatch.dna_compare = dna_compare_avx2;
             break;
 #elif defined(__aarch64__)
         case SIMD_SVE:
@@ -642,6 +646,7 @@ static void init_simd_dispatch_table(void)
             simd_dispatch.dna2_decode = dna2_decode_sve;
             simd_dispatch.dna4_encode = dna4_encode_sve;
             simd_dispatch.dna4_decode = dna4_decode_sve;
+            simd_dispatch.dna_compare = dna_compare_sve;
             break;
         case SIMD_NEON:
             /* ENABLED: Fixed ARM64 NEON implementations */
@@ -649,6 +654,7 @@ static void init_simd_dispatch_table(void)
             simd_dispatch.dna2_decode = dna2_decode_neon;
             simd_dispatch.dna4_encode = dna4_encode_neon;
             simd_dispatch.dna4_decode = dna4_decode_neon;
+            simd_dispatch.dna_compare = dna_compare_neon;
             break;
 #endif
         case SIMD_NONE:

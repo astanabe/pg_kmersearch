@@ -535,6 +535,17 @@ void dna4_encode_sve(const char* input, uint8_t* output, int len);
 void dna4_decode_sve(const uint8_t* input, char* output, int len);
 #endif
 
+/* DNA comparison functions */
+int dna_compare_scalar(const uint8_t* a, const uint8_t* b, int bit_len);
+#ifdef __x86_64__
+int dna_compare_avx2(const uint8_t* a, const uint8_t* b, int bit_len);
+int dna_compare_avx512(const uint8_t* a, const uint8_t* b, int bit_len);
+#endif
+#ifdef __aarch64__
+int dna_compare_neon(const uint8_t* a, const uint8_t* b, int bit_len);
+int dna_compare_sve(const uint8_t* a, const uint8_t* b, int bit_len);
+#endif
+
 /* GIN operator class functions */
 Datum kmersearch_extract_value_dna2(PG_FUNCTION_ARGS);
 Datum kmersearch_extract_value_dna4(PG_FUNCTION_ARGS);

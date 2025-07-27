@@ -405,7 +405,7 @@ kmersearch_dna4_to_string(VarBit *dna)
  */
 
 /* Scalar comparison function (fallback) */
-static int
+int
 dna_compare_scalar(const uint8_t* a, const uint8_t* b, int bit_len)
 {
     int byte_len = (bit_len + 7) / 8;
@@ -419,7 +419,7 @@ dna_compare_scalar(const uint8_t* a, const uint8_t* b, int bit_len)
 #ifdef __x86_64__
 /* AVX2 comparison function */
 __attribute__((target("avx2")))
-static int
+int
 dna_compare_avx2(const uint8_t* a, const uint8_t* b, int bit_len)
 {
     int byte_len = (bit_len + 7) / 8;
@@ -452,7 +452,7 @@ dna_compare_avx2(const uint8_t* a, const uint8_t* b, int bit_len)
 
 /* AVX512 comparison function */
 __attribute__((target("avx512f,avx512bw")))
-static int
+int
 dna_compare_avx512(const uint8_t* a, const uint8_t* b, int bit_len)
 {
     int byte_len = (bit_len + 7) / 8;
@@ -487,7 +487,7 @@ dna_compare_avx512(const uint8_t* a, const uint8_t* b, int bit_len)
 #ifdef __aarch64__
 /* NEON comparison function */
 __attribute__((target("+simd")))
-static int
+int
 dna_compare_neon(const uint8_t* a, const uint8_t* b, int bit_len)
 {
     int byte_len = (bit_len + 7) / 8;
@@ -523,7 +523,7 @@ dna_compare_neon(const uint8_t* a, const uint8_t* b, int bit_len)
 
 /* SVE comparison function */
 __attribute__((target("+sve")))
-static int
+int
 dna_compare_sve(const uint8_t* a, const uint8_t* b, int bit_len)
 {
     int byte_len = (bit_len + 7) / 8;
@@ -554,25 +554,8 @@ dna_compare_sve(const uint8_t* a, const uint8_t* b, int bit_len)
 static int
 dna_compare_simd(const uint8_t* a, const uint8_t* b, int bit_len)
 {
-    /* Use SIMD based on runtime capability and compiler flags */
-#ifdef __x86_64__
-    if (simd_capability >= SIMD_AVX512BW) {
-        return dna_compare_avx512(a, b, bit_len);
-    }
-    if (simd_capability >= SIMD_AVX2) {
-        return dna_compare_avx2(a, b, bit_len);
-    }
-#elif defined(__aarch64__)
-    if (simd_capability >= SIMD_SVE) {
-        return dna_compare_sve(a, b, bit_len);
-    }
-    if (simd_capability >= SIMD_NEON) {
-        return dna_compare_neon(a, b, bit_len);
-    }
-#endif
-    
-    /* Fallback to scalar comparison */
-    return dna_compare_scalar(a, b, bit_len);
+    /* Use the dispatch table for SIMD function selection */
+    return simd_dispatch.dna_compare(a, b, bit_len);
 }
 
 /*
