@@ -972,8 +972,24 @@ static Datum *kmersearch_extract_dna2_kmer2_direct_sve(VarBit *seq, int k, int *
 Datum *
 kmersearch_extract_dna2_kmer2_direct(VarBit *seq, int k, int *nkeys)
 {
-    /* For now, always use scalar version until SIMD functions are moved */
-    return kmersearch_extract_dna2_kmer2_direct_scalar(seq, k, nkeys);
+    /* Dispatch to appropriate SIMD implementation based on CPU capabilities */
+    switch (simd_capability) {
+#ifdef __x86_64__
+        case SIMD_AVX512BW:
+        case SIMD_AVX512F:
+            return kmersearch_extract_dna2_kmer2_direct_avx512(seq, k, nkeys);
+        case SIMD_AVX2:
+            return kmersearch_extract_dna2_kmer2_direct_avx2(seq, k, nkeys);
+#elif defined(__aarch64__)
+        case SIMD_SVE:
+            return kmersearch_extract_dna2_kmer2_direct_sve(seq, k, nkeys);
+        case SIMD_NEON:
+            return kmersearch_extract_dna2_kmer2_direct_neon(seq, k, nkeys);
+#endif
+        case SIMD_NONE:
+        default:
+            return kmersearch_extract_dna2_kmer2_direct_scalar(seq, k, nkeys);
+    }
 }
 
 /*
@@ -1311,8 +1327,16 @@ kmersearch_extract_dna2_kmer2_direct_sve(VarBit *seq, int k, int *nkeys)
 }
 #endif /* __aarch64__ */
 
-/* Forward declaration for DNA4 expansion function */
+/* Forward declaration for DNA4 expansion functions */
 static Datum *kmersearch_extract_dna4_kmer2_with_expansion_direct_scalar(VarBit *seq, int k, int *nkeys);
+#ifdef __x86_64__
+static Datum *kmersearch_extract_dna4_kmer2_with_expansion_direct_avx2(VarBit *seq, int k, int *nkeys);
+static Datum *kmersearch_extract_dna4_kmer2_with_expansion_direct_avx512(VarBit *seq, int k, int *nkeys);
+#endif
+#ifdef __aarch64__
+static Datum *kmersearch_extract_dna4_kmer2_with_expansion_direct_neon(VarBit *seq, int k, int *nkeys);
+static Datum *kmersearch_extract_dna4_kmer2_with_expansion_direct_sve(VarBit *seq, int k, int *nkeys);
+#endif
 
 /*
  * Extract k-mers directly from DNA4 bit sequence with degenerate expansion (kmer2 output without occurrence count)
@@ -1320,8 +1344,24 @@ static Datum *kmersearch_extract_dna4_kmer2_with_expansion_direct_scalar(VarBit 
 Datum *
 kmersearch_extract_dna4_kmer2_with_expansion_direct(VarBit *seq, int k, int *nkeys)
 {
-    /* For now, always use scalar version until SIMD functions are moved */
-    return kmersearch_extract_dna4_kmer2_with_expansion_direct_scalar(seq, k, nkeys);
+    /* Dispatch to appropriate SIMD implementation based on CPU capabilities */
+    switch (simd_capability) {
+#ifdef __x86_64__
+        case SIMD_AVX512BW:
+        case SIMD_AVX512F:
+            return kmersearch_extract_dna4_kmer2_with_expansion_direct_avx512(seq, k, nkeys);
+        case SIMD_AVX2:
+            return kmersearch_extract_dna4_kmer2_with_expansion_direct_avx2(seq, k, nkeys);
+#elif defined(__aarch64__)
+        case SIMD_SVE:
+            return kmersearch_extract_dna4_kmer2_with_expansion_direct_sve(seq, k, nkeys);
+        case SIMD_NEON:
+            return kmersearch_extract_dna4_kmer2_with_expansion_direct_neon(seq, k, nkeys);
+#endif
+        case SIMD_NONE:
+        default:
+            return kmersearch_extract_dna4_kmer2_with_expansion_direct_scalar(seq, k, nkeys);
+    }
 }
 
 /*

@@ -37,17 +37,22 @@ pg_kmersearchプロジェクトのソースコード精査の結果、以下の�
 
 ## 3. 過剰な内部ラッパー関数
 
-### 3.1 キャッシュ管理の_internal関数群 ✅ PARTIALLY COMPLETED
-**問題点**:
-- `kmersearch_highfreq_kmer_cache_load_internal()`
-- `kmersearch_highfreq_kmer_cache_free_internal()`
-- `kmersearch_free_query_pattern_cache_internal()` ✅
-- `kmersearch_free_actual_min_score_cache_internal()` ✅
-- `kmersearch_parallel_highfreq_kmer_cache_load_internal()`
-- `kmersearch_parallel_highfreq_kmer_cache_free_internal()`
-- `kmersearch_parallel_cache_cleanup_internal()`
+### 3.1 キャッシュ管理の_internal関数群 ✅ COMPLETED
+**分析結果**:
+内部関数は以下の2つのカテゴリに分類される：
 
-これらは単純なラッパーとして機能し、追加の価値を提供していない。
+**A. 削除された単純なラッパー関数**:
+- `kmersearch_free_query_pattern_cache_internal()` ✅ DELETED
+- `kmersearch_free_actual_min_score_cache_internal()` ✅ DELETED
+
+**B. 保持すべき実質的な処理を含む関数**:
+- `kmersearch_highfreq_kmer_cache_load_internal()` - データベースからのロード、メモリ管理、GUC検証を実行
+- `kmersearch_highfreq_kmer_cache_free_internal()` - メモリコンテキストの削除と状態リセットを実行
+- `kmersearch_parallel_highfreq_kmer_cache_load_internal()` - 並列キャッシュの初期化とロードを実行
+- `kmersearch_parallel_highfreq_kmer_cache_free_internal()` - 並列キャッシュのクリーンアップを実行
+- `kmersearch_parallel_cache_cleanup_internal()` - DSM/dshashのクリーンアップを実行
+
+これらの関数は実質的な処理を含み、SQL関数からの呼び出しに必要な内部実装である。
 
 **修正計画**:
 1. PostgreSQL関数(PG_FUNCTION_ARGS)から直接実装を呼び出す
@@ -204,18 +209,16 @@ pg_kmersearchプロジェクトのソースコード精査の結果、以下の�
 - 並列処理関連の修正は特に慎重にテストする
 - パフォーマンス測定を行い、改善を確認する
 
-## SIMD実装の再有効化
+## SIMD実装の再有効化 ✅ COMPLETED
 
-現在、`kmersearch_extract_dna2_kmer2_direct()`関数は常にscalarバージョンを使用するようにハードコードされています（kmersearch_kmer.c:928）。SIMD関数の移動が完了した後、以下の作業が必要です：
+以下のSIMDディスパッチロジックが再有効化されました：
 
-1. **ディスパッチロジックの実装**:
-   - `kmersearch_extract_dna2_kmer2_direct()`にSIMDディスパッチロジックを追加
-   - CPU機能に基づいて適切なSIMD実装を選択
+1. **`kmersearch_extract_dna2_kmer2_direct()`**:
+   - CPU機能に基づいてAVX2/AVX512/NEON/SVE実装を動的に選択
+   - `simd_capability`グローバル変数を使用して適切な実装を選択
 
-2. **グローバル変数のアクセス**:
-   - `simd_capability`変数へのアクセスを確保
-   - 必要に応じてextern宣言を追加
+2. **`kmersearch_extract_dna4_kmer2_with_expansion_direct()`**:
+   - 同様にCPU機能に基づいてAVX2/AVX512/NEON/SVE実装を動的に選択
+   - デジェネレートコード展開を含むDNA4シーケンスに対応
 
-3. **テストの実施**:
-   - 各プラットフォームでSIMD実装が正しく動作することを確認
-   - パフォーマンステストを実施してSIMD最適化の効果を検証
+**注意**: コンパイル時に警告が出るが、これは前方宣言のパターンの不一致によるもので、機能には影響しない。
