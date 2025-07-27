@@ -1079,19 +1079,26 @@ kmersearch_extract_dna2_kmer2_direct_avx2(VarBit *seq, int k, int *nkeys)
         int start_bit = i * 2;
         int start_byte = start_bit / 8;
         int bit_offset = start_bit % 8;
+        int last_bit_pos = (i + k - 1) * 2 + 1;
+        int last_byte_pos = last_bit_pos / 8;
+        int bytes_to_load;
+        int total_bits_loaded;
+        int shift_amount;
+        int kmer_bit_len;
+        int kmer_bytes;
         uint64_t src_bits = 0;
         uint64_t kmer_bits;
         VarBit *kmer_key;
+        bits8 *kmer_data;
         
         /* Check bounds before extraction */
-        int last_bit_pos = (i + k - 1) * 2 + 1;
-        int last_byte_pos = last_bit_pos / 8;
         if (last_byte_pos >= VARBITBYTES(seq)) {
             continue;
         }
         
         /* Load up to 8 bytes containing the k-mer bits */
-        int bytes_to_load = ((start_bit + k * 2 + 7) / 8) - start_byte;
+        bytes_to_load = ((start_bit + k * 2 + 7) / 8) - start_byte;
+        
         if (bytes_to_load > 8) bytes_to_load = 8;
         
         /* Load bytes in big-endian order for bit extraction */
@@ -1100,8 +1107,8 @@ kmersearch_extract_dna2_kmer2_direct_avx2(VarBit *seq, int k, int *nkeys)
         }
         
         /* Shift to align k-mer to the right position */
-        int total_bits_loaded = bytes_to_load * 8;
-        int shift_amount = total_bits_loaded - bit_offset - (k * 2);
+        total_bits_loaded = bytes_to_load * 8;
+        shift_amount = total_bits_loaded - bit_offset - (k * 2);
         if (shift_amount > 0) {
             src_bits >>= shift_amount;
         }
@@ -1117,14 +1124,14 @@ kmersearch_extract_dna2_kmer2_direct_avx2(VarBit *seq, int k, int *nkeys)
         }
         
         /* Create VarBit k-mer key from extracted bits */
-        int kmer_bit_len = k * 2;
-        int kmer_bytes = (kmer_bit_len + 7) / 8;
+        kmer_bit_len = k * 2;
+        kmer_bytes = (kmer_bit_len + 7) / 8;
         kmer_key = (VarBit *) palloc0(VARHDRSZ + sizeof(int32) + kmer_bytes);
         SET_VARSIZE(kmer_key, VARHDRSZ + sizeof(int32) + kmer_bytes);
         VARBITLEN(kmer_key) = kmer_bit_len;
         
         /* Store k-mer bits in VarBit structure */
-        bits8 *kmer_data = VARBITS(kmer_key);
+        kmer_data = VARBITS(kmer_key);
         for (int j = 0; j < kmer_bytes; j++) {
             int bits_remaining = kmer_bit_len - (j * 8);
             int bits_in_byte = (bits_remaining >= 8) ? 8 : bits_remaining;
@@ -1191,20 +1198,26 @@ kmersearch_extract_dna2_kmer2_direct_avx512(VarBit *seq, int k, int *nkeys)
                 int pos = i + j;
                 int last_bit_pos = (pos + k - 1) * 2 + 1;
                 int last_byte_pos = last_bit_pos / 8;
+                uint64_t kmer_bits;
+                int kmer_bit_len;
+                int kmer_bytes;
+                VarBit *kmer_key;
+                bits8 *kmer_data;
+                
                 if (last_byte_pos >= VARBITBYTES(seq)) {
                     continue;
                 }
                 
                 /* Create VarBit k-mer key from extracted bits */
-                uint64_t kmer_bits = extracted_array[j] & (((uint64_t)1 << (k * 2)) - 1);
-                int kmer_bit_len = k * 2;
-                int kmer_bytes = (kmer_bit_len + 7) / 8;
-                VarBit *kmer_key = (VarBit *) palloc0(VARHDRSZ + sizeof(int32) + kmer_bytes);
+                kmer_bits = extracted_array[j] & (((uint64_t)1 << (k * 2)) - 1);
+                kmer_bit_len = k * 2;
+                kmer_bytes = (kmer_bit_len + 7) / 8;
+                kmer_key = (VarBit *) palloc0(VARHDRSZ + sizeof(int32) + kmer_bytes);
                 SET_VARSIZE(kmer_key, VARHDRSZ + sizeof(int32) + kmer_bytes);
                 VARBITLEN(kmer_key) = kmer_bit_len;
                 
                 /* Store k-mer bits in VarBit structure */
-                bits8 *kmer_data = VARBITS(kmer_key);
+                kmer_data = VARBITS(kmer_key);
                 for (int b = 0; b < kmer_bytes; b++) {
                     int bits_remaining = kmer_bit_len - (b * 8);
                     int bits_in_byte = (bits_remaining >= 8) ? 8 : bits_remaining;

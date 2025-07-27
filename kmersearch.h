@@ -153,6 +153,20 @@ typedef enum {
 #define SIMD_DECODE_NEON_THRESHOLD     256     /* 256 bits: Use NEON for decoding */
 #define SIMD_DECODE_SVE_THRESHOLD      512     /* 512 bits: Use SVE for decoding */
 
+/*
+ * SIMD DNA4 k-mer expansion thresholds (bit length)
+ * These thresholds determine when to use SIMD for DNA4 k-mer expansion
+ * 
+ * NOTE: These values are initially set to match SIMD_EXTRACT_*_THRESHOLD values
+ * for consistency, but should be re-evaluated through performance testing
+ * as DNA4 expansion has different characteristics than simple extraction.
+ * TODO: Conduct performance benchmarks to determine optimal threshold values
+ */
+#define SIMD_DNA4KMER2_AVX2_THRESHOLD    512     /* 512 bits: Use AVX2 for expansion */
+#define SIMD_DNA4KMER2_AVX512_THRESHOLD  1024    /* 1024 bits: Use AVX512 for expansion */
+#define SIMD_DNA4KMER2_NEON_THRESHOLD    256     /* 256 bits: Use NEON for expansion */
+#define SIMD_DNA4KMER2_SVE_THRESHOLD     512     /* 512 bits: Use SVE for expansion */
+
 /* Removed SIMD dispatch table - now using direct threshold-based dispatch */
 
 /*
