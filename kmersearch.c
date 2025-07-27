@@ -104,7 +104,7 @@ Datum *kmersearch_extract_dna2_kmer2_direct(VarBit *seq, int k, int *nkeys);
 Datum *kmersearch_extract_dna4_kmer2_with_expansion_direct(VarBit *seq, int k, int *nkeys);
 Datum *kmersearch_extract_dna2_ngram_key2_direct(VarBit *seq, int k, int *nkeys);
 Datum *kmersearch_extract_dna4_ngram_key2_with_expansion_direct(VarBit *seq, int k, int *nkeys);
-static int kmersearch_count_matching_kmer_fast(VarBit **seq_keys, int seq_nkeys, VarBit **query_keys, int query_nkeys);
+int kmersearch_count_matching_kmer_fast(VarBit **seq_keys, int seq_nkeys, VarBit **query_keys, int query_nkeys);
 static bool kmersearch_kmer_based_match_dna2(VarBit *sequence, const char *query_string);
 static bool kmersearch_kmer_based_match_dna4(VarBit *sequence, const char *query_string);
 static bool kmersearch_evaluate_match_conditions(int shared_count, int query_total);
@@ -232,16 +232,12 @@ static simd_capability_t detect_cpu_capabilities(void);
 static void init_simd_dispatch_table(void);
 
 /* SIMD implementation functions */
-static void dna2_encode_scalar(const char* input, uint8_t* output, int len);
 static void dna2_decode_scalar(const uint8_t* input, char* output, int len);
 static void dna4_encode_scalar(const char* input, uint8_t* output, int len);
 static void dna4_decode_scalar(const uint8_t* input, char* output, int len);
 
 /* Scalar versions */
 static Datum *kmersearch_extract_dna2_kmer2_direct_scalar(VarBit *seq, int k, int *nkeys);
-static Datum *kmersearch_extract_dna4_kmer2_with_expansion_direct_scalar(VarBit *seq, int k, int *nkeys);
-static int kmersearch_count_matching_kmer_fast_scalar_simple(VarBit **seq_keys, int seq_nkeys, VarBit **query_keys, int query_nkeys);
-static int kmersearch_count_matching_kmer_fast_scalar_hashtable(VarBit **seq_keys, int seq_nkeys, VarBit **query_keys, int query_nkeys);
 
 #ifdef __x86_64__
 static void dna2_encode_avx2(const char* input, uint8_t* output, int len);
@@ -250,13 +246,8 @@ static void dna4_encode_avx2(const char* input, uint8_t* output, int len);
 static void dna4_decode_avx2(const uint8_t* input, char* output, int len);
 
 /* K-mer processing functions with SIMD optimization */
-static Datum *kmersearch_extract_dna2_kmer2_direct_avx2(VarBit *seq, int k, int *nkeys);
-static Datum *kmersearch_extract_dna4_kmer2_with_expansion_direct_avx2(VarBit *seq, int k, int *nkeys);
-static int kmersearch_count_matching_kmer_fast_avx2(VarBit **seq_keys, int seq_nkeys, VarBit **query_keys, int query_nkeys);
 
 static Datum *kmersearch_extract_dna2_kmer2_direct_avx512(VarBit *seq, int k, int *nkeys);
-static Datum *kmersearch_extract_dna4_kmer2_with_expansion_direct_avx512(VarBit *seq, int k, int *nkeys);
-static int kmersearch_count_matching_kmer_fast_avx512(VarBit **seq_keys, int seq_nkeys, VarBit **query_keys, int query_nkeys);
 
 static void dna2_encode_avx512(const char* input, uint8_t* output, int len);
 static void dna2_decode_avx512(const uint8_t* input, char* output, int len);
@@ -271,12 +262,8 @@ static void dna4_encode_neon(const char* input, uint8_t* output, int len);
 static void dna4_decode_neon(const uint8_t* input, char* output, int len);
 
 static Datum *kmersearch_extract_dna2_kmer2_direct_neon(VarBit *seq, int k, int *nkeys);
-static Datum *kmersearch_extract_dna4_kmer2_with_expansion_direct_neon(VarBit *seq, int k, int *nkeys);
-static int kmersearch_count_matching_kmer_fast_neon(VarBit **seq_keys, int seq_nkeys, VarBit **query_keys, int query_nkeys);
 
 static Datum *kmersearch_extract_dna2_kmer2_direct_sve(VarBit *seq, int k, int *nkeys);
-static Datum *kmersearch_extract_dna4_kmer2_with_expansion_direct_sve(VarBit *seq, int k, int *nkeys);
-static int kmersearch_count_matching_kmer_fast_sve(VarBit **seq_keys, int seq_nkeys, VarBit **query_keys, int query_nkeys);
 
 static void dna2_encode_sve(const char* input, uint8_t* output, int len);
 static void dna2_decode_sve(const uint8_t* input, char* output, int len);
@@ -806,140 +793,8 @@ kmersearch_expand_dna4_kmer2_to_dna2_direct(VarBit *dna4_seq, int start_pos, int
     *expansion_count = total_combinations;
     return results;
 }
-/*
- * Extract k-mers directly from DNA2 bit sequence (with SIMD dispatch)
- */
-Datum *
-kmersearch_extract_dna2_ngram_key2_direct(VarBit *seq, int k, int *nkeys)
-{
-    Datum *kmer2_keys;
-    int kmer2_count;
-    Datum *ngram_keys;
-    int ngram_count = 0;
-    int i;
-    KmerOccurrence *occurrences;
-    int occurrence_count = 0;
-    
-    /* First, extract all kmer2 keys without occurrence count */
-    kmer2_keys = kmersearch_extract_dna2_kmer2_direct(seq, k, &kmer2_count);
-    if (!kmer2_keys || kmer2_count == 0) {
-        *nkeys = 0;
-        return NULL;
-    }
-    
-    /* Allocate arrays for occurrence tracking and result */
-    occurrences = (KmerOccurrence *) palloc(kmer2_count * sizeof(KmerOccurrence));
-    ngram_keys = (Datum *) palloc(kmer2_count * sizeof(Datum));
-    
-    /* Process each kmer2 key and add occurrence count */
-    for (i = 0; i < kmer2_count; i++) {
-        VarBit *kmer2_key = (VarBit *) DatumGetPointer(kmer2_keys[i]);
-        uint64_t kmer_value;
-        int current_count;
-        VarBit *ngram_key;
-        
-        /* Extract k-mer hash value from kmer2 key */
-        kmer_value = kmersearch_get_kmer_hash(kmer2_key, 0, k);
-        
-        /* Find or add occurrence count using binary search */
-        current_count = kmersearch_find_or_add_kmer_occurrence(occurrences, &occurrence_count, 
-                                                              kmer_value, kmer2_count);
-        
-        if (current_count < 0)
-            continue;  /* Array full, skip */
-        
-        /* Skip if occurrence exceeds bit limit */
-        if (current_count > (1 << kmersearch_occur_bitlen))
-            continue;
-        
-        /* Create n-gram key (k-mer + occurrence count) from kmer2 key */
-        ngram_key = kmersearch_create_ngram_key2_from_dna2_bits(kmer2_key, 0, k, current_count);
-        if (ngram_key == NULL)
-            continue;  /* Skip if key creation failed */
-            
-        ngram_keys[ngram_count++] = PointerGetDatum(ngram_key);
-    }
-    
-    /* Cleanup */
-    for (i = 0; i < kmer2_count; i++) {
-        pfree(DatumGetPointer(kmer2_keys[i]));
-    }
-    pfree(kmer2_keys);
-    pfree(occurrences);
-    
-    *nkeys = ngram_count;
-    return ngram_keys;
-}
 
-/*
- * Extract k-mers directly from DNA2 bit sequence (kmer2 output without occurrence count)
- */
-Datum *
-kmersearch_extract_dna2_kmer2_direct(VarBit *seq, int k, int *nkeys)
-{
-    int seq_bits = VARBITLEN(seq);
-    
-    /* Use SIMD based on runtime capability and data size thresholds */
-#ifdef __x86_64__
-    if (simd_capability >= SIMD_AVX512BW && seq_bits >= SIMD_EXTRACT_AVX512_THRESHOLD) {
-        return kmersearch_extract_dna2_kmer2_direct_avx512(seq, k, nkeys);
-    }
-    if (simd_capability >= SIMD_AVX2 && seq_bits >= SIMD_EXTRACT_AVX2_THRESHOLD) {
-        return kmersearch_extract_dna2_kmer2_direct_avx2(seq, k, nkeys);
-    }
-#elif defined(__aarch64__)
-    if (simd_capability >= SIMD_SVE && seq_bits >= SIMD_EXTRACT_SVE_THRESHOLD) {
-        return kmersearch_extract_dna2_kmer2_direct_sve(seq, k, nkeys);
-    }
-    if (simd_capability >= SIMD_NEON && seq_bits >= SIMD_EXTRACT_NEON_THRESHOLD) {
-        return kmersearch_extract_dna2_kmer2_direct_neon(seq, k, nkeys);
-    }
-#endif
-    return kmersearch_extract_dna2_kmer2_direct_scalar(seq, k, nkeys);
-}
 
-/*
- * Scalar version: Extract k-mers directly from DNA2 bit sequence
- */
-static Datum *
-kmersearch_extract_dna2_kmer2_direct_scalar(VarBit *seq, int k, int *nkeys)
-{
-    int seq_bits = VARBITLEN(seq);
-    int seq_bases = seq_bits / 2;
-    int max_kmers = (seq_bases >= k) ? (seq_bases - k + 1) : 0;
-    Datum *keys;
-    int key_count = 0;
-    int i;
-    
-    *nkeys = 0;
-    if (max_kmers <= 0)
-        return NULL;
-    
-    keys = (Datum *) palloc(max_kmers * sizeof(Datum));
-    
-    /* Extract k-mers without occurrence count (all k-mers, no deduplication) */
-    for (i = 0; i <= seq_bases - k; i++)
-    {
-        VarBit *kmer_key;
-        
-        /* Check bounds before extraction to avoid invalid access */
-        int last_bit_pos = (i + k - 1) * 2 + 1;
-        int last_byte_pos = last_bit_pos / 8;
-        if (last_byte_pos >= VARBITBYTES(seq)) {
-            continue;  /* Out of bounds, skip */
-        }
-        
-        /* Create k-mer key (without occurrence count) */
-        kmer_key = kmersearch_create_kmer2_key_from_dna2_bits(seq, i, k);
-        if (kmer_key == NULL)
-            continue;  /* Skip if key creation failed */
-            
-        keys[key_count++] = PointerGetDatum(kmer_key);
-    }
-    
-    *nkeys = key_count;
-    return keys;
-}
 
 /*
  * Extract k-mers only (without occurrence counts) from DNA2 bit sequence
@@ -950,226 +805,15 @@ kmersearch_extract_dna2_kmer2_direct_scalar(VarBit *seq, int k, int *nkeys)
  * Encode k-mer-only VarBit into compact KmerData (ignoring occurrence count bits)
  */
 
-/*
- * Extract k-mers directly from DNA4 bit sequence with degenerate expansion (with SIMD dispatch)
- */
-Datum *
-kmersearch_extract_dna4_ngram_key2_with_expansion_direct(VarBit *seq, int k, int *nkeys)
-{
-    Datum *kmer2_keys;
-    int kmer2_count;
-    Datum *ngram_keys;
-    int ngram_count = 0;
-    int i;
-    KmerOccurrence *occurrences;
-    int occurrence_count = 0;
-    
-    /* First, extract all kmer2 keys without occurrence count */
-    kmer2_keys = kmersearch_extract_dna4_kmer2_with_expansion_direct(seq, k, &kmer2_count);
-    if (!kmer2_keys || kmer2_count == 0) {
-        *nkeys = 0;
-        return NULL;
-    }
-    
-    /* Allocate arrays for occurrence tracking and result */
-    occurrences = (KmerOccurrence *) palloc(kmer2_count * sizeof(KmerOccurrence));
-    ngram_keys = (Datum *) palloc(kmer2_count * sizeof(Datum));
-    
-    /* Process each kmer2 key and add occurrence count */
-    for (i = 0; i < kmer2_count; i++) {
-        VarBit *kmer2_key = (VarBit *) DatumGetPointer(kmer2_keys[i]);
-        uint64_t kmer_value;
-        int current_count;
-        VarBit *ngram_key;
-        
-        /* Extract k-mer hash value from kmer2 key */
-        kmer_value = kmersearch_get_kmer_hash(kmer2_key, 0, k);
-        
-        /* Find or add occurrence count using binary search */
-        current_count = kmersearch_find_or_add_kmer_occurrence(occurrences, &occurrence_count, 
-                                                              kmer_value, kmer2_count);
-        
-        if (current_count < 0)
-            continue;  /* Array full, skip */
-        
-        /* Skip if occurrence exceeds bit limit */
-        if (current_count > (1 << kmersearch_occur_bitlen))
-            continue;
-        
-        /* Create n-gram key (k-mer + occurrence count) from kmer2 key */
-        ngram_key = kmersearch_create_ngram_key2_from_dna2_bits(kmer2_key, 0, k, current_count);
-        if (ngram_key == NULL)
-            continue;  /* Skip if key creation failed */
-            
-        ngram_keys[ngram_count++] = PointerGetDatum(ngram_key);
-    }
-    
-    /* Cleanup */
-    for (i = 0; i < kmer2_count; i++) {
-        pfree(DatumGetPointer(kmer2_keys[i]));
-    }
-    pfree(kmer2_keys);
-    pfree(occurrences);
-    
-    *nkeys = ngram_count;
-    return ngram_keys;
-}
 
-/*
- * Extract k-mers directly from DNA4 bit sequence with degenerate expansion (kmer2 output without occurrence count)
- */
-Datum *
-kmersearch_extract_dna4_kmer2_with_expansion_direct(VarBit *seq, int k, int *nkeys)
-{
-    int seq_bits = VARBITLEN(seq);
-    
-    /* Use SIMD based on runtime capability and data size thresholds */
-#ifdef __x86_64__
-    if (simd_capability >= SIMD_AVX512BW && seq_bits >= SIMD_EXTRACT_AVX512_THRESHOLD) {
-        return kmersearch_extract_dna4_kmer2_with_expansion_direct_avx512(seq, k, nkeys);
-    }
-    if (simd_capability >= SIMD_AVX2 && seq_bits >= SIMD_EXTRACT_AVX2_THRESHOLD) {
-        return kmersearch_extract_dna4_kmer2_with_expansion_direct_avx2(seq, k, nkeys);
-    }
-#elif defined(__aarch64__)
-    if (simd_capability >= SIMD_SVE && seq_bits >= SIMD_EXTRACT_SVE_THRESHOLD) {
-        return kmersearch_extract_dna4_kmer2_with_expansion_direct_sve(seq, k, nkeys);
-    }
-    if (simd_capability >= SIMD_NEON && seq_bits >= SIMD_EXTRACT_NEON_THRESHOLD) {
-        return kmersearch_extract_dna4_kmer2_with_expansion_direct_neon(seq, k, nkeys);
-    }
-#endif
-    return kmersearch_extract_dna4_kmer2_with_expansion_direct_scalar(seq, k, nkeys);
-}
 
-/*
- * Scalar version: Extract k-mers directly from DNA4 bit sequence with degenerate expansion
- */
-static Datum *
-kmersearch_extract_dna4_kmer2_with_expansion_direct_scalar(VarBit *seq, int k, int *nkeys)
-{
-    int seq_bits = VARBITLEN(seq);
-    int seq_bases = seq_bits / 4;
-    int max_kmers = (seq_bases >= k) ? (seq_bases - k + 1) : 0;
-    Datum *keys;
-    int key_count = 0;
-    int i;
-    
-    *nkeys = 0;
-    if (max_kmers <= 0)
-        return NULL;
-    
-    /* Allocate keys array with room for expansions */
-    keys = (Datum *) palloc(max_kmers * 10 * sizeof(Datum));  /* Max 10 expansions */
-    
-    /* Extract k-mers without occurrence count (all k-mers, no deduplication) */
-    for (i = 0; i <= seq_bases - k; i++)
-    {
-        VarBit **expanded_kmers;
-        int expansion_count;
-        int j;
-        
-        /* Expand DNA4 k-mer to DNA2 k-mers */
-        expanded_kmers = kmersearch_expand_dna4_kmer2_to_dna2_direct(seq, i, k, &expansion_count);
-        
-        if (!expanded_kmers || expansion_count == 0)
-            continue;
-        
-        /* Process each expanded k-mer */
-        for (j = 0; j < expansion_count; j++)
-        {
-            VarBit *dna2_kmer = expanded_kmers[j];
-            
-            /* Add kmer2 key directly (without occurrence count) */
-            if (dna2_kmer)
-                keys[key_count++] = PointerGetDatum(dna2_kmer);
-        }
-        
-        /* Free only the array, not the individual kmers since we're using them */
-        if (expanded_kmers)
-            pfree(expanded_kmers);
-    }
-    
-    *nkeys = key_count;
-    return keys;
-}
 
 /*
  * Cache management functions
  */
 /* Cache management functions moved to kmersearch_cache.c */
 
-/*
- * Fast k-mer matching using hash table - optimized O(n+m) implementation (with SIMD dispatch)
- */
-static int
-kmersearch_count_matching_kmer_fast(VarBit **seq_keys, int seq_nkeys, VarBit **query_keys, int query_nkeys)
-{
-    int key_combinations;
-    
-    /* Validate input parameters */
-    if (!seq_keys || !query_keys) {
-        return 0;
-    }
-    
-    if (seq_nkeys <= 0 || query_nkeys <= 0) {
-        return 0;
-    }
-    
-    key_combinations = seq_nkeys * query_nkeys;
-    
-    /* For small datasets, O(n*m) might be faster than hash table overhead */
-    if (key_combinations < 100) {
-        return kmersearch_count_matching_kmer_fast_scalar_simple(seq_keys, seq_nkeys, query_keys, query_nkeys);
-    }
-    
-    /* Use SIMD based on runtime capability and key combination thresholds */
-#ifdef __x86_64__
-    if (simd_capability >= SIMD_AVX512BW && key_combinations >= SIMD_KEYCOMB_AVX512_THRESHOLD) {
-        return kmersearch_count_matching_kmer_fast_avx512(seq_keys, seq_nkeys, query_keys, query_nkeys);
-    }
-    if (simd_capability >= SIMD_AVX2 && key_combinations >= SIMD_KEYCOMB_AVX2_THRESHOLD) {
-        return kmersearch_count_matching_kmer_fast_avx2(seq_keys, seq_nkeys, query_keys, query_nkeys);
-    }
-#elif defined(__aarch64__)
-    if (simd_capability >= SIMD_SVE && key_combinations >= SIMD_KEYCOMB_SVE_THRESHOLD) {
-        return kmersearch_count_matching_kmer_fast_sve(seq_keys, seq_nkeys, query_keys, query_nkeys);
-    }
-    if (simd_capability >= SIMD_NEON && key_combinations >= SIMD_KEYCOMB_NEON_THRESHOLD) {
-        return kmersearch_count_matching_kmer_fast_neon(seq_keys, seq_nkeys, query_keys, query_nkeys);
-    }
-#endif
-    return kmersearch_count_matching_kmer_fast_scalar_hashtable(seq_keys, seq_nkeys, query_keys, query_nkeys);
-}
 
-/*
- * Scalar version: Simple O(n*m) comparison for small datasets
- */
-static int
-kmersearch_count_matching_kmer_fast_scalar_simple(VarBit **seq_keys, int seq_nkeys, VarBit **query_keys, int query_nkeys)
-{
-    int match_count = 0;
-    int i, j;
-    
-    if (seq_nkeys == 0 || query_nkeys == 0)
-        return 0;
-    
-    /* Simple comparison for small datasets */
-    for (i = 0; i < seq_nkeys; i++)
-    {
-        for (j = 0; j < query_nkeys; j++)
-        {
-            if (VARBITLEN(seq_keys[i]) == VARBITLEN(query_keys[j]) &&
-                VARSIZE(seq_keys[i]) == VARSIZE(query_keys[j]) &&
-                memcmp(VARBITS(seq_keys[i]), VARBITS(query_keys[j]), VARBITBYTES(seq_keys[i])) == 0)
-            {
-                match_count++;
-                break;
-            }
-        }
-    }
-    return match_count;
-}
 
 /*
  * Scalar version: Fast k-mer matching using hash table - optimized O(n+m) implementation
@@ -2887,28 +2531,6 @@ kmersearch_parallel_highfreq_kmer_cache_is_valid(Oid table_oid, const char *colu
  */
 
 /* Scalar implementations (fallback) */
-static void dna2_encode_scalar(const char* input, uint8_t* output, int len)
-{
-    int byte_len = (len * 2 + 7) / 8;
-    memset(output, 0, byte_len);
-    
-    for (int i = 0; i < len; i++) {
-        uint8_t encoded = kmersearch_dna2_encode_table[(unsigned char)input[i]];
-        int bit_pos = i * 2;
-        int byte_pos = bit_pos / 8;
-        int bit_offset = bit_pos % 8;
-        
-        if (bit_offset <= 6) {
-            output[byte_pos] |= (encoded << (6 - bit_offset));
-        } else {
-            /* bit_offset == 7: 1st bit to current byte, 2nd bit to next byte */
-            output[byte_pos] |= (encoded >> 1);
-            if (byte_pos + 1 < byte_len) {
-                output[byte_pos + 1] |= (encoded & 0x1) << 7;
-            }
-        }
-    }
-}
 
 static void dna2_decode_scalar(const uint8_t* input, char* output, int len)
 {

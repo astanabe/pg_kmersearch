@@ -844,3 +844,31 @@ kmersearch_dna4_hash_extended(PG_FUNCTION_ARGS)
     
     PG_RETURN_INT64(hash);
 }
+
+/*
+ * SIMD encoding/decoding functions
+ */
+
+/* Scalar implementation of DNA2 encoding */
+void dna2_encode_scalar(const char* input, uint8_t* output, int len)
+{
+    int byte_len = (len * 2 + 7) / 8;
+    memset(output, 0, byte_len);
+    
+    for (int i = 0; i < len; i++) {
+        uint8_t encoded = kmersearch_dna2_encode_table[(unsigned char)input[i]];
+        int bit_pos = i * 2;
+        int byte_pos = bit_pos / 8;
+        int bit_offset = bit_pos % 8;
+        
+        if (bit_offset <= 6) {
+            output[byte_pos] |= (encoded << (6 - bit_offset));
+        } else {
+            /* bit_offset == 7: 1st bit to current byte, 2nd bit to next byte */
+            output[byte_pos] |= (encoded >> 1);
+            if (byte_pos + 1 < byte_len) {
+                output[byte_pos + 1] |= (encoded & 0x1) << 7;
+            }
+        }
+    }
+}

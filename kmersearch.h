@@ -509,6 +509,9 @@ Datum kmersearch_dna4_char_length(PG_FUNCTION_ARGS);
 char *kmersearch_dna2_to_string(VarBit *dna);
 char *kmersearch_dna4_to_string(VarBit *dna);
 
+/* DNA encoding/decoding functions */
+void dna2_encode_scalar(const char* input, uint8_t* output, int len);
+
 /* GIN operator class functions */
 Datum kmersearch_extract_value_dna2(PG_FUNCTION_ARGS);
 Datum kmersearch_extract_value_dna4(PG_FUNCTION_ARGS);
@@ -607,6 +610,7 @@ int kmersearch_find_or_add_kmer_occurrence(KmerOccurrence *occurrences, int *cou
 VarBit **kmersearch_extract_kmer_from_varbit(VarBit *seq, int k, int *nkeys);
 VarBit **kmersearch_extract_kmer_from_query(const char *query, int k, int *nkeys);
 VarBit **kmersearch_extract_query_ngram_key2(const char *query, int k, int *nkeys);
+int kmersearch_count_matching_kmer_fast(VarBit **seq_keys, int seq_nkeys, VarBit **query_keys, int query_nkeys);
 uint8 kmersearch_get_bit_at(bits8 *data, int bit_pos);
 bool kmersearch_will_exceed_degenerate_limit(const char *seq, int len);
 

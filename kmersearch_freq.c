@@ -28,7 +28,6 @@ static int kmersearch_count_highfreq_kmer_in_query(VarBit **query_keys, int nkey
 static bool kmersearch_is_highfreq_filtering_enabled(void);
 /* Utility functions */
 static int kmersearch_varbit_cmp(VarBit *a, VarBit *b);
-static void kmersearch_spi_connect_or_error(void);
 
 /* Analysis dshash functions */
 static int analysis_kmer_hash_compare(const void *a, const void *b, size_t size, void *arg);
@@ -835,7 +834,7 @@ kmersearch_validate_guc_against_all_metadata(void)
 /*
  * Connect to SPI with error handling
  */
-static void
+void
 kmersearch_spi_connect_or_error(void)
 {
     int ret;
