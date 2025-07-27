@@ -513,6 +513,11 @@ char *kmersearch_dna4_to_string(VarBit *dna);
 void dna2_encode_scalar(const char* input, uint8_t* output, int len);
 #ifdef __x86_64__
 void dna2_encode_avx2(const char* input, uint8_t* output, int len);
+void dna2_encode_avx512(const char* input, uint8_t* output, int len);
+#endif
+#ifdef __aarch64__
+void dna2_encode_neon(const char* input, uint8_t* output, int len);
+void dna2_encode_sve(const char* input, uint8_t* output, int len);
 #endif
 
 /* GIN operator class functions */

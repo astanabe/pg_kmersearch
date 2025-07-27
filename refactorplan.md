@@ -134,7 +134,7 @@ pg_kmersearchプロジェクトのソースコード精査の結果、以下の�
 - `kmersearch_count_matching_kmer_fast()` およびそのSIMDバリアント ✅ (dispatcher + scalar_simple + scalar_hashtable)
 
 #### kmersearch.c → kmersearch_datatype.c（データ型エンコード・デコード関連）
-- `dna2_encode_scalar()` ✅, `dna2_encode_avx2()` ✅, `dna2_encode_avx512()`, `dna2_encode_neon()`, `dna2_encode_sve()`
+- `dna2_encode_scalar()` ✅, `dna2_encode_avx2()` ✅, `dna2_encode_avx512()` ✅, `dna2_encode_neon()` ✅, `dna2_encode_sve()` ✅
 - `dna2_decode_scalar()`, `dna2_decode_avx2()`, `dna2_decode_avx512()`, `dna2_decode_neon()`, `dna2_decode_sve()`
 - `dna4_encode_scalar()`, `dna4_encode_avx2()`, `dna4_encode_avx512()`, `dna4_encode_neon()`, `dna4_encode_sve()`
 - `dna4_decode_scalar()`, `dna4_decode_avx2()`, `dna4_decode_avx512()`, `dna4_decode_neon()`, `dna4_decode_sve()`

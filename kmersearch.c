@@ -246,21 +246,18 @@ static void dna4_decode_avx2(const uint8_t* input, char* output, int len);
 
 /* K-mer processing functions with SIMD optimization */
 
-static void dna2_encode_avx512(const char* input, uint8_t* output, int len);
 static void dna2_decode_avx512(const uint8_t* input, char* output, int len);
 static void dna4_encode_avx512(const char* input, uint8_t* output, int len);
 static void dna4_decode_avx512(const uint8_t* input, char* output, int len);
 #endif
 
 #ifdef __aarch64__
-static void dna2_encode_neon(const char* input, uint8_t* output, int len);
 static void dna2_decode_neon(const uint8_t* input, char* output, int len);
 static void dna4_encode_neon(const char* input, uint8_t* output, int len);
 static void dna4_decode_neon(const uint8_t* input, char* output, int len);
 
 
 
-static void dna2_encode_sve(const char* input, uint8_t* output, int len);
 static void dna2_decode_sve(const uint8_t* input, char* output, int len);
 static void dna4_encode_sve(const char* input, uint8_t* output, int len);
 static void dna4_decode_sve(const uint8_t* input, char* output, int len);
@@ -2810,65 +2807,6 @@ static void dna4_decode_avx2(const uint8_t* input, char* output, int len)
 }
 
 /* AVX512 implementations */
-__attribute__((target("avx512f,avx512bw")))
-static void dna2_encode_avx512(const char* input, uint8_t* output, int len)
-{
-    int byte_len = (len * 2 + 7) / 8;
-    int simd_len;
-    
-    memset(output, 0, byte_len);
-    
-    /* Process 64 characters at a time with AVX512 */
-    simd_len = len & ~63;  /* Round down to multiple of 64 */
-    
-    for (int i = 0; i < simd_len; i += 64) {
-        __m512i chars = _mm512_loadu_si512((__m512i*)(input + i));
-        
-        /* Generate 2-bit encoded values using lookup table approach */
-        uint8_t temp[64];
-        _mm512_storeu_si512((__m512i*)temp, chars);
-        
-        /* Encode each character using lookup table */
-        for (int j = 0; j < 64; j++) {
-            temp[j] = kmersearch_dna2_encode_table[(unsigned char)temp[j]];
-        }
-        
-        for (int j = 0; j < 64; j++) {
-            uint8_t encoded = temp[j];
-            int bit_pos = (i + j) * 2;
-            int byte_pos = bit_pos / 8;
-            int bit_offset = bit_pos % 8;
-            
-            if (bit_offset <= 6) {
-                output[byte_pos] |= (encoded << (6 - bit_offset));
-            } else {
-                /* bit_offset == 7: handle byte boundary crossing */
-                output[byte_pos] |= (encoded >> 1);
-                if (byte_pos + 1 < byte_len) {
-                    output[byte_pos + 1] |= (encoded & 0x1) << 7;
-                }
-            }
-        }
-    }
-    
-    /* Handle remaining characters with scalar */
-    for (int i = simd_len; i < len; i++) {
-        uint8_t encoded = kmersearch_dna2_encode_table[(unsigned char)input[i]];
-        int bit_pos = i * 2;
-        int byte_pos = bit_pos / 8;
-        int bit_offset = bit_pos % 8;
-        
-        if (bit_offset <= 6) {
-            output[byte_pos] |= (encoded << (6 - bit_offset));
-        } else {
-            /* bit_offset == 7: handle byte boundary crossing */
-            output[byte_pos] |= (encoded >> 1);
-            if (byte_pos + 1 < byte_len) {
-                output[byte_pos + 1] |= (encoded & 0x1) << 7;
-            }
-        }
-    }
-}
 
 __attribute__((target("avx512f,avx512bw")))
 static void dna2_decode_avx512(const uint8_t* input, char* output, int len)
@@ -3071,81 +3009,6 @@ static void dna4_decode_avx512(const uint8_t* input, char* output, int len)
 
 #ifdef __aarch64__
 /* NEON implementations */
-__attribute__((target("+simd")))
-static void dna2_encode_neon(const char* input, uint8_t* output, int len)
-{
-    int byte_len = (len * 2 + 7) / 8;
-    int simd_len = len & ~15;  /* Round down to multiple of 16 */
-    int i, j;
-    uint8x16_t chars, mask_C, mask_G, mask_T, mask_U, encoded;
-    uint8_t temp[16];
-    
-    memset(output, 0, byte_len);
-    
-    /* Process 16 characters at a time with NEON */
-    for (i = 0; i < simd_len; i += 16) {
-        chars = vld1q_u8((uint8_t*)(input + i));
-        
-        /* Create comparison masks for each DNA base */
-        /* A=00, so no mask needed */
-        mask_C = vorrq_u8(vceqq_u8(chars, vdupq_n_u8('C')),
-                          vceqq_u8(chars, vdupq_n_u8('c')));
-        mask_G = vorrq_u8(vceqq_u8(chars, vdupq_n_u8('G')),
-                          vceqq_u8(chars, vdupq_n_u8('g')));
-        mask_T = vorrq_u8(vceqq_u8(chars, vdupq_n_u8('T')),
-                          vceqq_u8(chars, vdupq_n_u8('t')));
-        mask_U = vorrq_u8(vceqq_u8(chars, vdupq_n_u8('U')),
-                          vceqq_u8(chars, vdupq_n_u8('u')));
-        
-        /* Combine T and U masks */
-        mask_T = vorrq_u8(mask_T, mask_U);
-        
-        /* Generate 2-bit encoded values */
-        encoded = vdupq_n_u8(0);
-        encoded = vorrq_u8(encoded, vandq_u8(mask_C, vdupq_n_u8(1)));
-        encoded = vorrq_u8(encoded, vandq_u8(mask_G, vdupq_n_u8(2)));
-        encoded = vorrq_u8(encoded, vandq_u8(mask_T, vdupq_n_u8(3)));
-        
-        /* Store and pack bits */
-        vst1q_u8(temp, encoded);
-        
-        for (j = 0; j < 16; j++) {
-            int bit_pos = (i + j) * 2;
-            int byte_pos = bit_pos / 8;
-            int bit_offset = bit_pos % 8;
-            
-            /* Fixed: Handle byte boundary crossing properly */
-            if (bit_offset <= 6) {
-                output[byte_pos] |= (temp[j] << (6 - bit_offset));
-            } else {
-                /* bit_offset == 7: split across two bytes */
-                output[byte_pos] |= (temp[j] >> 1);
-                if (byte_pos + 1 < byte_len) {
-                    output[byte_pos + 1] |= (temp[j] & 0x1) << 7;
-                }
-            }
-        }
-    }
-    
-    /* Handle remaining characters with scalar */
-    for (i = simd_len; i < len; i++) {
-        uint8_t encoded = kmersearch_dna2_encode_table[(unsigned char)input[i]];
-        int bit_pos = i * 2;
-        int byte_pos = bit_pos / 8;
-        int bit_offset = bit_pos % 8;
-        
-        /* Fixed: Handle byte boundary crossing properly */
-        if (bit_offset <= 6) {
-            output[byte_pos] |= (encoded << (6 - bit_offset));
-        } else {
-            /* bit_offset == 7: split across two bytes */
-            output[byte_pos] |= (encoded >> 1);
-            if (byte_pos + 1 < byte_len) {
-                output[byte_pos + 1] |= (encoded & 0x1) << 7;
-            }
-        }
-    }
-}
 
 __attribute__((target("+simd")))
 static void dna2_decode_neon(const uint8_t* input, char* output, int len)
@@ -3353,83 +3216,6 @@ static void dna4_decode_neon(const uint8_t* input, char* output, int len)
 }
 
 /* SVE implementations */
-__attribute__((target("+sve")))
-static void dna2_encode_sve(const char* input, uint8_t* output, int len)
-{
-    int byte_len = (len * 2 + 7) / 8;
-    int sve_len = svcntb();
-    int simd_len = len & ~(sve_len - 1);
-    int i, j;
-    svbool_t pg, mask_C, mask_G, mask_T, mask_U;
-    svuint8_t chars, encoded;
-    uint8_t temp[sve_len];
-    
-    memset(output, 0, byte_len);
-    
-    for (i = 0; i < simd_len; i += sve_len) {
-        pg = svwhilelt_b8_s32(i, len);
-        chars = svld1_u8(pg, (uint8_t*)(input + i));
-        
-        /* Create comparison masks for each DNA base */
-        /* A=00, so no mask needed */
-        mask_C = svorr_b_z(pg, svcmpeq_u8(pg, chars, svdup_n_u8('C')),
-                               svcmpeq_u8(pg, chars, svdup_n_u8('c')));
-        mask_G = svorr_b_z(pg, svcmpeq_u8(pg, chars, svdup_n_u8('G')),
-                               svcmpeq_u8(pg, chars, svdup_n_u8('g')));
-        mask_T = svorr_b_z(pg, svcmpeq_u8(pg, chars, svdup_n_u8('T')),
-                               svcmpeq_u8(pg, chars, svdup_n_u8('t')));
-        mask_U = svorr_b_z(pg, svcmpeq_u8(pg, chars, svdup_n_u8('U')),
-                               svcmpeq_u8(pg, chars, svdup_n_u8('u')));
-        
-        /* Combine T and U masks */
-        mask_T = svorr_b_z(pg, mask_T, mask_U);
-        
-        /* Generate 2-bit encoded values */
-        encoded = svdup_n_u8(0);
-        encoded = svorr_u8_m(mask_C, encoded, svdup_n_u8(1));
-        encoded = svorr_u8_m(mask_G, encoded, svdup_n_u8(2));
-        encoded = svorr_u8_m(mask_T, encoded, svdup_n_u8(3));
-        
-        /* Store and pack bits */
-        svst1_u8(pg, temp, encoded);
-        
-        for (j = 0; j < sve_len && (i + j) < len; j++) {
-            int bit_pos = (i + j) * 2;
-            int byte_pos = bit_pos / 8;
-            int bit_offset = bit_pos % 8;
-            
-            /* Fixed: Handle byte boundary crossing properly */
-            if (bit_offset <= 6) {
-                output[byte_pos] |= (temp[j] << (6 - bit_offset));
-            } else {
-                /* bit_offset == 7: split across two bytes */
-                output[byte_pos] |= (temp[j] >> 1);
-                if (byte_pos + 1 < byte_len) {
-                    output[byte_pos + 1] |= (temp[j] & 0x1) << 7;
-                }
-            }
-        }
-    }
-    
-    /* Handle remaining characters with scalar */
-    for (i = simd_len; i < len; i++) {
-        uint8_t encoded = kmersearch_dna2_encode_table[(unsigned char)input[i]];
-        int bit_pos = i * 2;
-        int byte_pos = bit_pos / 8;
-        int bit_offset = bit_pos % 8;
-        
-        /* Fixed: Handle byte boundary crossing properly */
-        if (bit_offset <= 6) {
-            output[byte_pos] |= (encoded << (6 - bit_offset));
-        } else {
-            /* bit_offset == 7: split across two bytes */
-            output[byte_pos] |= (encoded >> 1);
-            if (byte_pos + 1 < byte_len) {
-                output[byte_pos + 1] |= (encoded & 0x1) << 7;
-            }
-        }
-    }
-}
 
 __attribute__((target("+sve")))
 static void dna2_decode_sve(const uint8_t* input, char* output, int len)
