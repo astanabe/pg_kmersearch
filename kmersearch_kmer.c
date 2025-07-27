@@ -174,8 +174,7 @@ VarBit *
 kmersearch_create_ngram_key2(const char *kmer, int k, int occurrence)
 {
     int kmer_bits = k * 2;  /* 2 bits per base */
-    int occur_bits = kmersearch_occur_bitlen;
-    int total_bits = kmer_bits + occur_bits;
+    int total_bits = kmer_bits + kmersearch_occur_bitlen;
     int total_bytes = (total_bits + 7) / 8;
     int adj_occurrence = occurrence - 1;  /* 1-offset to 0-offset */
     VarBit *result;
@@ -188,8 +187,8 @@ kmersearch_create_ngram_key2(const char *kmer, int k, int occurrence)
     /* Adjust occurrence to valid range */
     if (adj_occurrence < 0)
         adj_occurrence = 0;
-    if (adj_occurrence >= (1 << occur_bits))
-        adj_occurrence = (1 << occur_bits) - 1;  /* Cap at max value */
+    if (adj_occurrence >= (1 << kmersearch_occur_bitlen))
+        adj_occurrence = (1 << kmersearch_occur_bitlen) - 1;  /* Cap at max value */
     
     /* Calculate correct allocation size */
     alloc_size = VARHDRSZ + VARBITHDRSZ + total_bytes;
@@ -213,13 +212,13 @@ kmersearch_create_ngram_key2(const char *kmer, int k, int occurrence)
     
     /* Encode occurrence count */
     
-    for (i = 0; i < occur_bits; i++)
+    for (i = 0; i < kmersearch_occur_bitlen; i++)
     {
         int bit_pos = kmer_bits + i;
         int byte_pos = bit_pos / 8;
         int bit_offset = bit_pos % 8;
         
-        if (adj_occurrence & (1 << (occur_bits - 1 - i)))
+        if (adj_occurrence & (1 << (kmersearch_occur_bitlen - 1 - i)))
             data_ptr[byte_pos] |= (1 << (7 - bit_offset));
     }
     
@@ -370,9 +369,9 @@ kmersearch_create_ngram_key2_from_dna2_bits(VarBit *seq, int start_pos, int k, i
     }
     
     /* Append occurrence count bits */
-    for (i = 0; i < occur_bits; i++)
+    for (i = 0; i < kmersearch_occur_bitlen; i++)
     {
-        int occur_bit = (occurrence_count >> (occur_bits - 1 - i)) & 1;
+        int occur_bit = (occurrence_count >> (kmersearch_occur_bitlen - 1 - i)) & 1;
         int dst_bit_pos = kmer_bits + i;
         int dst_byte_pos = dst_bit_pos / 8;
         int dst_bit_offset = dst_bit_pos % 8;
@@ -448,16 +447,16 @@ kmersearch_create_ngram_key2_with_occurrence_from_dna2(VarBit *dna2_kmer, int k,
     }
     
     /* Encode occurrence count */
-    if (adj_occurrence >= (1 << occur_bits))
-        adj_occurrence = (1 << occur_bits) - 1;
+    if (adj_occurrence >= (1 << kmersearch_occur_bitlen))
+        adj_occurrence = (1 << kmersearch_occur_bitlen) - 1;
     
-    for (i = 0; i < occur_bits; i++)
+    for (i = 0; i < kmersearch_occur_bitlen; i++)
     {
         int bit_pos = kmer_bits + i;
         int byte_pos = bit_pos / 8;
         int bit_offset = bit_pos % 8;
         
-        if (adj_occurrence & (1 << (occur_bits - 1 - i)))
+        if (adj_occurrence & (1 << (kmersearch_occur_bitlen - 1 - i)))
             dst_data[byte_pos] |= (1 << (7 - bit_offset));
     }
     
@@ -864,8 +863,7 @@ VarBit *
 kmersearch_create_ngram_key2_from_kmer2_as_uint(uint64 kmer2_as_uint, int kmer_size, int occurrence)
 {
     int kmer_bits = kmer_size * 2;
-    int occur_bits = kmersearch_occur_bitlen;
-    int total_bits = kmer_bits + occur_bits;
+    int total_bits = kmer_bits + kmersearch_occur_bitlen;
     int total_bytes = (total_bits + 7) / 8;
     int adj_occurrence = occurrence - 1;
     VarBit *result;
@@ -882,8 +880,8 @@ kmersearch_create_ngram_key2_from_kmer2_as_uint(uint64 kmer2_as_uint, int kmer_s
     
     if (adj_occurrence < 0)
         adj_occurrence = 0;
-    if (adj_occurrence >= (1 << occur_bits))
-        adj_occurrence = (1 << occur_bits) - 1;
+    if (adj_occurrence >= (1 << kmersearch_occur_bitlen))
+        adj_occurrence = (1 << kmersearch_occur_bitlen) - 1;
     
     alloc_size = VARHDRSZ + VARBITHDRSZ + total_bytes;
     
@@ -903,12 +901,12 @@ kmersearch_create_ngram_key2_from_kmer2_as_uint(uint64 kmer2_as_uint, int kmer_s
         data_ptr[byte_pos] |= (nucleotide << (6 - bit_offset));
     }
     
-    for (i = 0; i < occur_bits; i++) {
+    for (i = 0; i < kmersearch_occur_bitlen; i++) {
         int bit_pos = kmer_bits + i;
         int byte_pos = bit_pos / 8;
         int bit_offset = bit_pos % 8;
         
-        if (adj_occurrence & (1 << (occur_bits - 1 - i)))
+        if (adj_occurrence & (1 << (kmersearch_occur_bitlen - 1 - i)))
             data_ptr[byte_pos] |= (1 << (7 - bit_offset));
     }
     
@@ -924,8 +922,7 @@ VarBit*
 create_ngram_key2_from_kmer2_and_count(uint64_t kmer2_value, int k_size, int occurrence_count)
 {
     int kmer2_bits = k_size * 2;  /* 2 bits per base */
-    int occur_bits = kmersearch_occur_bitlen;
-    int total_bits = kmer2_bits + occur_bits;
+    int total_bits = kmer2_bits + kmersearch_occur_bitlen;
     int total_bytes = (total_bits + 7) / 8;
     VarBit *result;
     unsigned char *data;
@@ -942,7 +939,7 @@ create_ngram_key2_from_kmer2_and_count(uint64_t kmer2_value, int k_size, int occ
     memset(data, 0, total_bytes);
     
     /* Combine kmer2 and occurrence count: kmer2 in high bits, occurrence in low bits */
-    combined_value = (kmer2_value << occur_bits) | (occurrence_count & ((1ULL << occur_bits) - 1));
+    combined_value = (kmer2_value << kmersearch_occur_bitlen) | (occurrence_count & ((1ULL << kmersearch_occur_bitlen) - 1));
     
     /* Set bits in big-endian order */
     for (i = 0; i < total_bits; i++) {

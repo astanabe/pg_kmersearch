@@ -85,23 +85,25 @@ pg_kmersearchプロジェクトのソースコード精査の結果、以下の�
 
 ## 5. GUC変数の直接使用違反
 
-### 5.1 GUC変数のローカル変数への代入
+### 5.1 GUC変数のローカル変数への代入 ✅ COMPLETED
 **問題点**:
 - CLAUDE.mdで「assigning GUC variables to local variables is forbidden」と記載
 - 一部の関数でGUC変数をローカル変数に代入している可能性
 
-**修正計画**:
-1. 全関数でGUC変数の使用方法を確認
-2. ローカル変数への代入を削除し、直接参照に変更
-3. 必要に応じてマクロを定義して可読性を維持
+**修正内容**:
+1. kmersearch.c内の`int k = kmersearch_kmer_size;`の削除と直接参照への変更 ✅
+2. kmersearch_kmer.c内の`int occur_bits = kmersearch_occur_bitlen;`の削除と直接参照への変更 ✅
+3. kmersearch_gin.c内の`int k = kmersearch_kmer_size;`の削除と直接参照への変更 ✅
+4. kmersearch_freq.c内の`k_size = kmersearch_kmer_size;`の削除（関数パラメータとして渡す形に変更） ✅
 
 ## 実装優先順位
 
 1. **高優先度**: スタブ実装の削除と適切な実装 ✅ COMPLETED
 2. **中優先度**: 内部ラッパー関数の削除 ✅ PARTIALLY COMPLETED (2/7)
-3. **低優先度**: GUC変数使用の修正
+3. **低優先度**: GUC変数使用の修正 ✅ COMPLETED
 4. **中優先度**: ソースファイル間の関数再配置 ✅ IN PROGRESS
 5. **中優先度**: 未使用関数の削除 ✅ COMPLETED
+6. **高優先度**: USE_*条件付きコンパイルマクロの削除 ✅ COMPLETED
 
 ## 削除された項目
 

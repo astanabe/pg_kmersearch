@@ -92,7 +92,6 @@ kmersearch_extract_value_dna2(PG_FUNCTION_ARGS)
     int32 *nkeys = (int32 *) PG_GETARG_POINTER(1);
     
     Datum *keys;
-    int k = kmersearch_kmer_size;
     void *kmer_uint_array;
     int kmer_uint_count;
     KmerOccurrence *occurrences;
@@ -100,12 +99,12 @@ kmersearch_extract_value_dna2(PG_FUNCTION_ARGS)
     int final_count = 0;
     int i;
     
-    if (k < 4 || k > 32)
+    if (kmersearch_kmer_size < 4 || kmersearch_kmer_size > 32)
         ereport(ERROR, (errmsg("k-mer length must be between 4 and 32")));
     
     if (kmersearch_preclude_highfreq_kmer) {
         /* New optimized flow: extract uint k-mers and filter before VarBit creation */
-        kmersearch_extract_dna2_kmer2_as_uint_direct((VarBit *)dna, k, &kmer_uint_array, &kmer_uint_count);
+        kmersearch_extract_dna2_kmer2_as_uint_direct((VarBit *)dna, kmersearch_kmer_size, &kmer_uint_array, &kmer_uint_count);
         
         if (kmer_uint_count == 0) {
             *nkeys = 0;
@@ -122,9 +121,9 @@ kmersearch_extract_value_dna2(PG_FUNCTION_ARGS)
             bool is_high_frequency = false;
             
             /* Extract k-mer based on size */
-            if (k <= 8) {
+            if (kmersearch_kmer_size <= 8) {
                 kmer_uint = ((uint16 *)kmer_uint_array)[i];
-            } else if (k <= 16) {
+            } else if (kmersearch_kmer_size <= 16) {
                 kmer_uint = ((uint32 *)kmer_uint_array)[i];
             } else {
                 kmer_uint = ((uint64 *)kmer_uint_array)[i];
@@ -164,7 +163,7 @@ kmersearch_extract_value_dna2(PG_FUNCTION_ARGS)
             keys = (Datum *) palloc(final_count * sizeof(Datum));
             for (i = 0; i < final_count; i++) {
                 VarBit *ngram_key = kmersearch_create_ngram_key2_from_kmer2_as_uint(
-                    occurrences[i].kmer_value, k, occurrences[i].count);
+                    occurrences[i].kmer_value, kmersearch_kmer_size, occurrences[i].count);
                 keys[i] = PointerGetDatum(ngram_key);
             }
         } else {
@@ -178,7 +177,7 @@ kmersearch_extract_value_dna2(PG_FUNCTION_ARGS)
         *nkeys = final_count;
     } else {
         /* Original flow: extract ngram_key2 directly without filtering */
-        keys = kmersearch_extract_dna2_ngram_key2_direct((VarBit *)dna, k, nkeys);
+        keys = kmersearch_extract_dna2_ngram_key2_direct((VarBit *)dna, kmersearch_kmer_size, nkeys);
     }
     
     if (*nkeys == 0)
@@ -199,7 +198,6 @@ kmersearch_extract_value_dna4(PG_FUNCTION_ARGS)
     int32 *nkeys = (int32 *) PG_GETARG_POINTER(1);
     
     Datum *keys;
-    int k = kmersearch_kmer_size;
     void *kmer_uint_array;
     int kmer_uint_count;
     KmerOccurrence *occurrences;
@@ -207,12 +205,12 @@ kmersearch_extract_value_dna4(PG_FUNCTION_ARGS)
     int final_count = 0;
     int i;
     
-    if (k < 4 || k > 32)
+    if (kmersearch_kmer_size < 4 || kmersearch_kmer_size > 32)
         ereport(ERROR, (errmsg("k-mer length must be between 4 and 32")));
     
     if (kmersearch_preclude_highfreq_kmer) {
         /* New optimized flow: extract uint k-mers and filter before VarBit creation */
-        kmersearch_extract_dna4_kmer2_as_uint_with_expansion_direct((VarBit *)dna, k, &kmer_uint_array, &kmer_uint_count);
+        kmersearch_extract_dna4_kmer2_as_uint_with_expansion_direct((VarBit *)dna, kmersearch_kmer_size, &kmer_uint_array, &kmer_uint_count);
         
         if (kmer_uint_count == 0) {
             *nkeys = 0;
@@ -229,9 +227,9 @@ kmersearch_extract_value_dna4(PG_FUNCTION_ARGS)
             bool is_high_frequency = false;
             
             /* Extract k-mer based on size */
-            if (k <= 8) {
+            if (kmersearch_kmer_size <= 8) {
                 kmer_uint = ((uint16 *)kmer_uint_array)[i];
-            } else if (k <= 16) {
+            } else if (kmersearch_kmer_size <= 16) {
                 kmer_uint = ((uint32 *)kmer_uint_array)[i];
             } else {
                 kmer_uint = ((uint64 *)kmer_uint_array)[i];
@@ -271,7 +269,7 @@ kmersearch_extract_value_dna4(PG_FUNCTION_ARGS)
             keys = (Datum *) palloc(final_count * sizeof(Datum));
             for (i = 0; i < final_count; i++) {
                 VarBit *ngram_key = kmersearch_create_ngram_key2_from_kmer2_as_uint(
-                    occurrences[i].kmer_value, k, occurrences[i].count);
+                    occurrences[i].kmer_value, kmersearch_kmer_size, occurrences[i].count);
                 keys[i] = PointerGetDatum(ngram_key);
             }
         } else {
@@ -285,7 +283,7 @@ kmersearch_extract_value_dna4(PG_FUNCTION_ARGS)
         *nkeys = final_count;
     } else {
         /* Original flow: extract ngram_key2 directly without filtering */
-        keys = kmersearch_extract_dna4_ngram_key2_with_expansion_direct((VarBit *)dna, k, nkeys);
+        keys = kmersearch_extract_dna4_ngram_key2_with_expansion_direct((VarBit *)dna, kmersearch_kmer_size, nkeys);
     }
     
     if (*nkeys == 0)
@@ -306,7 +304,6 @@ kmersearch_extract_query(PG_FUNCTION_ARGS)
     Pointer **extra_data = (Pointer **) PG_GETARG_POINTER(4);
     bool **nullFlags = (bool **) PG_GETARG_POINTER(5);
     int32 *searchMode = (int32 *) PG_GETARG_POINTER(6);
-    int k = kmersearch_kmer_size;  /* k-mer length from GUC variable */
     
     text *query_text = DatumGetTextP(query);
     char *query_string = text_to_cstring(query_text);
@@ -315,14 +312,14 @@ kmersearch_extract_query(PG_FUNCTION_ARGS)
     Datum *keys;
     int i;
     
-    if (query_len < k)
-        ereport(ERROR, (errmsg("Query sequence must be at least %d bases long", k)));
+    if (query_len < kmersearch_kmer_size)
+        ereport(ERROR, (errmsg("Query sequence must be at least %d bases long", kmersearch_kmer_size)));
     
-    if (k < 4 || k > 32)
+    if (kmersearch_kmer_size < 4 || kmersearch_kmer_size > 32)
         ereport(ERROR, (errmsg("k-mer length must be between 4 and 32")));
     
     /* Use kmersearch_extract_query_ngram_key2() and convert to Datum array */
-    varbit_keys = kmersearch_extract_query_ngram_key2(query_string, k, nkeys);
+    varbit_keys = kmersearch_extract_query_ngram_key2(query_string, kmersearch_kmer_size, nkeys);
     
     if (varbit_keys == NULL || *nkeys == 0) {
         keys = NULL;
@@ -586,17 +583,16 @@ kmersearch_kmer_based_match_dna2(VarBit *sequence, const char *query_string)
     VarBit **query_keys;
     int seq_nkeys, query_nkeys;
     int shared_count;
-    int k = kmersearch_kmer_size;
     bool result;
     
     /* Extract k-mers from DNA2 sequence (no degenerate expansion) */
-    seq_keys = (VarBit **)kmersearch_extract_dna2_ngram_key2_direct(sequence, k, &seq_nkeys);
+    seq_keys = (VarBit **)kmersearch_extract_dna2_ngram_key2_direct(sequence, kmersearch_kmer_size, &seq_nkeys);
     if (seq_keys == NULL || seq_nkeys == 0) {
         return false;
     }
     
     /* Extract k-mers from query (with degenerate expansion) */
-    query_keys = get_cached_query_kmer(query_string, k, &query_nkeys);
+    query_keys = get_cached_query_kmer(query_string, kmersearch_kmer_size, &query_nkeys);
     if (query_keys == NULL || query_nkeys == 0) {
         /* Free sequence keys */
         if (seq_keys) {
@@ -648,17 +644,16 @@ kmersearch_kmer_based_match_dna4(VarBit *sequence, const char *query_string)
     VarBit **query_keys;
     int seq_nkeys, query_nkeys;
     int shared_count;
-    int k = kmersearch_kmer_size;
     bool result;
     
     /* Extract k-mers from DNA4 sequence (with degenerate expansion) */
-    seq_keys = (VarBit **)kmersearch_extract_dna4_ngram_key2_with_expansion_direct(sequence, k, &seq_nkeys);
+    seq_keys = (VarBit **)kmersearch_extract_dna4_ngram_key2_with_expansion_direct(sequence, kmersearch_kmer_size, &seq_nkeys);
     if (seq_keys == NULL || seq_nkeys == 0) {
         return false;
     }
     
     /* Extract k-mers from query (with degenerate expansion) */
-    query_keys = get_cached_query_kmer(query_string, k, &query_nkeys);
+    query_keys = get_cached_query_kmer(query_string, kmersearch_kmer_size, &query_nkeys);
     if (query_keys == NULL || query_nkeys == 0) {
         /* Free sequence keys */
         if (seq_keys) {

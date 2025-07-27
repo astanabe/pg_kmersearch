@@ -867,12 +867,11 @@ kmersearch_correctedscore_dna2(PG_FUNCTION_ARGS)
     Datum *seq_datum_keys = NULL;
     int query_nkeys = 0;
     int seq_nkeys = 0;
-    int k = kmersearch_kmer_size;
     int shared_count = 0;
     int i, j;
     
     /* Extract k-mers from DNA2 sequence (no degenerate expansion) */
-    seq_datum_keys = kmersearch_extract_dna2_ngram_key2_direct(sequence, k, &seq_nkeys);
+    seq_datum_keys = kmersearch_extract_dna2_ngram_key2_direct(sequence, kmersearch_kmer_size, &seq_nkeys);
     if (seq_datum_keys != NULL && seq_nkeys > 0) {
         seq_keys = (VarBit **) palloc(seq_nkeys * sizeof(VarBit *));
         for (i = 0; i < seq_nkeys; i++) {
@@ -880,7 +879,7 @@ kmersearch_correctedscore_dna2(PG_FUNCTION_ARGS)
         }
     }
     /* Extract k-mers from query as ngram_key2 format */
-    query_keys = kmersearch_extract_query_ngram_key2(query_string, k, &query_nkeys);
+    query_keys = kmersearch_extract_query_ngram_key2(query_string, kmersearch_kmer_size, &query_nkeys);
     
     /* Count shared k-mers using optimized function */
     if (seq_keys && query_keys && seq_nkeys > 0 && query_nkeys > 0) {
@@ -917,12 +916,11 @@ kmersearch_correctedscore_dna4(PG_FUNCTION_ARGS)
     Datum *seq_datum_keys = NULL;
     int query_nkeys = 0;
     int seq_nkeys = 0;
-    int k = kmersearch_kmer_size;
     int shared_count = 0;
     int i, j;
     
     /* Extract k-mers from DNA4 sequence (with degenerate expansion) */
-    seq_datum_keys = kmersearch_extract_dna4_ngram_key2_with_expansion_direct(sequence, k, &seq_nkeys);
+    seq_datum_keys = kmersearch_extract_dna4_ngram_key2_with_expansion_direct(sequence, kmersearch_kmer_size, &seq_nkeys);
     if (seq_datum_keys != NULL && seq_nkeys > 0) {
         seq_keys = (VarBit **) palloc(seq_nkeys * sizeof(VarBit *));
         for (i = 0; i < seq_nkeys; i++) {
@@ -930,7 +928,7 @@ kmersearch_correctedscore_dna4(PG_FUNCTION_ARGS)
         }
     }
     /* Extract k-mers from query as ngram_key2 format */
-    query_keys = kmersearch_extract_query_ngram_key2(query_string, k, &query_nkeys);
+    query_keys = kmersearch_extract_query_ngram_key2(query_string, kmersearch_kmer_size, &query_nkeys);
     
     /* Count shared k-mers using optimized function */
     if (seq_keys && query_keys && seq_nkeys > 0 && query_nkeys > 0) {
@@ -1041,7 +1039,6 @@ kmersearch_calculate_kmer_match_and_score_dna2(VarBit *sequence, const char *que
     VarBit **seq_keys = NULL;
     VarBit **query_keys = NULL;
     Datum *seq_datum_keys = NULL;
-    int k = kmersearch_kmer_size;
     int query_len;
     int i;
     
@@ -1060,13 +1057,13 @@ kmersearch_calculate_kmer_match_and_score_dna2(VarBit *sequence, const char *que
     
     /* Query length validation */
     query_len = strlen(query_string);
-    if (query_len < k) {
-        ereport(ERROR, (errmsg("Query sequence must be at least %d bases long", k)));
+    if (query_len < kmersearch_kmer_size) {
+        ereport(ERROR, (errmsg("Query sequence must be at least %d bases long", kmersearch_kmer_size)));
     }
     
     /* Extract k-mers from DNA2 sequence (no degenerate expansion) */
     elog(LOG, "DNA2 Cache: Starting k-mer extraction from sequence");
-    seq_datum_keys = kmersearch_extract_dna2_ngram_key2_direct(sequence, k, &result.seq_nkeys);
+    seq_datum_keys = kmersearch_extract_dna2_ngram_key2_direct(sequence, kmersearch_kmer_size, &result.seq_nkeys);
     elog(LOG, "DNA2 Cache: Extracted %d k-mers from sequence", result.seq_nkeys);
     
     if (seq_datum_keys != NULL && result.seq_nkeys > 0) {
@@ -1080,7 +1077,7 @@ kmersearch_calculate_kmer_match_and_score_dna2(VarBit *sequence, const char *que
     if (seq_keys != NULL && result.seq_nkeys > 0) {
         /* Extract k-mers from query (with degenerate expansion) */
         elog(LOG, "DNA2 Cache: Starting k-mer extraction from query '%s'", query_string);
-        query_keys = get_cached_query_kmer(query_string, k, &result.query_nkeys);
+        query_keys = get_cached_query_kmer(query_string, kmersearch_kmer_size, &result.query_nkeys);
         elog(LOG, "DNA2 Cache: Extracted %d k-mers from query", result.query_nkeys);
         
         if (query_keys != NULL && result.query_nkeys > 0) {
@@ -1123,7 +1120,6 @@ kmersearch_calculate_kmer_match_and_score_dna4(VarBit *sequence, const char *que
     VarBit **seq_keys = NULL;
     VarBit **query_keys = NULL;
     Datum *seq_datum_keys = NULL;
-    int k = kmersearch_kmer_size;
     int query_len;
     int i;
     
@@ -1142,12 +1138,12 @@ kmersearch_calculate_kmer_match_and_score_dna4(VarBit *sequence, const char *que
     
     /* Query length validation */
     query_len = strlen(query_string);
-    if (query_len < k) {
-        ereport(ERROR, (errmsg("Query sequence must be at least %d bases long", k)));
+    if (query_len < kmersearch_kmer_size) {
+        ereport(ERROR, (errmsg("Query sequence must be at least %d bases long", kmersearch_kmer_size)));
     }
     
     /* Extract k-mers from DNA4 sequence (with degenerate expansion) */
-    seq_datum_keys = kmersearch_extract_dna4_ngram_key2_with_expansion_direct(sequence, k, &result.seq_nkeys);
+    seq_datum_keys = kmersearch_extract_dna4_ngram_key2_with_expansion_direct(sequence, kmersearch_kmer_size, &result.seq_nkeys);
     if (seq_datum_keys != NULL && result.seq_nkeys > 0) {
         seq_keys = (VarBit **) palloc(result.seq_nkeys * sizeof(VarBit *));
         for (i = 0; i < result.seq_nkeys; i++) {
@@ -1157,7 +1153,7 @@ kmersearch_calculate_kmer_match_and_score_dna4(VarBit *sequence, const char *que
     
     if (seq_keys != NULL && result.seq_nkeys > 0) {
         /* Extract k-mers from query (with degenerate expansion) */
-        query_keys = get_cached_query_kmer(query_string, k, &result.query_nkeys);
+        query_keys = get_cached_query_kmer(query_string, kmersearch_kmer_size, &result.query_nkeys);
         
         if (query_keys != NULL && result.query_nkeys > 0) {
             /* Calculate shared k-mer count (this becomes the rawscore) */

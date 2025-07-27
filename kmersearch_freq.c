@@ -378,7 +378,6 @@ kmersearch_perform_highfreq_analysis(PG_FUNCTION_ARGS)
     Oid table_oid;
     char *column_name;
     AttrNumber column_attnum;
-    int k_size;
     int parallel_workers;
     char *table_str;
     char *column_str;
@@ -455,19 +454,18 @@ kmersearch_perform_highfreq_analysis(PG_FUNCTION_ARGS)
     }
     
     /* Get configuration from GUC variables */
-    k_size = kmersearch_kmer_size;
     parallel_workers = max_parallel_maintenance_workers;
     
     /* Comprehensive parameter validation */
-    kmersearch_validate_analysis_parameters(table_oid, column_name, k_size);
+    kmersearch_validate_analysis_parameters(table_oid, column_name, kmersearch_kmer_size);
     
     /* Log analysis start */
-    ereport(NOTICE, (errmsg("Performing k-mer frequency analysis for k=%d", k_size)));
+    ereport(NOTICE, (errmsg("Performing k-mer frequency analysis for k=%d", kmersearch_kmer_size)));
     ereport(NOTICE, (errmsg("Max appearance rate: %f, Max appearance nrow: %d", 
                            kmersearch_max_appearance_rate, kmersearch_max_appearance_nrow)));
     
     /* Perform parallel analysis */
-    result = kmersearch_perform_highfreq_analysis_parallel(table_oid, column_name, k_size, parallel_workers);
+    result = kmersearch_perform_highfreq_analysis_parallel(table_oid, column_name, kmersearch_kmer_size, parallel_workers);
     
     /* Create result tuple */
     {
