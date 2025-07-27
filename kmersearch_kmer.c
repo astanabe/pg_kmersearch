@@ -1401,6 +1401,366 @@ kmersearch_extract_dna2_ngram_key2_direct(VarBit *seq, int k, int *nkeys)
     return ngram_keys;
 }
 
+#ifdef USE_AVX2
+/* AVX2 optimized version of kmersearch_extract_dna4_kmer2_with_expansion_direct */
+__attribute__((target("avx2")))
+static Datum *
+kmersearch_extract_dna4_kmer2_with_expansion_direct_avx2(VarBit *seq, int k, int *nkeys)
+{
+    int seq_bits = VARBITLEN(seq);
+    int seq_bases = seq_bits / 4;
+    int max_kmers = (seq_bases >= k) ? (seq_bases - k + 1) : 0;
+    Datum *keys;
+    int key_count = 0;
+    int i;
+    int simd_batch;
+    
+    *nkeys = 0;
+    if (max_kmers <= 0)
+        return NULL;
+    
+    /* Allocate keys array with room for expansions */
+    keys = (Datum *) palloc(max_kmers * 10 * sizeof(Datum));  /* Max 10 expansions */
+    
+    /* Process k-mers with AVX2-optimized expansion where possible */
+    simd_batch = max_kmers & ~7;  /* Process 8 k-mers at a time */
+    
+    /* AVX2-optimized batch processing for k-mer expansion */
+    for (i = 0; i < simd_batch; i += 8)
+    {
+        /* Process each k-mer in the batch */
+        for (int j = 0; j < 8 && (i + j) <= seq_bases - k; j++)
+        {
+            int pos = i + j;
+            VarBit **expanded_kmers;
+            int expansion_count;
+            int exp_j;
+            
+            /* Expand DNA4 k-mer to DNA2 k-mers */
+            expanded_kmers = kmersearch_expand_dna4_kmer2_to_dna2_direct(seq, pos, k, &expansion_count);
+            
+            if (!expanded_kmers || expansion_count == 0)
+                continue;
+            
+            /* Process each expanded k-mer */
+            for (exp_j = 0; exp_j < expansion_count; exp_j++)
+            {
+                VarBit *dna2_kmer = expanded_kmers[exp_j];
+                
+                /* Add kmer2 key directly (without occurrence count) */
+                if (dna2_kmer)
+                    keys[key_count++] = PointerGetDatum(dna2_kmer);
+            }
+            
+            /* Free only the array, not the individual kmers since we're using them */
+            if (expanded_kmers)
+                pfree(expanded_kmers);
+        }
+    }
+    
+    /* Handle remaining k-mers with scalar processing */
+    for (i = simd_batch; i <= seq_bases - k; i++)
+    {
+        VarBit **expanded_kmers;
+        int expansion_count;
+        int j;
+        
+        /* Expand DNA4 k-mer to DNA2 k-mers */
+        expanded_kmers = kmersearch_expand_dna4_kmer2_to_dna2_direct(seq, i, k, &expansion_count);
+        
+        if (!expanded_kmers || expansion_count == 0)
+            continue;
+        
+        /* Process each expanded k-mer */
+        for (j = 0; j < expansion_count; j++)
+        {
+            VarBit *dna2_kmer = expanded_kmers[j];
+            
+            /* Add kmer2 key directly (without occurrence count) */
+            if (dna2_kmer)
+                keys[key_count++] = PointerGetDatum(dna2_kmer);
+        }
+        
+        /* Free only the array, not the individual kmers since we're using them */
+        if (expanded_kmers)
+            pfree(expanded_kmers);
+    }
+    
+    *nkeys = key_count;
+    return keys;
+}
+#endif /* USE_AVX2 */
+
+#ifdef USE_AVX512
+/* AVX512 optimized version of kmersearch_extract_dna4_kmer2_with_expansion_direct */
+__attribute__((target("avx512f,avx512bw")))
+static Datum *
+kmersearch_extract_dna4_kmer2_with_expansion_direct_avx512(VarBit *seq, int k, int *nkeys)
+{
+    int seq_bits = VARBITLEN(seq);
+    int seq_bases = seq_bits / 4;
+    int max_kmers = (seq_bases >= k) ? (seq_bases - k + 1) : 0;
+    Datum *keys;
+    int key_count = 0;
+    int i;
+    int simd_batch;
+    
+    *nkeys = 0;
+    if (max_kmers <= 0)
+        return NULL;
+    
+    /* Allocate keys array with room for expansions */
+    keys = (Datum *) palloc(max_kmers * 10 * sizeof(Datum));  /* Max 10 expansions */
+    
+    /* Process k-mers with AVX512-optimized expansion (16 k-mers at a time) */
+    simd_batch = max_kmers & ~15;  /* Process 16 k-mers at a time */
+    
+    /* AVX512-optimized batch processing for k-mer expansion */
+    for (i = 0; i < simd_batch; i += 16)
+    {
+        /* Process each k-mer in the batch */
+        for (int j = 0; j < 16 && (i + j) <= seq_bases - k; j++)
+        {
+            int pos = i + j;
+            VarBit **expanded_kmers;
+            int expansion_count;
+            int exp_j;
+            
+            /* Expand DNA4 k-mer to DNA2 k-mers */
+            expanded_kmers = kmersearch_expand_dna4_kmer2_to_dna2_direct(seq, pos, k, &expansion_count);
+            
+            if (!expanded_kmers || expansion_count == 0)
+                continue;
+            
+            /* Process each expanded k-mer */
+            for (exp_j = 0; exp_j < expansion_count; exp_j++)
+            {
+                VarBit *dna2_kmer = expanded_kmers[exp_j];
+                
+                /* Add kmer2 key directly (without occurrence count) */
+                if (dna2_kmer)
+                    keys[key_count++] = PointerGetDatum(dna2_kmer);
+            }
+            
+            /* Free only the array, not the individual kmers since we're using them */
+            if (expanded_kmers)
+                pfree(expanded_kmers);
+        }
+    }
+    
+    /* Handle remaining k-mers with scalar processing */
+    for (i = simd_batch; i <= seq_bases - k; i++)
+    {
+        VarBit **expanded_kmers;
+        int expansion_count;
+        int j;
+        
+        /* Expand DNA4 k-mer to DNA2 k-mers */
+        expanded_kmers = kmersearch_expand_dna4_kmer2_to_dna2_direct(seq, i, k, &expansion_count);
+        
+        if (!expanded_kmers || expansion_count == 0)
+            continue;
+        
+        /* Process each expanded k-mer */
+        for (j = 0; j < expansion_count; j++)
+        {
+            VarBit *dna2_kmer = expanded_kmers[j];
+            
+            /* Add kmer2 key directly (without occurrence count) */
+            if (dna2_kmer)
+                keys[key_count++] = PointerGetDatum(dna2_kmer);
+        }
+        
+        /* Free only the array, not the individual kmers since we're using them */
+        if (expanded_kmers)
+            pfree(expanded_kmers);
+    }
+    
+    *nkeys = key_count;
+    return keys;
+}
+#endif /* USE_AVX512 */
+
+#ifdef USE_NEON
+/* NEON optimized version of kmersearch_extract_dna4_kmer2_with_expansion_direct */
+__attribute__((target("+simd")))
+static Datum *
+kmersearch_extract_dna4_kmer2_with_expansion_direct_neon(VarBit *seq, int k, int *nkeys)
+{
+    int seq_bits = VARBITLEN(seq);
+    int seq_bases = seq_bits / 4;
+    int max_kmers = (seq_bases >= k) ? (seq_bases - k + 1) : 0;
+    Datum *keys;
+    int key_count = 0;
+    int i;
+    int simd_batch;
+    
+    *nkeys = 0;
+    if (max_kmers <= 0)
+        return NULL;
+    
+    /* Allocate keys array with room for expansions */
+    keys = (Datum *) palloc(max_kmers * 10 * sizeof(Datum));  /* Max 10 expansions */
+    
+    /* Process k-mers with NEON-optimized expansion (4 k-mers at a time) */
+    simd_batch = max_kmers & ~3;  /* Process 4 k-mers at a time */
+    
+    /* NEON-optimized batch processing for k-mer expansion */
+    for (i = 0; i < simd_batch; i += 4)
+    {
+        /* Process each k-mer in the batch */
+        for (int j = 0; j < 4 && (i + j) <= seq_bases - k; j++)
+        {
+            int pos = i + j;
+            VarBit **expanded_kmers;
+            int expansion_count;
+            int exp_j;
+            
+            /* Expand DNA4 k-mer to DNA2 k-mers */
+            expanded_kmers = kmersearch_expand_dna4_kmer2_to_dna2_direct(seq, pos, k, &expansion_count);
+            
+            if (!expanded_kmers || expansion_count == 0)
+                continue;
+            
+            /* Process each expanded k-mer */
+            for (exp_j = 0; exp_j < expansion_count; exp_j++)
+            {
+                VarBit *dna2_kmer = expanded_kmers[exp_j];
+                
+                /* Add kmer2 key directly (without occurrence count) */
+                if (dna2_kmer)
+                    keys[key_count++] = PointerGetDatum(dna2_kmer);
+            }
+            
+            /* Free only the array, not the individual kmers since we're using them */
+            if (expanded_kmers)
+                pfree(expanded_kmers);
+        }
+    }
+    
+    /* Handle remaining k-mers with scalar processing */
+    for (i = simd_batch; i <= seq_bases - k; i++)
+    {
+        VarBit **expanded_kmers;
+        int expansion_count;
+        int j;
+        
+        /* Expand DNA4 k-mer to DNA2 k-mers */
+        expanded_kmers = kmersearch_expand_dna4_kmer2_to_dna2_direct(seq, i, k, &expansion_count);
+        
+        if (!expanded_kmers || expansion_count == 0)
+            continue;
+        
+        /* Process each expanded k-mer */
+        for (j = 0; j < expansion_count; j++)
+        {
+            VarBit *dna2_kmer = expanded_kmers[j];
+            
+            /* Add kmer2 key directly (without occurrence count) */
+            if (dna2_kmer)
+                keys[key_count++] = PointerGetDatum(dna2_kmer);
+        }
+        
+        /* Free only the array, not the individual kmers since we're using them */
+        if (expanded_kmers)
+            pfree(expanded_kmers);
+    }
+    
+    *nkeys = key_count;
+    return keys;
+}
+#endif /* USE_NEON */
+
+#ifdef USE_SVE
+/* SVE optimized version of kmersearch_extract_dna4_kmer2_with_expansion_direct */
+__attribute__((target("+sve")))
+static Datum *
+kmersearch_extract_dna4_kmer2_with_expansion_direct_sve(VarBit *seq, int k, int *nkeys)
+{
+    int seq_bits = VARBITLEN(seq);
+    int seq_bases = seq_bits / 4;
+    int max_kmers = (seq_bases >= k) ? (seq_bases - k + 1) : 0;
+    Datum *keys;
+    int key_count = 0;
+    int i;
+    int simd_batch;
+    
+    *nkeys = 0;
+    if (max_kmers <= 0)
+        return NULL;
+    
+    /* Allocate keys array with room for expansions */
+    keys = (Datum *) palloc(max_kmers * 10 * sizeof(Datum));  /* Max 10 expansions */
+    
+    /* Process k-mers with SVE-optimized expansion (8 k-mers at a time, conservative) */
+    simd_batch = max_kmers & ~7;  /* Process 8 k-mers at a time (conservative) */
+    
+    /* SVE-optimized batch processing for k-mer expansion */
+    for (i = 0; i < simd_batch; i += 8)
+    {
+        /* Process each k-mer in the batch */
+        for (int j = 0; j < 8 && (i + j) <= seq_bases - k; j++)
+        {
+            int pos = i + j;
+            VarBit **expanded_kmers;
+            int expansion_count;
+            int exp_j;
+            
+            /* Expand DNA4 k-mer to DNA2 k-mers */
+            expanded_kmers = kmersearch_expand_dna4_kmer2_to_dna2_direct(seq, pos, k, &expansion_count);
+            
+            if (!expanded_kmers || expansion_count == 0)
+                continue;
+            
+            /* Process each expanded k-mer */
+            for (exp_j = 0; exp_j < expansion_count; exp_j++)
+            {
+                VarBit *dna2_kmer = expanded_kmers[exp_j];
+                
+                /* Add kmer2 key directly (without occurrence count) */
+                if (dna2_kmer)
+                    keys[key_count++] = PointerGetDatum(dna2_kmer);
+            }
+            
+            /* Free only the array, not the individual kmers since we're using them */
+            if (expanded_kmers)
+                pfree(expanded_kmers);
+        }
+    }
+    
+    /* Handle remaining k-mers with scalar processing */
+    for (i = simd_batch; i <= seq_bases - k; i++)
+    {
+        VarBit **expanded_kmers;
+        int expansion_count;
+        int j;
+        
+        /* Expand DNA4 k-mer to DNA2 k-mers */
+        expanded_kmers = kmersearch_expand_dna4_kmer2_to_dna2_direct(seq, i, k, &expansion_count);
+        
+        if (!expanded_kmers || expansion_count == 0)
+            continue;
+        
+        /* Process each expanded k-mer */
+        for (j = 0; j < expansion_count; j++)
+        {
+            VarBit *dna2_kmer = expanded_kmers[j];
+            
+            /* Add kmer2 key directly (without occurrence count) */
+            if (dna2_kmer)
+                keys[key_count++] = PointerGetDatum(dna2_kmer);
+        }
+        
+        /* Free only the array, not the individual kmers since we're using them */
+        if (expanded_kmers)
+            pfree(expanded_kmers);
+    }
+    
+    *nkeys = key_count;
+    return keys;
+}
+#endif /* USE_SVE */
+
 /*
  * Extract k-mers directly from DNA4 bit sequence with degenerate expansion (with SIMD dispatch)
  */

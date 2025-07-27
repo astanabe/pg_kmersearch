@@ -127,7 +127,7 @@ pg_kmersearchプロジェクトのソースコード精査の結果、以下の�
 
 #### kmersearch.c → kmersearch_kmer.c（k-mer抽出・変換関連）
 - `kmersearch_extract_dna2_kmer2_direct()` およびそのSIMDバリアント（scalar ✅, avx2 ✅, avx512 ✅, neon ✅, sve ✅）
-- `kmersearch_extract_dna4_kmer2_with_expansion_direct()` およびそのSIMDバリアント（scalar ✅, avx2, avx512, neon, sve）
+- `kmersearch_extract_dna4_kmer2_with_expansion_direct()` およびそのSIMDバリアント（scalar ✅, avx2 ✅, avx512 ✅, neon ✅, sve ✅）
 - `kmersearch_extract_dna2_ngram_key2_direct()` ✅
 - `kmersearch_extract_dna4_ngram_key2_direct()` ✅ 
 - `create_ngram_key2_from_kmer2_and_count()`
