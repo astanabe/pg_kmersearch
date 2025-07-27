@@ -473,6 +473,12 @@ CREATE FUNCTION length(DNA4)
     AS 'MODULE_PATHNAME', 'kmersearch_dna4_nuc_length'
     LANGUAGE C IMMUTABLE STRICT;
 
+-- SIMD capability detection function
+CREATE FUNCTION kmersearch_simd_capability() 
+    RETURNS text
+    AS 'MODULE_PATHNAME', 'kmersearch_simd_capability'
+    LANGUAGE C IMMUTABLE;
+
 -- BYTEA conversion functions for hash compatibility
 CREATE FUNCTION kmersearch_dna2_to_bytea(DNA2) RETURNS bytea
     AS 'MODULE_PATHNAME', 'kmersearch_dna2_to_bytea'

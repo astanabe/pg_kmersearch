@@ -1232,6 +1232,55 @@ kmersearch_dna4_nuc_length(PG_FUNCTION_ARGS)
     
     PG_RETURN_INT32(nuc_len);
 }
+
+/*
+ * Return SIMD capability string
+ */
+PG_FUNCTION_INFO_V1(kmersearch_simd_capability);
+Datum
+kmersearch_simd_capability(PG_FUNCTION_ARGS)
+{
+    const char *capability_str;
+    
+    switch (simd_capability) {
+        case SIMD_NONE:
+            capability_str = "None";
+            break;
+        case SIMD_AVX2:
+            capability_str = "AVX2";
+            break;
+        case SIMD_BMI2:
+            capability_str = "AVX2+BMI2";
+            break;
+        case SIMD_AVX512F:
+            capability_str = "AVX512F";
+            break;
+        case SIMD_AVX512BW:
+            capability_str = "AVX512F+AVX512BW";
+            break;
+        case SIMD_AVX512VBMI:
+            capability_str = "AVX512F+AVX512BW+AVX512VBMI";
+            break;
+        case SIMD_AVX512VBMI2:
+            capability_str = "AVX512F+AVX512BW+AVX512VBMI+AVX512VBMI2";
+            break;
+        case SIMD_NEON:
+            capability_str = "NEON";
+            break;
+        case SIMD_SVE:
+            capability_str = "NEON+SVE";
+            break;
+        case SIMD_SVE2:
+            capability_str = "NEON+SVE+SVE2";
+            break;
+        default:
+            capability_str = "Unknown";
+            break;
+    }
+    
+    PG_RETURN_TEXT_P(cstring_to_text(capability_str));
+}
+
 /* Parallel k-mer analysis functions declarations added elsewhere */
 
 /* Function moved to kmersearch_gin.c */
