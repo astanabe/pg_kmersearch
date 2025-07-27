@@ -85,12 +85,9 @@ RawscoreCacheManager *rawscore_cache_manager = NULL;
 
 /* Helper function declarations */
 /* Functions moved to kmersearch_util.c */
-static bool tuple_in_worker_range(HeapTuple tuple, KmerWorkerState *worker);
-static VarBit *extract_sequence_from_tuple(HeapTuple tuple, int attno, TupleDesc tupdesc);
 /* Function moved to kmersearch_freq.c */
 /* Moved to kmersearch_freq.c */
 /* Moved to kmersearch_kmer.c */
-static int get_processed_row_count(KmerWorkerState *worker);
 
 /* Function moved to kmersearch_cache.c */
 
@@ -102,7 +99,6 @@ Datum *kmersearch_extract_dna2_ngram_key2_direct(VarBit *seq, int k, int *nkeys)
 Datum *kmersearch_extract_dna4_ngram_key2_with_expansion_direct(VarBit *seq, int k, int *nkeys);
 /* Moved to kmersearch_kmer.c */
 /* Function moved to kmersearch_gin.c */
-static bool kmersearch_evaluate_match_conditions(int shared_count, int query_total);
 
 /* Actual min score cache functions */
 /* Function moved to kmersearch_gin.c */
@@ -113,7 +109,6 @@ static bool kmersearch_evaluate_match_conditions(int shared_count, int query_tot
 /* Function moved to kmersearch_freq.c */
 
 /* New memory-efficient k-mer functions */
-static size_t kmersearch_get_kmer_data_size(int k_size);
 /* Function moved to kmersearch_gin.c */
 /* Buffer functions moved to kmersearch_freq.c */
 /* Function moved to kmersearch_freq.c */
@@ -1013,29 +1008,6 @@ kmersearch_dna4_nuc_length(PG_FUNCTION_ARGS)
 }
 /* Parallel k-mer analysis functions declarations added elsewhere */
 
-/*
- * Helper function to evaluate match conditions using both score and rate thresholds
- */
-static bool
-kmersearch_evaluate_match_conditions(int shared_count, int query_total)
-{
-    /* Condition 1: Absolute shared key count */
-    bool score_condition = (shared_count >= kmersearch_min_score);
-    
-    /* Condition 2: Relative shared key rate */
-    double sharing_rate;
-    bool rate_condition;
-    
-    if (query_total > 0) {
-        sharing_rate = (double)shared_count / (double)query_total;
-    } else {
-        sharing_rate = 0.0;
-    }
-    rate_condition = (sharing_rate >= kmersearch_min_shared_ngram_key_rate);
-    
-    /* AND condition */
-    return (score_condition && rate_condition);
-}
 /* Function moved to kmersearch_gin.c */
 
 /* Function moved to kmersearch_gin.c */
@@ -1210,23 +1182,6 @@ kmersearch_calculate_kmer_match_and_score_dna4(VarBit *sequence, const char *que
     return result;
 }
 
-/*
- * Get the data size in bytes for a given k-mer size
- */
-static size_t
-kmersearch_get_kmer_data_size(int k_size)
-{
-    if (k_size <= 8) return 2;       /* uint16 */
-    else if (k_size <= 16) return 4; /* uint32 */
-    else if (k_size <= 32) return 8; /* uint64 */
-    else {
-        /* k > 32 not supported */
-        ereport(ERROR,
-                (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-                 errmsg("k-mer length must be between 4 and 32"),
-                 errdetail("Provided k-mer length: %d", k_size)));
-    }
-}
 
 /* Function moved to kmersearch_gin.c */
 
@@ -1255,18 +1210,12 @@ static int
 kmersearch_determine_parallel_workers(int requested_workers, Relation target_relation)
 {
     int max_workers;
-    int max_parallel_workers_val;
-    int max_parallel_maintenance_workers_val;
     int table_size_factor;
     int auto_workers;
     BlockNumber total_blocks;
     
-    /* Get GUC values */
-    max_parallel_workers_val = max_parallel_workers;
-    max_parallel_maintenance_workers_val = max_parallel_maintenance_workers;
-    
     /* Use the smaller of the two limits */
-    max_workers = Min(max_parallel_workers_val, max_parallel_maintenance_workers_val);
+    max_workers = Min(max_parallel_workers, max_parallel_maintenance_workers);
     
     if (max_workers <= 0) {
         return 1;  /* No parallel processing allowed */
@@ -1295,31 +1244,7 @@ kmersearch_determine_parallel_workers(int requested_workers, Relation target_rel
 
 /* Functions moved to kmersearch_util.c */
 
-/*
- * Check if tuple is in worker's processing range
- */
-static bool
-tuple_in_worker_range(HeapTuple tuple, KmerWorkerState *worker)
-{
-    BlockNumber block_num = ItemPointerGetBlockNumber(&tuple->t_self);
-    return (block_num >= worker->start_block && block_num < worker->end_block);
-}
 
-/*
- * Extract DNA sequence from tuple
- */
-static VarBit *
-extract_sequence_from_tuple(HeapTuple tuple, int attno, TupleDesc tupdesc)
-{
-    bool isnull;
-    Datum value;
-    
-    value = heap_getattr(tuple, attno, tupdesc, &isnull);
-    if (isnull)
-        return NULL;
-        
-    return DatumGetVarBitP(value);
-}
 
 /* Function moved to kmersearch_freq.c */
 
@@ -1332,32 +1257,6 @@ extract_sequence_from_tuple(HeapTuple tuple, int attno, TupleDesc tupdesc)
 
 /* Function moved to kmersearch_freq.c */
 
-/*
- * Get processed row count for worker
- */
-static int
-get_processed_row_count(KmerWorkerState *worker)
-{
-    StringInfoData query;
-    int count = 0;
-    int ret;
-    
-    initStringInfo(&query);
-    appendStringInfo(&query, "SELECT COUNT(*) FROM %s", worker->temp_table_name);
-    
-    ret = SPI_exec(query.data, 0);
-    
-    if (ret == SPI_OK_SELECT && SPI_processed > 0) {
-        bool isnull;
-        Datum result = SPI_getbinval(SPI_tuptable->vals[0], SPI_tuptable->tupdesc, 1, &isnull);
-        if (!isnull)
-            count = DatumGetInt32(result);
-    }
-    
-    pfree(query.data);
-    
-    return count;
-}
 
 
 

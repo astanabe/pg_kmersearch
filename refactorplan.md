@@ -95,7 +95,8 @@ pg_kmersearchプロジェクトのソースコード精査の結果、以下の�
 1. **高優先度**: スタブ実装の削除と適切な実装 ✅ COMPLETED
 2. **中優先度**: 内部ラッパー関数の削除 ✅ PARTIALLY COMPLETED (2/7)
 3. **低優先度**: GUC変数使用の修正
-4. **中優先度**: ソースファイル間の関数再配置
+4. **中優先度**: ソースファイル間の関数再配置 ✅ IN PROGRESS
+5. **中優先度**: 未使用関数の削除 ✅ COMPLETED
 
 ## 削除された項目
 
@@ -175,11 +176,13 @@ pg_kmersearchプロジェクトのソースコード精査の結果、以下の�
 - `detect_cpu_capabilities()` - CPU機能検出は初期化処理の一部として中央管理
 - `init_simd_dispatch_table()` - SIMDディスパッチテーブルの初期化も中央管理
 
-#### 移動先を後で検討する関数
-以下の関数は、他の関数の移動が完了した後、使用箇所を精査して適切な移動先を決定する：
-- `tuple_in_worker_range()` - 並列処理関連のため、使用箇所に応じて決定
-- `get_processed_row_count()` - ワーカー関連のため、使用箇所に応じて決定
-- `kmersearch_get_kmer_data_size()` - k-merデータサイズ計算のため、使用箇所に応じて決定
+#### 削除された未使用関数
+調査の結果、以下の関数は実際には使用されていなかったため削除した：
+- `tuple_in_worker_range()` ✅ DELETED (未使用)
+- `get_processed_row_count()` ✅ DELETED (未使用)
+- `kmersearch_get_kmer_data_size()` ✅ DELETED (未使用)
+- `extract_sequence_from_tuple()` ✅ DELETED (未使用)
+- `kmersearch_evaluate_match_conditions()` ✅ DELETED (未使用、evaluate_optimized_match_conditionに置き換え済み)
 - `kmersearch_calculate_buffer_size()` - バッファサイズ計算のため、使用箇所に応じて決定
 
 ### 6.3 期待される効果
