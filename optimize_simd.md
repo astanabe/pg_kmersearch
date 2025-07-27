@@ -1,0 +1,790 @@
+# SIMD Optimization Plan for pg_kmersearch
+
+This document outlines the optimization plan for SIMD versions of key functions using advanced bit manipulation instructions.
+
+## Target Functions
+
+1. K-mer extraction functions
+   - `kmersearch_extract_dna2_kmer2_direct()` ✅ **COMPLETED**
+   - `kmersearch_extract_dna4_kmer2_with_expansion_direct()`
+   - `kmersearch_extract_dna2_kmer2_as_uint_direct()`
+   - `kmersearch_extract_dna4_kmer2_as_uint_with_expansion_direct()`
+   - `kmersearch_expand_dna4_kmer2_to_dna2_direct()`
+
+2. Encoding/Decoding functions
+   - `dna2_encode()`
+   - `dna2_decode()`
+   - `dna4_encode()`
+   - `dna4_decode()`
+
+## Architecture-Specific Optimizations
+
+### x86-64 Optimizations
+
+#### AVX2 + BMI2 Versions (*_avx2) ✅ **COMPLETED**
+
+**Target Instructions**: PEXT, PDEP, BZHI, BEXTR (BMI2), VPSHUFB, VPERM2I128
+
+##### kmersearch_extract_dna2_kmer2_direct_avx2 ✅ **COMPLETED**
+```c
+// Implemented optimizations:
+// 1. Use PEXT to extract 2-bit sequences without shifting
+uint64_t extract_mask = kmer_mask << (64 - bit_offset - k * 2);
+kmer_bits = _pext_u64(src_bits, extract_mask);
+
+// 2. Process 4 k-mers at a time with prefetching
+_mm_prefetch(&seq_data[(i + 16) / 4], _MM_HINT_T0);
+
+// 3. Fast path for byte-aligned data with memcpy and bswap
+memcpy(&src_bits, &seq_data[start_byte], 8);
+src_bits = __builtin_bswap64(src_bits);
+```
+
+##### dna2_encode_avx2
+```c
+// 1. Load 32 characters at once
+__m256i chars = _mm256_loadu_si256((__m256i*)input);
+
+// 2. Parallel comparison for all bases
+__m256i mask_C = _mm256_cmpeq_epi8(chars, _mm256_set1_epi8('C'));
+
+// 3. Use PDEP to deposit bits efficiently
+uint64_t encoded = _pdep_u64(base_bits, 0x5555555555555555ULL);
+```
+
+#### AVX512 + VBMI/VBMI2 Versions (*_avx512) ✅ **COMPLETED**
+
+**Target Instructions**: VPERMB, VPMULTISHIFTQB, VPCOMPRESSB, VEXPANDB
+
+##### kmersearch_extract_dna2_kmer2_direct_avx512 ✅ **COMPLETED**
+```c
+// Implemented optimizations:
+// 1. Process 8 k-mers at a time with double prefetching
+_mm_prefetch(&seq_data[(i + 32) / 4], _MM_HINT_T0);
+_mm_prefetch(&seq_data[(i + 64) / 4], _MM_HINT_T1);
+
+// 2. Direct bit extraction for simplicity (VPMULTISHIFTQB removed due to compatibility)
+// Instead using optimized scalar extraction with AVX512 for memory operations
+
+// 3. Fast memory copy paths for bit packing
+uint64_t deposited = kmer_bits << (64 - kmer_bit_len);
+deposited = __builtin_bswap64(deposited);
+memcpy(kmer_data, &deposited, kmer_bytes);
+```
+
+##### dna4_decode_avx512
+```c
+// 1. Use VPERMB for 64-byte lookup table
+__m512i lookup = _mm512_set_epi8(/* 64 decode values */);
+__m512i decoded = _mm512_permutexvar_epi8(encoded_vals, lookup);
+
+// 2. Use VEXPANDB to expand 4-bit values
+__m512i expanded = _mm512_maskz_expand_epi8(expand_mask, packed_data);
+```
+
+### ARM64 Optimizations
+
+#### NEON Versions (*_neon) ✅ **COMPLETED**
+
+**Target Instructions**: vld1q_u8, vextq_u8, vtbl, vbsl, vshr, vshl, vrev
+
+##### kmersearch_extract_dna2_kmer2_direct_neon ✅ **COMPLETED**
+```c
+// Implemented optimizations:
+// 1. Process 8 k-mers at a time with prefetching
+__builtin_prefetch(&seq_data[(i + 32) / 4], 0, 1);
+
+// 2. Use VEXT for sliding window operations
+uint8x16_t next_vec = vld1q_u8(&seq_data[start_byte + 1]);
+data_vec = vextq_u8(data_vec, next_vec, 1);
+
+// 3. Use VTBL for small k-mer extraction (k <= 4)
+uint8x16_t indices = vld1q_u8(&table_data[bit_offset * 8]);
+uint8x16_t extracted = vqtbl1q_u8(data_vec, indices);
+
+// 4. Use VREV for byte reversal in bit packing
+uint8x8_t vec = vreinterpret_u8_u64(vcreate_u64(deposited));
+vec = vrev64_u8(vec);
+vst1_u8(kmer_data, vec);
+```
+
+##### dna2_encode_neon
+```c
+// 1. Use VTBL for character->encoding lookup
+uint8x16x4_t lookup_tables = vld4q_u8(encoding_table);
+uint8x16_t encoded = vqtbl4q_u8(lookup_tables, chars);
+
+// 2. Use VSHL/VSHR for bit packing
+uint8x16_t shifted = vshlq_n_u8(encoded, 6 - bit_offset);
+
+// 3. Use VZIP for interleaving
+uint8x16x2_t zipped = vzipq_u8(even_bits, odd_bits);
+```
+
+##### kmersearch_expand_dna4_kmer2_to_dna2_direct_neon
+```c
+// 1. Use VTBX for extended table lookup (>16 bytes)
+uint8x16_t base_lookup = vqtbl1q_u8(degenerate_table1, dna4_bases);
+base_lookup = vqtbx1q_u8(base_lookup, degenerate_table2, vsub_u8(dna4_bases, 16));
+
+// 2. Use VREV for endianness conversion
+uint8x16_t reversed = vrev64q_u8(kmer_data);
+
+// 3. Use VBSL for expansion masking
+uint8x16_t expanded = vbslq_u8(expansion_mask, base1, base2);
+```
+
+#### SVE Versions (*_sve)
+
+**Target Instructions**: svld1, svtbl, svbsl, svext, svrev
+
+##### kmersearch_extract_dna4_kmer2_with_expansion_direct_sve
+```c
+// 1. Scalable vector processing
+svuint8_t seq_vec = svld1_u8(pg, &seq_data[pos]);
+
+// 2. Use SVTBL for flexible lookup
+svuint8_t expanded = svtbl_u8(seq_vec, lookup_indices);
+
+// 3. Use SVBSL for predicated selection
+svuint8_t result = svbsl_u8(expand_pred, expanded_bases, original_bases);
+
+// 4. Use SVREV for byte reversal
+svuint8_t reversed = svrevb_u8(kmer_vec, svptrue_b8());
+```
+
+##### dna4_encode_sve
+```c
+// 1. Process variable-length vectors
+svbool_t pg = svwhilelt_b8(i, len);
+svuint8_t chars = svld1_u8(pg, &input[i]);
+
+// 2. Multi-way comparison with predicates
+svbool_t is_C = svcmpeq_u8(pg, chars, 'C');
+svbool_t is_G = svcmpeq_u8(pg, chars, 'G');
+
+// 3. Conditional encoding with SVSEL
+svuint8_t encoded = svsel_u8(is_C, sv_1, sv_0);
+encoded = svsel_u8(is_G, sv_2, encoded);
+```
+
+#### SVE2 Versions (*_sve2)
+
+**Target Instructions**: svbext, svbgrp, svbdep, svtbl2, svmatch, svhistcnt
+
+##### kmersearch_extract_dna2_kmer2_direct_sve2
+```c
+// 1. Use SVBEXT for direct bit extraction
+svuint64_t kmer_bits = svbext_u64(seq_data, start_bit, k * 2);
+
+// 2. Use SVBGRP for bit grouping
+svuint64_t grouped = svbgrp_u64(kmer_bits, group_mask);
+
+// 3. Use SVPMUL for hash calculation
+svuint64_t hash = svpmul_u64(kmer_bits, polynomial);
+```
+
+##### kmersearch_extract_dna4_kmer2_as_uint_with_expansion_direct_sve2
+```c
+// 1. Use SVTBL2 for large lookup tables (>16 bytes)
+svuint8x2_t tables = {degenerate_table1, degenerate_table2};
+svuint8_t expanded = svtbl2_u8(tables, dna4_indices);
+
+// 2. Use SVHISTCNT for base frequency counting
+svuint64_t hist = svhistcnt_u64_z(pg, base_values, 4);
+
+// 3. Use SVMATCH for pattern detection
+svbool_t has_degenerate = svmatch_u8(pg, seq_vec, degenerate_pattern);
+```
+
+##### kmersearch_expand_dna4_kmer2_to_dna2_direct_sve2
+```c
+// 1. Use SVBDEP to deposit expansion bits
+svuint64_t expanded_bits = svbdep_u64(base_bits, expansion_mask);
+
+// 2. Use SVBSL for complex bit selection
+svuint64_t result = svbsl_u64(selection_mask, option1, option2);
+
+// 3. Use SVREVB for endianness handling
+svuint8_t reversed = svrevb_u8_z(pg, kmer_bytes);
+```
+
+##### dna2_decode_sve2
+```c
+// 1. Use SVBEXT for 2-bit extraction
+svuint64_t two_bits = svbext_u64(packed_data, bit_offset, 2);
+
+// 2. Use SVTBL2 for decoding lookup
+svuint8x2_t decode_tables = {decode_table_low, decode_table_high};
+svuint8_t decoded = svtbl2_u8(decode_tables, two_bits);
+
+// 3. Use SVMATCH for validation
+svbool_t valid = svmatch_u8(pg, decoded, valid_bases);
+```
+
+## Performance Optimization Guidelines
+
+### General Principles
+
+1. **Minimize Memory Access**
+   - Load data once and reuse in registers
+   - Use aligned loads when possible
+   - Prefetch data for next iteration
+
+2. **Reduce Branch Mispredictions**
+   - Use predicated/masked operations
+   - Replace conditionals with bit manipulation
+   - Unroll loops for predictable patterns
+
+3. **Optimize Bit Manipulation**
+   - Use dedicated bit manipulation instructions
+   - Combine multiple operations into single instructions
+   - Avoid scalar bit shifting in loops
+
+### Architecture-Specific Guidelines
+
+#### x86-64
+- Prefer PDEP/PEXT for bit scatter/gather operations
+- Use VPSHUFB for byte-level permutations
+- Leverage VPMULTISHIFTQB for parallel bit extraction
+- Use VPCOMPRESSB/VEXPANDB for packing/unpacking
+
+#### ARM64
+- Use TBL instructions for small lookup tables
+- Leverage EXT for sliding window operations
+- Prefer BSL over conditional branches
+- Use REV for endianness conversion
+- Combine VTBL/VTBX for extended lookups
+
+#### SVE/SVE2
+- Utilize scalable vector length for flexibility
+- Use predication for partial vector processing
+- Leverage SVE2 bit manipulation for complex operations
+- Prefer MATCH instructions for pattern detection
+- Combine NEON for fixed-width operations when beneficial
+
+## Implementation Priority
+
+1. **High Priority** (Maximum performance impact)
+   - ✅ `kmersearch_extract_dna2_kmer2_direct_avx2` (PEXT/PDEP) - **COMPLETED**
+   - ✅ `kmersearch_extract_dna2_kmer2_direct_avx512` (Memory optimization) - **COMPLETED**
+   - ✅ `kmersearch_extract_dna2_kmer2_direct_neon` (VTBL/VEXT) - **COMPLETED**
+   - `kmersearch_extract_dna2_kmer2_direct_sve2` (SVBEXT)
+   - `dna2_encode_avx512` (VPMULTISHIFTQB)
+   - `kmersearch_expand_dna4_kmer2_to_dna2_direct_neon` (VTBL/VTBX)
+
+2. **Medium Priority** (Significant performance gains)
+   - `kmersearch_extract_dna4_kmer2_with_expansion_direct_sve2`
+   - `dna4_decode_avx512` (VPERMB)
+   - `dna2_decode_neon` (VTBL)
+
+3. **Low Priority** (Incremental improvements)
+   - Remaining encode/decode functions
+   - Additional architecture variants
+
+## Expected Performance Gains
+
+### x86-64
+- AVX2+BMI2: 2-3x speedup over scalar
+- AVX512+VBMI2: 4-6x speedup over scalar
+
+### ARM64
+- NEON: 2-3x speedup over scalar
+- SVE: 3-4x speedup over scalar
+- SVE2: 4-5x speedup over scalar
+
+### Critical Functions
+- K-mer extraction: 40-60% improvement with SIMD
+- DNA4 expansion: 50-70% improvement with lookup tables
+- Encode/Decode: 30-50% improvement with parallel processing
+
+## SVE + NEON Hybrid Optimization
+
+### Rationale for SVE/NEON Combination
+
+SVE provides scalable vector processing but NEON offers advantages for:
+1. **Fixed-width operations** - NEON's 128-bit vectors are optimal for small data
+2. **Complex bit manipulation** - NEON's TBL/TBX instructions are more mature
+3. **Known data sizes** - When processing exactly 16 bytes, NEON is more efficient
+4. **Cache-friendly operations** - NEON's fixed size fits L1 cache better
+
+### Hybrid Implementation Strategies
+
+#### kmersearch_extract_dna2_kmer2_direct_sve (with NEON)
+```c
+// Use SVE for main loop with variable-length vectors
+svuint8_t seq_vec = svld1_u8(pg, &seq_data[pos]);
+
+// Switch to NEON for complex bit extraction when k <= 8
+if (k <= 8 && remaining >= 16) {
+    // NEON's VTBL is more efficient for small lookups
+    uint8x16_t neon_data = vld1q_u8(&seq_data[byte_pos]);
+    uint8x16_t indices = vld1q_u8(kmer_extract_indices[k]);
+    uint8x16_t extracted = vqtbl1q_u8(neon_data, indices);
+    
+    // Convert back to SVE for further processing
+    svuint8_t sve_result = svld1_u8(svptrue_b8(), (uint8_t*)&extracted);
+}
+```
+
+#### kmersearch_extract_dna4_kmer2_with_expansion_direct_sve (with NEON)
+```c
+// Main loop with SVE for scalability
+svuint8_t dna4_vec = svld1_u8(pg, &seq_data[pos]);
+
+// Use NEON for degenerate base expansion (fixed lookup tables)
+uint8x16x4_t degenerate_tables = {
+    vld1q_u8(degenerate_table_A),
+    vld1q_u8(degenerate_table_C),
+    vld1q_u8(degenerate_table_G),
+    vld1q_u8(degenerate_table_T)
+};
+
+// VTBX for extended table lookup (better than SVE for small tables)
+uint8x16_t base_expansion = vqtbx4q_u8(base_expansion, degenerate_tables, dna4_bases);
+```
+
+#### kmersearch_expand_dna4_kmer2_to_dna2_direct_sve (with NEON)
+```c
+// Process bulk data with SVE
+svuint64_t kmer_data = svld1_u64(pg, &kmer_array[i]);
+
+// Use NEON for complex bit interleaving
+if (expansion_count <= 10) {
+    // NEON VZIP for efficient bit interleaving
+    uint8x16_t base1 = vld1q_u8(expanded_bases);
+    uint8x16_t base2 = vld1q_u8(expanded_bases + 16);
+    uint8x16x2_t interleaved = vzipq_u8(base1, base2);
+    
+    // VREV for endianness adjustment
+    uint64x2_t reversed = vreinterpretq_u64_u8(vrev64q_u8(interleaved.val[0]));
+}
+```
+
+#### dna2_encode_sve (with NEON)
+```c
+// Main processing with SVE
+svuint8_t chars = svld1_u8(pg, &input[i]);
+
+// Use NEON for final bit packing (more efficient for 16-byte blocks)
+if (chars_remaining == 16) {
+    uint8x16_t neon_chars = vld1q_u8(&input[i]);
+    
+    // VTBL for fast character->encoding lookup
+    uint8x16_t lookup = vld1q_u8(dna2_encode_table_neon);
+    uint8x16_t encoded = vqtbl1q_u8(lookup, neon_chars);
+    
+    // VSHL/VSHR for bit alignment
+    uint8x16_t aligned = vshlq_n_u8(encoded, bit_offset);
+}
+```
+
+#### dna4_decode_sve (with NEON)
+```c
+// SVE for variable-length processing
+svuint8_t packed = svld1_u8(pg, &input[byte_pos]);
+
+// NEON for efficient 4-bit unpacking
+uint8x16_t neon_packed = vld1q_u8(&input[byte_pos]);
+
+// Use NEON's efficient bit manipulation
+uint8x16_t low_nibbles = vandq_u8(neon_packed, vdupq_n_u8(0x0F));
+uint8x16_t high_nibbles = vshrq_n_u8(neon_packed, 4);
+
+// VTBL2 for 32-entry lookup table
+uint8x16x2_t decode_table = {vld1q_u8(dna4_decode_low), vld1q_u8(dna4_decode_high)};
+uint8x16_t decoded_low = vqtbl2q_u8(decode_table, low_nibbles);
+uint8x16_t decoded_high = vqtbl2q_u8(decode_table, high_nibbles);
+
+// ZIP to interleave results
+uint8x16x2_t result = vzipq_u8(decoded_high, decoded_low);
+```
+
+### Performance Benefits of SVE/NEON Hybrid
+
+1. **Small k-mer extraction (k ≤ 8)**: 20-30% faster with NEON VTBL
+2. **Lookup table operations**: 15-25% faster with NEON VTBX
+3. **Bit packing/unpacking**: 10-20% faster with NEON shifts
+4. **Fixed-size operations**: 15-20% faster with NEON
+
+### Implementation Guidelines
+
+1. **Decision Criteria for NEON Usage**:
+   - Data size is exactly 16 bytes or multiples
+   - Lookup table size ≤ 64 bytes
+   - Complex bit manipulation patterns
+   - Need for specific bit interleaving
+
+2. **Context Switching**:
+   - Minimize SVE↔NEON transitions
+   - Process complete cache lines with same instruction set
+   - Align data for both SVE and NEON access
+
+3. **Compiler Optimization**:
+   ```c
+   // Ensure both instruction sets are available
+   __attribute__((target("+sve,+simd")))
+   ```
+
+## Uint Conversion and Bit Extraction Optimizations
+
+### Overview
+The `kmersearch_extract_dna2_kmer2_as_uint_direct()` and `kmersearch_extract_dna4_kmer2_as_uint_with_expansion_direct()` functions perform reversible bit extraction to convert k-mers to uint64 values. These operations can be significantly accelerated using specialized bit manipulation instructions.
+
+### x86-64 Bit Extraction Optimizations
+
+#### BMI2 Instructions (AVX2 level)
+```c
+// kmersearch_extract_dna2_kmer2_as_uint_direct_avx2
+uint64_t extract_2bit_kmer_bmi2(uint64_t data, int offset, int k) {
+    // PEXT: Parallel bit extraction
+    uint64_t mask = ((1ULL << (k * 2)) - 1) << offset;
+    uint64_t extracted = _pext_u64(data, mask);
+    
+    // PDEP: Parallel bit deposit (for alignment)
+    uint64_t aligned = _pdep_u64(extracted, 0xFFFFFFFFFFFFFFFFULL);
+    return aligned;
+}
+
+// Process multiple k-mers with AVX2 + BMI2
+__m256i extract_4_kmers_avx2(const uint8_t* seq_data, int k) {
+    // Load and extract 4 k-mers in parallel
+    uint64_t kmer0 = _pext_u64(*(uint64_t*)&seq_data[0], mask);
+    uint64_t kmer1 = _pext_u64(*(uint64_t*)&seq_data[8], mask);
+    uint64_t kmer2 = _pext_u64(*(uint64_t*)&seq_data[16], mask);
+    uint64_t kmer3 = _pext_u64(*(uint64_t*)&seq_data[24], mask);
+    
+    return _mm256_set_epi64x(kmer3, kmer2, kmer1, kmer0);
+}
+```
+
+#### AVX512VBMI2 Instructions
+```c
+// kmersearch_extract_dna2_kmer2_as_uint_direct_avx512
+__m512i extract_8_kmers_avx512vbmi2(const uint8_t* seq_data, int k) {
+    __m512i data = _mm512_loadu_si512(seq_data);
+    
+    // VPMULTISHIFTQB: Extract 2-bit values from 8 positions simultaneously
+    __m512i shift_control = _mm512_setr_epi64(
+        0x003E3C3A38363432ULL,  // Shift amounts for bytes 0-7
+        0x00302E2C2A282624ULL,  // Shift amounts for bytes 8-15
+        // ... (8 total 64-bit control values)
+    );
+    
+    __m512i shifted = _mm512_multishift_epi64_epi8(shift_control, data);
+    
+    // VPCOMPRESSB: Compress extracted 2-bit values
+    __mmask64 compress_mask = calculate_compress_mask(k);
+    __m512i compressed = _mm512_maskz_compress_epi8(compress_mask, shifted);
+    
+    // Convert to 8 uint64 values
+    return compressed;
+}
+
+// For DNA4 with expansion
+__m512i extract_dna4_with_expansion_avx512vbmi2(const uint8_t* seq_data, int k) {
+    // VPERMB: Byte permutation for 4-bit extraction
+    __m512i perm_indices = _mm512_setr_epi8(/* permutation pattern */);
+    __m512i permuted = _mm512_permutexvar_epi8(perm_indices, data);
+    
+    // VPEXPANDB: Expand based on degenerate mask (AVX512VBMI2)
+    __mmask64 degenerate_mask = detect_degenerate_bases(permuted);
+    __m512i expanded = _mm512_mask_expand_epi8(permuted, degenerate_mask, expansion_values);
+    
+    return expanded;
+}
+```
+
+### ARM64 Bit Extraction Optimizations
+
+#### NEON Bit Manipulation
+```c
+// kmersearch_extract_dna2_kmer2_as_uint_direct_neon
+uint64_t extract_2bit_kmer_neon(const uint8_t* seq_data, int offset, int k) {
+    uint8x16_t data = vld1q_u8(seq_data);
+    
+    // TBL for bit extraction pattern
+    uint8x16_t extract_tbl = vld1q_u8(bit_extract_table[offset]);
+    uint8x16_t extracted = vqtbl1q_u8(data, extract_tbl);
+    
+    // Shift and combine
+    uint64x2_t shifted = vshrq_n_u64(vreinterpretq_u64_u8(extracted), offset);
+    uint64_t result = vgetq_lane_u64(shifted, 0);
+    
+    // Mask to k*2 bits
+    return result & ((1ULL << (k * 2)) - 1);
+}
+
+// Process multiple k-mers
+void extract_16_kmers_neon(const uint8_t* seq_data, int k, uint64_t* output) {
+    // Use TBL2 for extended extraction
+    uint8x16x2_t extract_tables = vld2q_u8(bit_extract_table_extended);
+    
+    for (int i = 0; i < 16; i++) {
+        uint8x16_t data = vld1q_u8(&seq_data[i * 2]);
+        uint8x16_t extracted = vqtbl2q_u8(extract_tables, data);
+        
+        // Convert to uint64
+        uint64x2_t result = vreinterpretq_u64_u8(extracted);
+        vst1q_u64(&output[i * 2], result);
+    }
+}
+```
+
+#### SVE2 Bit Manipulation
+```c
+// kmersearch_extract_dna2_kmer2_as_uint_direct_sve2
+void extract_kmers_sve2(const uint8_t* seq_data, int k, int count, uint64_t* output) {
+    svbool_t pg = svptrue_b8();
+    
+    for (int i = 0; i < count; i += svcntd()) {
+        svuint8_t data = svld1_u8(pg, &seq_data[i * k / 4]);
+        
+        // SVBEXT: Extract bits at specified positions
+        svuint64_t extracted = svbext_u64(svreinterpret_u64_u8(data), i * 2, k * 2);
+        
+        // Store results
+        svst1_u64(pg, &output[i], extracted);
+    }
+}
+
+// For DNA4 with SVE2 + NEON hybrid
+void extract_dna4_kmers_sve2_neon(const uint8_t* seq_data, int k, int count, uint64_t* output) {
+    svbool_t pg = svptrue_b8();
+    
+    for (int i = 0; i < count; ) {
+        // Use SVE2 for bulk processing
+        if (count - i >= svcntd()) {
+            svuint8_t data = svld1_u8(pg, &seq_data[i * k / 2]);
+            
+            // SVTBL2 for 4-bit extraction
+            svuint8x2_t tables = {degenerate_table1, degenerate_table2};
+            svuint8_t extracted = svtbl2_u8(tables, data);
+            
+            // SVBGRP: Group bits for efficient packing
+            svuint64_t grouped = svbgrp_u64(svreinterpret_u64_u8(extracted), group_mask);
+            
+            svst1_u64(pg, &output[i], grouped);
+            i += svcntd();
+        } else {
+            // Use NEON for remainder
+            uint8x16_t data = vld1q_u8(&seq_data[i * k / 2]);
+            uint8x16_t extracted = vqtbl1q_u8(data, extract_indices);
+            uint64x2_t result = vreinterpretq_u64_u8(extracted);
+            vst1q_u64(&output[i], result);
+            i += 2;
+        }
+    }
+}
+```
+
+### Performance Optimization Guidelines for Bit Extraction
+
+1. **Instruction Selection**:
+   - Use PEXT/PDEP for simple 2-bit extraction (x86)
+   - Use VPMULTISHIFTQB for parallel extraction (AVX512VBMI2)
+   - Use TBL/TBL2 for pattern-based extraction (NEON)
+   - Use SVBEXT for scalable extraction (SVE2)
+
+2. **Data Alignment**:
+   - Align input data to 64-byte boundaries for AVX512
+   - Align to 16-byte boundaries for NEON
+   - Use unaligned loads only when necessary
+
+3. **Batch Processing**:
+   - Process 8 k-mers at once with AVX512
+   - Process 4-8 k-mers with NEON (depending on k size)
+   - Use SVE for variable-length batches
+
+## SIMD Optimizations for k-mer Matching
+
+### Overview
+The `kmersearch_count_matching_kmer_fast()` function uses PostgreSQL's hash table for matching, but the comparison operations within can be accelerated using SIMD instructions for better cache utilization and parallel comparison.
+
+### x86-64 k-mer Matching Optimizations
+
+#### AVX2 Version Enhancement
+```c
+// kmersearch_count_matching_kmer_fast_avx2 - Enhanced hash lookup
+static int
+kmersearch_count_matching_kmer_fast_avx2(VarBit **seq_keys, int seq_nkeys, 
+                                         VarBit **query_keys, int query_nkeys)
+{
+    // Existing PostgreSQL hash table setup...
+    
+    // SIMD optimization for small k-mers (≤ 8 bytes)
+    if (VARBITBYTES(seq_keys[0]) <= 8) {
+        // Process 4 seq k-mers at once for hash lookups
+        for (int i = 0; i < seq_nkeys - 3; i += 4) {
+            // Prefetch next batch
+            _mm_prefetch(&seq_keys[i + 4], _MM_HINT_T0);
+            
+            // Load 4 k-mers
+            __m256i kmers = _mm256_set_epi64x(
+                *(uint64_t*)VARBITS(seq_keys[i+3]),
+                *(uint64_t*)VARBITS(seq_keys[i+2]),
+                *(uint64_t*)VARBITS(seq_keys[i+1]),
+                *(uint64_t*)VARBITS(seq_keys[i])
+            );
+            
+            // Check each against hash table (still using PostgreSQL hash)
+            for (int j = 0; j < 4; j++) {
+                if (hash_search(query_hash, VARBITS(seq_keys[i+j]), HASH_FIND, NULL))
+                    match_count++;
+            }
+        }
+    }
+}
+```
+
+#### AVX512 Version Enhancement
+```c
+// kmersearch_count_matching_kmer_fast_avx512 - Optimized memory access
+static int
+kmersearch_count_matching_kmer_fast_avx512(VarBit **seq_keys, int seq_nkeys,
+                                          VarBit **query_keys, int query_nkeys)
+{
+    // Existing PostgreSQL hash table setup...
+    
+    // Process with prefetching and batch loading
+    for (int i = 0; i < seq_nkeys - 15; i += 16) {
+        // Prefetch next batch
+        _mm_prefetch(&seq_keys[i + 16], _MM_HINT_T0);
+        _mm_prefetch(&seq_keys[i + 32], _MM_HINT_T1);
+        
+        // Check each against hash table with improved memory access pattern
+        for (int j = 0; j < 16; j++) {
+            if (hash_search(query_hash, VARBITS(seq_keys[i+j]), HASH_FIND, NULL))
+                match_count++;
+        }
+    }
+    
+    // Handle remainder
+    // ... existing implementation
+}
+```
+
+### ARM64 k-mer Matching Optimizations
+
+#### NEON Version Enhancement
+```c
+// kmersearch_count_matching_kmer_fast_neon - Improved memory access
+static int
+kmersearch_count_matching_kmer_fast_neon(VarBit **seq_keys, int seq_nkeys,
+                                        VarBit **query_keys, int query_nkeys)
+{
+    // For 16-bit k-mers, process 8 at once
+    if (VARBITBYTES(seq_keys[0]) == 2) {
+        for (int i = 0; i < seq_nkeys - 7; i += 8) {
+            // Prefetch
+            __builtin_prefetch(&seq_keys[i + 8], 0, 1);
+            
+            // Load 8 k-mers
+            uint16x8_t kmers = {
+                *(uint16_t*)VARBITS(seq_keys[i]),
+                *(uint16_t*)VARBITS(seq_keys[i+1]),
+                // ... etc
+            };
+            
+            // Check each against hash table
+            for (int j = 0; j < 8; j++) {
+                uint16_t kmer = vgetq_lane_u16(kmers, j);
+                if (hash_search(query_hash, &kmer, HASH_FIND, NULL))
+                    match_count++;
+            }
+        }
+    }
+}
+```
+
+#### SVE Version Enhancement
+```c
+// kmersearch_count_matching_kmer_fast_sve - Scalable prefetching
+static int
+kmersearch_count_matching_kmer_fast_sve(VarBit **seq_keys, int seq_nkeys,
+                                       VarBit **query_keys, int query_nkeys)
+{
+    // Existing PostgreSQL hash table setup...
+    
+    // Process with scalable vector length
+    int vl = svcntd();
+    
+    for (int i = 0; i < seq_nkeys - vl; i += vl) {
+        // Prefetch next batch
+        svprfd(svptrue_b8(), &seq_keys[i + vl], SV_PLDL1STRM);
+        
+        // Check each against hash table
+        for (int j = 0; j < vl && (i + j) < seq_nkeys; j++) {
+            if (hash_search(query_hash, VARBITS(seq_keys[i+j]), HASH_FIND, NULL))
+                match_count++;
+        }
+    }
+    
+    // Handle remainder
+    // ... existing implementation
+}
+```
+
+### Key Optimization Principles
+
+1. **Prefetching**: Always prefetch next batch of k-mers for better cache utilization
+2. **Batch Processing**: Process multiple k-mers together to amortize memory access costs
+3. **Type-Specific Optimization**: Special handling for 16-bit, 32-bit, and 64-bit k-mers
+4. **Memory Access Pattern**: Optimize for sequential access to improve cache performance
+
+### Expected Performance Improvements
+
+| Scenario | Optimization | Expected Speedup |
+|----------|--------------|------------------|
+| 16-bit k-mers | NEON batch processing | 2-3x |
+| Cache optimization | Prefetching | 10-20% |
+| Large datasets | Better memory access patterns | 15-25% |
+| AVX512 batch processing | 16-element prefetch | 20-30% |
+
+### Expected Performance Gains for Uint Conversion
+
+| Function | Optimization | Expected Speedup |
+|----------|--------------|------------------|
+| `kmersearch_extract_dna2_kmer2_as_uint_direct` | BMI2 PEXT | 2-3x |
+| `kmersearch_extract_dna2_kmer2_as_uint_direct` | AVX512VBMI2 | 6-8x |
+| `kmersearch_extract_dna2_kmer2_as_uint_direct` | NEON TBL | 3-4x |
+| `kmersearch_extract_dna2_kmer2_as_uint_direct` | SVE2 BEXT | 4-6x |
+| `kmersearch_extract_dna4_kmer2_as_uint_with_expansion_direct` | AVX512VBMI2 | 5-7x |
+| `kmersearch_extract_dna4_kmer2_as_uint_with_expansion_direct` | SVE2+NEON | 4-5x |
+
+### Implementation Priority for Bit Extraction
+
+1. **Highest Priority**:
+   - AVX512VBMI2 `VPMULTISHIFTQB` for `extract_dna2_as_uint`
+   - SVE2 `SVBEXT` for scalable extraction
+
+2. **High Priority**:
+   - BMI2 `PEXT/PDEP` as baseline x86 optimization
+   - NEON `VTBL2` for DNA4 expansion
+
+3. **Medium Priority**:
+   - Hybrid SVE2+NEON implementations
+   - AVX512 `VPCOMPRESSB` for packing
+
+## Testing Strategy
+
+1. **Correctness Testing**
+   - Compare SIMD results with scalar implementation
+   - Test edge cases (boundary conditions, all base types)
+   - Verify bit-perfect accuracy
+   - Test SVE/NEON transitions
+   - Validate uint conversion reversibility
+
+2. **Performance Testing**
+   - Benchmark against scalar baseline
+   - Test with various k-mer sizes (4-32)
+   - Measure with different sequence lengths
+   - Compare pure SVE vs SVE+NEON hybrid
+   - Profile bit extraction operations separately
+
+3. **Platform Testing**
+   - Test on different CPU architectures
+   - Verify runtime CPU detection works correctly
+   - Ensure graceful fallback to scalar
+   - Validate NEON availability when SVE is present
+   - Check BMI2 availability on x86 platforms
