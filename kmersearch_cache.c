@@ -67,13 +67,6 @@ bool kmersearch_highfreq_kmer_cache_load_internal(Oid table_oid, const char *col
 void kmersearch_highfreq_kmer_cache_free_internal(void);
 bool kmersearch_highfreq_kmer_cache_is_valid(Oid table_oid, const char *column_name, int k_value);
 
-/* Rawscore cache heap management */
-static void rawscore_heap_swap(RawscoreCacheManager *manager, int i, int j);
-static void rawscore_heap_bubble_up(RawscoreCacheManager *manager, int index);
-static void rawscore_heap_bubble_down(RawscoreCacheManager *manager, int index);
-static void rawscore_heap_insert(RawscoreCacheManager *manager, RawscoreCacheEntry *entry);
-static void rawscore_heap_remove(RawscoreCacheManager *manager, RawscoreCacheEntry *entry);
-static void rawscore_heap_evict_lowest_score(RawscoreCacheManager *manager);
 
 /* High-level cache functions */
 
@@ -640,126 +633,7 @@ sequences_equal(VarBit *a, VarBit *b)
     return memcmp(VARBITS(a), VARBITS(b), VARBITBYTES(a)) == 0;
 }
 
-/*
- * Helper functions for min-heap operations
- */
-static void
-rawscore_heap_swap(RawscoreCacheManager *manager, int i, int j)
-{
-    RawscoreCacheEntry *temp = manager->min_heap[i];
-    manager->min_heap[i] = manager->min_heap[j];
-    manager->min_heap[j] = temp;
-    
-    /* Update heap indices */
-    manager->min_heap[i]->heap_index = i;
-    manager->min_heap[j]->heap_index = j;
-}
 
-static void
-rawscore_heap_bubble_up(RawscoreCacheManager *manager, int index)
-{
-    int parent;
-    
-    while (index > 0)
-    {
-        parent = (index - 1) / 2;
-        if (manager->min_heap[index]->result.shared_count >= manager->min_heap[parent]->result.shared_count)
-            break;
-        
-        rawscore_heap_swap(manager, index, parent);
-        index = parent;
-    }
-}
-
-static void
-rawscore_heap_bubble_down(RawscoreCacheManager *manager, int index)
-{
-    int smallest = index;
-    int left = 2 * index + 1;
-    int right = 2 * index + 2;
-    
-    if (left < manager->heap_size && 
-        manager->min_heap[left]->result.shared_count < manager->min_heap[smallest]->result.shared_count)
-        smallest = left;
-    
-    if (right < manager->heap_size && 
-        manager->min_heap[right]->result.shared_count < manager->min_heap[smallest]->result.shared_count)
-        smallest = right;
-    
-    if (smallest != index)
-    {
-        rawscore_heap_swap(manager, index, smallest);
-        rawscore_heap_bubble_down(manager, smallest);
-    }
-}
-
-/*
- * Insert entry into min-heap
- */
-static void
-rawscore_heap_insert(RawscoreCacheManager *manager, RawscoreCacheEntry *entry)
-{
-    if (manager->heap_size >= manager->max_entries)
-        return;  /* Heap is full */
-    
-    /* Add to end of heap */
-    manager->min_heap[manager->heap_size] = entry;
-    entry->heap_index = manager->heap_size;
-    manager->heap_size++;
-    
-    /* Bubble up to maintain heap property */
-    rawscore_heap_bubble_up(manager, entry->heap_index);
-}
-
-/*
- * Remove entry from min-heap
- */
-static void
-rawscore_heap_remove(RawscoreCacheManager *manager, RawscoreCacheEntry *entry)
-{
-    int index = entry->heap_index;
-    
-    if (index < 0 || index >= manager->heap_size)
-        return;  /* Entry not in heap */
-    
-    /* Move last element to this position */
-    manager->heap_size--;
-    if (index != manager->heap_size)
-    {
-        manager->min_heap[index] = manager->min_heap[manager->heap_size];
-        manager->min_heap[index]->heap_index = index;
-        
-        /* Restore heap property */
-        rawscore_heap_bubble_up(manager, index);
-        rawscore_heap_bubble_down(manager, index);
-    }
-    
-    entry->heap_index = -1;
-}
-
-/*
- * Evict entry with lowest rawscore
- */
-static void
-rawscore_heap_evict_lowest_score(RawscoreCacheManager *manager)
-{
-    RawscoreCacheEntry *lowest;
-    bool found;
-    
-    if (manager->heap_size == 0)
-        return;
-    
-    /* Root of min-heap has lowest score */
-    lowest = manager->min_heap[0];
-    
-    /* Remove from heap */
-    rawscore_heap_remove(manager, lowest);
-    
-    /* Remove from hash table */
-    hash_search(manager->hash_table, &lowest->hash_key, HASH_REMOVE, &found);
-    
-    manager->current_entries--;
-}
 
 /*
  * Create rawscore cache manager
@@ -882,9 +756,12 @@ store_rawscore_cache_entry(RawscoreCacheManager *manager, uint64 hash_key, VarBi
         return;
     }
     
-    /* Check if we need to evict */
-    while (manager->current_entries >= manager->max_entries)
-        rawscore_heap_evict_lowest_score(manager);
+    /* Check if cache is full */
+    if (manager->current_entries >= manager->max_entries)
+    {
+        /* Cache is full, don't add new entries */
+        return;
+    }
     
     old_context = MemoryContextSwitchTo(manager->cache_context);
     
@@ -901,8 +778,6 @@ store_rawscore_cache_entry(RawscoreCacheManager *manager, uint64 hash_key, VarBi
         entry->result = result;
         entry->heap_index = -1;
         
-        /* Add to min-heap */
-        rawscore_heap_insert(manager, entry);
         manager->current_entries++;
     }
     

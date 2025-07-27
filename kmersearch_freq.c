@@ -27,7 +27,6 @@ static bool kmersearch_is_kmer_highfreq(VarBit *kmer_key);
 static int kmersearch_count_highfreq_kmer_in_query(VarBit **query_keys, int nkeys);
 static bool kmersearch_is_highfreq_filtering_enabled(void);
 /* Utility functions */
-static int kmersearch_varbit_cmp(VarBit *a, VarBit *b);
 
 /* Analysis dshash functions */
 static int analysis_kmer_hash_compare(const void *a, const void *b, size_t size, void *arg);
@@ -1043,24 +1042,6 @@ kmersearch_get_adjusted_min_score(VarBit **query_keys, int nkeys)
 /* Functions moved here from kmersearch.c are now implemented below */
 
 
-static int
-kmersearch_varbit_cmp(VarBit *a, VarBit *b)
-{
-    int len_a, len_b;
-    
-    /* Simple comparison implementation */
-    if (!a && !b) return 0;
-    if (!a) return -1;
-    if (!b) return 1;
-    
-    len_a = VARBITLEN(a);
-    len_b = VARBITLEN(b);
-    
-    if (len_a != len_b)
-        return len_a - len_b;
-    
-    return memcmp(VARBITS(a), VARBITS(b), VARBITBYTES(a));
-}
 
 /*
  * Validate GUC settings against all metadata table entries
@@ -1896,36 +1877,6 @@ kmersearch_add_hash_to_buffer(KmerBuffer *buffer, uint64_t kmer_hash, const char
     buffer->count++;
 }
 
-/*
- * Create temporary table for worker k-mer storage
- */
-static void
-kmersearch_create_worker_temp_table(const char *temp_table_name, int k_size)
-{
-    StringInfoData query;
-    int ret;
-    const char *data_type;
-    
-    initStringInfo(&query);
-    
-    /* For hash-based storage, always use bigint */
-    data_type = "bigint";
-    
-    appendStringInfo(&query,
-        "CREATE TEMP TABLE %s ("
-        "kmer_data %s PRIMARY KEY, "
-        "frequency_count integer"
-        ")", temp_table_name, data_type);
-    
-    ret = SPI_exec(query.data, 0);
-    if (ret != SPI_OK_UTILITY) {
-        ereport(ERROR,
-                (errcode(ERRCODE_INTERNAL_ERROR),
-                 errmsg("failed to create temporary table %s", temp_table_name)));
-    }
-    
-    pfree(query.data);
-}
 
 /*
  * Worker function to analyze blocks and extract k-mer frequencies
@@ -1955,7 +1906,6 @@ kmersearch_worker_analyze_blocks(KmerWorkerState *worker, Relation rel,
     
     /* Create temporary table for this worker with unique name */
     worker->temp_table_name = kmersearch_generate_unique_temp_table_name("temp_kmer_worker", worker->worker_id);
-    kmersearch_create_worker_temp_table(worker->temp_table_name, k_size);
     
     /* Scan assigned blocks only */
     
@@ -2636,70 +2586,4 @@ is_kmer2_in_analysis_dshash(uint64_t kmer2_value)
     return kmersearch_is_kmer_hash_in_analysis_dshash(kmer2_value);
 }
 
-/*
- * Process extracted kmer2 values and generate ngram_key2 for high-frequency ones
- * This function counts occurrences of each kmer2 within the current sequence
- */
-static void
-process_extracted_kmer2(uint64_t *kmer2_values, int nkeys, VarBit *sequence, int k_size, const char *worker_table, const char *highfreq_table)
-{
-    StringInfoData query;
-    int i, j;
-    
-    if (!kmer2_values || nkeys <= 0)
-        return;
-    
-    initStringInfo(&query);
-    
-    /* Process each unique kmer2 */
-    for (i = 0; i < nkeys; i++) {
-        uint64_t current_kmer2 = kmer2_values[i];
-        
-        /* Check if this kmer2 is in the high-frequency list */
-        bool is_highfreq = false;
-        
-        /* Use dshash lookup if highfreq_table is NULL (indicating dshash mode),
-         * otherwise fall back to table lookup for backward compatibility */
-        if (highfreq_table == NULL) {
-            is_highfreq = is_kmer2_in_analysis_dshash(current_kmer2);
-        } else {
-            is_highfreq = is_kmer2_in_highfreq_table(current_kmer2, highfreq_table);
-        }
-        
-        if (is_highfreq) {
-            /* Count occurrences of this kmer2 in the sequence */
-            int occurrence_count = 0;
-            VarBit *ngram_key2;
-            
-            for (j = 0; j < nkeys; j++) {
-                if (kmer2_values[j] == current_kmer2) {
-                    occurrence_count++;
-                }
-            }
-            
-            /* Create ngram_key2 with occurrence count */
-            ngram_key2 = create_ngram_key2_from_kmer2_and_count(current_kmer2, k_size, occurrence_count);
-            
-            /* Insert into worker table */
-            resetStringInfo(&query);
-            appendStringInfo(&query,
-                "INSERT INTO %s (ngram_key) VALUES ('%s')",
-                worker_table,
-                DatumGetCString(DirectFunctionCall1(varbit_out, VarBitPGetDatum(ngram_key2))));
-            
-            SPI_exec(query.data, 0);
-            
-            /* Mark processed kmer2 values to avoid duplicates */
-            for (j = i; j < nkeys; j++) {
-                if (kmer2_values[j] == current_kmer2) {
-                    kmer2_values[j] = UINT64_MAX; /* Mark as processed */
-                }
-            }
-            
-            pfree(ngram_key2);
-        }
-    }
-    
-    pfree(query.data);
-}
 

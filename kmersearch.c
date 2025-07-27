@@ -598,6 +598,33 @@ static void sigill_handler(int sig) {
     siglongjmp(jmpbuf, 1);
 }
 
+__attribute__((target("+sve,+simd")))
+static simd_capability_t detect_cpu_capabilities(void)
+{
+    struct sigaction sa, old_sa;
+    sa.sa_handler = sigill_handler;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = 0;
+    sigaction(SIGILL, &sa, &old_sa);
+    
+    /* Check for SVE support */
+    if (sigsetjmp(jmpbuf, 1) == 0) {
+        size_t vl = svcntb();
+        (void)vl;
+        sigaction(SIGILL, &old_sa, NULL);
+        return SIMD_SVE;
+    }
+    
+    /* Check for NEON support */
+    if (sigsetjmp(jmpbuf, 1) == 0) {
+        volatile uint8x8_t a = vdup_n_u8(1);
+        (void)a;
+        sigaction(SIGILL, &old_sa, NULL);
+        return SIMD_NEON;
+    }
+    
+    return SIMD_NONE;
+}
 #endif
 
 /*
@@ -1366,43 +1393,6 @@ kmersearch_get_kmer_uint_size(int k)
 }
 
 
-/*
- * Extract DNA4 base and get all possible expansions directly as uint values
- */
-static void
-kmersearch_expand_dna4_base_direct(uint8 dna4_base, uint64 *expansions, int *count)
-{
-    /* DNA4 base expansion mapping - direct to 2-bit values */
-    static const uint8 dna4_expansions[][4] = {
-        {0},           /* A=0001 -> A(00) */
-        {1},           /* C=0010 -> C(01) */
-        {0, 1},        /* M=0011 -> A(00), C(01) */
-        {2},           /* G=0100 -> G(10) */
-        {0, 2},        /* R=0101 -> A(00), G(10) */
-        {1, 2},        /* S=0110 -> C(01), G(10) */
-        {0, 1, 2},     /* V=0111 -> A(00), C(01), G(10) */
-        {3},           /* T=1000 -> T(11) */
-        {0, 3},        /* W=1001 -> A(00), T(11) */
-        {1, 3},        /* Y=1010 -> C(01), T(11) */
-        {0, 1, 3},     /* H=1011 -> A(00), C(01), T(11) */
-        {2, 3},        /* K=1100 -> G(10), T(11) */
-        {0, 2, 3},     /* D=1101 -> A(00), G(10), T(11) */
-        {1, 2, 3},     /* B=1110 -> C(01), G(10), T(11) */
-        {0, 1, 2, 3}   /* N=1111 -> A(00), C(01), G(10), T(11) */
-    };
-    
-    static const int dna4_expansion_counts[] = {1, 1, 2, 1, 2, 2, 3, 1, 2, 2, 3, 2, 3, 3, 4};
-    
-    if (dna4_base == 0 || dna4_base > 15) {
-        *count = 0;
-        return;
-    }
-    
-    *count = dna4_expansion_counts[dna4_base - 1];
-    for (int i = 0; i < *count; i++) {
-        expansions[i] = dna4_expansions[dna4_base - 1][i];
-    }
-}
 
 /*
  * Expand DNA4 k-mer to DNA2 k-mers directly as uint values
