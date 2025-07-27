@@ -1410,15 +1410,17 @@ kmersearch_highfreq_kmer_cache_load_internal(Oid table_oid, const char *column_n
     while (offset < highfreq_count) {
         uint64 *batch_kmers;
         int batch_count;
-        int batch_size = kmersearch_highfreq_kmer_cache_load_batch_size;
+        int current_batch_limit;
         
         /* Ensure we don't exceed the total count */
-        if (offset + batch_size > highfreq_count) {
-            batch_size = highfreq_count - offset;
+        if (offset + kmersearch_highfreq_kmer_cache_load_batch_size > highfreq_count) {
+            current_batch_limit = highfreq_count - offset;
+        } else {
+            current_batch_limit = kmersearch_highfreq_kmer_cache_load_batch_size;
         }
         
         ereport(DEBUG1, (errmsg("kmersearch_highfreq_kmer_cache_load_internal: Processing batch %d (offset=%d, batch_size=%d)", 
-                               batch_num, offset, batch_size)));
+                               batch_num, offset, current_batch_limit)));
         
         /* Get batch of k-mers from table using LIMIT/OFFSET */
         {
@@ -1466,7 +1468,7 @@ kmersearch_highfreq_kmer_cache_load_internal(Oid table_oid, const char *column_n
                 ") "
                 "ORDER BY hkm.kmer2_as_uint "
                 "LIMIT %d OFFSET %d",
-                table_oid, escaped_column_name, table_oid, escaped_column_name, k_value, batch_size, offset);
+                table_oid, escaped_column_name, table_oid, escaped_column_name, k_value, current_batch_limit, offset);
             
             /* Execute batch query */
             ret = SPI_execute(query.data, true, 0);
@@ -1565,9 +1567,9 @@ kmersearch_highfreq_kmer_cache_load_internal(Oid table_oid, const char *column_n
         batch_num++;
         
         /* Break if we got fewer results than requested (end of data) */
-        if (batch_count < batch_size) {
+        if (batch_count < current_batch_limit) {
             ereport(DEBUG1, (errmsg("kmersearch_highfreq_kmer_cache_load_internal: Reached end of data (batch_count=%d < batch_size=%d)", 
-                                   batch_count, batch_size)));
+                                   batch_count, current_batch_limit)));
             break;
         }
     }
@@ -1767,7 +1769,6 @@ kmersearch_highfreq_kmer_cache_load(PG_FUNCTION_ARGS)
     char *column_name = text_to_cstring(column_name_text);
     bool success;
     Oid table_oid;
-    int k_value;
     
     /* Get table OID from table name */
     table_oid = RelnameGetRelid(table_name);
@@ -1778,10 +1779,7 @@ kmersearch_highfreq_kmer_cache_load(PG_FUNCTION_ARGS)
                  errmsg("relation \"%s\" does not exist", table_name)));
     }
     
-    /* Get k_value from GUC variable */
-    k_value = kmersearch_kmer_size;
-    
-    success = kmersearch_highfreq_kmer_cache_load_internal(table_oid, column_name, k_value);
+    success = kmersearch_highfreq_kmer_cache_load_internal(table_oid, column_name, kmersearch_kmer_size);
     
     PG_RETURN_BOOL(success);
 }
@@ -2111,7 +2109,6 @@ kmersearch_parallel_highfreq_kmer_cache_load(PG_FUNCTION_ARGS)
     char *column_name = text_to_cstring(column_name_text);
     bool result;
     Oid table_oid;
-    int k_value;
     
     /* Get table OID from table name */
     table_oid = RelnameGetRelid(table_name);
@@ -2122,16 +2119,13 @@ kmersearch_parallel_highfreq_kmer_cache_load(PG_FUNCTION_ARGS)
                  errmsg("relation \"%s\" does not exist", table_name)));
     }
     
-    /* Get k_value from GUC variable */
-    k_value = kmersearch_kmer_size;
-    
     /* Initialize parallel cache if not already done */
     if (parallel_highfreq_cache == NULL) {
         kmersearch_parallel_highfreq_kmer_cache_init();
     }
     
     /* Load cache data into DSM */
-    result = kmersearch_parallel_highfreq_kmer_cache_load_internal(table_oid, column_name, k_value);
+    result = kmersearch_parallel_highfreq_kmer_cache_load_internal(table_oid, column_name, kmersearch_kmer_size);
     
     /* Register cleanup function for process exit */
     if (result) {
@@ -2611,15 +2605,17 @@ kmersearch_parallel_highfreq_kmer_cache_load_internal(Oid table_oid, const char 
     while (offset < total_kmer_count) {
         uint64 *batch_kmers;
         int batch_count;
-        int batch_size = kmersearch_highfreq_kmer_cache_load_batch_size;
+        int current_batch_limit;
         
         /* Ensure we don't exceed the total count */
-        if (offset + batch_size > total_kmer_count) {
-            batch_size = total_kmer_count - offset;
+        if (offset + kmersearch_highfreq_kmer_cache_load_batch_size > total_kmer_count) {
+            current_batch_limit = total_kmer_count - offset;
+        } else {
+            current_batch_limit = kmersearch_highfreq_kmer_cache_load_batch_size;
         }
         
         ereport(LOG, (errmsg("dshash_cache_load: Processing batch %d (offset=%d, batch_size=%d)", 
-                             batch_num, offset, batch_size)));
+                             batch_num, offset, current_batch_limit)));
         
         /* Get batch of k-mers from table using LIMIT/OFFSET */
         {
@@ -2664,7 +2660,7 @@ kmersearch_parallel_highfreq_kmer_cache_load_internal(Oid table_oid, const char 
                 ") "
                 "ORDER BY hkm.kmer2_as_uint "
                 "LIMIT %d OFFSET %d",
-                table_oid, escaped_column_name, table_oid, escaped_column_name, k_value, batch_size, offset);
+                table_oid, escaped_column_name, table_oid, escaped_column_name, k_value, current_batch_limit, offset);
             
             /* Execute batch query */
             ret = SPI_execute(query.data, true, 0);
@@ -2772,9 +2768,9 @@ kmersearch_parallel_highfreq_kmer_cache_load_internal(Oid table_oid, const char 
         batch_num++;
         
         /* Break if we got fewer results than requested (end of data) */
-        if (batch_count < batch_size) {
+        if (batch_count < current_batch_limit) {
             ereport(LOG, (errmsg("dshash_cache_load: Reached end of data (batch_count=%d < batch_size=%d)", 
-                                 batch_count, batch_size)));
+                                 batch_count, current_batch_limit)));
             break;
         }
     }

@@ -95,13 +95,15 @@ pg_kmersearchプロジェクトのソースコード精査の結果、以下の�
 2. kmersearch_kmer.c内の`int occur_bits = kmersearch_occur_bitlen;`の削除と直接参照への変更 ✅
 3. kmersearch_gin.c内の`int k = kmersearch_kmer_size;`の削除と直接参照への変更 ✅
 4. kmersearch_freq.c内の`k_size = kmersearch_kmer_size;`の削除（関数パラメータとして渡す形に変更） ✅
+5. kmersearch_cache.c内の`int batch_size = kmersearch_highfreq_kmer_cache_load_batch_size;`の削除と直接参照への変更 ✅
+6. kmersearch_cache.c内の`int k_value = kmersearch_kmer_size;`の削除と直接参照への変更 ✅
 
 ## 実装優先順位
 
 1. **高優先度**: スタブ実装の削除と適切な実装 ✅ COMPLETED
-2. **中優先度**: 内部ラッパー関数の削除 ✅ PARTIALLY COMPLETED (2/7)
+2. **中優先度**: 内部ラッパー関数の削除 ✅ COMPLETED
 3. **低優先度**: GUC変数使用の修正 ✅ COMPLETED
-4. **中優先度**: ソースファイル間の関数再配置 ✅ IN PROGRESS
+4. **中優先度**: ソースファイル間の関数再配置 ✅ COMPLETED
 5. **中優先度**: 未使用関数の削除 ✅ COMPLETED
 6. **高優先度**: USE_*条件付きコンパイルマクロの削除 ✅ COMPLETED
 
