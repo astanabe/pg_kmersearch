@@ -130,7 +130,7 @@ pg_kmersearchプロジェクトのソースコード精査の結果、以下の�
 - `kmersearch_extract_dna4_kmer2_with_expansion_direct()` およびそのSIMDバリアント（scalar ✅, avx2 ✅, avx512 ✅, neon ✅, sve ✅）
 - `kmersearch_extract_dna2_ngram_key2_direct()` ✅
 - `kmersearch_extract_dna4_ngram_key2_direct()` ✅ 
-- `create_ngram_key2_from_kmer2_and_count()`
+- `create_ngram_key2_from_kmer2_and_count()` ✅
 - `kmersearch_count_matching_kmer_fast()` およびそのSIMDバリアント ✅ (dispatcher + scalar_simple + scalar_hashtable)
 
 #### kmersearch.c → kmersearch_datatype.c（データ型エンコード・デコード関連）
@@ -142,11 +142,9 @@ pg_kmersearchプロジェクトのソースコード精査の結果、以下の�
 - ~~`kmersearch_dna2_nuc_length()`, `kmersearch_dna4_nuc_length()`~~ (SQL API functions - remain in kmersearch.c)
 
 #### kmersearch.c → kmersearch_freq.c（頻度分析関連）
-- `kmersearch_worker_analyze_blocks()`
-- `kmersearch_merge_worker_results_sql()`
-- `process_extracted_kmer2()`
-- `is_kmer2_in_highfreq_table()`
-- `is_kmer2_in_analysis_dshash()`
+- `kmersearch_worker_analyze_blocks()` ✅ (with helper functions: `kmersearch_calculate_buffer_size`, `kmersearch_init_buffer`, `kmersearch_add_hash_to_buffer`, `kmersearch_flush_hash_buffer_to_table`, `kmersearch_create_worker_temp_table`)
+- `kmersearch_merge_worker_results_sql()` ✅
+- `process_extracted_kmer2()` ✅ (with helper functions: `is_kmer2_in_highfreq_table`, `is_kmer2_in_analysis_dshash`)
 - `kmersearch_persist_highfreq_kmers_from_temp()`
 - `create_worker_ngram_temp_table()`
 - バッファ関連関数群：

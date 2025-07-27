@@ -627,6 +627,7 @@ VarBit *kmersearch_create_kmer2_key_from_dna2_bits(VarBit *seq, int start_pos, i
 VarBit *kmersearch_create_ngram_key2_from_dna2_bits(VarBit *seq, int start_pos, int k, int occurrence_count);
 VarBit *kmersearch_create_ngram_key2_from_dna4_bits(VarBit *seq, int start_pos, int k, int occurrence_count);
 VarBit *kmersearch_create_ngram_key2_with_occurrence_from_dna2(VarBit *dna2_kmer, int k, int occurrence);
+VarBit *create_ngram_key2_from_kmer2_and_count(uint64_t kmer2_value, int k_size, int occurrence_count);
 VarBit **kmersearch_expand_dna4_kmer2_to_dna2_direct(VarBit *dna4_seq, int start_pos, int k, int *expansion_count);
 uint64_t kmersearch_get_kmer_hash(VarBit *seq, int start_pos, int k);
 int kmersearch_find_or_add_kmer_occurrence(KmerOccurrence *occurrences, int *count, uint64_t kmer_value, int max_count);

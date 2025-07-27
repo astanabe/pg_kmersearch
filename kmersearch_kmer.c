@@ -915,6 +915,46 @@ kmersearch_create_ngram_key2_from_kmer2_as_uint(uint64 kmer2_as_uint, int kmer_s
     return result;
 }
 
+/*
+ * Create an ngram_key2 from a kmer2 uint64 value and occurrence count
+ * This function is used during frequency analysis to create ngram keys
+ * from already extracted k-mers
+ */
+VarBit*
+create_ngram_key2_from_kmer2_and_count(uint64_t kmer2_value, int k_size, int occurrence_count)
+{
+    int kmer2_bits = k_size * 2;  /* 2 bits per base */
+    int occur_bits = kmersearch_occur_bitlen;
+    int total_bits = kmer2_bits + occur_bits;
+    int total_bytes = (total_bits + 7) / 8;
+    VarBit *result;
+    unsigned char *data;
+    uint64_t combined_value;
+    int i, bit_idx;
+    
+    /* Allocate VarBit structure */
+    result = (VarBit *) palloc(VARHDRSZ + total_bytes);
+    SET_VARSIZE(result, VARHDRSZ + total_bytes);
+    VARBITLEN(result) = total_bits;
+    
+    /* Initialize data to zero */
+    data = VARBITS(result);
+    memset(data, 0, total_bytes);
+    
+    /* Combine kmer2 and occurrence count: kmer2 in high bits, occurrence in low bits */
+    combined_value = (kmer2_value << occur_bits) | (occurrence_count & ((1ULL << occur_bits) - 1));
+    
+    /* Set bits in big-endian order */
+    for (i = 0; i < total_bits; i++) {
+        bit_idx = i / 8;
+        if ((combined_value & (1ULL << (total_bits - 1 - i))) != 0) {
+            data[bit_idx] |= (0x80 >> (i % 8));
+        }
+    }
+    
+    return result;
+}
+
 /* Forward declarations for SIMD variants */
 static Datum *kmersearch_extract_dna2_kmer2_direct_scalar(VarBit *seq, int k, int *nkeys);
 #ifdef __x86_64__
