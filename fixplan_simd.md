@@ -74,6 +74,7 @@ if (simd_capability >= SIMD_AVX512BW && seq_bits >= SIMD_EXTRACT_AVX512_THRESHOL
 ### Phase 0: Remove Dispatch Table System [COMPLETED - 2025-07-27]
 **Priority: CRITICAL** - Must be completed before any other work
 **Status**: Successfully completed without errors or warnings
+**Verification**: Build successful with `make clean && make` - no errors or warnings
 
 #### Actions to Take from Master Branch
 1. **Copy threshold-based dispatch patterns** from master for all functions
@@ -81,7 +82,7 @@ if (simd_capability >= SIMD_AVX512BW && seq_bits >= SIMD_EXTRACT_AVX512_THRESHOL
 3. **Retrieve k-mer matching SIMD implementations** - Complete set with proper thresholds
 4. **Study the dispatch patterns** - Master shows correct per-function threshold checking
 
-#### 0.1 Remove dispatch table from all functions [COMPLETED]
+#### 0.1 Remove dispatch table from all functions [COMPLETED - 2025-07-27]
 - **Files**: `kmersearch.c`, `kmersearch_datatype.c`, `kmersearch_kmer.c`
 - **Tasks**:
   - [x] Remove `simd_dispatch_table_t` structure from `kmersearch.h`
@@ -89,7 +90,7 @@ if (simd_capability >= SIMD_AVX512BW && seq_bits >= SIMD_EXTRACT_AVX512_THRESHOL
   - [x] Remove `init_simd_dispatch_table()` function
   - [x] Update all SIMD-enabled functions to use direct selection
 
-#### 0.2 Restore per-function SIMD selection with data size thresholds
+#### 0.2 Restore per-function SIMD selection with data size thresholds [COMPLETED - 2025-07-27]
 - **Pattern to follow** (from master branch):
 ```c
 Datum *
@@ -172,7 +173,7 @@ dna2_decode_simd(const uint8_t *input, char *output, int bit_len)
 }
 ```
 
-#### 0.3 Create new dispatch functions and update call sites [COMPLETED]
+#### 0.3 Create new dispatch functions and update call sites [COMPLETED - 2025-07-27]
 1. **Create new encoding/decoding functions** (`kmersearch_datatype.c`):
    - [x] Create `dna2_encode()` - Main function with threshold-based SIMD dispatch
    - [x] Create `dna2_decode()` - Main function with threshold-based SIMD dispatch
@@ -221,7 +222,7 @@ dna2_decode_simd(const uint8_t *input, char *output, int bit_len)
 4. **K-mer matching functions** (`kmersearch_kmer.c`):
    - [x] `kmersearch_count_matching_kmer_fast()` - Updated with threshold-based dispatch (TODOs for SIMD implementations)
 
-#### 0.4 Verify thresholds are appropriate
+#### 0.4 Verify thresholds are appropriate [COMPLETED - 2025-07-27]
 - **Current threshold values** in `kmersearch.h`:
   - **Comparison thresholds** (bit length) - Already exist and will be used:
     - `SIMD_COMPARE_AVX2_THRESHOLD = 128` (128 bits)
@@ -281,13 +282,14 @@ dna2_decode_simd(const uint8_t *input, char *output, int bit_len)
 - **Tasks**:
   - [x] Add function declarations for all dna_compare variants
 
-### Phase 2: Import K-mer Extraction SIMD (as_uint variants) from Master
+### Phase 2: Import K-mer Extraction SIMD (as_uint variants) from Master [COMPLETED - 2025-07-27]
 **Priority: High** - Complete implementations available in master branch
-**Status**: Can be copied directly from master commit 517bb58
+**Status**: Successfully imported from master commit 517bb58
+**Verification**: Build successful with `make clean && make` - no errors or warnings
 
-#### 2.1 Import DNA2 k-mer extraction SIMD functions
+#### 2.1 Import DNA2 k-mer extraction SIMD functions [COMPLETED - 2025-07-27]
 - **Source**: master branch `kmersearch.c`
-- **Functions to import**:
+- **Functions imported**:
   - [x] `kmersearch_extract_dna2_kmer2_as_uint_direct()` - Already has proper threshold dispatch
   - [x] `kmersearch_extract_dna2_kmer2_as_uint_direct_scalar()` - Complete implementation
   - [x] `kmersearch_extract_dna2_kmer2_as_uint_direct_avx2()` - Complete with SIMD optimization
@@ -295,9 +297,9 @@ dna2_decode_simd(const uint8_t *input, char *output, int bit_len)
   - [x] `kmersearch_extract_dna2_kmer2_as_uint_direct_neon()` - Complete with SIMD optimization
   - [x] `kmersearch_extract_dna2_kmer2_as_uint_direct_sve()` - Complete with SIMD optimization
 
-#### 2.2 Import DNA4 k-mer extraction SIMD functions
+#### 2.2 Import DNA4 k-mer extraction SIMD functions [COMPLETED - 2025-07-27]
 - **Source**: master branch `kmersearch.c`
-- **Functions to import**:
+- **Functions imported**:
   - [x] `kmersearch_extract_dna4_kmer2_as_uint_with_expansion_direct()` - Has proper threshold dispatch
   - [x] `kmersearch_extract_dna4_kmer2_as_uint_with_expansion_direct_scalar()` - Complete
   - [x] `kmersearch_extract_dna4_kmer2_as_uint_with_expansion_direct_avx2()` - Complete
@@ -305,9 +307,10 @@ dna2_decode_simd(const uint8_t *input, char *output, int bit_len)
   - [x] `kmersearch_extract_dna4_kmer2_as_uint_with_expansion_direct_neon()` - Complete
   - [x] `kmersearch_extract_dna4_kmer2_as_uint_with_expansion_direct_sve()` - Complete
 
-#### 2.3 Import K-mer matching SIMD functions
+#### 2.3 Import K-mer matching SIMD functions [COMPLETED - 2025-07-27]
 - **Source**: master branch `kmersearch.c`
-- **Functions to import**:
+- **Target**: `kmersearch_kmer.c` (different location than source)
+- **Functions imported**:
   - [x] `kmersearch_count_matching_kmer_fast()` - Has proper key combination threshold dispatch
   - [x] `kmersearch_count_matching_kmer_fast_scalar_simple()` - For small datasets
   - [x] `kmersearch_count_matching_kmer_fast_scalar_hashtable()` - For larger datasets

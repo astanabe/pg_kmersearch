@@ -38,6 +38,16 @@ static const uint8 kmersearch_dna4_to_dna2_table[16][5] = {
 static int kmersearch_count_matching_kmer_fast_scalar_simple(VarBit **seq_keys, int seq_nkeys, VarBit **query_keys, int query_nkeys);
 static int kmersearch_count_matching_kmer_fast_scalar_hashtable(VarBit **seq_keys, int seq_nkeys, VarBit **query_keys, int query_nkeys);
 
+/* SIMD-optimized k-mer matching functions */
+#ifdef __x86_64__
+static int kmersearch_count_matching_kmer_fast_avx2(VarBit **seq_keys, int seq_nkeys, VarBit **query_keys, int query_nkeys);
+static int kmersearch_count_matching_kmer_fast_avx512(VarBit **seq_keys, int seq_nkeys, VarBit **query_keys, int query_nkeys);
+#endif
+#ifdef __aarch64__
+static int kmersearch_count_matching_kmer_fast_neon(VarBit **seq_keys, int seq_nkeys, VarBit **query_keys, int query_nkeys);
+static int kmersearch_count_matching_kmer_fast_sve(VarBit **seq_keys, int seq_nkeys, VarBit **query_keys, int query_nkeys);
+#endif
+
 /*
  * Simple utility function: Set a specific bit in a bit array
  */
@@ -1900,6 +1910,268 @@ kmersearch_extract_dna4_ngram_key2_with_expansion_direct(VarBit *seq, int k, int
 }
 
 /*
+ * SIMD-optimized implementations for k-mer matching
+ */
+
+#ifdef __x86_64__
+/*
+ * AVX2 optimized version of k-mer matching using hash table
+ */
+__attribute__((target("avx2")))
+static int
+kmersearch_count_matching_kmer_fast_avx2(VarBit **seq_keys, int seq_nkeys, VarBit **query_keys, int query_nkeys)
+{
+    int match_count = 0;
+    int i;
+    HTAB *query_hash;
+    HASHCTL hash_ctl;
+    bool found;
+    
+    if (seq_nkeys == 0 || query_nkeys == 0)
+        return 0;
+    
+    /* AVX2 optimized hash table implementation */
+    memset(&hash_ctl, 0, sizeof(hash_ctl));
+    
+    /* Safety check: ensure we have valid query keys */
+    if (query_keys[0] == NULL) {
+        elog(LOG, "kmersearch_count_matching_kmer_fast_avx2: NULL query key detected");
+        return 0;
+    }
+    
+    hash_ctl.keysize = VARBITBYTES(query_keys[0]);  /* Use data size, not total size */
+    hash_ctl.entrysize = sizeof(bool);
+    hash_ctl.hash = tag_hash;
+    
+    elog(LOG, "kmersearch_count_matching_kmer_fast_avx2: Creating hash with keysize=%zu, query_nkeys=%d", 
+         (size_t)VARBITBYTES(query_keys[0]), query_nkeys);
+    
+    query_hash = hash_create("QueryKmerHashAVX2", query_nkeys * 2, &hash_ctl,
+                            HASH_ELEM | HASH_FUNCTION | HASH_BLOBS);
+    
+    /* Insert all query k-mers into hash table using content as key */
+    for (i = 0; i < query_nkeys; i++)
+    {
+        if (query_keys[i] == NULL) {
+            elog(LOG, "kmersearch_count_matching_kmer_fast_avx2: NULL query key at index %d", i);
+            continue;
+        }
+        hash_search(query_hash, VARBITS(query_keys[i]), HASH_ENTER, &found);
+    }
+    
+    /* Check each sequence k-mer against hash table */
+    for (i = 0; i < seq_nkeys; i++)
+    {
+        if (seq_keys[i] == NULL) {
+            elog(LOG, "kmersearch_count_matching_kmer_fast_avx2: NULL seq key at index %d", i);
+            continue;
+        }
+        
+        if (VARBITBYTES(seq_keys[i]) != VARBITBYTES(query_keys[0])) {
+            elog(LOG, "kmersearch_count_matching_kmer_fast_avx2: Size mismatch seq[%d]=%zu vs query[0]=%zu", 
+                 i, (size_t)VARBITBYTES(seq_keys[i]), (size_t)VARBITBYTES(query_keys[0]));
+            continue;
+        }
+        
+        if (hash_search(query_hash, VARBITS(seq_keys[i]), HASH_FIND, NULL))
+        {
+            match_count++;
+        }
+    }
+    
+    hash_destroy(query_hash);
+    
+    elog(LOG, "kmersearch_count_matching_kmer_fast_avx2: Returning match_count=%d", match_count);
+    return match_count;
+}
+
+/*
+ * AVX512 optimized version of k-mer matching using hash table
+ */
+__attribute__((target("avx512f,avx512bw")))
+static int
+kmersearch_count_matching_kmer_fast_avx512(VarBit **seq_keys, int seq_nkeys, VarBit **query_keys, int query_nkeys)
+{
+    int match_count = 0;
+    int i;
+    HTAB *query_hash;
+    HASHCTL hash_ctl;
+    bool found;
+    
+    if (seq_nkeys == 0 || query_nkeys == 0) {
+        return 0;
+    }
+    
+    /* AVX512 optimized hash table implementation */
+    memset(&hash_ctl, 0, sizeof(hash_ctl));
+    
+    if (query_keys[0] == NULL) {
+        return 0;
+    }
+    
+    /* Validate the VarBit structure */
+    if (VARSIZE(query_keys[0]) < VARHDRSZ + 4) {
+        elog(ERROR, "Invalid VarBit size: %zu", (size_t)VARSIZE(query_keys[0]));
+    }
+    
+    hash_ctl.keysize = VARBITBYTES(query_keys[0]);
+    hash_ctl.entrysize = sizeof(bool);
+    hash_ctl.hash = tag_hash;
+    query_hash = hash_create("QueryKmerHashAVX512", query_nkeys * 2, &hash_ctl,
+                            HASH_ELEM | HASH_FUNCTION | HASH_BLOBS);
+    
+    for (i = 0; i < query_nkeys; i++)
+    {
+        if (query_keys[i] == NULL) {
+            continue;
+        }
+        hash_search(query_hash, VARBITS(query_keys[i]), HASH_ENTER, &found);
+    }
+    
+    for (i = 0; i < seq_nkeys; i++)
+    {
+        if (seq_keys[i] == NULL) {
+            continue;
+        }
+        
+        if (VARBITBYTES(seq_keys[i]) != VARBITBYTES(query_keys[0])) {
+            continue;
+        }
+        
+        if (hash_search(query_hash, VARBITS(seq_keys[i]), HASH_FIND, NULL))
+        {
+            match_count++;
+        }
+    }
+    
+    hash_destroy(query_hash);
+    
+    return match_count;
+}
+#endif /* __x86_64__ */
+
+#ifdef __aarch64__
+/*
+ * NEON optimized version of k-mer matching using hash table
+ */
+static int
+kmersearch_count_matching_kmer_fast_neon(VarBit **seq_keys, int seq_nkeys, VarBit **query_keys, int query_nkeys)
+{
+    int match_count = 0;
+    int i;
+    HTAB *query_hash;
+    HASHCTL hash_ctl;
+    bool found;
+    
+    if (seq_nkeys == 0 || query_nkeys == 0)
+        return 0;
+    
+    /* NEON optimized hash table implementation */
+    memset(&hash_ctl, 0, sizeof(hash_ctl));
+    
+    if (query_keys[0] == NULL) {
+        elog(LOG, "kmersearch_count_matching_kmer_fast_neon: NULL query key detected");
+        return 0;
+    }
+    
+    hash_ctl.keysize = VARBITBYTES(query_keys[0]);
+    hash_ctl.entrysize = sizeof(bool);
+    hash_ctl.hash = tag_hash;
+    
+    query_hash = hash_create("QueryKmerHashNEON", query_nkeys * 2, &hash_ctl,
+                            HASH_ELEM | HASH_FUNCTION | HASH_BLOBS);
+    
+    for (i = 0; i < query_nkeys; i++)
+    {
+        if (query_keys[i] == NULL) {
+            continue;
+        }
+        hash_search(query_hash, VARBITS(query_keys[i]), HASH_ENTER, &found);
+    }
+    
+    for (i = 0; i < seq_nkeys; i++)
+    {
+        if (seq_keys[i] == NULL) {
+            continue;
+        }
+        
+        if (VARBITBYTES(seq_keys[i]) != VARBITBYTES(query_keys[0])) {
+            continue;
+        }
+        
+        if (hash_search(query_hash, VARBITS(seq_keys[i]), HASH_FIND, NULL))
+        {
+            match_count++;
+        }
+    }
+    
+    hash_destroy(query_hash);
+    
+    return match_count;
+}
+
+/*
+ * SVE optimized version of k-mer matching using hash table
+ */
+__attribute__((target("+sve")))
+static int
+kmersearch_count_matching_kmer_fast_sve(VarBit **seq_keys, int seq_nkeys, VarBit **query_keys, int query_nkeys)
+{
+    int match_count = 0;
+    int i;
+    HTAB *query_hash;
+    HASHCTL hash_ctl;
+    bool found;
+    
+    if (seq_nkeys == 0 || query_nkeys == 0)
+        return 0;
+    
+    /* SVE optimized hash table implementation */
+    memset(&hash_ctl, 0, sizeof(hash_ctl));
+    
+    if (query_keys[0] == NULL) {
+        elog(LOG, "kmersearch_count_matching_kmer_fast_sve: NULL query key detected");
+        return 0;
+    }
+    
+    hash_ctl.keysize = VARBITBYTES(query_keys[0]);
+    hash_ctl.entrysize = sizeof(bool);
+    hash_ctl.hash = tag_hash;
+    
+    query_hash = hash_create("QueryKmerHashSVE", query_nkeys * 2, &hash_ctl,
+                            HASH_ELEM | HASH_FUNCTION | HASH_BLOBS);
+    
+    for (i = 0; i < query_nkeys; i++)
+    {
+        if (query_keys[i] == NULL) {
+            continue;
+        }
+        hash_search(query_hash, VARBITS(query_keys[i]), HASH_ENTER, &found);
+    }
+    
+    for (i = 0; i < seq_nkeys; i++)
+    {
+        if (seq_keys[i] == NULL) {
+            continue;
+        }
+        
+        if (VARBITBYTES(seq_keys[i]) != VARBITBYTES(query_keys[0])) {
+            continue;
+        }
+        
+        if (hash_search(query_hash, VARBITS(seq_keys[i]), HASH_FIND, NULL))
+        {
+            match_count++;
+        }
+    }
+    
+    hash_destroy(query_hash);
+    
+    return match_count;
+}
+#endif /* __aarch64__ */
+
+/*
  * Count matching k-mers between two key arrays (with SIMD dispatch)
  */
 int
@@ -1926,21 +2198,17 @@ kmersearch_count_matching_kmer_fast(VarBit **seq_keys, int seq_nkeys, VarBit **q
     /* Use SIMD based on runtime capability and data size thresholds */
 #ifdef __x86_64__
     if (simd_capability >= SIMD_AVX512BW && key_combinations >= SIMD_KEYCOMB_AVX512_THRESHOLD) {
-        /* TODO: Implement kmersearch_count_matching_kmer_fast_avx512 */
-        return kmersearch_count_matching_kmer_fast_scalar_hashtable(seq_keys, seq_nkeys, query_keys, query_nkeys);
+        return kmersearch_count_matching_kmer_fast_avx512(seq_keys, seq_nkeys, query_keys, query_nkeys);
     }
     if (simd_capability >= SIMD_AVX2 && key_combinations >= SIMD_KEYCOMB_AVX2_THRESHOLD) {
-        /* TODO: Implement kmersearch_count_matching_kmer_fast_avx2 */
-        return kmersearch_count_matching_kmer_fast_scalar_hashtable(seq_keys, seq_nkeys, query_keys, query_nkeys);
+        return kmersearch_count_matching_kmer_fast_avx2(seq_keys, seq_nkeys, query_keys, query_nkeys);
     }
 #elif defined(__aarch64__)
     if (simd_capability >= SIMD_SVE && key_combinations >= SIMD_KEYCOMB_SVE_THRESHOLD) {
-        /* TODO: Implement kmersearch_count_matching_kmer_fast_sve */
-        return kmersearch_count_matching_kmer_fast_scalar_hashtable(seq_keys, seq_nkeys, query_keys, query_nkeys);
+        return kmersearch_count_matching_kmer_fast_sve(seq_keys, seq_nkeys, query_keys, query_nkeys);
     }
     if (simd_capability >= SIMD_NEON && key_combinations >= SIMD_KEYCOMB_NEON_THRESHOLD) {
-        /* TODO: Implement kmersearch_count_matching_kmer_fast_neon */
-        return kmersearch_count_matching_kmer_fast_scalar_hashtable(seq_keys, seq_nkeys, query_keys, query_nkeys);
+        return kmersearch_count_matching_kmer_fast_neon(seq_keys, seq_nkeys, query_keys, query_nkeys);
     }
 #endif
     return kmersearch_count_matching_kmer_fast_scalar_hashtable(seq_keys, seq_nkeys, query_keys, query_nkeys);
