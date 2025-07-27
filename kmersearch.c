@@ -29,6 +29,8 @@ PG_MODULE_MAGIC;
 
 /* Global SIMD capability */
 simd_capability_t simd_capability = SIMD_NONE;
+simd_capability_t simd_capability_auto = SIMD_NONE;  /* Auto-detected capability */
+int kmersearch_force_simd_capability = -1;  /* -1 means auto-detect */
 
 /* Global variables for k-mer search configuration */
 int kmersearch_occur_bitlen = 8;  /* Default 8 bits for occurrence count */
@@ -315,6 +317,73 @@ kmersearch_min_shared_ngram_key_rate_assign_hook(double newval, void *extra)
 /* Query pattern cache max entries change requires cache recreation */
 /* Function moved to kmersearch_cache.c */
 
+/* Check if forced capability is valid */
+static bool
+kmersearch_force_simd_capability_check_hook(int *newval, void **extra, GucSource source)
+{
+    /* -1 means auto-detect */
+    if (*newval == -1)
+        return true;
+    
+    /* Check if value is a valid simd_capability_t */
+    if (*newval < 0)
+    {
+        GUC_check_errdetail("SIMD capability must be -1 (auto) or >= 0");
+        return false;
+    }
+    
+    /* Architecture-specific validation */
+#ifdef __x86_64__
+    /* x86-64: valid values are 0-6 */
+    if (*newval > SIMD_AVX512VBMI2)
+    {
+        GUC_check_errdetail("Invalid SIMD capability %d for x86-64 architecture (valid range: 0-%d)", 
+                           *newval, SIMD_AVX512VBMI2);
+        return false;
+    }
+#elif defined(__aarch64__)
+    /* ARM64: valid values are 0 or 21-23 */
+    if (*newval != SIMD_NONE && (*newval < SIMD_NEON || *newval > SIMD_SVE2))
+    {
+        GUC_check_errdetail("Invalid SIMD capability %d for ARM64 architecture (valid values: 0, %d-%d)", 
+                           *newval, SIMD_NEON, SIMD_SVE2);
+        return false;
+    }
+#else
+    /* Other architectures: only SIMD_NONE is valid */
+    if (*newval != SIMD_NONE)
+    {
+        GUC_check_errdetail("SIMD capability must be 0 (none) on this architecture");
+        return false;
+    }
+#endif
+    
+    /* Check if the forced capability is within CPU limits */
+    if (*newval > (int)simd_capability_auto)
+    {
+        GUC_check_errdetail("Cannot force SIMD capability to %d (higher than auto-detected capability %d)", 
+                           *newval, (int)simd_capability_auto);
+        return false;
+    }
+    
+    return true;
+}
+
+/* Apply forced SIMD capability */
+static void
+kmersearch_force_simd_capability_assign_hook(int newval, void *extra)
+{
+    if (newval == -1)
+    {
+        /* Reset to auto-detected capability */
+        simd_capability = simd_capability_auto;
+    }
+    else
+    {
+        simd_capability = (simd_capability_t)newval;
+    }
+}
+
 /* Occurrence bit length change affects rawscore and high-freq caches */
 static void
 kmersearch_occur_bitlen_assign_hook(int newval, void *extra)
@@ -357,7 +426,8 @@ _PG_init(void)
     }
     
     /* Initialize SIMD capabilities */
-    simd_capability = detect_cpu_capabilities();
+    simd_capability_auto = detect_cpu_capabilities();
+    simd_capability = simd_capability_auto;
     
     /* Define custom GUC variables */
     DefineCustomRealVariable("kmersearch.max_appearance_rate",
@@ -473,6 +543,19 @@ _PG_init(void)
                             NULL,
                             NULL,
                             NULL);
+    
+    DefineCustomIntVariable("kmersearch.force_simd_capability",
+                           "Force SIMD capability to a specific level",
+                           "Forces SIMD capability to a lower level than auto-detected. -1 means auto-detect.",
+                           &kmersearch_force_simd_capability,
+                           -1,
+                           -1,
+                           100,  /* Max value, will be validated by check hook */
+                           PGC_USERSET,
+                           0,
+                           kmersearch_force_simd_capability_check_hook,
+                           kmersearch_force_simd_capability_assign_hook,
+                           NULL);
 
     DefineCustomIntVariable("kmersearch.query_pattern_cache_max_entries",
                            "Maximum number of entries in query pattern cache",
@@ -1323,6 +1406,7 @@ Datum
 kmersearch_simd_capability(PG_FUNCTION_ARGS)
 {
     const char *capability_str;
+    char *result_str;
     
     switch (simd_capability) {
         case SIMD_NONE:
@@ -1360,7 +1444,55 @@ kmersearch_simd_capability(PG_FUNCTION_ARGS)
             break;
     }
     
-    PG_RETURN_TEXT_P(cstring_to_text(capability_str));
+    /* If forced, show both auto-detected and forced values */
+    if (kmersearch_force_simd_capability != -1)
+    {
+        const char *auto_capability_str;
+        
+        switch (simd_capability_auto) {
+            case SIMD_NONE:
+                auto_capability_str = "None";
+                break;
+            case SIMD_AVX2:
+                auto_capability_str = "AVX2";
+                break;
+            case SIMD_BMI2:
+                auto_capability_str = "AVX2+BMI2";
+                break;
+            case SIMD_AVX512F:
+                auto_capability_str = "AVX512F";
+                break;
+            case SIMD_AVX512BW:
+                auto_capability_str = "AVX512F+AVX512BW";
+                break;
+            case SIMD_AVX512VBMI:
+                auto_capability_str = "AVX512F+AVX512BW+AVX512VBMI";
+                break;
+            case SIMD_AVX512VBMI2:
+                auto_capability_str = "AVX512F+AVX512BW+AVX512VBMI+AVX512VBMI2";
+                break;
+            case SIMD_NEON:
+                auto_capability_str = "NEON";
+                break;
+            case SIMD_SVE:
+                auto_capability_str = "NEON+SVE";
+                break;
+            case SIMD_SVE2:
+                auto_capability_str = "NEON+SVE+SVE2";
+                break;
+            default:
+                auto_capability_str = "Unknown";
+                break;
+        }
+        
+        result_str = psprintf("%s (forced from %s)", capability_str, auto_capability_str);
+    }
+    else
+    {
+        result_str = pstrdup(capability_str);
+    }
+    
+    PG_RETURN_TEXT_P(cstring_to_text(result_str));
 }
 
 /* Parallel k-mer analysis functions declarations added elsewhere */

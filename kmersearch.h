@@ -491,6 +491,10 @@ extern HighfreqKmerCache global_highfreq_cache;
 /* Global testing variable for dshash usage */
 extern bool kmersearch_force_use_parallel_highfreq_kmer_cache;
 
+/* Global SIMD variables */
+extern int kmersearch_force_simd_capability;
+extern simd_capability_t simd_capability_auto;  /* Auto-detected capability */
+
 /* Global parallel cache state */
 extern ParallelHighfreqKmerCache *parallel_highfreq_cache;
 extern dsm_segment *parallel_cache_segment;
