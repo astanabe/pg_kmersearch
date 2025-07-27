@@ -232,7 +232,6 @@ static simd_capability_t detect_cpu_capabilities(void);
 static void init_simd_dispatch_table(void);
 
 /* SIMD implementation functions */
-static void dna2_decode_scalar(const uint8_t* input, char* output, int len);
 static void dna4_encode_scalar(const char* input, uint8_t* output, int len);
 static void dna4_decode_scalar(const uint8_t* input, char* output, int len);
 
@@ -240,27 +239,31 @@ static void dna4_decode_scalar(const uint8_t* input, char* output, int len);
 static Datum *kmersearch_extract_dna2_kmer2_direct_scalar(VarBit *seq, int k, int *nkeys);
 
 #ifdef __x86_64__
-static void dna2_decode_avx2(const uint8_t* input, char* output, int len);
+/* TODO: Move to kmersearch_datatype.c
 static void dna4_encode_avx2(const char* input, uint8_t* output, int len);
 static void dna4_decode_avx2(const uint8_t* input, char* output, int len);
+*/
 
 /* K-mer processing functions with SIMD optimization */
 
-static void dna2_decode_avx512(const uint8_t* input, char* output, int len);
+/* TODO: Move to kmersearch_datatype.c
 static void dna4_encode_avx512(const char* input, uint8_t* output, int len);
 static void dna4_decode_avx512(const uint8_t* input, char* output, int len);
+*/
 #endif
 
 #ifdef __aarch64__
-static void dna2_decode_neon(const uint8_t* input, char* output, int len);
+/* TODO: Move to kmersearch_datatype.c
 static void dna4_encode_neon(const char* input, uint8_t* output, int len);
 static void dna4_decode_neon(const uint8_t* input, char* output, int len);
+*/
 
 
 
-static void dna2_decode_sve(const uint8_t* input, char* output, int len);
+/* TODO: Move to kmersearch_datatype.c
 static void dna4_encode_sve(const char* input, uint8_t* output, int len);
 static void dna4_decode_sve(const uint8_t* input, char* output, int len);
+*/
 #endif
 
 /*
@@ -611,33 +614,6 @@ static void sigill_handler(int sig) {
     siglongjmp(jmpbuf, 1);
 }
 
-__attribute__((target("+sve,+simd")))
-static simd_capability_t detect_cpu_capabilities(void)
-{
-    struct sigaction sa, old_sa;
-    sa.sa_handler = sigill_handler;
-    sigemptyset(&sa.sa_mask);
-    sa.sa_flags = 0;
-    sigaction(SIGILL, &sa, &old_sa);
-    
-    /* Check for SVE support */
-    if (sigsetjmp(jmpbuf, 1) == 0) {
-        size_t vl = svcntb();
-        (void)vl;
-        sigaction(SIGILL, &old_sa, NULL);
-        return SIMD_SVE;
-    }
-    
-    /* Check for NEON support */
-    if (sigsetjmp(jmpbuf, 1) == 0) {
-        volatile uint8x8_t a = vdup_n_u8(1);
-        (void)a;
-        sigaction(SIGILL, &old_sa, NULL);
-        return SIMD_NEON;
-    }
-    
-    return SIMD_NONE;
-}
 #endif
 
 /*
@@ -658,36 +634,46 @@ static void init_simd_dispatch_table(void)
         case SIMD_AVX512BW:
             simd_dispatch.dna2_encode = dna2_encode_avx512;
             simd_dispatch.dna2_decode = dna2_decode_avx512;
+            /* TODO: Uncomment after moving dna4 functions
             simd_dispatch.dna4_encode = dna4_encode_avx512;
             simd_dispatch.dna4_decode = dna4_decode_avx512;
+            */
             break;
         case SIMD_AVX512F:
             /* AVX512F without BW - use AVX2 fallback for encode/decode */
             simd_dispatch.dna2_encode = dna2_encode_avx2;
             simd_dispatch.dna2_decode = dna2_decode_avx2;
+            /* TODO: Uncomment after moving dna4 functions
             simd_dispatch.dna4_encode = dna4_encode_avx2;
             simd_dispatch.dna4_decode = dna4_decode_avx2;
+            */
             break;
         case SIMD_AVX2:
             simd_dispatch.dna2_encode = dna2_encode_avx2;
             simd_dispatch.dna2_decode = dna2_decode_avx2;
+            /* TODO: Uncomment after moving dna4 functions
             simd_dispatch.dna4_encode = dna4_encode_avx2;
             simd_dispatch.dna4_decode = dna4_decode_avx2;
+            */
             break;
 #elif defined(__aarch64__)
         case SIMD_SVE:
             /* ENABLED: Fixed ARM64 SVE implementations */
             simd_dispatch.dna2_encode = dna2_encode_sve;
             simd_dispatch.dna2_decode = dna2_decode_sve;
+            /* TODO: Uncomment after moving dna4 functions
             simd_dispatch.dna4_encode = dna4_encode_sve;
             simd_dispatch.dna4_decode = dna4_decode_sve;
+            */
             break;
         case SIMD_NEON:
             /* ENABLED: Fixed ARM64 NEON implementations */
             simd_dispatch.dna2_encode = dna2_encode_neon;
             simd_dispatch.dna2_decode = dna2_decode_neon;
+            /* TODO: Uncomment after moving dna4 functions
             simd_dispatch.dna4_encode = dna4_encode_neon;
             simd_dispatch.dna4_decode = dna4_decode_neon;
+            */
             break;
 #endif
         case SIMD_NONE:
@@ -2524,33 +2510,6 @@ kmersearch_parallel_highfreq_kmer_cache_is_valid(Oid table_oid, const char *colu
 
 /* Scalar implementations (fallback) */
 
-static void dna2_decode_scalar(const uint8_t* input, char* output, int len)
-{
-    for (int i = 0; i < len; i++) {
-        int bit_pos = i * 2;
-        int byte_pos = bit_pos / 8;
-        int bit_offset = bit_pos % 8;
-        uint8_t encoded = 0;
-        
-        if (bit_offset <= 6) {
-            encoded = (input[byte_pos] >> (6 - bit_offset)) & 0x3;
-        } else {
-            /* bit_offset == 7: 1st bit from current byte, 2nd bit from next byte */
-            encoded = (input[byte_pos] & 0x1) << 1;
-            if (byte_pos + 1 < (len * 2 + 7) / 8) {
-                encoded |= (input[byte_pos + 1] >> 7) & 0x1;
-            }
-        }
-        
-        /* Range check for safety */
-        if (encoded >= 4) {
-            encoded = 0; /* Default to 'A' */
-        }
-        
-        output[i] = kmersearch_dna2_decode_table[encoded];
-    }
-    output[len] = '\0';
-}
 
 static void dna4_encode_scalar(const char* input, uint8_t* output, int len)
 {
@@ -2607,824 +2566,25 @@ static void dna4_decode_scalar(const uint8_t* input, char* output, int len)
 
 #ifdef __x86_64__
 /* AVX2 implementations */
-__attribute__((target("avx2")))
-static void dna2_decode_avx2(const uint8_t* input, char* output, int len)
-{
-    /* Process 32 characters at a time with AVX2 */
-    int simd_len = len & ~31;  /* Round down to multiple of 32 */
-    
-    for (int i = 0; i < simd_len; i += 32) {
-        /* Calculate how many bytes needed for 32 characters (32 * 2 bits = 64 bits = 8 bytes) */
-        int bytes_needed = 8;
-        uint8_t temp[8];
-        
-        /* Load 8 bytes for 32 characters */
-        for (int b = 0; b < bytes_needed && (i * 2 / 8 + b) < (len * 2 + 7) / 8; b++) {
-            temp[b] = input[i * 2 / 8 + b];
-        }
-        
-        /* Decode each 2-bit pair */
-        for (int j = 0; j < 32; j++) {
-            int rel_bit_pos = j * 2;  /* Relative bit position within this 32-char block */
-            int byte_pos = rel_bit_pos / 8;
-            int bit_offset = rel_bit_pos % 8;
-            uint8_t encoded = 0;
-            
-            if (bit_offset <= 6) {
-                encoded = (temp[byte_pos] >> (6 - bit_offset)) & 0x3;
-            } else {
-                /* bit_offset == 7: 1st bit from current byte, 2nd bit from next byte */
-                encoded = (temp[byte_pos] & 0x1) << 1;
-                if (byte_pos + 1 < bytes_needed) {
-                    encoded |= (temp[byte_pos + 1] >> 7) & 0x1;
-                }
-            }
-            
-            /* Range check for safety */
-            if (encoded >= 4) {
-                encoded = 0; /* Default to 'A' */
-            }
-            
-            output[i + j] = kmersearch_dna2_decode_table[encoded];
-        }
-    }
-    
-    /* Handle remaining characters with scalar */
-    for (int i = simd_len; i < len; i++) {
-        int bit_pos = i * 2;
-        int byte_pos = bit_pos / 8;
-        int bit_offset = bit_pos % 8;
-        uint8_t encoded = 0;
-        
-        if (bit_offset <= 6) {
-            encoded = (input[byte_pos] >> (6 - bit_offset)) & 0x3;
-        } else {
-            /* bit_offset == 7: 1st bit from current byte, 2nd bit from next byte */
-            encoded = (input[byte_pos] & 0x1) << 1;
-            if (byte_pos + 1 < (len * 2 + 7) / 8) {
-                encoded |= (input[byte_pos + 1] >> 7) & 0x1;
-            }
-        }
-        
-        /* Range check for safety */
-        if (encoded >= 4) {
-            encoded = 0; /* Default to 'A' */
-        }
-        
-        output[i] = kmersearch_dna2_decode_table[encoded];
-    }
-    output[len] = '\0';
-}
 
-__attribute__((target("avx2")))
-static void dna4_encode_avx2(const char* input, uint8_t* output, int len)
-{
-    int byte_len = (len * 4 + 7) / 8;
-    int simd_len;
-    
-    memset(output, 0, byte_len);
-    
-    /* Process 32 characters at a time with AVX2 */
-    simd_len = len & ~31;  /* Round down to multiple of 32 */
-    
-    for (int i = 0; i < simd_len; i += 32) {
-        __m256i chars = _mm256_loadu_si256((__m256i*)(input + i));
-        
-        /* Use lookup table approach for DNA4 encoding */
-        uint8_t temp[32];
-        _mm256_storeu_si256((__m256i*)temp, chars);
-        
-        for (int j = 0; j < 32; j++) {
-            uint8_t encoded = kmersearch_dna4_encode_table[(unsigned char)temp[j]];
-            int bit_pos = (i + j) * 4;
-            int byte_pos = bit_pos / 8;
-            int bit_offset = bit_pos % 8;
-            
-            if (bit_offset <= 4) {
-                output[byte_pos] |= (encoded << (4 - bit_offset));
-            } else {
-                /* bit_offset > 4: split across two bytes */
-                int remaining_bits = 8 - bit_offset;
-                output[byte_pos] |= (encoded >> (4 - remaining_bits));
-                if (byte_pos + 1 < byte_len) {
-                    output[byte_pos + 1] |= (encoded << (4 + remaining_bits));
-                }
-            }
-        }
-    }
-    
-    /* Handle remaining characters with scalar */
-    for (int i = simd_len; i < len; i++) {
-        uint8_t encoded = kmersearch_dna4_encode_table[(unsigned char)input[i]];
-        int bit_pos = i * 4;
-        int byte_pos = bit_pos / 8;
-        int bit_offset = bit_pos % 8;
-        
-        if (bit_offset <= 4) {
-            output[byte_pos] |= (encoded << (4 - bit_offset));
-        } else {
-            /* bit_offset > 4: split across two bytes */
-            int remaining_bits = 8 - bit_offset;
-            output[byte_pos] |= (encoded >> (4 - remaining_bits));
-            if (byte_pos + 1 < byte_len) {
-                output[byte_pos + 1] |= (encoded << (4 + remaining_bits));
-            }
-        }
-    }
-}
 
-__attribute__((target("avx2")))
-static void dna4_decode_avx2(const uint8_t* input, char* output, int len)
-{
-    int bit_len = len * 4;
-    
-    /* Process characters with AVX2 assistance */
-    int simd_len = len & ~31;  /* Round down to multiple of 32 */
-    
-    for (int i = 0; i < simd_len; i += 32) {
-        /* Calculate how many bytes needed for 32 characters (32 * 4 bits = 128 bits = 16 bytes) */
-        int bytes_needed = 16;
-        uint8_t temp[16];
-        
-        /* Load 16 bytes for 32 characters */
-        for (int b = 0; b < bytes_needed && (i * 4 / 8 + b) < (len * 4 + 7) / 8; b++) {
-            temp[b] = input[i * 4 / 8 + b];
-        }
-        
-        /* Decode each 4-bit nibble */
-        for (int j = 0; j < 32; j++) {
-            int rel_bit_pos = j * 4;  /* Relative bit position within this 32-char block */
-            int byte_pos = rel_bit_pos / 8;
-            int bit_offset = rel_bit_pos % 8;
-            uint8_t encoded = 0;
-            
-            if (bit_offset <= 4) {
-                encoded = (temp[byte_pos] >> (4 - bit_offset)) & 0xF;
-            } else {
-                /* bit_offset > 4: get bits from two bytes */
-                int remaining_bits = 8 - bit_offset;
-                encoded = (temp[byte_pos] & ((1 << remaining_bits) - 1)) << (4 - remaining_bits);
-                if (byte_pos + 1 < bytes_needed) {
-                    encoded |= (temp[byte_pos + 1] >> (4 + remaining_bits)) & 0xF;
-                }
-            }
-            
-            /* Range check for safety */
-            if (encoded >= 16) {
-                encoded = 0; /* Default to '?' */
-            }
-            
-            output[i + j] = kmersearch_dna4_decode_table[encoded];
-        }
-    }
-    
-    /* Handle remaining characters with scalar */
-    for (int i = simd_len; i < len; i++) {
-        int bit_pos = i * 4;
-        int byte_pos = bit_pos / 8;
-        int bit_offset = bit_pos % 8;
-        uint8_t encoded = 0;
-        
-        if (bit_offset <= 4) {
-            encoded = (input[byte_pos] >> (4 - bit_offset)) & 0xF;
-        } else {
-            /* bit_offset > 4: get bits from two bytes */
-            int remaining_bits = 8 - bit_offset;
-            encoded = (input[byte_pos] & ((1 << remaining_bits) - 1)) << (4 - remaining_bits);
-            if (byte_pos + 1 < (len * 4 + 7) / 8) {
-                encoded |= (input[byte_pos + 1] >> (4 + remaining_bits)) & 0xF;
-            }
-        }
-        
-        /* Range check for safety */
-        if (encoded >= 16) {
-            encoded = 0; /* Default to '?' */
-        }
-        
-        output[i] = kmersearch_dna4_decode_table[encoded];
-    }
-    output[len] = '\0';
-}
 
 /* AVX512 implementations */
 
-__attribute__((target("avx512f,avx512bw")))
-static void dna2_decode_avx512(const uint8_t* input, char* output, int len)
-{
-    /* Process 64 characters at a time with AVX512 */
-    int simd_len = len & ~63;  /* Round down to multiple of 64 */
-    
-    for (int i = 0; i < simd_len; i += 64) {
-        /* 64 characters need 128 bits = 16 bytes */
-        int bytes_needed = 16;
-        uint8_t temp[16];
-        
-        /* Clear temp array first */
-        memset(temp, 0, bytes_needed);
-        
-        /* Load required bytes from correct position */
-        for (int b = 0; b < bytes_needed && (i * 2 / 8 + b) < (len * 2 + 7) / 8; b++) {
-            temp[b] = input[i * 2 / 8 + b];
-        }
-        
-        /* Decode each 2-bit pair using relative positioning */
-        for (int j = 0; j < 64; j++) {
-            int rel_bit_pos = j * 2;  /* Relative bit position in temp array */
-            int byte_pos = rel_bit_pos / 8;
-            int bit_offset = rel_bit_pos % 8;
-            uint8_t encoded = 0;
-            
-            if (bit_offset <= 6) {
-                encoded = (temp[byte_pos] >> (6 - bit_offset)) & 0x3;
-            } else {
-                /* bit_offset == 7: handle byte boundary crossing */
-                encoded = (temp[byte_pos] & 0x1) << 1;
-                if (byte_pos + 1 < bytes_needed) {
-                    encoded |= (temp[byte_pos + 1] >> 7) & 0x1;
-                }
-            }
-            
-            if (encoded >= 4) {
-                encoded = 0; /* Default to 'A' */
-            }
-            
-            output[i + j] = kmersearch_dna2_decode_table[encoded];
-        }
-    }
-    
-    /* Handle remaining characters with scalar */
-    for (int i = simd_len; i < len; i++) {
-        int bit_pos = i * 2;
-        int byte_pos = bit_pos / 8;
-        int bit_offset = bit_pos % 8;
-        uint8_t encoded = 0;
-        
-        if (bit_offset <= 6) {
-            encoded = (input[byte_pos] >> (6 - bit_offset)) & 0x3;
-        } else {
-            /* bit_offset == 7: handle byte boundary crossing */
-            encoded = (input[byte_pos] & 0x1) << 1;
-            if (byte_pos + 1 < (len * 2 + 7) / 8) {
-                encoded |= (input[byte_pos + 1] >> 7) & 0x1;
-            }
-        }
-        
-        if (encoded >= 4) {
-            encoded = 0; /* Default to 'A' */
-        }
-        
-        output[i] = kmersearch_dna2_decode_table[encoded];
-    }
-    output[len] = '\0';
-}
 
-__attribute__((target("avx512f,avx512bw")))
-static void dna4_encode_avx512(const char* input, uint8_t* output, int len)
-{
-    int byte_len = (len * 4 + 7) / 8;
-    int simd_len;
-    
-    memset(output, 0, byte_len);
-    
-    /* Process 64 characters at a time with AVX512 */
-    simd_len = len & ~63;  /* Round down to multiple of 64 */
-    
-    for (int i = 0; i < simd_len; i += 64) {
-        __m512i chars = _mm512_loadu_si512((__m512i*)(input + i));
-        
-        /* Use lookup table approach for DNA4 encoding */
-        uint8_t temp[64];
-        _mm512_storeu_si512((__m512i*)temp, chars);
-        
-        for (int j = 0; j < 64; j++) {
-            uint8_t encoded = kmersearch_dna4_encode_table[(unsigned char)temp[j]];
-            int bit_pos = (i + j) * 4;
-            int byte_pos = bit_pos / 8;
-            int bit_offset = bit_pos % 8;
-            
-            if (bit_offset <= 4) {
-                output[byte_pos] |= (encoded << (4 - bit_offset));
-            } else {
-                /* bit_offset > 4: handle byte boundary crossing */
-                int remaining_bits = 8 - bit_offset;
-                output[byte_pos] |= (encoded >> (4 - remaining_bits));
-                if (byte_pos + 1 < byte_len) {
-                    output[byte_pos + 1] |= (encoded << (4 + remaining_bits));
-                }
-            }
-        }
-    }
-    
-    /* Handle remaining characters with scalar */
-    for (int i = simd_len; i < len; i++) {
-        uint8_t encoded = kmersearch_dna4_encode_table[(unsigned char)input[i]];
-        int bit_pos = i * 4;
-        int byte_pos = bit_pos / 8;
-        int bit_offset = bit_pos % 8;
-        
-        if (bit_offset <= 4) {
-            output[byte_pos] |= (encoded << (4 - bit_offset));
-        } else {
-            /* bit_offset > 4: handle byte boundary crossing */
-            int remaining_bits = 8 - bit_offset;
-            output[byte_pos] |= (encoded >> (4 - remaining_bits));
-            if (byte_pos + 1 < byte_len) {
-                output[byte_pos + 1] |= (encoded << (4 + remaining_bits));
-            }
-        }
-    }
-}
 
-__attribute__((target("avx512f,avx512bw")))
-static void dna4_decode_avx512(const uint8_t* input, char* output, int len)
-{
-    int bit_len = len * 4;
-    
-    /* Process 64 characters at a time with AVX512 */
-    int simd_len = len & ~63;  /* Round down to multiple of 64 */
-    
-    for (int i = 0; i < simd_len; i += 64) {
-        /* 64 characters need 256 bits = 32 bytes */
-        int bytes_needed = 32;
-        uint8_t temp[32];
-        
-        /* Load required bytes from correct position */
-        for (int b = 0; b < bytes_needed && (i * 4 / 8 + b) < (len * 4 + 7) / 8; b++) {
-            temp[b] = input[i * 4 / 8 + b];
-        }
-        
-        /* Decode each 4-bit nibble using relative positioning */
-        for (int j = 0; j < 64; j++) {
-            int rel_bit_pos = j * 4;  /* Relative bit position in temp array */
-            int byte_pos = rel_bit_pos / 8;
-            int bit_offset = rel_bit_pos % 8;
-            uint8_t encoded = 0;
-            
-            if (bit_offset <= 4) {
-                encoded = (temp[byte_pos] >> (4 - bit_offset)) & 0xF;
-            } else {
-                /* bit_offset > 4: handle byte boundary crossing */
-                int remaining_bits = 8 - bit_offset;
-                encoded = (temp[byte_pos] & ((1 << remaining_bits) - 1)) << (4 - remaining_bits);
-                if (byte_pos + 1 < bytes_needed) {
-                    encoded |= (temp[byte_pos + 1] >> (4 + remaining_bits)) & 0xF;
-                }
-            }
-            
-            if (encoded >= 16) {
-                encoded = 0; /* Default to '?' */
-            }
-            
-            output[i + j] = kmersearch_dna4_decode_table[encoded];
-        }
-    }
-    
-    /* Handle remaining characters with scalar */
-    for (int i = simd_len; i < len; i++) {
-        int bit_pos = i * 4;
-        int byte_pos = bit_pos / 8;
-        int bit_offset = bit_pos % 8;
-        uint8_t encoded = 0;
-        
-        if (bit_offset <= 4) {
-            encoded = (input[byte_pos] >> (4 - bit_offset)) & 0xF;
-        } else {
-            /* bit_offset > 4: handle byte boundary crossing */
-            int remaining_bits = 8 - bit_offset;
-            encoded = (input[byte_pos] & ((1 << remaining_bits) - 1)) << (4 - remaining_bits);
-            if (byte_pos + 1 < (len * 4 + 7) / 8) {
-                encoded |= (input[byte_pos + 1] >> (4 + remaining_bits)) & 0xF;
-            }
-        }
-        
-        if (encoded >= 16) {
-            encoded = 0; /* Default to '?' */
-        }
-        
-        output[i] = kmersearch_dna4_decode_table[encoded];
-    }
-    output[len] = '\0';
-}
 #endif
 
 #ifdef __aarch64__
 /* NEON implementations */
 
-__attribute__((target("+simd")))
-static void dna2_decode_neon(const uint8_t* input, char* output, int len)
-{
-    /* Process 16 characters at a time with NEON */
-    int simd_len = len & ~15;  /* Round down to multiple of 16 */
-    
-    for (int i = 0; i < simd_len; i += 16) {
-        /* Fixed: Load correct number of bytes for 16 characters (32 bits = 4 bytes) */
-        int bytes_needed = 4;  /* 16 * 2 bits = 32 bits = 4 bytes */
-        uint8_t temp[4];
-        
-        /* Fixed: Load from correct position in input array */
-        for (int b = 0; b < bytes_needed && (i * 2 / 8 + b) < (len * 2 + 7) / 8; b++) {
-            temp[b] = input[i * 2 / 8 + b];
-        }
-        
-        /* Decode each 2-bit pair using relative positions in temp array */
-        for (int j = 0; j < 16; j++) {
-            int rel_bit_pos = j * 2;  /* Relative position within temp array */
-            int byte_pos = rel_bit_pos / 8;  /* Byte position within temp array */
-            int bit_offset = rel_bit_pos % 8;
-            uint8_t encoded;
-            
-            /* Fixed: Handle byte boundary crossing properly */
-            if (bit_offset <= 6) {
-                encoded = (temp[byte_pos] >> (6 - bit_offset)) & 0x3;
-            } else {
-                /* bit_offset == 7: bits span across two bytes */
-                encoded = (temp[byte_pos] & 0x1) << 1;
-                if (byte_pos + 1 < bytes_needed) {
-                    encoded |= (temp[byte_pos + 1] >> 7) & 0x1;
-                }
-            }
-            
-            /* Range check */
-            if (encoded >= 4) {
-                encoded = 0; /* Default to 'A' */
-            }
-            
-            output[i + j] = kmersearch_dna2_decode_table[encoded];
-        }
-    }
-    
-    /* Handle remaining characters with scalar */
-    for (int i = simd_len; i < len; i++) {
-        int bit_pos = i * 2;
-        int byte_pos = bit_pos / 8;
-        int bit_offset = bit_pos % 8;
-        uint8_t encoded;
-        
-        /* Fixed: Handle byte boundary crossing properly */
-        if (bit_offset <= 6) {
-            encoded = (input[byte_pos] >> (6 - bit_offset)) & 0x3;
-        } else {
-            /* bit_offset == 7: bits span across two bytes */
-            encoded = (input[byte_pos] & 0x1) << 1;
-            if (byte_pos + 1 < (len * 2 + 7) / 8) {
-                encoded |= (input[byte_pos + 1] >> 7) & 0x1;
-            }
-        }
-        
-        /* Range check */
-        if (encoded >= 4) {
-            encoded = 0; /* Default to 'A' */
-        }
-        
-        output[i] = kmersearch_dna2_decode_table[encoded];
-    }
-    output[len] = '\0';
-}
 
-__attribute__((target("+simd")))
-static void dna4_encode_neon(const char* input, uint8_t* output, int len)
-{
-    int byte_len = (len * 4 + 7) / 8;
-    int simd_len = len & ~15;  /* Round down to multiple of 16 */
-    int i, j;
-    uint8x16_t chars;
-    uint8_t temp[16];
-    
-    memset(output, 0, byte_len);
-    
-    /* Process 16 characters at a time with NEON */
-    for (i = 0; i < simd_len; i += 16) {
-        chars = vld1q_u8((uint8_t*)(input + i));
-        
-        /* Use lookup table approach for DNA4 encoding */
-        vst1q_u8(temp, chars);
-        
-        for (j = 0; j < 16; j++) {
-            uint8_t encoded = kmersearch_dna4_encode_table[(unsigned char)temp[j]];
-            int bit_pos = (i + j) * 4;
-            int byte_pos = bit_pos / 8;
-            int bit_offset = bit_pos % 8;
-            
-            /* Fixed: Handle byte boundary crossing properly */
-            if (bit_offset <= 4) {
-                output[byte_pos] |= (encoded << (4 - bit_offset));
-            } else {
-                /* bit_offset > 4: split across two bytes */
-                int remaining_bits = 8 - bit_offset;
-                output[byte_pos] |= (encoded >> (4 - remaining_bits));
-                if (byte_pos + 1 < byte_len) {
-                    output[byte_pos + 1] |= (encoded << (4 + remaining_bits));
-                }
-            }
-        }
-    }
-    
-    /* Handle remaining characters with scalar */
-    for (i = simd_len; i < len; i++) {
-        uint8_t encoded = kmersearch_dna4_encode_table[(unsigned char)input[i]];
-        int bit_pos = i * 4;
-        int byte_pos = bit_pos / 8;
-        int bit_offset = bit_pos % 8;
-        
-        /* Fixed: Handle byte boundary crossing properly */
-        if (bit_offset <= 4) {
-            output[byte_pos] |= (encoded << (4 - bit_offset));
-        } else {
-            /* bit_offset > 4: split across two bytes */
-            int remaining_bits = 8 - bit_offset;
-            output[byte_pos] |= (encoded >> (4 - remaining_bits));
-            if (byte_pos + 1 < byte_len) {
-                output[byte_pos + 1] |= (encoded << (4 + remaining_bits));
-            }
-        }
-    }
-}
 
-__attribute__((target("+simd")))
-static void dna4_decode_neon(const uint8_t* input, char* output, int len)
-{
-    /* Process 16 characters at a time with NEON */
-    int simd_len = len & ~15;  /* Round down to multiple of 16 */
-    
-    for (int i = 0; i < simd_len; i += 16) {
-        /* Fixed: Load correct number of bytes for 16 characters (64 bits = 8 bytes) */
-        int bytes_needed = 8;  /* 16 * 4 bits = 64 bits = 8 bytes */
-        uint8_t temp[8];
-        
-        /* Fixed: Load from correct position in input array */
-        for (int b = 0; b < bytes_needed && (i * 4 / 8 + b) < (len * 4 + 7) / 8; b++) {
-            temp[b] = input[i * 4 / 8 + b];
-        }
-        
-        /* Decode each 4-bit nibble using relative positions in temp array */
-        for (int j = 0; j < 16; j++) {
-            int rel_bit_pos = j * 4;  /* Relative position within temp array */
-            int byte_pos = rel_bit_pos / 8;  /* Byte position within temp array */
-            int bit_offset = rel_bit_pos % 8;
-            uint8_t encoded;
-            
-            /* Fixed: Handle byte boundary crossing properly */
-            if (bit_offset <= 4) {
-                encoded = (temp[byte_pos] >> (4 - bit_offset)) & 0xF;
-            } else {
-                /* bit_offset > 4: bits span across two bytes */
-                int remaining_bits = 8 - bit_offset;
-                encoded = (temp[byte_pos] & ((1 << remaining_bits) - 1)) << (4 - remaining_bits);
-                if (byte_pos + 1 < bytes_needed) {
-                    encoded |= (temp[byte_pos + 1] >> (4 + remaining_bits)) & 0xF;
-                }
-                encoded &= 0xF;
-            }
-            
-            /* Range check */
-            if (encoded >= 16) {
-                encoded = 0; /* Default to '?' */
-            }
-            
-            output[i + j] = kmersearch_dna4_decode_table[encoded];
-        }
-    }
-    
-    /* Handle remaining characters with scalar */
-    for (int i = simd_len; i < len; i++) {
-        int bit_pos = i * 4;
-        int byte_pos = bit_pos / 8;
-        int bit_offset = bit_pos % 8;
-        uint8_t encoded;
-        
-        /* Fixed: Handle byte boundary crossing properly */
-        if (bit_offset <= 4) {
-            encoded = (input[byte_pos] >> (4 - bit_offset)) & 0xF;
-        } else {
-            /* bit_offset > 4: bits span across two bytes */
-            int remaining_bits = 8 - bit_offset;
-            encoded = (input[byte_pos] & ((1 << remaining_bits) - 1)) << (4 - remaining_bits);
-            if (byte_pos + 1 < (len * 4 + 7) / 8) {
-                encoded |= (input[byte_pos + 1] >> (4 + remaining_bits)) & 0xF;
-            }
-            encoded &= 0xF;
-        }
-        
-        /* Range check */
-        if (encoded >= 16) {
-            encoded = 0; /* Default to '?' */
-        }
-        
-        output[i] = kmersearch_dna4_decode_table[encoded];
-    }
-    output[len] = '\0';
-}
 
 /* SVE implementations */
 
-__attribute__((target("+sve")))
-static void dna2_decode_sve(const uint8_t* input, char* output, int len)
-{
-    /* Get SVE vector length */
-    int sve_len = svcntb();
-    int simd_len = len & ~(sve_len - 1);  /* Round down to SVE vector multiple */
-    int i, j, b;
-    
-    for (i = 0; i < simd_len; i += sve_len) {
-        /* Fixed: Load correct number of bytes for sve_len characters */
-        int bytes_needed = (sve_len * 2 + 7) / 8;
-        uint8_t temp[bytes_needed];
-        
-        /* Fixed: Load from correct position in input array */
-        for (b = 0; b < bytes_needed && (i * 2 / 8 + b) < (len * 2 + 7) / 8; b++) {
-            temp[b] = input[i * 2 / 8 + b];
-        }
-        
-        /* Decode each 2-bit pair using relative positions in temp array */
-        for (j = 0; j < sve_len && (i + j) < len; j++) {
-            int rel_bit_pos = j * 2;  /* Relative position within temp array */
-            int byte_pos = rel_bit_pos / 8;  /* Byte position within temp array */
-            int bit_offset = rel_bit_pos % 8;
-            uint8_t encoded;
-            
-            /* Fixed: Handle byte boundary crossing properly */
-            if (bit_offset <= 6) {
-                encoded = (temp[byte_pos] >> (6 - bit_offset)) & 0x3;
-            } else {
-                /* bit_offset == 7: bits span across two bytes */
-                encoded = (temp[byte_pos] & 0x1) << 1;
-                if (byte_pos + 1 < bytes_needed) {
-                    encoded |= (temp[byte_pos + 1] >> 7) & 0x1;
-                }
-            }
-            
-            /* Range check */
-            if (encoded >= 4) {
-                encoded = 0; /* Default to 'A' */
-            }
-            
-            output[i + j] = kmersearch_dna2_decode_table[encoded];
-        }
-    }
-    
-    /* Handle remaining characters with scalar */
-    for (i = simd_len; i < len; i++) {
-        int bit_pos = i * 2;
-        int byte_pos = bit_pos / 8;
-        int bit_offset = bit_pos % 8;
-        uint8_t encoded;
-        
-        /* Fixed: Handle byte boundary crossing properly */
-        if (bit_offset <= 6) {
-            encoded = (input[byte_pos] >> (6 - bit_offset)) & 0x3;
-        } else {
-            /* bit_offset == 7: bits span across two bytes */
-            encoded = (input[byte_pos] & 0x1) << 1;
-            if (byte_pos + 1 < (len * 2 + 7) / 8) {
-                encoded |= (input[byte_pos + 1] >> 7) & 0x1;
-            }
-        }
-        
-        /* Range check */
-        if (encoded >= 4) {
-            encoded = 0; /* Default to 'A' */
-        }
-        
-        output[i] = kmersearch_dna2_decode_table[encoded];
-    }
-    output[len] = '\0';
-}
 
-__attribute__((target("+sve")))
-static void dna4_encode_sve(const char* input, uint8_t* output, int len)
-{
-    int byte_len = (len * 4 + 7) / 8;
-    int sve_len = svcntb();
-    int simd_len = len & ~(sve_len - 1);  /* Round down to SVE vector multiple */
-    int i, j;
-    uint8_t temp[sve_len];
-    
-    memset(output, 0, byte_len);
-    
-    for (i = 0; i < simd_len; i += sve_len) {
-        svbool_t pg = svwhilelt_b8_s32(i, len);
-        svuint8_t chars = svld1_u8(pg, (uint8_t*)(input + i));
-        
-        /* Use lookup table approach for DNA4 encoding */
-        svst1_u8(pg, temp, chars);
-        
-        for (j = 0; j < sve_len && (i + j) < len; j++) {
-            uint8_t encoded = kmersearch_dna4_encode_table[(unsigned char)temp[j]];
-            int bit_pos = (i + j) * 4;
-            int byte_pos = bit_pos / 8;
-            int bit_offset = bit_pos % 8;
-            
-            /* Fixed: Handle byte boundary crossing properly */
-            if (bit_offset <= 4) {
-                output[byte_pos] |= (encoded << (4 - bit_offset));
-            } else {
-                /* bit_offset > 4: split across two bytes */
-                int remaining_bits = 8 - bit_offset;
-                output[byte_pos] |= (encoded >> (4 - remaining_bits));
-                if (byte_pos + 1 < byte_len) {
-                    output[byte_pos + 1] |= (encoded << (4 + remaining_bits));
-                }
-            }
-        }
-    }
-    
-    /* Handle remaining characters with scalar */
-    for (i = simd_len; i < len; i++) {
-        uint8_t encoded = kmersearch_dna4_encode_table[(unsigned char)input[i]];
-        int bit_pos = i * 4;
-        int byte_pos = bit_pos / 8;
-        int bit_offset = bit_pos % 8;
-        
-        /* Fixed: Handle byte boundary crossing properly */
-        if (bit_offset <= 4) {
-            output[byte_pos] |= (encoded << (4 - bit_offset));
-        } else {
-            /* bit_offset > 4: split across two bytes */
-            int remaining_bits = 8 - bit_offset;
-            output[byte_pos] |= (encoded >> (4 - remaining_bits));
-            if (byte_pos + 1 < byte_len) {
-                output[byte_pos + 1] |= (encoded << (4 + remaining_bits));
-            }
-        }
-    }
-}
 
-__attribute__((target("+sve")))
-static void dna4_decode_sve(const uint8_t* input, char* output, int len)
-{
-    /* Get SVE vector length */
-    int sve_len = svcntb();
-    int simd_len = len & ~(sve_len - 1);  /* Round down to SVE vector multiple */
-    int i, j, b;
-    
-    for (i = 0; i < simd_len; i += sve_len) {
-        /* Fixed: Load correct number of bytes for sve_len characters */
-        int bytes_needed = (sve_len * 4 + 7) / 8;
-        uint8_t temp[bytes_needed];
-        
-        /* Fixed: Load from correct position in input array */
-        for (b = 0; b < bytes_needed && (i * 4 / 8 + b) < (len * 4 + 7) / 8; b++) {
-            temp[b] = input[i * 4 / 8 + b];
-        }
-        
-        /* Decode each 4-bit nibble using relative positions in temp array */
-        for (j = 0; j < sve_len && (i + j) < len; j++) {
-            int rel_bit_pos = j * 4;  /* Relative position within temp array */
-            int byte_pos = rel_bit_pos / 8;  /* Byte position within temp array */
-            int bit_offset = rel_bit_pos % 8;
-            uint8_t encoded;
-            
-            /* Fixed: Handle byte boundary crossing properly */
-            if (bit_offset <= 4) {
-                encoded = (temp[byte_pos] >> (4 - bit_offset)) & 0xF;
-            } else {
-                /* bit_offset > 4: bits span across two bytes */
-                int remaining_bits = 8 - bit_offset;
-                encoded = (temp[byte_pos] & ((1 << remaining_bits) - 1)) << (4 - remaining_bits);
-                if (byte_pos + 1 < bytes_needed) {
-                    encoded |= (temp[byte_pos + 1] >> (4 + remaining_bits)) & 0xF;
-                }
-                encoded &= 0xF;
-            }
-            
-            /* Range check */
-            if (encoded >= 16) {
-                encoded = 0; /* Default to '?' */
-            }
-            
-            output[i + j] = kmersearch_dna4_decode_table[encoded];
-        }
-    }
-    
-    /* Handle remaining characters with scalar */
-    for (i = simd_len; i < len; i++) {
-        int bit_pos = i * 4;
-        int byte_pos = bit_pos / 8;
-        int bit_offset = bit_pos % 8;
-        uint8_t encoded;
-        
-        /* Fixed: Handle byte boundary crossing properly */
-        if (bit_offset <= 4) {
-            encoded = (input[byte_pos] >> (4 - bit_offset)) & 0xF;
-        } else {
-            /* bit_offset > 4: bits span across two bytes */
-            int remaining_bits = 8 - bit_offset;
-            encoded = (input[byte_pos] & ((1 << remaining_bits) - 1)) << (4 - remaining_bits);
-            if (byte_pos + 1 < (len * 4 + 7) / 8) {
-                encoded |= (input[byte_pos + 1] >> (4 + remaining_bits)) & 0xF;
-            }
-            encoded &= 0xF;
-        }
-        
-        /* Range check */
-        if (encoded >= 16) {
-            encoded = 0; /* Default to '?' */
-        }
-        
-        output[i] = kmersearch_dna4_decode_table[encoded];
-    }
-    output[len] = '\0';
-}
 #endif
 
 /*
@@ -3435,260 +2595,22 @@ static void dna4_decode_sve(const uint8_t* input, char* output, int len)
 
 
 /* AVX2 optimized version of kmersearch_count_matching_kmer_fast */
-__attribute__((target("avx2")))
-static int
-kmersearch_count_matching_kmer_fast_avx2(VarBit **seq_keys, int seq_nkeys, VarBit **query_keys, int query_nkeys)
-{
-    int match_count = 0;
-    int i;
-    HTAB *query_hash;
-    HASHCTL hash_ctl;
-    bool found;
-    
-    if (seq_nkeys == 0 || query_nkeys == 0)
-        return 0;
-    
-    /* AVX2 optimized hash table implementation */
-    memset(&hash_ctl, 0, sizeof(hash_ctl));
-    
-    /* Safety check: ensure we have valid query keys */
-    if (query_keys[0] == NULL) {
-        elog(LOG, "kmersearch_count_matching_kmer_fast_avx2: NULL query key detected");
-        return 0;
-    }
-    
-    hash_ctl.keysize = VARBITBYTES(query_keys[0]);  /* Use data size, not total size */
-    hash_ctl.entrysize = sizeof(bool);
-    hash_ctl.hash = tag_hash;
-    
-    elog(LOG, "kmersearch_count_matching_kmer_fast_avx2: Creating hash with keysize=%zu, query_nkeys=%d", 
-         (size_t)VARBITBYTES(query_keys[0]), query_nkeys);
-    
-    query_hash = hash_create("QueryKmerHashAVX2", query_nkeys * 2, &hash_ctl,
-                            HASH_ELEM | HASH_FUNCTION | HASH_BLOBS);
-    
-    /* Insert all query k-mers into hash table using content as key */
-    for (i = 0; i < query_nkeys; i++)
-    {
-        if (query_keys[i] == NULL) {
-            elog(LOG, "kmersearch_count_matching_kmer_fast_avx2: NULL query key at index %d", i);
-            continue;
-        }
-        hash_search(query_hash, VARBITS(query_keys[i]), HASH_ENTER, &found);
-    }
-    
-    /* Check each sequence k-mer against hash table */
-    for (i = 0; i < seq_nkeys; i++)
-    {
-        if (seq_keys[i] == NULL) {
-            elog(LOG, "kmersearch_count_matching_kmer_fast_avx2: NULL seq key at index %d", i);
-            continue;
-        }
-        
-        if (VARBITBYTES(seq_keys[i]) != VARBITBYTES(query_keys[0])) {
-            elog(LOG, "kmersearch_count_matching_kmer_fast_avx2: Size mismatch seq[%d]=%zu vs query[0]=%zu", 
-                 i, (size_t)VARBITBYTES(seq_keys[i]), (size_t)VARBITBYTES(query_keys[0]));
-            continue;
-        }
-        
-        if (hash_search(query_hash, VARBITS(seq_keys[i]), HASH_FIND, NULL))
-        {
-            match_count++;
-        }
-    }
-    
-    hash_destroy(query_hash);
-    
-    elog(LOG, "kmersearch_count_matching_kmer_fast_avx2: Returning match_count=%d", match_count);
-    return match_count;
-}
 
 
 
 /* AVX512 optimized version of kmersearch_count_matching_kmer_fast */
-__attribute__((target("avx512f,avx512bw")))
-static int
-kmersearch_count_matching_kmer_fast_avx512(VarBit **seq_keys, int seq_nkeys, VarBit **query_keys, int query_nkeys)
-{
-    int match_count = 0;
-    int i;
-    HTAB *query_hash;
-    HASHCTL hash_ctl;
-    bool found;
-    
-    if (seq_nkeys == 0 || query_nkeys == 0) {
-        return 0;
-    }
-    
-    /* AVX512 optimized hash table implementation */
-    memset(&hash_ctl, 0, sizeof(hash_ctl));
-    
-    if (query_keys[0] == NULL) {
-        return 0;
-    }
-    
-    /* Validate the VarBit structure */
-    if (VARSIZE(query_keys[0]) < VARHDRSZ + 4) {
-        elog(ERROR, "Invalid VarBit size: %zu", (size_t)VARSIZE(query_keys[0]));
-    }
-    
-    hash_ctl.keysize = VARBITBYTES(query_keys[0]);
-    hash_ctl.entrysize = sizeof(bool);
-    hash_ctl.hash = tag_hash;
-    query_hash = hash_create("QueryKmerHashAVX512", query_nkeys * 2, &hash_ctl,
-                            HASH_ELEM | HASH_FUNCTION | HASH_BLOBS);
-    
-    for (i = 0; i < query_nkeys; i++)
-    {
-        if (query_keys[i] == NULL) {
-            continue;
-        }
-        hash_search(query_hash, VARBITS(query_keys[i]), HASH_ENTER, &found);
-    }
-    
-    for (i = 0; i < seq_nkeys; i++)
-    {
-        if (seq_keys[i] == NULL) {
-            continue;
-        }
-        
-        if (VARBITBYTES(seq_keys[i]) != VARBITBYTES(query_keys[0])) {
-            continue;
-        }
-        
-        if (hash_search(query_hash, VARBITS(seq_keys[i]), HASH_FIND, NULL))
-        {
-            match_count++;
-        }
-    }
-    
-    hash_destroy(query_hash);
-    return match_count;
-}
 #endif
 
 #ifdef __aarch64__
 
 
 /* NEON optimized version of kmersearch_count_matching_kmer_fast */
-__attribute__((target("+simd")))
-static int
-kmersearch_count_matching_kmer_fast_neon(VarBit **seq_keys, int seq_nkeys, VarBit **query_keys, int query_nkeys)
-{
-    int match_count = 0;
-    int i;
-    HTAB *query_hash;
-    HASHCTL hash_ctl;
-    bool found;
-    
-    if (seq_nkeys == 0 || query_nkeys == 0)
-        return 0;
-    
-    /* NEON optimized hash table implementation */
-    memset(&hash_ctl, 0, sizeof(hash_ctl));
-    
-    if (query_keys[0] == NULL) {
-        elog(LOG, "kmersearch_count_matching_kmer_fast_neon: NULL query key detected");
-        return 0;
-    }
-    
-    hash_ctl.keysize = VARBITBYTES(query_keys[0]);
-    hash_ctl.entrysize = sizeof(bool);
-    hash_ctl.hash = tag_hash;
-    
-    query_hash = hash_create("QueryKmerHashNEON", query_nkeys * 2, &hash_ctl,
-                            HASH_ELEM | HASH_FUNCTION | HASH_BLOBS);
-    
-    for (i = 0; i < query_nkeys; i++)
-    {
-        if (query_keys[i] == NULL) {
-            continue;
-        }
-        hash_search(query_hash, VARBITS(query_keys[i]), HASH_ENTER, &found);
-    }
-    
-    for (i = 0; i < seq_nkeys; i++)
-    {
-        if (seq_keys[i] == NULL) {
-            continue;
-        }
-        
-        if (VARBITBYTES(seq_keys[i]) != VARBITBYTES(query_keys[0])) {
-            continue;
-        }
-        
-        if (hash_search(query_hash, VARBITS(seq_keys[i]), HASH_FIND, NULL))
-        {
-            match_count++;
-        }
-    }
-    
-    hash_destroy(query_hash);
-    
-    return match_count;
-}
 #endif
 
 #ifdef __aarch64__
 
 
 /* SVE optimized version of kmersearch_count_matching_kmer_fast */
-__attribute__((target("+sve")))
-static int
-kmersearch_count_matching_kmer_fast_sve(VarBit **seq_keys, int seq_nkeys, VarBit **query_keys, int query_nkeys)
-{
-    int match_count = 0;
-    int i;
-    HTAB *query_hash;
-    HASHCTL hash_ctl;
-    bool found;
-    
-    if (seq_nkeys == 0 || query_nkeys == 0)
-        return 0;
-    
-    /* SVE optimized hash table implementation */
-    memset(&hash_ctl, 0, sizeof(hash_ctl));
-    
-    if (query_keys[0] == NULL) {
-        elog(LOG, "kmersearch_count_matching_kmer_fast_sve: NULL query key detected");
-        return 0;
-    }
-    
-    hash_ctl.keysize = VARBITBYTES(query_keys[0]);
-    hash_ctl.entrysize = sizeof(bool);
-    hash_ctl.hash = tag_hash;
-    
-    query_hash = hash_create("QueryKmerHashSVE", query_nkeys * 2, &hash_ctl,
-                            HASH_ELEM | HASH_FUNCTION | HASH_BLOBS);
-    
-    for (i = 0; i < query_nkeys; i++)
-    {
-        if (query_keys[i] == NULL) {
-            continue;
-        }
-        hash_search(query_hash, VARBITS(query_keys[i]), HASH_ENTER, &found);
-    }
-    
-    for (i = 0; i < seq_nkeys; i++)
-    {
-        if (seq_keys[i] == NULL) {
-            continue;
-        }
-        
-        if (VARBITBYTES(seq_keys[i]) != VARBITBYTES(query_keys[0])) {
-            continue;
-        }
-        
-        if (hash_search(query_hash, VARBITS(seq_keys[i]), HASH_FIND, NULL))
-        {
-            match_count++;
-        }
-    }
-    
-    hash_destroy(query_hash);
-    
-    return match_count;
-}
 
 #endif
 
@@ -3839,574 +2761,20 @@ kmersearch_expand_dna4_kmer2_as_uint_to_dna2_direct(VarBit *dna4_seq, int start_
  * DNA2 AVX2 implementation - DIRECT BIT MANIPULATION
  */
 #ifdef __x86_64__
-__attribute__((target("avx2")))
-static void
-kmersearch_extract_dna2_kmer2_as_uint_direct_avx2(VarBit *seq, int k, void **output, int *nkeys)
-{
-    int seq_bits = VARBITLEN(seq);
-    int seq_bases = seq_bits / 2;
-    int max_kmers = (seq_bases >= k) ? (seq_bases - k + 1) : 0;
-    size_t element_size = kmersearch_get_kmer_uint_size(k);
-    void *result;
-    bits8 *src_data = VARBITS(seq);
-    int i;
-    
-    *nkeys = 0;
-    if (max_kmers <= 0) {
-        *output = NULL;
-        return;
-    }
-    
-    result = palloc(max_kmers * element_size);
-    *output = result;
-    
-    /* AVX2 optimized k-mer extraction */
-    if (k <= 8) {
-        uint16 *output_array = (uint16 *) result;
-        int simd_batch = max_kmers & ~15;  /* Process 16 k-mers at a time */
-        
-        /* AVX2 batch processing */
-        for (i = 0; i < simd_batch; i += 16) {
-            /* Process 16 k-mers in parallel */
-            for (int batch_idx = 0; batch_idx < 16; batch_idx++) {
-                uint64 kmer_value = 0;
-                int pos = i + batch_idx;
-                
-                /* Extract k-mer directly from VarBit data */
-                for (int j = 0; j < k; j++) {
-                    int bit_pos = (pos + j) * 2;
-                    int byte_pos = bit_pos / 8;
-                    int bit_offset = bit_pos % 8;
-                    uint8 base_bits = (src_data[byte_pos] >> (6 - bit_offset)) & 0x3;
-                    kmer_value = (kmer_value << 2) | base_bits;
-                }
-                
-                output_array[*nkeys] = (uint16) kmer_value;
-                (*nkeys)++;
-            }
-        }
-        
-        /* Handle remaining k-mers */
-        for (i = simd_batch; i <= seq_bases - k; i++) {
-            uint64 kmer_value = 0;
-            
-            for (int j = 0; j < k; j++) {
-                int bit_pos = (i + j) * 2;
-                int byte_pos = bit_pos / 8;
-                int bit_offset = bit_pos % 8;
-                uint8 base_bits = (src_data[byte_pos] >> (6 - bit_offset)) & 0x3;
-                kmer_value = (kmer_value << 2) | base_bits;
-            }
-            
-            output_array[*nkeys] = (uint16) kmer_value;
-            (*nkeys)++;
-        }
-    } else if (k <= 16) {
-        uint32 *output_array = (uint32 *) result;
-        int simd_batch = max_kmers & ~7;  /* Process 8 k-mers at a time */
-        
-        /* AVX2 batch processing */
-        for (i = 0; i < simd_batch; i += 8) {
-            for (int batch_idx = 0; batch_idx < 8; batch_idx++) {
-                uint64 kmer_value = 0;
-                int pos = i + batch_idx;
-                
-                for (int j = 0; j < k; j++) {
-                    int bit_pos = (pos + j) * 2;
-                    int byte_pos = bit_pos / 8;
-                    int bit_offset = bit_pos % 8;
-                    uint8 base_bits = (src_data[byte_pos] >> (6 - bit_offset)) & 0x3;
-                    kmer_value = (kmer_value << 2) | base_bits;
-                }
-                
-                output_array[*nkeys] = (uint32) kmer_value;
-                (*nkeys)++;
-            }
-        }
-        
-        /* Handle remaining k-mers */
-        for (i = simd_batch; i <= seq_bases - k; i++) {
-            uint64 kmer_value = 0;
-            
-            for (int j = 0; j < k; j++) {
-                int bit_pos = (i + j) * 2;
-                int byte_pos = bit_pos / 8;
-                int bit_offset = bit_pos % 8;
-                uint8 base_bits = (src_data[byte_pos] >> (6 - bit_offset)) & 0x3;
-                kmer_value = (kmer_value << 2) | base_bits;
-            }
-            
-            output_array[*nkeys] = (uint32) kmer_value;
-            (*nkeys)++;
-        }
-    } else {
-        uint64 *output_array = (uint64 *) result;
-        int simd_batch = max_kmers & ~3;  /* Process 4 k-mers at a time */
-        
-        /* AVX2 batch processing */
-        for (i = 0; i < simd_batch; i += 4) {
-            for (int batch_idx = 0; batch_idx < 4; batch_idx++) {
-                uint64 kmer_value = 0;
-                int pos = i + batch_idx;
-                
-                for (int j = 0; j < k; j++) {
-                    int bit_pos = (pos + j) * 2;
-                    int byte_pos = bit_pos / 8;
-                    int bit_offset = bit_pos % 8;
-                    uint8 base_bits = (src_data[byte_pos] >> (6 - bit_offset)) & 0x3;
-                    kmer_value = (kmer_value << 2) | base_bits;
-                }
-                
-                output_array[*nkeys] = kmer_value;
-                (*nkeys)++;
-            }
-        }
-        
-        /* Handle remaining k-mers */
-        for (i = simd_batch; i <= seq_bases - k; i++) {
-            uint64 kmer_value = 0;
-            
-            for (int j = 0; j < k; j++) {
-                int bit_pos = (i + j) * 2;
-                int byte_pos = bit_pos / 8;
-                int bit_offset = bit_pos % 8;
-                uint8 base_bits = (src_data[byte_pos] >> (6 - bit_offset)) & 0x3;
-                kmer_value = (kmer_value << 2) | base_bits;
-            }
-            
-            output_array[*nkeys] = kmer_value;
-            (*nkeys)++;
-        }
-    }
-}
 
 /*
  * DNA2 AVX512 implementation - DIRECT BIT MANIPULATION
  */
-__attribute__((target("avx512bw")))
-static void
-kmersearch_extract_dna2_kmer2_as_uint_direct_avx512(VarBit *seq, int k, void **output, int *nkeys)
-{
-    int seq_bits = VARBITLEN(seq);
-    int seq_bases = seq_bits / 2;
-    int max_kmers = (seq_bases >= k) ? (seq_bases - k + 1) : 0;
-    size_t element_size = kmersearch_get_kmer_uint_size(k);
-    void *result;
-    bits8 *src_data = VARBITS(seq);
-    int i;
-    
-    *nkeys = 0;
-    if (max_kmers <= 0) {
-        *output = NULL;
-        return;
-    }
-    
-    result = palloc(max_kmers * element_size);
-    *output = result;
-    
-    /* AVX512 optimized k-mer extraction */
-    if (k <= 8) {
-        uint16 *output_array = (uint16 *) result;
-        int simd_batch = max_kmers & ~31;  /* Process 32 k-mers at a time */
-        
-        /* AVX512 batch processing */
-        for (i = 0; i < simd_batch; i += 32) {
-            for (int batch_idx = 0; batch_idx < 32; batch_idx++) {
-                uint64 kmer_value = 0;
-                int pos = i + batch_idx;
-                
-                for (int j = 0; j < k; j++) {
-                    int bit_pos = (pos + j) * 2;
-                    int byte_pos = bit_pos / 8;
-                    int bit_offset = bit_pos % 8;
-                    uint8 base_bits = (src_data[byte_pos] >> (6 - bit_offset)) & 0x3;
-                    kmer_value = (kmer_value << 2) | base_bits;
-                }
-                
-                output_array[*nkeys] = (uint16) kmer_value;
-                (*nkeys)++;
-            }
-        }
-        
-        /* Handle remaining k-mers */
-        for (i = simd_batch; i <= seq_bases - k; i++) {
-            uint64 kmer_value = 0;
-            
-            for (int j = 0; j < k; j++) {
-                int bit_pos = (i + j) * 2;
-                int byte_pos = bit_pos / 8;
-                int bit_offset = bit_pos % 8;
-                uint8 base_bits = (src_data[byte_pos] >> (6 - bit_offset)) & 0x3;
-                kmer_value = (kmer_value << 2) | base_bits;
-            }
-            
-            output_array[*nkeys] = (uint16) kmer_value;
-            (*nkeys)++;
-        }
-    } else if (k <= 16) {
-        uint32 *output_array = (uint32 *) result;
-        int simd_batch = max_kmers & ~15;  /* Process 16 k-mers at a time */
-        
-        /* AVX512 batch processing */
-        for (i = 0; i < simd_batch; i += 16) {
-            for (int batch_idx = 0; batch_idx < 16; batch_idx++) {
-                uint64 kmer_value = 0;
-                int pos = i + batch_idx;
-                
-                for (int j = 0; j < k; j++) {
-                    int bit_pos = (pos + j) * 2;
-                    int byte_pos = bit_pos / 8;
-                    int bit_offset = bit_pos % 8;
-                    uint8 base_bits = (src_data[byte_pos] >> (6 - bit_offset)) & 0x3;
-                    kmer_value = (kmer_value << 2) | base_bits;
-                }
-                
-                output_array[*nkeys] = (uint32) kmer_value;
-                (*nkeys)++;
-            }
-        }
-        
-        /* Handle remaining k-mers */
-        for (i = simd_batch; i <= seq_bases - k; i++) {
-            uint64 kmer_value = 0;
-            
-            for (int j = 0; j < k; j++) {
-                int bit_pos = (i + j) * 2;
-                int byte_pos = bit_pos / 8;
-                int bit_offset = bit_pos % 8;
-                uint8 base_bits = (src_data[byte_pos] >> (6 - bit_offset)) & 0x3;
-                kmer_value = (kmer_value << 2) | base_bits;
-            }
-            
-            output_array[*nkeys] = (uint32) kmer_value;
-            (*nkeys)++;
-        }
-    } else {
-        uint64 *output_array = (uint64 *) result;
-        int simd_batch = max_kmers & ~7;  /* Process 8 k-mers at a time */
-        
-        /* AVX512 batch processing */
-        for (i = 0; i < simd_batch; i += 8) {
-            for (int batch_idx = 0; batch_idx < 8; batch_idx++) {
-                uint64 kmer_value = 0;
-                int pos = i + batch_idx;
-                
-                for (int j = 0; j < k; j++) {
-                    int bit_pos = (pos + j) * 2;
-                    int byte_pos = bit_pos / 8;
-                    int bit_offset = bit_pos % 8;
-                    uint8 base_bits = (src_data[byte_pos] >> (6 - bit_offset)) & 0x3;
-                    kmer_value = (kmer_value << 2) | base_bits;
-                }
-                
-                output_array[*nkeys] = kmer_value;
-                (*nkeys)++;
-            }
-        }
-        
-        /* Handle remaining k-mers */
-        for (i = simd_batch; i <= seq_bases - k; i++) {
-            uint64 kmer_value = 0;
-            
-            for (int j = 0; j < k; j++) {
-                int bit_pos = (i + j) * 2;
-                int byte_pos = bit_pos / 8;
-                int bit_offset = bit_pos % 8;
-                uint8 base_bits = (src_data[byte_pos] >> (6 - bit_offset)) & 0x3;
-                kmer_value = (kmer_value << 2) | base_bits;
-            }
-            
-            output_array[*nkeys] = kmer_value;
-            (*nkeys)++;
-        }
-    }
-}
 #endif
 
 /*
  * DNA2 NEON implementation - DIRECT BIT MANIPULATION
  */
 #ifdef __aarch64__
-__attribute__((target("+simd")))
-static void
-kmersearch_extract_dna2_kmer2_as_uint_direct_neon(VarBit *seq, int k, void **output, int *nkeys)
-{
-    int seq_bits = VARBITLEN(seq);
-    int seq_bases = seq_bits / 2;
-    int max_kmers = (seq_bases >= k) ? (seq_bases - k + 1) : 0;
-    size_t element_size = kmersearch_get_kmer_uint_size(k);
-    void *result;
-    bits8 *src_data = VARBITS(seq);
-    int i;
-    
-    *nkeys = 0;
-    if (max_kmers <= 0) {
-        *output = NULL;
-        return;
-    }
-    
-    result = palloc(max_kmers * element_size);
-    *output = result;
-    
-    /* NEON optimized k-mer extraction */
-    if (k <= 8) {
-        uint16 *output_array = (uint16 *) result;
-        int simd_batch = max_kmers & ~7;  /* Process 8 k-mers at a time */
-        
-        /* NEON batch processing */
-        for (i = 0; i < simd_batch; i += 8) {
-            for (int batch_idx = 0; batch_idx < 8; batch_idx++) {
-                uint64 kmer_value = 0;
-                int pos = i + batch_idx;
-                
-                for (int j = 0; j < k; j++) {
-                    int bit_pos = (pos + j) * 2;
-                    int byte_pos = bit_pos / 8;
-                    int bit_offset = bit_pos % 8;
-                    uint8 base_bits = (src_data[byte_pos] >> (6 - bit_offset)) & 0x3;
-                    kmer_value = (kmer_value << 2) | base_bits;
-                }
-                
-                output_array[*nkeys] = (uint16) kmer_value;
-                (*nkeys)++;
-            }
-        }
-        
-        /* Handle remaining k-mers */
-        for (i = simd_batch; i <= seq_bases - k; i++) {
-            uint64 kmer_value = 0;
-            
-            for (int j = 0; j < k; j++) {
-                int bit_pos = (i + j) * 2;
-                int byte_pos = bit_pos / 8;
-                int bit_offset = bit_pos % 8;
-                uint8 base_bits = (src_data[byte_pos] >> (6 - bit_offset)) & 0x3;
-                kmer_value = (kmer_value << 2) | base_bits;
-            }
-            
-            output_array[*nkeys] = (uint16) kmer_value;
-            (*nkeys)++;
-        }
-    } else if (k <= 16) {
-        uint32 *output_array = (uint32 *) result;
-        int simd_batch = max_kmers & ~3;  /* Process 4 k-mers at a time */
-        
-        /* NEON batch processing */
-        for (i = 0; i < simd_batch; i += 4) {
-            for (int batch_idx = 0; batch_idx < 4; batch_idx++) {
-                uint64 kmer_value = 0;
-                int pos = i + batch_idx;
-                
-                for (int j = 0; j < k; j++) {
-                    int bit_pos = (pos + j) * 2;
-                    int byte_pos = bit_pos / 8;
-                    int bit_offset = bit_pos % 8;
-                    uint8 base_bits = (src_data[byte_pos] >> (6 - bit_offset)) & 0x3;
-                    kmer_value = (kmer_value << 2) | base_bits;
-                }
-                
-                output_array[*nkeys] = (uint32) kmer_value;
-                (*nkeys)++;
-            }
-        }
-        
-        /* Handle remaining k-mers */
-        for (i = simd_batch; i <= seq_bases - k; i++) {
-            uint64 kmer_value = 0;
-            
-            for (int j = 0; j < k; j++) {
-                int bit_pos = (i + j) * 2;
-                int byte_pos = bit_pos / 8;
-                int bit_offset = bit_pos % 8;
-                uint8 base_bits = (src_data[byte_pos] >> (6 - bit_offset)) & 0x3;
-                kmer_value = (kmer_value << 2) | base_bits;
-            }
-            
-            output_array[*nkeys] = (uint32) kmer_value;
-            (*nkeys)++;
-        }
-    } else {
-        uint64 *output_array = (uint64 *) result;
-        int simd_batch = max_kmers & ~1;  /* Process 2 k-mers at a time */
-        
-        /* NEON batch processing */
-        for (i = 0; i < simd_batch; i += 2) {
-            for (int batch_idx = 0; batch_idx < 2; batch_idx++) {
-                uint64 kmer_value = 0;
-                int pos = i + batch_idx;
-                
-                for (int j = 0; j < k; j++) {
-                    int bit_pos = (pos + j) * 2;
-                    int byte_pos = bit_pos / 8;
-                    int bit_offset = bit_pos % 8;
-                    uint8 base_bits = (src_data[byte_pos] >> (6 - bit_offset)) & 0x3;
-                    kmer_value = (kmer_value << 2) | base_bits;
-                }
-                
-                output_array[*nkeys] = kmer_value;
-                (*nkeys)++;
-            }
-        }
-        
-        /* Handle remaining k-mers */
-        for (i = simd_batch; i <= seq_bases - k; i++) {
-            uint64 kmer_value = 0;
-            
-            for (int j = 0; j < k; j++) {
-                int bit_pos = (i + j) * 2;
-                int byte_pos = bit_pos / 8;
-                int bit_offset = bit_pos % 8;
-                uint8 base_bits = (src_data[byte_pos] >> (6 - bit_offset)) & 0x3;
-                kmer_value = (kmer_value << 2) | base_bits;
-            }
-            
-            output_array[*nkeys] = kmer_value;
-            (*nkeys)++;
-        }
-    }
-}
 
 /*
  * DNA2 SVE implementation - DIRECT BIT MANIPULATION
  */
-__attribute__((target("+sve")))
-static void
-kmersearch_extract_dna2_kmer2_as_uint_direct_sve(VarBit *seq, int k, void **output, int *nkeys)
-{
-    int seq_bits = VARBITLEN(seq);
-    int seq_bases = seq_bits / 2;
-    int max_kmers = (seq_bases >= k) ? (seq_bases - k + 1) : 0;
-    size_t element_size = kmersearch_get_kmer_uint_size(k);
-    void *result;
-    bits8 *src_data = VARBITS(seq);
-    int i;
-    
-    *nkeys = 0;
-    if (max_kmers <= 0) {
-        *output = NULL;
-        return;
-    }
-    
-    result = palloc(max_kmers * element_size);
-    *output = result;
-    
-    /* SVE optimized k-mer extraction */
-    if (k <= 8) {
-        uint16 *output_array = (uint16 *) result;
-        int simd_batch = max_kmers & ~15;  /* Process 16 k-mers at a time */
-        
-        /* SVE batch processing */
-        for (i = 0; i < simd_batch; i += 16) {
-            for (int batch_idx = 0; batch_idx < 16; batch_idx++) {
-                uint64 kmer_value = 0;
-                int pos = i + batch_idx;
-                
-                for (int j = 0; j < k; j++) {
-                    int bit_pos = (pos + j) * 2;
-                    int byte_pos = bit_pos / 8;
-                    int bit_offset = bit_pos % 8;
-                    uint8 base_bits = (src_data[byte_pos] >> (6 - bit_offset)) & 0x3;
-                    kmer_value = (kmer_value << 2) | base_bits;
-                }
-                
-                output_array[*nkeys] = (uint16) kmer_value;
-                (*nkeys)++;
-            }
-        }
-        
-        /* Handle remaining k-mers */
-        for (i = simd_batch; i <= seq_bases - k; i++) {
-            uint64 kmer_value = 0;
-            
-            for (int j = 0; j < k; j++) {
-                int bit_pos = (i + j) * 2;
-                int byte_pos = bit_pos / 8;
-                int bit_offset = bit_pos % 8;
-                uint8 base_bits = (src_data[byte_pos] >> (6 - bit_offset)) & 0x3;
-                kmer_value = (kmer_value << 2) | base_bits;
-            }
-            
-            output_array[*nkeys] = (uint16) kmer_value;
-            (*nkeys)++;
-        }
-    } else if (k <= 16) {
-        uint32 *output_array = (uint32 *) result;
-        int simd_batch = max_kmers & ~7;  /* Process 8 k-mers at a time */
-        
-        /* SVE batch processing */
-        for (i = 0; i < simd_batch; i += 8) {
-            for (int batch_idx = 0; batch_idx < 8; batch_idx++) {
-                uint64 kmer_value = 0;
-                int pos = i + batch_idx;
-                
-                for (int j = 0; j < k; j++) {
-                    int bit_pos = (pos + j) * 2;
-                    int byte_pos = bit_pos / 8;
-                    int bit_offset = bit_pos % 8;
-                    uint8 base_bits = (src_data[byte_pos] >> (6 - bit_offset)) & 0x3;
-                    kmer_value = (kmer_value << 2) | base_bits;
-                }
-                
-                output_array[*nkeys] = (uint32) kmer_value;
-                (*nkeys)++;
-            }
-        }
-        
-        /* Handle remaining k-mers */
-        for (i = simd_batch; i <= seq_bases - k; i++) {
-            uint64 kmer_value = 0;
-            
-            for (int j = 0; j < k; j++) {
-                int bit_pos = (i + j) * 2;
-                int byte_pos = bit_pos / 8;
-                int bit_offset = bit_pos % 8;
-                uint8 base_bits = (src_data[byte_pos] >> (6 - bit_offset)) & 0x3;
-                kmer_value = (kmer_value << 2) | base_bits;
-            }
-            
-            output_array[*nkeys] = (uint32) kmer_value;
-            (*nkeys)++;
-        }
-    } else {
-        uint64 *output_array = (uint64 *) result;
-        int simd_batch = max_kmers & ~3;  /* Process 4 k-mers at a time */
-        
-        /* SVE batch processing */
-        for (i = 0; i < simd_batch; i += 4) {
-            for (int batch_idx = 0; batch_idx < 4; batch_idx++) {
-                uint64 kmer_value = 0;
-                int pos = i + batch_idx;
-                
-                for (int j = 0; j < k; j++) {
-                    int bit_pos = (pos + j) * 2;
-                    int byte_pos = bit_pos / 8;
-                    int bit_offset = bit_pos % 8;
-                    uint8 base_bits = (src_data[byte_pos] >> (6 - bit_offset)) & 0x3;
-                    kmer_value = (kmer_value << 2) | base_bits;
-                }
-                
-                output_array[*nkeys] = kmer_value;
-                (*nkeys)++;
-            }
-        }
-        
-        /* Handle remaining k-mers */
-        for (i = simd_batch; i <= seq_bases - k; i++) {
-            uint64 kmer_value = 0;
-            
-            for (int j = 0; j < k; j++) {
-                int bit_pos = (i + j) * 2;
-                int byte_pos = bit_pos / 8;
-                int bit_offset = bit_pos % 8;
-                uint8 base_bits = (src_data[byte_pos] >> (6 - bit_offset)) & 0x3;
-                kmer_value = (kmer_value << 2) | base_bits;
-            }
-            
-            output_array[*nkeys] = kmer_value;
-            (*nkeys)++;
-        }
-    }
-}
 #endif
 
 /*
@@ -4515,422 +2883,20 @@ kmersearch_extract_dna2_kmer2_as_uint_direct_scalar(VarBit *seq, int k, void **o
  * DNA4 AVX2 implementation - DIRECT DEGENERATE EXPANSION
  */
 #ifdef __x86_64__
-__attribute__((target("avx2")))
-static void
-kmersearch_extract_dna4_kmer2_as_uint_with_expansion_direct_avx2(VarBit *seq, int k, void **output, int *nkeys)
-{
-    int seq_bits = VARBITLEN(seq);
-    int seq_bases = seq_bits / 4;
-    int max_kmers = (seq_bases >= k) ? (seq_bases - k + 1) : 0;
-    size_t element_size = kmersearch_get_kmer_uint_size(k);
-    void *result;
-    int key_count = 0;
-    int i;
-    int simd_batch;
-    
-    *nkeys = 0;
-    if (max_kmers <= 0) {
-        *output = NULL;
-        return;
-    }
-    
-    /* Allocate result array with room for expansions (max 10 expansions per k-mer position) */
-    result = palloc(max_kmers * 10 * element_size);
-    *output = result;
-    
-    /* AVX2 optimized k-mer extraction with expansion */
-    simd_batch = max_kmers & ~7;  /* Process 8 k-mers at a time */
-    
-    /* AVX2 batch processing */
-    for (i = 0; i < simd_batch; i += 8) {
-        for (int batch_idx = 0; batch_idx < 8; batch_idx++) {
-            int pos = i + batch_idx;
-            void *expanded_uints;
-            int expansion_count;
-            int j;
-            
-            /* Expand DNA4 k-mer to DNA2 k-mers directly as uint values */
-            expanded_uints = kmersearch_expand_dna4_kmer2_as_uint_to_dna2_direct(seq, pos, k, &expansion_count);
-            
-            if (!expanded_uints || expansion_count == 0)
-                continue;
-            
-            /* Copy expanded uint values to result array */
-            if (k <= 8) {
-                uint16 *src_array = (uint16 *) expanded_uints;
-                uint16 *dst_array = (uint16 *) result;
-                for (j = 0; j < expansion_count; j++) {
-                    dst_array[key_count++] = src_array[j];
-                }
-            } else if (k <= 16) {
-                uint32 *src_array = (uint32 *) expanded_uints;
-                uint32 *dst_array = (uint32 *) result;
-                for (j = 0; j < expansion_count; j++) {
-                    dst_array[key_count++] = src_array[j];
-                }
-            } else {
-                uint64 *src_array = (uint64 *) expanded_uints;
-                uint64 *dst_array = (uint64 *) result;
-                for (j = 0; j < expansion_count; j++) {
-                    dst_array[key_count++] = src_array[j];
-                }
-            }
-            
-            pfree(expanded_uints);
-        }
-    }
-    
-    /* Handle remaining k-mers */
-    for (i = simd_batch; i <= seq_bases - k; i++) {
-        void *expanded_uints;
-        int expansion_count;
-        int j;
-        
-        expanded_uints = kmersearch_expand_dna4_kmer2_as_uint_to_dna2_direct(seq, i, k, &expansion_count);
-        
-        if (!expanded_uints || expansion_count == 0)
-            continue;
-        
-        if (k <= 8) {
-            uint16 *src_array = (uint16 *) expanded_uints;
-            uint16 *dst_array = (uint16 *) result;
-            for (j = 0; j < expansion_count; j++) {
-                dst_array[key_count++] = src_array[j];
-            }
-        } else if (k <= 16) {
-            uint32 *src_array = (uint32 *) expanded_uints;
-            uint32 *dst_array = (uint32 *) result;
-            for (j = 0; j < expansion_count; j++) {
-                dst_array[key_count++] = src_array[j];
-            }
-        } else {
-            uint64 *src_array = (uint64 *) expanded_uints;
-            uint64 *dst_array = (uint64 *) result;
-            for (j = 0; j < expansion_count; j++) {
-                dst_array[key_count++] = src_array[j];
-            }
-        }
-        
-        pfree(expanded_uints);
-    }
-    
-    *nkeys = key_count;
-}
 
 /*
  * DNA4 AVX512 implementation - DIRECT DEGENERATE EXPANSION
  */
-__attribute__((target("avx512bw")))
-static void
-kmersearch_extract_dna4_kmer2_as_uint_with_expansion_direct_avx512(VarBit *seq, int k, void **output, int *nkeys)
-{
-    int seq_bits = VARBITLEN(seq);
-    int seq_bases = seq_bits / 4;
-    int max_kmers = (seq_bases >= k) ? (seq_bases - k + 1) : 0;
-    size_t element_size = kmersearch_get_kmer_uint_size(k);
-    void *result;
-    int key_count = 0;
-    int i;
-    int simd_batch;
-    
-    *nkeys = 0;
-    if (max_kmers <= 0) {
-        *output = NULL;
-        return;
-    }
-    
-    /* Allocate result array with room for expansions (max 10 expansions per k-mer position) */
-    result = palloc(max_kmers * 10 * element_size);
-    *output = result;
-    
-    /* AVX512 optimized k-mer extraction with expansion */
-    simd_batch = max_kmers & ~15;  /* Process 16 k-mers at a time */
-    
-    /* AVX512 batch processing */
-    for (i = 0; i < simd_batch; i += 16) {
-        for (int batch_idx = 0; batch_idx < 16; batch_idx++) {
-            int pos = i + batch_idx;
-            void *expanded_uints;
-            int expansion_count;
-            int j;
-            
-            /* Expand DNA4 k-mer to DNA2 k-mers directly as uint values */
-            expanded_uints = kmersearch_expand_dna4_kmer2_as_uint_to_dna2_direct(seq, pos, k, &expansion_count);
-            
-            if (!expanded_uints || expansion_count == 0)
-                continue;
-            
-            /* Copy expanded uint values to result array */
-            if (k <= 8) {
-                uint16 *src_array = (uint16 *) expanded_uints;
-                uint16 *dst_array = (uint16 *) result;
-                for (j = 0; j < expansion_count; j++) {
-                    dst_array[key_count++] = src_array[j];
-                }
-            } else if (k <= 16) {
-                uint32 *src_array = (uint32 *) expanded_uints;
-                uint32 *dst_array = (uint32 *) result;
-                for (j = 0; j < expansion_count; j++) {
-                    dst_array[key_count++] = src_array[j];
-                }
-            } else {
-                uint64 *src_array = (uint64 *) expanded_uints;
-                uint64 *dst_array = (uint64 *) result;
-                for (j = 0; j < expansion_count; j++) {
-                    dst_array[key_count++] = src_array[j];
-                }
-            }
-            
-            pfree(expanded_uints);
-        }
-    }
-    
-    /* Handle remaining k-mers */
-    for (i = simd_batch; i <= seq_bases - k; i++) {
-        void *expanded_uints;
-        int expansion_count;
-        int j;
-        
-        expanded_uints = kmersearch_expand_dna4_kmer2_as_uint_to_dna2_direct(seq, i, k, &expansion_count);
-        
-        if (!expanded_uints || expansion_count == 0)
-            continue;
-        
-        if (k <= 8) {
-            uint16 *src_array = (uint16 *) expanded_uints;
-            uint16 *dst_array = (uint16 *) result;
-            for (j = 0; j < expansion_count; j++) {
-                dst_array[key_count++] = src_array[j];
-            }
-        } else if (k <= 16) {
-            uint32 *src_array = (uint32 *) expanded_uints;
-            uint32 *dst_array = (uint32 *) result;
-            for (j = 0; j < expansion_count; j++) {
-                dst_array[key_count++] = src_array[j];
-            }
-        } else {
-            uint64 *src_array = (uint64 *) expanded_uints;
-            uint64 *dst_array = (uint64 *) result;
-            for (j = 0; j < expansion_count; j++) {
-                dst_array[key_count++] = src_array[j];
-            }
-        }
-        
-        pfree(expanded_uints);
-    }
-    
-    *nkeys = key_count;
-}
 #endif
 
 /*
  * DNA4 NEON implementation - DIRECT DEGENERATE EXPANSION
  */
 #ifdef __aarch64__
-__attribute__((target("+simd")))
-static void
-kmersearch_extract_dna4_kmer2_as_uint_with_expansion_direct_neon(VarBit *seq, int k, void **output, int *nkeys)
-{
-    int seq_bits = VARBITLEN(seq);
-    int seq_bases = seq_bits / 4;
-    int max_kmers = (seq_bases >= k) ? (seq_bases - k + 1) : 0;
-    size_t element_size = kmersearch_get_kmer_uint_size(k);
-    void *result;
-    int key_count = 0;
-    int simd_batch, i;
-    
-    *nkeys = 0;
-    if (max_kmers <= 0) {
-        *output = NULL;
-        return;
-    }
-    
-    /* Allocate result array with room for expansions (max 10 expansions per k-mer position) */
-    result = palloc(max_kmers * 10 * element_size);
-    *output = result;
-    
-    /* NEON optimized k-mer extraction with expansion */
-    simd_batch = max_kmers & ~3;  /* Process 4 k-mers at a time */
-    
-    /* NEON batch processing */
-    for (i = 0; i < simd_batch; i += 4) {
-        for (int batch_idx = 0; batch_idx < 4; batch_idx++) {
-            int pos = i + batch_idx;
-            void *expanded_uints;
-            int expansion_count;
-            int j;
-            
-            /* Expand DNA4 k-mer to DNA2 k-mers directly as uint values */
-            expanded_uints = kmersearch_expand_dna4_kmer2_as_uint_to_dna2_direct(seq, pos, k, &expansion_count);
-            
-            if (!expanded_uints || expansion_count == 0)
-                continue;
-            
-            /* Copy expanded uint values to result array */
-            if (k <= 8) {
-                uint16 *src_array = (uint16 *) expanded_uints;
-                uint16 *dst_array = (uint16 *) result;
-                for (j = 0; j < expansion_count; j++) {
-                    dst_array[key_count++] = src_array[j];
-                }
-            } else if (k <= 16) {
-                uint32 *src_array = (uint32 *) expanded_uints;
-                uint32 *dst_array = (uint32 *) result;
-                for (j = 0; j < expansion_count; j++) {
-                    dst_array[key_count++] = src_array[j];
-                }
-            } else {
-                uint64 *src_array = (uint64 *) expanded_uints;
-                uint64 *dst_array = (uint64 *) result;
-                for (j = 0; j < expansion_count; j++) {
-                    dst_array[key_count++] = src_array[j];
-                }
-            }
-            
-            pfree(expanded_uints);
-        }
-    }
-    
-    /* Handle remaining k-mers */
-    for (i = simd_batch; i <= seq_bases - k; i++) {
-        void *expanded_uints;
-        int expansion_count;
-        int j;
-        
-        expanded_uints = kmersearch_expand_dna4_kmer2_as_uint_to_dna2_direct(seq, i, k, &expansion_count);
-        
-        if (!expanded_uints || expansion_count == 0)
-            continue;
-        
-        if (k <= 8) {
-            uint16 *src_array = (uint16 *) expanded_uints;
-            uint16 *dst_array = (uint16 *) result;
-            for (j = 0; j < expansion_count; j++) {
-                dst_array[key_count++] = src_array[j];
-            }
-        } else if (k <= 16) {
-            uint32 *src_array = (uint32 *) expanded_uints;
-            uint32 *dst_array = (uint32 *) result;
-            for (j = 0; j < expansion_count; j++) {
-                dst_array[key_count++] = src_array[j];
-            }
-        } else {
-            uint64 *src_array = (uint64 *) expanded_uints;
-            uint64 *dst_array = (uint64 *) result;
-            for (j = 0; j < expansion_count; j++) {
-                dst_array[key_count++] = src_array[j];
-            }
-        }
-        
-        pfree(expanded_uints);
-    }
-    
-    *nkeys = key_count;
-}
 
 /*
  * DNA4 SVE implementation - DIRECT DEGENERATE EXPANSION
  */
-__attribute__((target("+sve")))
-static void
-kmersearch_extract_dna4_kmer2_as_uint_with_expansion_direct_sve(VarBit *seq, int k, void **output, int *nkeys)
-{
-    int seq_bits = VARBITLEN(seq);
-    int seq_bases = seq_bits / 4;
-    int max_kmers = (seq_bases >= k) ? (seq_bases - k + 1) : 0;
-    size_t element_size = kmersearch_get_kmer_uint_size(k);
-    void *result;
-    int key_count = 0;
-    int simd_batch, i;
-    
-    *nkeys = 0;
-    if (max_kmers <= 0) {
-        *output = NULL;
-        return;
-    }
-    
-    /* Allocate result array with room for expansions (max 10 expansions per k-mer position) */
-    result = palloc(max_kmers * 10 * element_size);
-    *output = result;
-    
-    /* SVE optimized k-mer extraction with expansion */
-    simd_batch = max_kmers & ~7;  /* Process 8 k-mers at a time */
-    
-    /* SVE batch processing */
-    for (i = 0; i < simd_batch; i += 8) {
-        for (int batch_idx = 0; batch_idx < 8; batch_idx++) {
-            int pos = i + batch_idx;
-            void *expanded_uints;
-            int expansion_count;
-            int j;
-            
-            /* Expand DNA4 k-mer to DNA2 k-mers directly as uint values */
-            expanded_uints = kmersearch_expand_dna4_kmer2_as_uint_to_dna2_direct(seq, pos, k, &expansion_count);
-            
-            if (!expanded_uints || expansion_count == 0)
-                continue;
-            
-            /* Copy expanded uint values to result array */
-            if (k <= 8) {
-                uint16 *src_array = (uint16 *) expanded_uints;
-                uint16 *dst_array = (uint16 *) result;
-                for (j = 0; j < expansion_count; j++) {
-                    dst_array[key_count++] = src_array[j];
-                }
-            } else if (k <= 16) {
-                uint32 *src_array = (uint32 *) expanded_uints;
-                uint32 *dst_array = (uint32 *) result;
-                for (j = 0; j < expansion_count; j++) {
-                    dst_array[key_count++] = src_array[j];
-                }
-            } else {
-                uint64 *src_array = (uint64 *) expanded_uints;
-                uint64 *dst_array = (uint64 *) result;
-                for (j = 0; j < expansion_count; j++) {
-                    dst_array[key_count++] = src_array[j];
-                }
-            }
-            
-            pfree(expanded_uints);
-        }
-    }
-    
-    /* Handle remaining k-mers */
-    for (i = simd_batch; i <= seq_bases - k; i++) {
-        void *expanded_uints;
-        int expansion_count;
-        int j;
-        
-        expanded_uints = kmersearch_expand_dna4_kmer2_as_uint_to_dna2_direct(seq, i, k, &expansion_count);
-        
-        if (!expanded_uints || expansion_count == 0)
-            continue;
-        
-        if (k <= 8) {
-            uint16 *src_array = (uint16 *) expanded_uints;
-            uint16 *dst_array = (uint16 *) result;
-            for (j = 0; j < expansion_count; j++) {
-                dst_array[key_count++] = src_array[j];
-            }
-        } else if (k <= 16) {
-            uint32 *src_array = (uint32 *) expanded_uints;
-            uint32 *dst_array = (uint32 *) result;
-            for (j = 0; j < expansion_count; j++) {
-                dst_array[key_count++] = src_array[j];
-            }
-        } else {
-            uint64 *src_array = (uint64 *) expanded_uints;
-            uint64 *dst_array = (uint64 *) result;
-            for (j = 0; j < expansion_count; j++) {
-                dst_array[key_count++] = src_array[j];
-            }
-        }
-        
-        pfree(expanded_uints);
-    }
-    
-    *nkeys = key_count;
-}
 #endif
 
 /*
@@ -5007,29 +2973,31 @@ kmersearch_extract_dna2_kmer2_as_uint_direct(VarBit *seq, int k, void **output, 
 {
     int seq_bits = VARBITLEN(seq);
     
+    /* TODO: Re-enable SIMD dispatch after moving k-mer extraction functions
 #ifdef __x86_64__
     if (simd_capability >= SIMD_AVX512BW && seq_bits >= SIMD_EXTRACT_AVX512_THRESHOLD) {
-        /* AVX512 implementation */
-        kmersearch_extract_dna2_kmer2_as_uint_direct_avx512(seq, k, output, nkeys);
-        return;
+        // AVX512 implementation
+        // kmersearch_extract_dna2_kmer2_as_uint_direct_avx512(seq, k, output, nkeys);
+        // return;
     }
     if (simd_capability >= SIMD_AVX2 && seq_bits >= SIMD_EXTRACT_AVX2_THRESHOLD) {
-        /* AVX2 implementation */
-        kmersearch_extract_dna2_kmer2_as_uint_direct_avx2(seq, k, output, nkeys);
-        return;
+        // AVX2 implementation  
+        // kmersearch_extract_dna2_kmer2_as_uint_direct_avx2(seq, k, output, nkeys);
+        // return;
     }
 #elif defined(__aarch64__)
     if (simd_capability >= SIMD_SVE && seq_bits >= SIMD_EXTRACT_SVE_THRESHOLD) {
-        /* SVE implementation */
-        kmersearch_extract_dna2_kmer2_as_uint_direct_sve(seq, k, output, nkeys);
-        return;
+        // SVE implementation
+        // kmersearch_extract_dna2_kmer2_as_uint_direct_sve(seq, k, output, nkeys);
+        // return;
     }
     if (simd_capability >= SIMD_NEON && seq_bits >= SIMD_EXTRACT_NEON_THRESHOLD) {
-        /* NEON implementation */
-        kmersearch_extract_dna2_kmer2_as_uint_direct_neon(seq, k, output, nkeys);
-        return;
+        // NEON implementation
+        // kmersearch_extract_dna2_kmer2_as_uint_direct_neon(seq, k, output, nkeys);
+        // return;
     }
 #endif
+    */
     kmersearch_extract_dna2_kmer2_as_uint_direct_scalar(seq, k, output, nkeys);
 }
 
@@ -5041,28 +3009,30 @@ kmersearch_extract_dna4_kmer2_as_uint_with_expansion_direct(VarBit *seq, int k, 
 {
     int seq_bits = VARBITLEN(seq);
     
+    /* TODO: Re-enable SIMD dispatch after moving k-mer extraction functions
 #ifdef __x86_64__
     if (simd_capability >= SIMD_AVX512BW && seq_bits >= SIMD_EXTRACT_AVX512_THRESHOLD) {
-        /* AVX512 implementation */
-        kmersearch_extract_dna4_kmer2_as_uint_with_expansion_direct_avx512(seq, k, output, nkeys);
-        return;
+        // AVX512 implementation
+        // kmersearch_extract_dna4_kmer2_as_uint_with_expansion_direct_avx512(seq, k, output, nkeys);
+        // return;
     }
     if (simd_capability >= SIMD_AVX2 && seq_bits >= SIMD_EXTRACT_AVX2_THRESHOLD) {
-        /* AVX2 implementation */
-        kmersearch_extract_dna4_kmer2_as_uint_with_expansion_direct_avx2(seq, k, output, nkeys);
-        return;
+        // AVX2 implementation
+        // kmersearch_extract_dna4_kmer2_as_uint_with_expansion_direct_avx2(seq, k, output, nkeys);
+        // return;
     }
 #elif defined(__aarch64__)
     if (simd_capability >= SIMD_SVE && seq_bits >= SIMD_EXTRACT_SVE_THRESHOLD) {
-        /* SVE implementation */
-        kmersearch_extract_dna4_kmer2_as_uint_with_expansion_direct_sve(seq, k, output, nkeys);
-        return;
+        // SVE implementation
+        // kmersearch_extract_dna4_kmer2_as_uint_with_expansion_direct_sve(seq, k, output, nkeys);
+        // return;
     }
     if (simd_capability >= SIMD_NEON && seq_bits >= SIMD_EXTRACT_NEON_THRESHOLD) {
-        /* NEON implementation */
-        kmersearch_extract_dna4_kmer2_as_uint_with_expansion_direct_neon(seq, k, output, nkeys);
-        return;
+        // NEON implementation
+        // kmersearch_extract_dna4_kmer2_as_uint_with_expansion_direct_neon(seq, k, output, nkeys);
+        // return;
     }
 #endif
+    */
     kmersearch_extract_dna4_kmer2_as_uint_with_expansion_direct_scalar(seq, k, output, nkeys);
 }
