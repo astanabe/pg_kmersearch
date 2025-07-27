@@ -540,25 +540,63 @@ _PG_init(void)
 static simd_capability_t detect_cpu_capabilities(void)
 {
     unsigned int eax, ebx, ecx, edx;
+    bool has_avx2 = false;
+    bool has_bmi2 = false;
+    bool has_avx512f = false;
+    bool has_avx512bw = false;
+    bool has_avx512vbmi = false;
+    bool has_avx512vbmi2 = false;
     
-    /* Check for AVX512 support */
-    if (__get_cpuid_max(0, NULL) >= 7) {
-        __cpuid_count(7, 0, eax, ebx, ecx, edx);
-        if (ebx & (1 << 16)) { /* AVX512F */
-            if (ebx & (1 << 30)) { /* AVX512BW */
-                return SIMD_AVX512BW;
+    /* Check CPUID support level */
+    unsigned int max_leaf = __get_cpuid_max(0, NULL);
+    
+    /* Check for AVX support (required for AVX2/AVX512) */
+    if (max_leaf >= 1) {
+        __cpuid(1, eax, ebx, ecx, edx);
+        bool has_xsave = (ecx & (1 << 27)) != 0;
+        bool has_osxsave = (ecx & (1 << 28)) != 0;
+        
+        if (has_xsave && has_osxsave) {
+            /* Check OS support for YMM/ZMM registers */
+            unsigned long long xcr0 = 0;
+            __asm__ ("xgetbv" : "=a" (xcr0) : "c" (0) : "%edx");
+            bool ymm_enabled = (xcr0 & 0x6) == 0x6;
+            bool zmm_enabled = (xcr0 & 0xe6) == 0xe6;
+            
+            /* Check extended features */
+            if (max_leaf >= 7) {
+                __cpuid_count(7, 0, eax, ebx, ecx, edx);
+                
+                /* AVX2 and BMI2 */
+                if (ymm_enabled) {
+                    has_avx2 = (ebx & (1 << 5)) != 0;
+                    has_bmi2 = (ebx & (1 << 8)) != 0;
+                }
+                
+                /* AVX512 features */
+                if (zmm_enabled) {
+                    has_avx512f = (ebx & (1 << 16)) != 0;
+                    has_avx512bw = (ebx & (1 << 30)) != 0;
+                    has_avx512vbmi = (ecx & (1 << 1)) != 0;
+                    has_avx512vbmi2 = (ecx & (1 << 6)) != 0;
+                }
             }
-            return SIMD_AVX512F;
         }
     }
     
-    /* Check for AVX2 support */
-    if (__get_cpuid_max(0, NULL) >= 7) {
-        __cpuid_count(7, 0, eax, ebx, ecx, edx);
-        if (ebx & (1 << 5)) { /* AVX2 */
-            return SIMD_AVX2;
-        }
-    }
+    /* Return highest supported capability */
+    if (has_avx512f && has_avx512bw && has_avx512vbmi && has_avx512vbmi2)
+        return SIMD_AVX512VBMI2;
+    if (has_avx512f && has_avx512bw && has_avx512vbmi)
+        return SIMD_AVX512VBMI;
+    if (has_avx512f && has_avx512bw)
+        return SIMD_AVX512BW;
+    if (has_avx512f)
+        return SIMD_AVX512F;
+    if (has_avx2 && has_bmi2)
+        return SIMD_BMI2;
+    if (has_avx2)
+        return SIMD_AVX2;
     
     return SIMD_NONE;
 }
@@ -569,7 +607,7 @@ static void sigill_handler(int sig) {
     siglongjmp(jmpbuf, 1);
 }
 
-__attribute__((target("+sve,+simd")))
+__attribute__((target("+sve2,+sve,+simd")))
 static simd_capability_t detect_cpu_capabilities(void)
 {
     struct sigaction sa, old_sa;
@@ -578,21 +616,36 @@ static simd_capability_t detect_cpu_capabilities(void)
     sa.sa_flags = 0;
     sigaction(SIGILL, &sa, &old_sa);
     
+    /* Check for SVE2 support */
+#ifdef __ARM_FEATURE_SVE2
+    if (sigsetjmp(jmpbuf, 1) == 0) {
+        /* Try SVE2-specific instruction */
+        size_t vl = svcntd();
+        (void)vl;
+        sigaction(SIGILL, &old_sa, NULL);
+        return SIMD_SVE2;
+    }
+#endif
+    
     /* Check for SVE support */
+#ifdef __ARM_FEATURE_SVE
     if (sigsetjmp(jmpbuf, 1) == 0) {
         size_t vl = svcntb();
         (void)vl;
         sigaction(SIGILL, &old_sa, NULL);
         return SIMD_SVE;
     }
+#endif
     
     /* Check for NEON support */
+#ifdef __ARM_NEON
     if (sigsetjmp(jmpbuf, 1) == 0) {
         volatile uint8x8_t a = vdup_n_u8(1);
         (void)a;
         sigaction(SIGILL, &old_sa, NULL);
         return SIMD_NEON;
     }
+#endif
     
     return SIMD_NONE;
 }

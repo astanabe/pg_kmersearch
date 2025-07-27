@@ -90,12 +90,20 @@
  * SIMD capability detection
  */
 typedef enum {
-    SIMD_NONE,
-    SIMD_AVX2,     /* AMD64: AVX2 + SSE4.x */
-    SIMD_AVX512F,  /* AMD64: AVX512F (basic set) */
-    SIMD_AVX512BW, /* AMD64: AVX512BW (byte/word operations) */
-    SIMD_NEON,     /* ARM64: Apple M1+ NEON */
-    SIMD_SVE       /* ARM64: Graviton4+ SVE */
+    SIMD_NONE = 0,              /* No SIMD support */
+    
+    /* x86/x64 SIMD capabilities */
+    SIMD_AVX2 = 1,              /* AVX2 support */
+    SIMD_BMI2 = 2,              /* AVX2 + BMI2 support */
+    SIMD_AVX512F = 3,           /* AVX512F support */
+    SIMD_AVX512BW = 4,          /* AVX512BW support */
+    SIMD_AVX512VBMI = 5,        /* AVX512 + VBMI support */
+    SIMD_AVX512VBMI2 = 6,       /* AVX512 + VBMI + VBMI2 support */
+    
+    /* ARM SIMD capabilities */
+    SIMD_NEON = 21,             /* ARM NEON support */
+    SIMD_SVE = 22,              /* ARM SVE support */
+    SIMD_SVE2 = 23              /* ARM SVE2 support */
 } simd_capability_t;
 
 /*
