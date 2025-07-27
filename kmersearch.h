@@ -537,9 +537,9 @@ Datum kmersearch_rawscore_cache_free(PG_FUNCTION_ARGS);
 Datum kmersearch_query_pattern_cache_stats(PG_FUNCTION_ARGS);
 Datum kmersearch_query_pattern_cache_free(PG_FUNCTION_ARGS);
 
-/* Internal cache management functions */
-void kmersearch_free_query_pattern_cache_internal(void);
-void kmersearch_free_actual_min_score_cache_internal(void);
+/* Cache manager functions (defined in kmersearch_cache.c) */
+void free_query_pattern_cache_manager(QueryPatternCacheManager **manager);
+void free_actual_min_score_cache_manager(ActualMinScoreCacheManager **manager);
 
 /* High-frequency k-mer cache global variables (defined in kmersearch_cache.c) */
 
@@ -676,5 +676,8 @@ void kmersearch_extract_dna4_kmer2_as_uint_with_expansion_direct(VarBit *seq, in
 size_t kmersearch_get_kmer_uint_size(int k);
 void kmersearch_extract_dna4_kmer_expansions_direct_bits(VarBit *seq, int start_pos, int k, uint64 *output, int *count);
 void *kmersearch_expand_dna4_kmer2_as_uint_to_dna2_direct(VarBit *dna4_seq, int start_pos, int k, int *expansion_count);
+
+/* Utility functions */
+void kmersearch_spi_connect_or_error(void);
 
 #endif   /* KMERSEARCH_H */

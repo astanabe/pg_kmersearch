@@ -47,11 +47,11 @@ static QueryPatternCacheEntry *lookup_query_pattern_cache_entry(QueryPatternCach
 static void store_query_pattern_cache_entry(QueryPatternCacheManager *manager, uint64 hash_key, const char *query_string, int k_size, VarBit **kmers, int kmer_count);
 static void lru_touch_query_pattern_cache(QueryPatternCacheManager *manager, QueryPatternCacheEntry *entry);
 static void lru_evict_oldest_query_pattern_cache(QueryPatternCacheManager *manager);
-static void free_query_pattern_cache_manager(QueryPatternCacheManager **manager);
+void free_query_pattern_cache_manager(QueryPatternCacheManager **manager);
 
 /* Actual min score cache functions */
 static void create_actual_min_score_cache_manager(ActualMinScoreCacheManager **manager);
-static void free_actual_min_score_cache_manager(ActualMinScoreCacheManager **manager);
+void free_actual_min_score_cache_manager(ActualMinScoreCacheManager **manager);
 
 /* Rawscore cache functions */
 static RawscoreCacheManager *create_rawscore_cache_manager(const char *name);
@@ -346,7 +346,7 @@ get_cached_query_kmer(const char *query_string, int k_size, int *nkeys)
 /*
  * Free query pattern cache manager
  */
-static void
+void
 free_query_pattern_cache_manager(QueryPatternCacheManager **manager)
 {
     if (*manager)
@@ -400,7 +400,7 @@ create_actual_min_score_cache_manager(ActualMinScoreCacheManager **manager)
 /*
  * Free actual min score cache manager
  */
-static void
+void
 free_actual_min_score_cache_manager(ActualMinScoreCacheManager **manager)
 {
     if (*manager)
@@ -1214,23 +1214,7 @@ kmersearch_actual_min_score_cache_free(PG_FUNCTION_ARGS)
     PG_RETURN_INT32(freed_entries);
 }
 
-/*
- * Internal function to free query pattern cache (without PostgreSQL function wrapper)
- */
-void
-kmersearch_free_query_pattern_cache_internal(void)
-{
-    free_query_pattern_cache_manager(&query_pattern_cache_manager);
-}
 
-/*
- * Internal function to free actual min score cache (without PostgreSQL function wrapper)
- */
-void
-kmersearch_free_actual_min_score_cache_internal(void)
-{
-    free_actual_min_score_cache_manager(&actual_min_score_cache_manager);
-}
 
 /*
  * High-frequency k-mer cache management functions implementation
@@ -2237,7 +2221,7 @@ kmersearch_query_pattern_cache_max_entries_assign_hook(int newval, void *extra)
     
     /* Clear query pattern cache to recreate with new size limit */
     if (query_pattern_cache_manager)
-        kmersearch_free_query_pattern_cache_internal();
+        free_query_pattern_cache_manager(&query_pattern_cache_manager);
 }
 
 /* Additional global variable for parallel cache exit callback */

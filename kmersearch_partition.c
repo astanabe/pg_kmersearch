@@ -46,7 +46,6 @@ static void create_partition_table(const char *temp_table_name, const char *tabl
                                    const char *dna_column_name, int partition_count, const char *tablespace_name);
 static void migrate_data_in_batches(const char *table_name, const char *temp_table_name, Oid table_oid);
 static void replace_table_with_partition(const char *table_name, const char *temp_table_name);
-static void cleanup_temp_partitions(const char *temp_table_name, int partition_count);
 
 
 /*
@@ -617,22 +616,6 @@ replace_table_with_partition(const char *table_name, const char *temp_table_name
     pfree(query.data);
 }
 
-/*
- * cleanup_temp_partitions
- *
- * Clean up temporary tables on error
- * NOTE: This function is kept for potential future use but is not called
- * within SPI context due to PostgreSQL restrictions on dropping tables
- * that are being used by active queries in the same session.
- */
-static void
-cleanup_temp_partitions(const char *temp_table_name, int partition_count)
-{
-    /* This function intentionally left as a stub.
-     * Cleanup of temporary tables created within SPI context
-     * must be done manually by the user if the operation fails.
-     */
-}
 
 
 

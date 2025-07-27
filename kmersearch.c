@@ -315,11 +315,11 @@ kmersearch_kmer_size_assign_hook(int newval, void *extra)
     
     /* Clear query pattern cache */
     if (query_pattern_cache_manager)
-        kmersearch_free_query_pattern_cache_internal();
+        free_query_pattern_cache_manager(&query_pattern_cache_manager);
     
     /* Clear actual min score cache */
     if (actual_min_score_cache_manager)
-        kmersearch_free_actual_min_score_cache_internal();
+        free_actual_min_score_cache_manager(&actual_min_score_cache_manager);
     
     /* Clear high-frequency k-mer cache with conditional warning */
     clear_highfreq_cache_with_warning();
@@ -333,7 +333,7 @@ kmersearch_max_appearance_rate_assign_hook(double newval, void *extra)
     (void) extra;   /* Suppress unused parameter warning */
     /* Clear actual min score cache */
     if (actual_min_score_cache_manager)
-        kmersearch_free_actual_min_score_cache_internal();
+        free_actual_min_score_cache_manager(&actual_min_score_cache_manager);
     
     /* Clear high-frequency k-mer cache with conditional warning */
     clear_highfreq_cache_with_warning();
@@ -347,7 +347,7 @@ kmersearch_max_appearance_nrow_assign_hook(int newval, void *extra)
     (void) extra;   /* Suppress unused parameter warning */
     /* Clear actual min score cache */
     if (actual_min_score_cache_manager)
-        kmersearch_free_actual_min_score_cache_internal();
+        free_actual_min_score_cache_manager(&actual_min_score_cache_manager);
     
     /* Clear high-frequency k-mer cache with conditional warning */
     clear_highfreq_cache_with_warning();
@@ -361,7 +361,7 @@ kmersearch_min_score_assign_hook(int newval, void *extra)
     (void) extra;   /* Suppress unused parameter warning */
     /* Clear actual min score cache */
     if (actual_min_score_cache_manager)
-        kmersearch_free_actual_min_score_cache_internal();
+        free_actual_min_score_cache_manager(&actual_min_score_cache_manager);
 }
 
 /* Min shared ngram key rate change affects actual min score cache */
@@ -372,7 +372,7 @@ kmersearch_min_shared_ngram_key_rate_assign_hook(double newval, void *extra)
     (void) extra;   /* Suppress unused parameter warning */
     /* Clear actual min score cache */
     if (actual_min_score_cache_manager)
-        kmersearch_free_actual_min_score_cache_internal();
+        free_actual_min_score_cache_manager(&actual_min_score_cache_manager);
 }
 /* Query pattern cache max entries change requires cache recreation */
 /* Function moved to kmersearch_cache.c */
@@ -2838,10 +2838,10 @@ _PG_fini(void)
 {
     /* Free query pattern cache manager on module unload (uses TopMemoryContext - needs manual cleanup) */
     /* DNA2/DNA4 cache managers are now local and automatically freed with QueryContext */
-    kmersearch_free_query_pattern_cache_internal();
+    free_query_pattern_cache_manager(&query_pattern_cache_manager);
     
     /* Free actual min score cache manager on module unload */
-    kmersearch_free_actual_min_score_cache_internal();
+    free_actual_min_score_cache_manager(&actual_min_score_cache_manager);
     
     /* Free high-frequency k-mer cache on module unload */
     kmersearch_highfreq_kmer_cache_free_internal();
