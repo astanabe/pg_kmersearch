@@ -222,33 +222,7 @@ static void init_simd_dispatch_table(void);
 /* Scalar versions */
 static Datum *kmersearch_extract_dna2_kmer2_direct_scalar(VarBit *seq, int k, int *nkeys);
 
-#ifdef __x86_64__
-/* TODO: Move to kmersearch_datatype.c
-static void dna4_encode_avx2(const char* input, uint8_t* output, int len);
-static void dna4_decode_avx2(const uint8_t* input, char* output, int len);
-*/
-
-/* K-mer processing functions with SIMD optimization */
-
-/* TODO: Move to kmersearch_datatype.c
-static void dna4_encode_avx512(const char* input, uint8_t* output, int len);
-static void dna4_decode_avx512(const uint8_t* input, char* output, int len);
-*/
-#endif
-
-#ifdef __aarch64__
-/* TODO: Move to kmersearch_datatype.c
-static void dna4_encode_neon(const char* input, uint8_t* output, int len);
-static void dna4_decode_neon(const uint8_t* input, char* output, int len);
-*/
-
-
-
-/* TODO: Move to kmersearch_datatype.c
-static void dna4_encode_sve(const char* input, uint8_t* output, int len);
-static void dna4_decode_sve(const uint8_t* input, char* output, int len);
-*/
-#endif
+/* SIMD function declarations are now in kmersearch.h */
 
 /*
  * GUC assign hook functions for cache invalidation
@@ -1701,31 +1675,10 @@ kmersearch_extract_dna2_kmer2_as_uint_direct(VarBit *seq, int k, void **output, 
 {
     int seq_bits = VARBITLEN(seq);
     
-    /* TODO: Re-enable SIMD dispatch after moving k-mer extraction functions
-#ifdef __x86_64__
-    if (simd_capability >= SIMD_AVX512BW && seq_bits >= SIMD_EXTRACT_AVX512_THRESHOLD) {
-        // AVX512 implementation
-        // kmersearch_extract_dna2_kmer2_as_uint_direct_avx512(seq, k, output, nkeys);
-        // return;
-    }
-    if (simd_capability >= SIMD_AVX2 && seq_bits >= SIMD_EXTRACT_AVX2_THRESHOLD) {
-        // AVX2 implementation  
-        // kmersearch_extract_dna2_kmer2_as_uint_direct_avx2(seq, k, output, nkeys);
-        // return;
-    }
-#elif defined(__aarch64__)
-    if (simd_capability >= SIMD_SVE && seq_bits >= SIMD_EXTRACT_SVE_THRESHOLD) {
-        // SVE implementation
-        // kmersearch_extract_dna2_kmer2_as_uint_direct_sve(seq, k, output, nkeys);
-        // return;
-    }
-    if (simd_capability >= SIMD_NEON && seq_bits >= SIMD_EXTRACT_NEON_THRESHOLD) {
-        // NEON implementation
-        // kmersearch_extract_dna2_kmer2_as_uint_direct_neon(seq, k, output, nkeys);
-        // return;
-    }
-#endif
-    */
+    /* SIMD dispatch currently not implemented for k-mer extraction.
+     * The functions kmersearch_extract_dna2_kmer2_as_uint_direct_avx512 etc.
+     * need to be implemented before SIMD dispatch can be enabled.
+     */
     kmersearch_extract_dna2_kmer2_as_uint_direct_scalar(seq, k, output, nkeys);
 }
 
@@ -1737,30 +1690,9 @@ kmersearch_extract_dna4_kmer2_as_uint_with_expansion_direct(VarBit *seq, int k, 
 {
     int seq_bits = VARBITLEN(seq);
     
-    /* TODO: Re-enable SIMD dispatch after moving k-mer extraction functions
-#ifdef __x86_64__
-    if (simd_capability >= SIMD_AVX512BW && seq_bits >= SIMD_EXTRACT_AVX512_THRESHOLD) {
-        // AVX512 implementation
-        // kmersearch_extract_dna4_kmer2_as_uint_with_expansion_direct_avx512(seq, k, output, nkeys);
-        // return;
-    }
-    if (simd_capability >= SIMD_AVX2 && seq_bits >= SIMD_EXTRACT_AVX2_THRESHOLD) {
-        // AVX2 implementation
-        // kmersearch_extract_dna4_kmer2_as_uint_with_expansion_direct_avx2(seq, k, output, nkeys);
-        // return;
-    }
-#elif defined(__aarch64__)
-    if (simd_capability >= SIMD_SVE && seq_bits >= SIMD_EXTRACT_SVE_THRESHOLD) {
-        // SVE implementation
-        // kmersearch_extract_dna4_kmer2_as_uint_with_expansion_direct_sve(seq, k, output, nkeys);
-        // return;
-    }
-    if (simd_capability >= SIMD_NEON && seq_bits >= SIMD_EXTRACT_NEON_THRESHOLD) {
-        // NEON implementation
-        // kmersearch_extract_dna4_kmer2_as_uint_with_expansion_direct_neon(seq, k, output, nkeys);
-        // return;
-    }
-#endif
-    */
+    /* SIMD dispatch currently not implemented for k-mer extraction.
+     * The functions kmersearch_extract_dna4_kmer2_as_uint_with_expansion_direct_avx512 etc.
+     * need to be implemented before SIMD dispatch can be enabled.
+     */
     kmersearch_extract_dna4_kmer2_as_uint_with_expansion_direct_scalar(seq, k, output, nkeys);
 }
