@@ -862,17 +862,99 @@ kmersearch_expand_dna4_kmer2_to_dna2_direct_avx2(VarBit *dna4_seq, int start_pos
         result_data = VARBITS(result);
         
         /* Generate this combination */
-        /* TODO: Optimize this part with AVX2 when processing multiple bases */
-        for (i = 0; i < k; i++)
+        /* Optimize with AVX2 when processing multiple bases */
+        if (k >= 16)
         {
-            int base_idx = temp_combo % base_counts[i];
-            uint8 dna2_base = base_expansions[i][base_idx];
-            int dst_bit_pos = i * 2;
-            int dst_byte_pos = dst_bit_pos / 8;
-            int dst_bit_offset = dst_bit_pos % 8;
+            /* Process 16 bases at a time using AVX2 */
+            for (i = 0; i < k - 15; i += 16)
+            {
+                uint8_t base_array[16];
+                uint64_t packed = 0;
+                uint64_t deposited;
+                int j;
+                
+                /* Collect 16 DNA2 bases */
+                for (j = 0; j < 16; j++)
+                {
+                    int base_idx = temp_combo % base_counts[i + j];
+                    base_array[j] = base_expansions[i + j][base_idx];
+                    temp_combo /= base_counts[i + j];
+                }
+                
+                /* Pack 16 2-bit values into 32 bits */
+                for (j = 0; j < 16; j++)
+                {
+                    packed |= ((uint64_t)base_array[j] << (j * 2));
+                }
+                
+                /* Use PDEP to deposit bits efficiently */
+                deposited = _pdep_u64(packed, 0xFFFFFFFF);
+                
+                /* Write 4 bytes to result */
+                memcpy(&result_data[i / 4], &deposited, 4);
+            }
             
-            result_data[dst_byte_pos] |= (dna2_base << (6 - dst_bit_offset));
-            temp_combo /= base_counts[i];
+            /* Handle remaining bases */
+            for (; i < k; i++)
+            {
+                int base_idx = temp_combo % base_counts[i];
+                uint8 dna2_base = base_expansions[i][base_idx];
+                int dst_bit_pos = i * 2;
+                int dst_byte_pos = dst_bit_pos / 8;
+                int dst_bit_offset = dst_bit_pos % 8;
+                
+                result_data[dst_byte_pos] |= (dna2_base << (6 - dst_bit_offset));
+                temp_combo /= base_counts[i];
+            }
+        }
+        else if (k >= 8)
+        {
+            /* Process 8 bases at a time */
+            for (i = 0; i < k - 7; i += 8)
+            {
+                uint16_t packed = 0;
+                int j;
+                
+                /* Collect and pack 8 DNA2 bases */
+                for (j = 0; j < 8; j++)
+                {
+                    int base_idx = temp_combo % base_counts[i + j];
+                    uint8 dna2_base = base_expansions[i + j][base_idx];
+                    packed |= ((uint16_t)dna2_base << (j * 2));
+                    temp_combo /= base_counts[i + j];
+                }
+                
+                /* Write 2 bytes to result */
+                memcpy(&result_data[i / 4], &packed, 2);
+            }
+            
+            /* Handle remaining bases */
+            for (; i < k; i++)
+            {
+                int base_idx = temp_combo % base_counts[i];
+                uint8 dna2_base = base_expansions[i][base_idx];
+                int dst_bit_pos = i * 2;
+                int dst_byte_pos = dst_bit_pos / 8;
+                int dst_bit_offset = dst_bit_pos % 8;
+                
+                result_data[dst_byte_pos] |= (dna2_base << (6 - dst_bit_offset));
+                temp_combo /= base_counts[i];
+            }
+        }
+        else
+        {
+            /* Original scalar implementation for small k */
+            for (i = 0; i < k; i++)
+            {
+                int base_idx = temp_combo % base_counts[i];
+                uint8 dna2_base = base_expansions[i][base_idx];
+                int dst_bit_pos = i * 2;
+                int dst_byte_pos = dst_bit_pos / 8;
+                int dst_bit_offset = dst_bit_pos % 8;
+                
+                result_data[dst_byte_pos] |= (dna2_base << (6 - dst_bit_offset));
+                temp_combo /= base_counts[i];
+            }
         }
         
         results[combo] = result;

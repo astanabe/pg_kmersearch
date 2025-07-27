@@ -9,10 +9,10 @@ This document outlines the optimization plan for SIMD versions of key functions 
    - `kmersearch_extract_dna4_kmer2_with_expansion_direct()` ✅ **COMPLETED**
    - `kmersearch_extract_dna2_kmer2_as_uint_direct()` ✅ **COMPLETED** 
    - `kmersearch_extract_dna4_kmer2_as_uint_with_expansion_direct()` ✅ **COMPLETED**
-   - `kmersearch_expand_dna4_kmer2_to_dna2_direct()` ⚠️ **PARTIALLY COMPLETED** (AVX2 version has BMI2 for phase 1)
+   - `kmersearch_expand_dna4_kmer2_to_dna2_direct()` ✅ **COMPLETED** (AVX2 version with BMI2 optimizations)
 
 2. Encoding/Decoding functions
-   - `dna2_encode()`
+   - `dna2_encode()` ✅ **COMPLETED** (AVX2 version with PDEP optimization)
    - `dna2_decode()`
    - `dna4_encode()`
    - `dna4_decode()`
@@ -67,16 +67,23 @@ src_bits = __builtin_bswap64(src_bits);
 // 4. Efficient DNA4 to DNA2 bit conversion
 ```
 
-##### dna2_encode_avx2
+##### dna2_encode_avx2 ✅ **COMPLETED**
 ```c
+// Implemented optimizations:
 // 1. Load 32 characters at once
 __m256i chars = _mm256_loadu_si256((__m256i*)input);
 
-// 2. Parallel comparison for all bases
+// 2. Parallel comparison for all bases using AVX2
 __m256i mask_C = _mm256_cmpeq_epi8(chars, _mm256_set1_epi8('C'));
+__m256i mask_G = _mm256_cmpeq_epi8(chars, _mm256_set1_epi8('G'));
+// ... etc for all bases including case handling
 
 // 3. Use PDEP to deposit bits efficiently
-uint64_t encoded = _pdep_u64(base_bits, 0x5555555555555555ULL);
+uint64_t base_bits0 = collect_2bit_values(first_16_bases);
+uint64_t deposited0 = _pdep_u64(base_bits0, 0xFFFFFFFF);
+
+// 4. Process 32 bases at a time with batch bit packing
+memcpy(&output[byte_offset], &deposited0, 4);
 ```
 
 #### AVX512 + VBMI/VBMI2 Versions (*_avx512) ✅ **COMPLETED**

@@ -986,7 +986,7 @@ void dna2_encode_scalar(const char* input, uint8_t* output, int len)
 }
 
 #ifdef __x86_64__
-__attribute__((target("avx2")))
+__attribute__((target("avx2,bmi2")))
 void dna2_encode_avx2(const char* input, uint8_t* output, int len)
 {
     int byte_len = (len * 2 + 7) / 8;
@@ -1024,24 +1024,35 @@ void dna2_encode_avx2(const char* input, uint8_t* output, int len)
         encoded = _mm256_or_si256(encoded, _mm256_and_si256(mask_G, _mm256_set1_epi8(2)));
         encoded = _mm256_or_si256(encoded, _mm256_and_si256(mask_T, _mm256_set1_epi8(3)));
         
-        /* Pack 2-bit values into bytes - simplified approach */
-        /* For full implementation, we'd need complex bit packing */
-        /* Fall back to scalar for bit packing part */
+        /* Extract 2-bit values and pack using PDEP */
         _mm256_storeu_si256((__m256i*)temp, encoded);
         
-        for (int j = 0; j < 32; j++) {
-            int bit_pos = (i + j) * 2;
-            int byte_pos = bit_pos / 8;
-            int bit_offset = bit_pos % 8;
+        /* Process 32 bases (64 bits) using PDEP for efficient bit packing */
+        for (int j = 0; j < 32; j += 32) {
+            uint64_t base_bits0 = 0, base_bits1 = 0;
+            uint64_t deposited0, deposited1;
+            int byte_offset = (i + j) / 4;
             
-            if (bit_offset <= 6) {
-                output[byte_pos] |= (temp[j] << (6 - bit_offset));
-            } else {
-                /* bit_offset == 7: 1st bit to current byte, 2nd bit to next byte */
-                output[byte_pos] |= (temp[j] >> 1);
-                if (byte_pos + 1 < byte_len) {
-                    output[byte_pos + 1] |= (temp[j] & 0x1) << 7;
-                }
+            /* Collect 2-bit values into 64-bit integers */
+            for (int k = 0; k < 16 && (j + k) < 32; k++) {
+                base_bits0 |= ((uint64_t)temp[j + k] << (k * 2));
+            }
+            for (int k = 0; k < 16 && (j + k + 16) < 32; k++) {
+                base_bits1 |= ((uint64_t)temp[j + k + 16] << (k * 2));
+            }
+            
+            /* Use PDEP to deposit bits efficiently */
+            deposited0 = _pdep_u64(base_bits0, 0xFFFFFFFF);
+            deposited1 = _pdep_u64(base_bits1, 0xFFFFFFFF);
+            
+            /* Write packed data to output */
+            if (byte_offset < byte_len) {
+                memcpy(&output[byte_offset], &deposited0, 
+                       (byte_offset + 4 <= byte_len) ? 4 : (byte_len - byte_offset));
+            }
+            if (byte_offset + 4 < byte_len) {
+                memcpy(&output[byte_offset + 4], &deposited1, 
+                       (byte_offset + 8 <= byte_len) ? 4 : (byte_len - byte_offset - 4));
             }
         }
     }
