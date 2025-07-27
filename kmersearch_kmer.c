@@ -719,7 +719,7 @@ kmersearch_extract_query_ngram_key2(const char *query, int k, int *nkeys)
     
     /* Convert query string to DNA4 format using SIMD dispatch */
     data_ptr = VARBITS(dna4_seq);
-    simd_dispatch.dna4_encode(query, (uint8_t*)data_ptr, query_len);
+    dna4_encode(query, (uint8_t*)data_ptr, query_len);
     
     /* Extract k-mers using SIMD optimized function */
     datum_keys = kmersearch_extract_dna4_ngram_key2_with_expansion_direct(dna4_seq, k, nkeys);
@@ -969,24 +969,25 @@ static Datum *kmersearch_extract_dna2_kmer2_direct_sve(VarBit *seq, int k, int *
 Datum *
 kmersearch_extract_dna2_kmer2_direct(VarBit *seq, int k, int *nkeys)
 {
-    /* Dispatch to appropriate SIMD implementation based on CPU capabilities */
-    switch (simd_capability) {
+    int seq_bits = VARBITLEN(seq);
+    
+    /* Use SIMD based on runtime capability and data size thresholds */
 #ifdef __x86_64__
-        case SIMD_AVX512BW:
-        case SIMD_AVX512F:
-            return kmersearch_extract_dna2_kmer2_direct_avx512(seq, k, nkeys);
-        case SIMD_AVX2:
-            return kmersearch_extract_dna2_kmer2_direct_avx2(seq, k, nkeys);
-#elif defined(__aarch64__)
-        case SIMD_SVE:
-            return kmersearch_extract_dna2_kmer2_direct_sve(seq, k, nkeys);
-        case SIMD_NEON:
-            return kmersearch_extract_dna2_kmer2_direct_neon(seq, k, nkeys);
-#endif
-        case SIMD_NONE:
-        default:
-            return kmersearch_extract_dna2_kmer2_direct_scalar(seq, k, nkeys);
+    if (simd_capability >= SIMD_AVX512BW && seq_bits >= SIMD_EXTRACT_AVX512_THRESHOLD) {
+        return kmersearch_extract_dna2_kmer2_direct_avx512(seq, k, nkeys);
     }
+    if (simd_capability >= SIMD_AVX2 && seq_bits >= SIMD_EXTRACT_AVX2_THRESHOLD) {
+        return kmersearch_extract_dna2_kmer2_direct_avx2(seq, k, nkeys);
+    }
+#elif defined(__aarch64__)
+    if (simd_capability >= SIMD_SVE && seq_bits >= SIMD_EXTRACT_SVE_THRESHOLD) {
+        return kmersearch_extract_dna2_kmer2_direct_sve(seq, k, nkeys);
+    }
+    if (simd_capability >= SIMD_NEON && seq_bits >= SIMD_EXTRACT_NEON_THRESHOLD) {
+        return kmersearch_extract_dna2_kmer2_direct_neon(seq, k, nkeys);
+    }
+#endif
+    return kmersearch_extract_dna2_kmer2_direct_scalar(seq, k, nkeys);
 }
 
 /*
@@ -1341,24 +1342,25 @@ static Datum *kmersearch_extract_dna4_kmer2_with_expansion_direct_sve(VarBit *se
 Datum *
 kmersearch_extract_dna4_kmer2_with_expansion_direct(VarBit *seq, int k, int *nkeys)
 {
-    /* Dispatch to appropriate SIMD implementation based on CPU capabilities */
-    switch (simd_capability) {
+    int seq_bits = VARBITLEN(seq);
+    
+    /* Use SIMD based on runtime capability and data size thresholds */
 #ifdef __x86_64__
-        case SIMD_AVX512BW:
-        case SIMD_AVX512F:
-            return kmersearch_extract_dna4_kmer2_with_expansion_direct_avx512(seq, k, nkeys);
-        case SIMD_AVX2:
-            return kmersearch_extract_dna4_kmer2_with_expansion_direct_avx2(seq, k, nkeys);
-#elif defined(__aarch64__)
-        case SIMD_SVE:
-            return kmersearch_extract_dna4_kmer2_with_expansion_direct_sve(seq, k, nkeys);
-        case SIMD_NEON:
-            return kmersearch_extract_dna4_kmer2_with_expansion_direct_neon(seq, k, nkeys);
-#endif
-        case SIMD_NONE:
-        default:
-            return kmersearch_extract_dna4_kmer2_with_expansion_direct_scalar(seq, k, nkeys);
+    if (simd_capability >= SIMD_AVX512BW && seq_bits >= SIMD_EXTRACT_AVX512_THRESHOLD) {
+        return kmersearch_extract_dna4_kmer2_with_expansion_direct_avx512(seq, k, nkeys);
     }
+    if (simd_capability >= SIMD_AVX2 && seq_bits >= SIMD_EXTRACT_AVX2_THRESHOLD) {
+        return kmersearch_extract_dna4_kmer2_with_expansion_direct_avx2(seq, k, nkeys);
+    }
+#elif defined(__aarch64__)
+    if (simd_capability >= SIMD_SVE && seq_bits >= SIMD_EXTRACT_SVE_THRESHOLD) {
+        return kmersearch_extract_dna4_kmer2_with_expansion_direct_sve(seq, k, nkeys);
+    }
+    if (simd_capability >= SIMD_NEON && seq_bits >= SIMD_EXTRACT_NEON_THRESHOLD) {
+        return kmersearch_extract_dna4_kmer2_with_expansion_direct_neon(seq, k, nkeys);
+    }
+#endif
+    return kmersearch_extract_dna4_kmer2_with_expansion_direct_scalar(seq, k, nkeys);
 }
 
 /*
@@ -1921,7 +1923,26 @@ kmersearch_count_matching_kmer_fast(VarBit **seq_keys, int seq_nkeys, VarBit **q
         return kmersearch_count_matching_kmer_fast_scalar_simple(seq_keys, seq_nkeys, query_keys, query_nkeys);
     }
     
-    /* For now, always use scalar hashtable version until SIMD functions are moved */
+    /* Use SIMD based on runtime capability and data size thresholds */
+#ifdef __x86_64__
+    if (simd_capability >= SIMD_AVX512BW && key_combinations >= SIMD_KEYCOMB_AVX512_THRESHOLD) {
+        /* TODO: Implement kmersearch_count_matching_kmer_fast_avx512 */
+        return kmersearch_count_matching_kmer_fast_scalar_hashtable(seq_keys, seq_nkeys, query_keys, query_nkeys);
+    }
+    if (simd_capability >= SIMD_AVX2 && key_combinations >= SIMD_KEYCOMB_AVX2_THRESHOLD) {
+        /* TODO: Implement kmersearch_count_matching_kmer_fast_avx2 */
+        return kmersearch_count_matching_kmer_fast_scalar_hashtable(seq_keys, seq_nkeys, query_keys, query_nkeys);
+    }
+#elif defined(__aarch64__)
+    if (simd_capability >= SIMD_SVE && key_combinations >= SIMD_KEYCOMB_SVE_THRESHOLD) {
+        /* TODO: Implement kmersearch_count_matching_kmer_fast_sve */
+        return kmersearch_count_matching_kmer_fast_scalar_hashtable(seq_keys, seq_nkeys, query_keys, query_nkeys);
+    }
+    if (simd_capability >= SIMD_NEON && key_combinations >= SIMD_KEYCOMB_NEON_THRESHOLD) {
+        /* TODO: Implement kmersearch_count_matching_kmer_fast_neon */
+        return kmersearch_count_matching_kmer_fast_scalar_hashtable(seq_keys, seq_nkeys, query_keys, query_nkeys);
+    }
+#endif
     return kmersearch_count_matching_kmer_fast_scalar_hashtable(seq_keys, seq_nkeys, query_keys, query_nkeys);
 }
 

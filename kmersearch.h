@@ -125,14 +125,27 @@ typedef enum {
 #define SIMD_KEYCOMB_NEON_THRESHOLD    64      /* 64 combinations: Use NEON for matching */
 #define SIMD_KEYCOMB_SVE_THRESHOLD     128     /* 128 combinations: Use SVE for matching */
 
-/* Function pointers for different SIMD implementations */
-typedef struct {
-    void (*dna2_encode)(const char* input, uint8_t* output, int len);
-    void (*dna2_decode)(const uint8_t* input, char* output, int len);
-    void (*dna4_encode)(const char* input, uint8_t* output, int len);
-    void (*dna4_decode)(const uint8_t* input, char* output, int len);
-    int (*dna_compare)(const uint8_t* a, const uint8_t* b, int bit_len);
-} simd_dispatch_table_t;
+/*
+ * SIMD encoding thresholds (input character length)
+ * Initially set to same values as SIMD_EXTRACT thresholds
+ * TODO: These values need performance testing for optimal settings
+ */
+#define SIMD_ENCODE_AVX2_THRESHOLD     512     /* 512 chars: Use AVX2 for encoding */
+#define SIMD_ENCODE_AVX512_THRESHOLD   1024    /* 1024 chars: Use AVX512 for encoding */
+#define SIMD_ENCODE_NEON_THRESHOLD     256     /* 256 chars: Use NEON for encoding */
+#define SIMD_ENCODE_SVE_THRESHOLD      512     /* 512 chars: Use SVE for encoding */
+
+/*
+ * SIMD decoding thresholds (bit length)
+ * Initially set to same values as SIMD_EXTRACT thresholds
+ * TODO: These values need performance testing for optimal settings
+ */
+#define SIMD_DECODE_AVX2_THRESHOLD     512     /* 512 bits: Use AVX2 for decoding */
+#define SIMD_DECODE_AVX512_THRESHOLD   1024    /* 1024 bits: Use AVX512 for decoding */
+#define SIMD_DECODE_NEON_THRESHOLD     256     /* 256 bits: Use NEON for decoding */
+#define SIMD_DECODE_SVE_THRESHOLD      512     /* 512 bits: Use SVE for decoding */
+
+/* Removed SIMD dispatch table - now using direct threshold-based dispatch */
 
 /*
  * K-mer frequency entry for analysis
@@ -427,7 +440,6 @@ typedef struct
 /*
  * External variable declarations
  */
-extern simd_dispatch_table_t simd_dispatch;
 extern simd_capability_t simd_capability;
 
 /* Global configuration variables */
@@ -508,6 +520,13 @@ Datum kmersearch_dna4_char_length(PG_FUNCTION_ARGS);
 /* DNA datatype utility functions */
 char *kmersearch_dna2_to_string(VarBit *dna);
 char *kmersearch_dna4_to_string(VarBit *dna);
+
+/* Main dispatch functions with threshold-based SIMD selection */
+void dna2_encode(const char* input, uint8_t* output, int len);
+void dna2_decode(const uint8_t* input, char* output, int len);
+void dna4_encode(const char* input, uint8_t* output, int len);
+void dna4_decode(const uint8_t* input, char* output, int len);
+int dna_compare(const uint8_t* a, const uint8_t* b, int bit_len);
 
 /* DNA encoding/decoding functions */
 void dna2_encode_scalar(const char* input, uint8_t* output, int len);

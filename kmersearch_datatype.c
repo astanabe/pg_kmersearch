@@ -90,7 +90,7 @@ kmersearch_dna2_in(PG_FUNCTION_ARGS)
     
     /* Encode sequence using SIMD dispatch */
     data_ptr = VARBITS(result);
-    simd_dispatch.dna2_encode(input_string, (uint8_t*)data_ptr, input_len);
+    dna2_encode(input_string, (uint8_t*)data_ptr, input_len);
     
     PG_RETURN_VARBIT_P(result);
 }
@@ -119,7 +119,7 @@ kmersearch_dna2_out(PG_FUNCTION_ARGS)
     result = (char *) palloc(char_len + 1);
     
     /* Decode sequence using SIMD dispatch */
-    simd_dispatch.dna2_decode((uint8_t*)data_ptr, result, char_len);
+    dna2_decode((uint8_t*)data_ptr, result, char_len);
     
     PG_RETURN_CSTRING(result);
 }
@@ -198,7 +198,7 @@ kmersearch_dna4_in(PG_FUNCTION_ARGS)
     
     /* Encode sequence using SIMD dispatch */
     data_ptr = VARBITS(result);
-    simd_dispatch.dna4_encode(input_string, (uint8_t*)data_ptr, input_len);
+    dna4_encode(input_string, (uint8_t*)data_ptr, input_len);
     
     PG_RETURN_VARBIT_P(result);
 }
@@ -227,7 +227,7 @@ kmersearch_dna4_out(PG_FUNCTION_ARGS)
     result = (char *) palloc(char_len + 1);
     
     /* Decode sequence using SIMD dispatch */
-    simd_dispatch.dna4_decode((uint8_t*)data_ptr, result, char_len);
+    dna4_decode((uint8_t*)data_ptr, result, char_len);
     PG_RETURN_CSTRING(result);
 }
 
@@ -367,7 +367,7 @@ kmersearch_dna2_to_string(VarBit *dna)
     result = (char *) palloc(char_len + 1);
     
     /* Decode sequence using SIMD dispatch */
-    simd_dispatch.dna2_decode((uint8_t*)data_ptr, result, char_len);
+    dna2_decode((uint8_t*)data_ptr, result, char_len);
     
     return result;
 }
@@ -395,7 +395,7 @@ kmersearch_dna4_to_string(VarBit *dna)
     result = (char *) palloc(char_len + 1);
     
     /* Decode sequence using SIMD dispatch */
-    simd_dispatch.dna4_decode((uint8_t*)data_ptr, result, char_len);
+    dna4_decode((uint8_t*)data_ptr, result, char_len);
     
     return result;
 }
@@ -550,12 +550,141 @@ dna_compare_sve(const uint8_t* a, const uint8_t* b, int bit_len)
 }
 #endif
 
-/* Main SIMD dispatch function */
+/*
+ * Main dispatch functions with threshold-based SIMD selection
+ */
+void
+dna2_encode(const char* input, uint8_t* output, int len)
+{
+    /* Use SIMD based on runtime capability and data size thresholds */
+#ifdef __x86_64__
+    if (simd_capability >= SIMD_AVX512BW && len >= SIMD_ENCODE_AVX512_THRESHOLD) {
+        dna2_encode_avx512(input, output, len);
+        return;
+    }
+    if (simd_capability >= SIMD_AVX2 && len >= SIMD_ENCODE_AVX2_THRESHOLD) {
+        dna2_encode_avx2(input, output, len);
+        return;
+    }
+#elif defined(__aarch64__)
+    if (simd_capability >= SIMD_SVE && len >= SIMD_ENCODE_SVE_THRESHOLD) {
+        dna2_encode_sve(input, output, len);
+        return;
+    }
+    if (simd_capability >= SIMD_NEON && len >= SIMD_ENCODE_NEON_THRESHOLD) {
+        dna2_encode_neon(input, output, len);
+        return;
+    }
+#endif
+    dna2_encode_scalar(input, output, len);
+}
+
+void
+dna2_decode(const uint8_t* input, char* output, int bit_len)
+{
+    /* Use SIMD based on runtime capability and data size thresholds */
+#ifdef __x86_64__
+    if (simd_capability >= SIMD_AVX512BW && bit_len >= SIMD_DECODE_AVX512_THRESHOLD) {
+        dna2_decode_avx512(input, output, bit_len);
+        return;
+    }
+    if (simd_capability >= SIMD_AVX2 && bit_len >= SIMD_DECODE_AVX2_THRESHOLD) {
+        dna2_decode_avx2(input, output, bit_len);
+        return;
+    }
+#elif defined(__aarch64__)
+    if (simd_capability >= SIMD_SVE && bit_len >= SIMD_DECODE_SVE_THRESHOLD) {
+        dna2_decode_sve(input, output, bit_len);
+        return;
+    }
+    if (simd_capability >= SIMD_NEON && bit_len >= SIMD_DECODE_NEON_THRESHOLD) {
+        dna2_decode_neon(input, output, bit_len);
+        return;
+    }
+#endif
+    dna2_decode_scalar(input, output, bit_len);
+}
+
+void
+dna4_encode(const char* input, uint8_t* output, int len)
+{
+    /* Use SIMD based on runtime capability and data size thresholds */
+#ifdef __x86_64__
+    if (simd_capability >= SIMD_AVX512BW && len >= SIMD_ENCODE_AVX512_THRESHOLD) {
+        dna4_encode_avx512(input, output, len);
+        return;
+    }
+    if (simd_capability >= SIMD_AVX2 && len >= SIMD_ENCODE_AVX2_THRESHOLD) {
+        dna4_encode_avx2(input, output, len);
+        return;
+    }
+#elif defined(__aarch64__)
+    if (simd_capability >= SIMD_SVE && len >= SIMD_ENCODE_SVE_THRESHOLD) {
+        dna4_encode_sve(input, output, len);
+        return;
+    }
+    if (simd_capability >= SIMD_NEON && len >= SIMD_ENCODE_NEON_THRESHOLD) {
+        dna4_encode_neon(input, output, len);
+        return;
+    }
+#endif
+    dna4_encode_scalar(input, output, len);
+}
+
+void
+dna4_decode(const uint8_t* input, char* output, int bit_len)
+{
+    /* Use SIMD based on runtime capability and data size thresholds */
+#ifdef __x86_64__
+    if (simd_capability >= SIMD_AVX512BW && bit_len >= SIMD_DECODE_AVX512_THRESHOLD) {
+        dna4_decode_avx512(input, output, bit_len);
+        return;
+    }
+    if (simd_capability >= SIMD_AVX2 && bit_len >= SIMD_DECODE_AVX2_THRESHOLD) {
+        dna4_decode_avx2(input, output, bit_len);
+        return;
+    }
+#elif defined(__aarch64__)
+    if (simd_capability >= SIMD_SVE && bit_len >= SIMD_DECODE_SVE_THRESHOLD) {
+        dna4_decode_sve(input, output, bit_len);
+        return;
+    }
+    if (simd_capability >= SIMD_NEON && bit_len >= SIMD_DECODE_NEON_THRESHOLD) {
+        dna4_decode_neon(input, output, bit_len);
+        return;
+    }
+#endif
+    dna4_decode_scalar(input, output, bit_len);
+}
+
+int
+dna_compare(const uint8_t* a, const uint8_t* b, int bit_len)
+{
+    /* Use SIMD based on runtime capability and data size thresholds */
+#ifdef __x86_64__
+    if (simd_capability >= SIMD_AVX512BW && bit_len >= SIMD_COMPARE_AVX512_THRESHOLD) {
+        return dna_compare_avx512(a, b, bit_len);
+    }
+    if (simd_capability >= SIMD_AVX2 && bit_len >= SIMD_COMPARE_AVX2_THRESHOLD) {
+        return dna_compare_avx2(a, b, bit_len);
+    }
+#elif defined(__aarch64__)
+    if (simd_capability >= SIMD_SVE && bit_len >= SIMD_COMPARE_SVE_THRESHOLD) {
+        return dna_compare_sve(a, b, bit_len);
+    }
+    if (simd_capability >= SIMD_NEON && bit_len >= SIMD_COMPARE_NEON_THRESHOLD) {
+        return dna_compare_neon(a, b, bit_len);
+    }
+#endif
+    return dna_compare_scalar(a, b, bit_len);
+}
+
+/* Main SIMD dispatch function - now renamed to dna_compare() */
 static int
 dna_compare_simd(const uint8_t* a, const uint8_t* b, int bit_len)
 {
-    /* Use the dispatch table for SIMD function selection */
-    return simd_dispatch.dna_compare(a, b, bit_len);
+    /* This function is deprecated - use dna_compare() instead */
+    return dna_compare(a, b, bit_len);
 }
 
 /*

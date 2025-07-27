@@ -27,8 +27,7 @@ kmersearch_generate_unique_temp_table_name(const char *prefix, int additional_id
 
 PG_MODULE_MAGIC;
 
-/* Global SIMD dispatch table */
-simd_dispatch_table_t simd_dispatch;
+/* Global SIMD capability */
 simd_capability_t simd_capability = SIMD_NONE;
 
 /* Global variables for k-mer search configuration */
@@ -215,7 +214,6 @@ PG_FUNCTION_INFO_V1(kmersearch_correctedscore_dna2);
 PG_FUNCTION_INFO_V1(kmersearch_correctedscore_dna4);
 /* SIMD capability detection functions */
 static simd_capability_t detect_cpu_capabilities(void);
-static void init_simd_dispatch_table(void);
 
 /* SIMD implementation functions */
 
@@ -360,7 +358,6 @@ _PG_init(void)
     
     /* Initialize SIMD capabilities */
     simd_capability = detect_cpu_capabilities();
-    init_simd_dispatch_table();
     
     /* Define custom GUC variables */
     DefineCustomRealVariable("kmersearch.max_appearance_rate",
@@ -601,68 +598,6 @@ static simd_capability_t detect_cpu_capabilities(void)
 }
 #endif
 
-/*
- * Initialize SIMD dispatch table
- */
-static void init_simd_dispatch_table(void)
-{
-    /* Set default scalar implementations */
-    simd_dispatch.dna2_encode = dna2_encode_scalar;
-    simd_dispatch.dna2_decode = dna2_decode_scalar;
-    simd_dispatch.dna4_encode = dna4_encode_scalar;
-    simd_dispatch.dna4_decode = dna4_decode_scalar;
-    simd_dispatch.dna_compare = dna_compare_scalar;
-    
-    /* Override with SIMD implementations if available */
-    /* Enable only AVX2 implementations for testing */
-    switch (simd_capability) {
-#ifdef __x86_64__
-        case SIMD_AVX512BW:
-            simd_dispatch.dna2_encode = dna2_encode_avx512;
-            simd_dispatch.dna2_decode = dna2_decode_avx512;
-            simd_dispatch.dna4_encode = dna4_encode_avx512;
-            simd_dispatch.dna4_decode = dna4_decode_avx512;
-            simd_dispatch.dna_compare = dna_compare_avx512;
-            break;
-        case SIMD_AVX512F:
-            /* AVX512F without BW - use AVX2 fallback for encode/decode */
-            simd_dispatch.dna2_encode = dna2_encode_avx2;
-            simd_dispatch.dna2_decode = dna2_decode_avx2;
-            simd_dispatch.dna4_encode = dna4_encode_avx2;
-            simd_dispatch.dna4_decode = dna4_decode_avx2;
-            simd_dispatch.dna_compare = dna_compare_avx512;
-            break;
-        case SIMD_AVX2:
-            simd_dispatch.dna2_encode = dna2_encode_avx2;
-            simd_dispatch.dna2_decode = dna2_decode_avx2;
-            simd_dispatch.dna4_encode = dna4_encode_avx2;
-            simd_dispatch.dna4_decode = dna4_decode_avx2;
-            simd_dispatch.dna_compare = dna_compare_avx2;
-            break;
-#elif defined(__aarch64__)
-        case SIMD_SVE:
-            /* ENABLED: Fixed ARM64 SVE implementations */
-            simd_dispatch.dna2_encode = dna2_encode_sve;
-            simd_dispatch.dna2_decode = dna2_decode_sve;
-            simd_dispatch.dna4_encode = dna4_encode_sve;
-            simd_dispatch.dna4_decode = dna4_decode_sve;
-            simd_dispatch.dna_compare = dna_compare_sve;
-            break;
-        case SIMD_NEON:
-            /* ENABLED: Fixed ARM64 NEON implementations */
-            simd_dispatch.dna2_encode = dna2_encode_neon;
-            simd_dispatch.dna2_decode = dna2_decode_neon;
-            simd_dispatch.dna4_encode = dna4_encode_neon;
-            simd_dispatch.dna4_decode = dna4_decode_neon;
-            simd_dispatch.dna_compare = dna_compare_neon;
-            break;
-#endif
-        case SIMD_NONE:
-        default:
-            /* Already set to scalar implementations */
-            break;
-    }
-}
 /*
  * Expand single DNA4 k-mer to multiple DNA2 k-mers using bit operations
  */
