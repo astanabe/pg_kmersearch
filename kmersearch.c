@@ -232,8 +232,6 @@ static simd_capability_t detect_cpu_capabilities(void);
 static void init_simd_dispatch_table(void);
 
 /* SIMD implementation functions */
-static void dna4_encode_scalar(const char* input, uint8_t* output, int len);
-static void dna4_decode_scalar(const uint8_t* input, char* output, int len);
 
 /* Scalar versions */
 static Datum *kmersearch_extract_dna2_kmer2_direct_scalar(VarBit *seq, int k, int *nkeys);
@@ -634,46 +632,36 @@ static void init_simd_dispatch_table(void)
         case SIMD_AVX512BW:
             simd_dispatch.dna2_encode = dna2_encode_avx512;
             simd_dispatch.dna2_decode = dna2_decode_avx512;
-            /* TODO: Uncomment after moving dna4 functions
             simd_dispatch.dna4_encode = dna4_encode_avx512;
             simd_dispatch.dna4_decode = dna4_decode_avx512;
-            */
             break;
         case SIMD_AVX512F:
             /* AVX512F without BW - use AVX2 fallback for encode/decode */
             simd_dispatch.dna2_encode = dna2_encode_avx2;
             simd_dispatch.dna2_decode = dna2_decode_avx2;
-            /* TODO: Uncomment after moving dna4 functions
             simd_dispatch.dna4_encode = dna4_encode_avx2;
             simd_dispatch.dna4_decode = dna4_decode_avx2;
-            */
             break;
         case SIMD_AVX2:
             simd_dispatch.dna2_encode = dna2_encode_avx2;
             simd_dispatch.dna2_decode = dna2_decode_avx2;
-            /* TODO: Uncomment after moving dna4 functions
             simd_dispatch.dna4_encode = dna4_encode_avx2;
             simd_dispatch.dna4_decode = dna4_decode_avx2;
-            */
             break;
 #elif defined(__aarch64__)
         case SIMD_SVE:
             /* ENABLED: Fixed ARM64 SVE implementations */
             simd_dispatch.dna2_encode = dna2_encode_sve;
             simd_dispatch.dna2_decode = dna2_decode_sve;
-            /* TODO: Uncomment after moving dna4 functions
             simd_dispatch.dna4_encode = dna4_encode_sve;
             simd_dispatch.dna4_decode = dna4_decode_sve;
-            */
             break;
         case SIMD_NEON:
             /* ENABLED: Fixed ARM64 NEON implementations */
             simd_dispatch.dna2_encode = dna2_encode_neon;
             simd_dispatch.dna2_decode = dna2_decode_neon;
-            /* TODO: Uncomment after moving dna4 functions
             simd_dispatch.dna4_encode = dna4_encode_neon;
             simd_dispatch.dna4_decode = dna4_decode_neon;
-            */
             break;
 #endif
         case SIMD_NONE:
@@ -793,67 +781,6 @@ kmersearch_expand_dna4_kmer2_to_dna2_direct(VarBit *dna4_seq, int start_pos, int
 
 
 
-/*
- * Scalar version: Fast k-mer matching using hash table - optimized O(n+m) implementation
- */
-static int
-kmersearch_count_matching_kmer_fast_scalar_hashtable(VarBit **seq_keys, int seq_nkeys, VarBit **query_keys, int query_nkeys)
-{
-    int match_count = 0;
-    int i;
-    HTAB *query_hash;
-    HASHCTL hash_ctl;
-    bool found;
-    
-    if (seq_nkeys == 0 || query_nkeys == 0)
-        return 0;
-    
-    /* Create hash table using VarBit content as key */
-    memset(&hash_ctl, 0, sizeof(hash_ctl));
-    
-    /* Safety check: ensure we have valid query keys */
-    if (query_keys[0] == NULL) {
-        return 0;
-    }
-    
-    hash_ctl.keysize = VARBITBYTES(query_keys[0]);  /* Use data size, not total size */
-    hash_ctl.entrysize = sizeof(bool);
-    hash_ctl.hash = tag_hash;
-    
-    query_hash = hash_create("QueryKmerHash", query_nkeys * 2, &hash_ctl,
-                            HASH_ELEM | HASH_FUNCTION | HASH_BLOBS);
-    
-    /* Insert all query k-mers into hash table using content as key */
-    for (i = 0; i < query_nkeys; i++)
-    {
-        if (query_keys[i] == NULL) {
-            continue;
-        }
-        hash_search(query_hash, VARBITS(query_keys[i]), HASH_ENTER, &found);
-    }
-    
-    /* Check each sequence k-mer against hash table */
-    for (i = 0; i < seq_nkeys; i++)
-    {
-        if (seq_keys[i] == NULL) {
-            continue;
-        }
-        
-        if (VARBITBYTES(seq_keys[i]) != VARBITBYTES(query_keys[0])) {
-            continue;
-        }
-        
-        if (hash_search(query_hash, VARBITS(seq_keys[i]), HASH_FIND, NULL))
-        {
-            match_count++;
-        }
-    }
-    
-    /* Cleanup */
-    hash_destroy(query_hash);
-    
-    return match_count;
-}
 
 /*
  * DNA2 =% operator for k-mer search
@@ -2511,58 +2438,7 @@ kmersearch_parallel_highfreq_kmer_cache_is_valid(Oid table_oid, const char *colu
 /* Scalar implementations (fallback) */
 
 
-static void dna4_encode_scalar(const char* input, uint8_t* output, int len)
-{
-    int byte_len = (len * 4 + 7) / 8;
-    memset(output, 0, byte_len);
-    
-    for (int i = 0; i < len; i++) {
-        uint8_t encoded = kmersearch_dna4_encode_table[(unsigned char)input[i]];
-        int bit_pos = i * 4;
-        int byte_pos = bit_pos / 8;
-        int bit_offset = bit_pos % 8;
-        
-        if (bit_offset <= 4) {
-            output[byte_pos] |= (encoded << (4 - bit_offset));
-        } else {
-            /* bit_offset > 4: split across two bytes */
-            int remaining_bits = 8 - bit_offset;
-            output[byte_pos] |= (encoded >> (4 - remaining_bits));
-            if (byte_pos + 1 < byte_len) {
-                output[byte_pos + 1] |= (encoded << (4 + remaining_bits));
-            }
-        }
-    }
-}
 
-static void dna4_decode_scalar(const uint8_t* input, char* output, int len)
-{
-    for (int i = 0; i < len; i++) {
-        int bit_pos = i * 4;
-        int byte_pos = bit_pos / 8;
-        int bit_offset = bit_pos % 8;
-        uint8_t encoded = 0;
-        
-        if (bit_offset <= 4) {
-            encoded = (input[byte_pos] >> (4 - bit_offset)) & 0xF;
-        } else {
-            /* bit_offset > 4: get bits from two bytes */
-            int remaining_bits = 8 - bit_offset;
-            encoded = (input[byte_pos] & ((1 << remaining_bits) - 1)) << (4 - remaining_bits);
-            if (byte_pos + 1 < (len * 4 + 7) / 8) {
-                encoded |= (input[byte_pos + 1] >> (4 + remaining_bits)) & 0xF;
-            }
-        }
-        
-        /* Range check for safety */
-        if (encoded >= 16) {
-            encoded = 0; /* Default to '?' */
-        }
-        
-        output[i] = kmersearch_dna4_decode_table[encoded];
-    }
-    output[len] = '\0';
-}
 
 #ifdef __x86_64__
 /* AVX2 implementations */

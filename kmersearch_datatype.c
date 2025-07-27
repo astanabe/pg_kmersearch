@@ -1485,3 +1485,602 @@ void dna2_decode_sve(const uint8_t* input, char* output, int len)
     output[len] = '\0';
 }
 #endif /* __aarch64__ */
+
+/*
+ * DNA4 Encoding Functions
+ */
+
+/* Scalar implementation for DNA4 encoding */
+void dna4_encode_scalar(const char* input, uint8_t* output, int len)
+{
+    int byte_len = (len * 4 + 7) / 8;
+    memset(output, 0, byte_len);
+    
+    for (int i = 0; i < len; i++) {
+        uint8_t encoded = kmersearch_dna4_encode_table[(unsigned char)input[i]];
+        int bit_pos = i * 4;
+        int byte_pos = bit_pos / 8;
+        int bit_offset = bit_pos % 8;
+        
+        if (bit_offset <= 4) {
+            output[byte_pos] |= (encoded << (4 - bit_offset));
+        } else {
+            /* bit_offset > 4: split across two bytes */
+            int remaining_bits = 8 - bit_offset;
+            output[byte_pos] |= (encoded >> (4 - remaining_bits));
+            if (byte_pos + 1 < byte_len) {
+                output[byte_pos + 1] |= (encoded << (4 + remaining_bits));
+            }
+        }
+    }
+}
+
+/* Scalar implementation for DNA4 decoding */
+void dna4_decode_scalar(const uint8_t* input, char* output, int len)
+{
+    for (int i = 0; i < len; i++) {
+        int bit_pos = i * 4;
+        int byte_pos = bit_pos / 8;
+        int bit_offset = bit_pos % 8;
+        uint8_t encoded = 0;
+        
+        if (bit_offset <= 4) {
+            encoded = (input[byte_pos] >> (4 - bit_offset)) & 0xF;
+        } else {
+            /* bit_offset > 4: get bits from two bytes */
+            int remaining_bits = 8 - bit_offset;
+            encoded = (input[byte_pos] & ((1 << remaining_bits) - 1)) << (4 - remaining_bits);
+            if (byte_pos + 1 < (len * 4 + 7) / 8) {
+                encoded |= (input[byte_pos + 1] >> (4 + remaining_bits)) & 0xF;
+            }
+        }
+        
+        /* Range check for safety */
+        if (encoded >= 16) {
+            encoded = 0; /* Default to '?' */
+        }
+        
+        output[i] = kmersearch_dna4_decode_table[encoded];
+    }
+    output[len] = '\0';
+}
+
+#ifdef __x86_64__
+/* AVX2 implementation for DNA4 encoding */
+__attribute__((target("avx2")))
+void dna4_encode_avx2(const char* input, uint8_t* output, int len)
+{
+    int byte_len = (len * 4 + 7) / 8;
+    int simd_len;
+    
+    memset(output, 0, byte_len);
+    
+    /* Process 32 characters at a time with AVX2 */
+    simd_len = len & ~31;  /* Round down to multiple of 32 */
+    
+    for (int i = 0; i < simd_len; i += 32) {
+        __m256i chars = _mm256_loadu_si256((__m256i*)(input + i));
+        
+        /* Use lookup table approach for DNA4 encoding */
+        uint8_t temp[32];
+        _mm256_storeu_si256((__m256i*)temp, chars);
+        
+        for (int j = 0; j < 32; j++) {
+            uint8_t encoded = kmersearch_dna4_encode_table[(unsigned char)temp[j]];
+            int bit_pos = (i + j) * 4;
+            int byte_pos = bit_pos / 8;
+            int bit_offset = bit_pos % 8;
+            
+            if (bit_offset <= 4) {
+                output[byte_pos] |= (encoded << (4 - bit_offset));
+            } else {
+                /* bit_offset > 4: split across two bytes */
+                int remaining_bits = 8 - bit_offset;
+                output[byte_pos] |= (encoded >> (4 - remaining_bits));
+                if (byte_pos + 1 < byte_len) {
+                    output[byte_pos + 1] |= (encoded << (4 + remaining_bits));
+                }
+            }
+        }
+    }
+    
+    /* Handle remaining characters with scalar */
+    for (int i = simd_len; i < len; i++) {
+        uint8_t encoded = kmersearch_dna4_encode_table[(unsigned char)input[i]];
+        int bit_pos = i * 4;
+        int byte_pos = bit_pos / 8;
+        int bit_offset = bit_pos % 8;
+        
+        if (bit_offset <= 4) {
+            output[byte_pos] |= (encoded << (4 - bit_offset));
+        } else {
+            /* bit_offset > 4: split across two bytes */
+            int remaining_bits = 8 - bit_offset;
+            output[byte_pos] |= (encoded >> (4 - remaining_bits));
+            if (byte_pos + 1 < byte_len) {
+                output[byte_pos + 1] |= (encoded << (4 + remaining_bits));
+            }
+        }
+    }
+}
+
+/* AVX2 implementation for DNA4 decoding */
+__attribute__((target("avx2")))
+void dna4_decode_avx2(const uint8_t* input, char* output, int len)
+{
+    int bit_len = len * 4;
+    
+    /* Process characters with AVX2 assistance */
+    int simd_len = len & ~31;  /* Round down to multiple of 32 */
+    
+    for (int i = 0; i < simd_len; i += 32) {
+        /* Calculate how many bytes needed for 32 characters (32 * 4 bits = 128 bits = 16 bytes) */
+        int bytes_needed = 16;
+        uint8_t temp[16];
+        
+        /* Load 16 bytes for 32 characters */
+        for (int b = 0; b < bytes_needed && (i * 4 / 8 + b) < (len * 4 + 7) / 8; b++) {
+            temp[b] = input[i * 4 / 8 + b];
+        }
+        
+        /* Decode each 4-bit nibble */
+        for (int j = 0; j < 32; j++) {
+            int rel_bit_pos = j * 4;  /* Relative bit position within this 32-char block */
+            int byte_pos = rel_bit_pos / 8;
+            int bit_offset = rel_bit_pos % 8;
+            uint8_t encoded = 0;
+            
+            if (bit_offset <= 4) {
+                encoded = (temp[byte_pos] >> (4 - bit_offset)) & 0xF;
+            } else {
+                /* bit_offset > 4: get bits from two bytes */
+                int remaining_bits = 8 - bit_offset;
+                encoded = (temp[byte_pos] & ((1 << remaining_bits) - 1)) << (4 - remaining_bits);
+                if (byte_pos + 1 < bytes_needed) {
+                    encoded |= (temp[byte_pos + 1] >> (4 + remaining_bits)) & 0xF;
+                }
+            }
+            
+            /* Range check for safety */
+            if (encoded >= 16) {
+                encoded = 0; /* Default to '?' */
+            }
+            
+            output[i + j] = kmersearch_dna4_decode_table[encoded];
+        }
+    }
+    
+    /* Handle remaining characters with scalar */
+    for (int i = simd_len; i < len; i++) {
+        int bit_pos = i * 4;
+        int byte_pos = bit_pos / 8;
+        int bit_offset = bit_pos % 8;
+        uint8_t encoded = 0;
+        
+        if (bit_offset <= 4) {
+            encoded = (input[byte_pos] >> (4 - bit_offset)) & 0xF;
+        } else {
+            /* bit_offset > 4: get bits from two bytes */
+            int remaining_bits = 8 - bit_offset;
+            encoded = (input[byte_pos] & ((1 << remaining_bits) - 1)) << (4 - remaining_bits);
+            if (byte_pos + 1 < (len * 4 + 7) / 8) {
+                encoded |= (input[byte_pos + 1] >> (4 + remaining_bits)) & 0xF;
+            }
+        }
+        
+        /* Range check for safety */
+        if (encoded >= 16) {
+            encoded = 0; /* Default to '?' */
+        }
+        
+        output[i] = kmersearch_dna4_decode_table[encoded];
+    }
+    output[len] = '\0';
+}
+
+/* AVX512 implementation for DNA4 encoding */
+__attribute__((target("avx512bw")))
+void dna4_encode_avx512(const char* input, uint8_t* output, int len)
+{
+    int byte_len = (len * 4 + 7) / 8;
+    int simd_len;
+    
+    memset(output, 0, byte_len);
+    
+    /* Process 64 characters at a time with AVX512 */
+    simd_len = len & ~63;  /* Round down to multiple of 64 */
+    
+    for (int i = 0; i < simd_len; i += 64) {
+        __m512i chars = _mm512_loadu_si512((__m512i*)(input + i));
+        
+        /* Use lookup table approach for DNA4 encoding */
+        uint8_t temp[64];
+        _mm512_storeu_si512((__m512i*)temp, chars);
+        
+        for (int j = 0; j < 64; j++) {
+            uint8_t encoded = kmersearch_dna4_encode_table[(unsigned char)temp[j]];
+            int bit_pos = (i + j) * 4;
+            int byte_pos = bit_pos / 8;
+            int bit_offset = bit_pos % 8;
+            
+            if (bit_offset <= 4) {
+                output[byte_pos] |= (encoded << (4 - bit_offset));
+            } else {
+                /* bit_offset > 4: handle byte boundary crossing */
+                int remaining_bits = 8 - bit_offset;
+                output[byte_pos] |= (encoded >> (4 - remaining_bits));
+                if (byte_pos + 1 < byte_len) {
+                    output[byte_pos + 1] |= (encoded << (4 + remaining_bits));
+                }
+            }
+        }
+    }
+    
+    /* Handle remaining characters with scalar */
+    for (int i = simd_len; i < len; i++) {
+        uint8_t encoded = kmersearch_dna4_encode_table[(unsigned char)input[i]];
+        int bit_pos = i * 4;
+        int byte_pos = bit_pos / 8;
+        int bit_offset = bit_pos % 8;
+        
+        if (bit_offset <= 4) {
+            output[byte_pos] |= (encoded << (4 - bit_offset));
+        } else {
+            /* bit_offset > 4: handle byte boundary crossing */
+            int remaining_bits = 8 - bit_offset;
+            output[byte_pos] |= (encoded >> (4 - remaining_bits));
+            if (byte_pos + 1 < byte_len) {
+                output[byte_pos + 1] |= (encoded << (4 + remaining_bits));
+            }
+        }
+    }
+}
+
+/* AVX512 implementation for DNA4 decoding */
+__attribute__((target("avx512bw")))
+void dna4_decode_avx512(const uint8_t* input, char* output, int len)
+{
+    int bit_len = len * 4;
+    
+    /* Process 64 characters at a time with AVX512 */
+    int simd_len = len & ~63;  /* Round down to multiple of 64 */
+    
+    for (int i = 0; i < simd_len; i += 64) {
+        /* 64 characters need 256 bits = 32 bytes */
+        int bytes_needed = 32;
+        uint8_t temp[32];
+        
+        /* Load required bytes from correct position */
+        for (int b = 0; b < bytes_needed && (i * 4 / 8 + b) < (len * 4 + 7) / 8; b++) {
+            temp[b] = input[i * 4 / 8 + b];
+        }
+        
+        /* Decode each 4-bit nibble using relative positioning */
+        for (int j = 0; j < 64; j++) {
+            int rel_bit_pos = j * 4;  /* Relative bit position in temp array */
+            int byte_pos = rel_bit_pos / 8;
+            int bit_offset = rel_bit_pos % 8;
+            uint8_t encoded = 0;
+            
+            if (bit_offset <= 4) {
+                encoded = (temp[byte_pos] >> (4 - bit_offset)) & 0xF;
+            } else {
+                /* bit_offset > 4: handle byte boundary crossing */
+                int remaining_bits = 8 - bit_offset;
+                encoded = (temp[byte_pos] & ((1 << remaining_bits) - 1)) << (4 - remaining_bits);
+                if (byte_pos + 1 < bytes_needed) {
+                    encoded |= (temp[byte_pos + 1] >> (4 + remaining_bits)) & 0xF;
+                }
+            }
+            
+            if (encoded >= 16) {
+                encoded = 0; /* Default to '?' */
+            }
+            
+            output[i + j] = kmersearch_dna4_decode_table[encoded];
+        }
+    }
+    
+    /* Handle remaining characters with scalar */
+    for (int i = simd_len; i < len; i++) {
+        int bit_pos = i * 4;
+        int byte_pos = bit_pos / 8;
+        int bit_offset = bit_pos % 8;
+        uint8_t encoded = 0;
+        
+        if (bit_offset <= 4) {
+            encoded = (input[byte_pos] >> (4 - bit_offset)) & 0xF;
+        } else {
+            /* bit_offset > 4: handle byte boundary crossing */
+            int remaining_bits = 8 - bit_offset;
+            encoded = (input[byte_pos] & ((1 << remaining_bits) - 1)) << (4 - remaining_bits);
+            if (byte_pos + 1 < (len * 4 + 7) / 8) {
+                encoded |= (input[byte_pos + 1] >> (4 + remaining_bits)) & 0xF;
+            }
+        }
+        
+        if (encoded >= 16) {
+            encoded = 0; /* Default to '?' */
+        }
+        
+        output[i] = kmersearch_dna4_decode_table[encoded];
+    }
+    output[len] = '\0';
+}
+#endif /* __x86_64__ */
+
+#ifdef __aarch64__
+/* NEON implementation for DNA4 encoding */
+__attribute__((target("+simd")))
+void dna4_encode_neon(const char* input, uint8_t* output, int len)
+{
+    int byte_len = (len * 4 + 7) / 8;
+    int simd_len = len & ~15;  /* Round down to multiple of 16 */
+    int i, j;
+    uint8x16_t chars;
+    uint8_t temp[16];
+    
+    memset(output, 0, byte_len);
+    
+    /* Process 16 characters at a time with NEON */
+    for (i = 0; i < simd_len; i += 16) {
+        chars = vld1q_u8((uint8_t*)(input + i));
+        
+        /* Use lookup table approach for DNA4 encoding */
+        vst1q_u8(temp, chars);
+        
+        for (j = 0; j < 16; j++) {
+            uint8_t encoded = kmersearch_dna4_encode_table[(unsigned char)temp[j]];
+            int bit_pos = (i + j) * 4;
+            int byte_pos = bit_pos / 8;
+            int bit_offset = bit_pos % 8;
+            
+            /* Fixed: Handle byte boundary crossing properly */
+            if (bit_offset <= 4) {
+                output[byte_pos] |= (encoded << (4 - bit_offset));
+            } else {
+                /* bit_offset > 4: split across two bytes */
+                int remaining_bits = 8 - bit_offset;
+                output[byte_pos] |= (encoded >> (4 - remaining_bits));
+                if (byte_pos + 1 < byte_len) {
+                    output[byte_pos + 1] |= (encoded << (4 + remaining_bits));
+                }
+            }
+        }
+    }
+    
+    /* Handle remaining characters with scalar */
+    for (i = simd_len; i < len; i++) {
+        uint8_t encoded = kmersearch_dna4_encode_table[(unsigned char)input[i]];
+        int bit_pos = i * 4;
+        int byte_pos = bit_pos / 8;
+        int bit_offset = bit_pos % 8;
+        
+        /* Fixed: Handle byte boundary crossing properly */
+        if (bit_offset <= 4) {
+            output[byte_pos] |= (encoded << (4 - bit_offset));
+        } else {
+            /* bit_offset > 4: split across two bytes */
+            int remaining_bits = 8 - bit_offset;
+            output[byte_pos] |= (encoded >> (4 - remaining_bits));
+            if (byte_pos + 1 < byte_len) {
+                output[byte_pos + 1] |= (encoded << (4 + remaining_bits));
+            }
+        }
+    }
+}
+
+/* NEON implementation for DNA4 decoding */
+__attribute__((target("+simd")))
+void dna4_decode_neon(const uint8_t* input, char* output, int len)
+{
+    /* Process 16 characters at a time with NEON */
+    int simd_len = len & ~15;  /* Round down to multiple of 16 */
+    
+    for (int i = 0; i < simd_len; i += 16) {
+        /* Fixed: Load correct number of bytes for 16 characters (64 bits = 8 bytes) */
+        int bytes_needed = 8;  /* 16 * 4 bits = 64 bits = 8 bytes */
+        uint8_t temp[8];
+        
+        /* Fixed: Load from correct position in input array */
+        for (int b = 0; b < bytes_needed && (i * 4 / 8 + b) < (len * 4 + 7) / 8; b++) {
+            temp[b] = input[i * 4 / 8 + b];
+        }
+        
+        /* Decode each 4-bit nibble using relative positions in temp array */
+        for (int j = 0; j < 16; j++) {
+            int rel_bit_pos = j * 4;  /* Relative position within temp array */
+            int byte_pos = rel_bit_pos / 8;  /* Byte position within temp array */
+            int bit_offset = rel_bit_pos % 8;
+            uint8_t encoded;
+            
+            /* Fixed: Handle byte boundary crossing properly */
+            if (bit_offset <= 4) {
+                encoded = (temp[byte_pos] >> (4 - bit_offset)) & 0xF;
+            } else {
+                /* bit_offset > 4: bits span across two bytes */
+                int remaining_bits = 8 - bit_offset;
+                encoded = (temp[byte_pos] & ((1 << remaining_bits) - 1)) << (4 - remaining_bits);
+                if (byte_pos + 1 < bytes_needed) {
+                    encoded |= (temp[byte_pos + 1] >> (4 + remaining_bits)) & 0xF;
+                }
+                encoded &= 0xF;
+            }
+            
+            /* Range check */
+            if (encoded >= 16) {
+                encoded = 0; /* Default to '?' */
+            }
+            
+            output[i + j] = kmersearch_dna4_decode_table[encoded];
+        }
+    }
+    
+    /* Handle remaining characters with scalar */
+    for (int i = simd_len; i < len; i++) {
+        int bit_pos = i * 4;
+        int byte_pos = bit_pos / 8;
+        int bit_offset = bit_pos % 8;
+        uint8_t encoded;
+        
+        /* Fixed: Handle byte boundary crossing properly */
+        if (bit_offset <= 4) {
+            encoded = (input[byte_pos] >> (4 - bit_offset)) & 0xF;
+        } else {
+            /* bit_offset > 4: bits span across two bytes */
+            int remaining_bits = 8 - bit_offset;
+            encoded = (input[byte_pos] & ((1 << remaining_bits) - 1)) << (4 - remaining_bits);
+            if (byte_pos + 1 < (len * 4 + 7) / 8) {
+                encoded |= (input[byte_pos + 1] >> (4 + remaining_bits)) & 0xF;
+            }
+            encoded &= 0xF;
+        }
+        
+        /* Range check */
+        if (encoded >= 16) {
+            encoded = 0; /* Default to '?' */
+        }
+        
+        output[i] = kmersearch_dna4_decode_table[encoded];
+    }
+    output[len] = '\0';
+}
+
+/* SVE implementation for DNA4 encoding */
+__attribute__((target("+sve")))
+void dna4_encode_sve(const char* input, uint8_t* output, int len)
+{
+    int byte_len = (len * 4 + 7) / 8;
+    int sve_len = svcntb();
+    int simd_len = len & ~(sve_len - 1);  /* Round down to SVE vector multiple */
+    int i, j;
+    uint8_t temp[sve_len];
+    
+    memset(output, 0, byte_len);
+    
+    for (i = 0; i < simd_len; i += sve_len) {
+        svbool_t pg = svwhilelt_b8_s32(i, len);
+        svuint8_t chars = svld1_u8(pg, (uint8_t*)(input + i));
+        
+        /* Use lookup table approach for DNA4 encoding */
+        svst1_u8(pg, temp, chars);
+        
+        for (j = 0; j < sve_len && (i + j) < len; j++) {
+            uint8_t encoded = kmersearch_dna4_encode_table[(unsigned char)temp[j]];
+            int bit_pos = (i + j) * 4;
+            int byte_pos = bit_pos / 8;
+            int bit_offset = bit_pos % 8;
+            
+            /* Fixed: Handle byte boundary crossing properly */
+            if (bit_offset <= 4) {
+                output[byte_pos] |= (encoded << (4 - bit_offset));
+            } else {
+                /* bit_offset > 4: split across two bytes */
+                int remaining_bits = 8 - bit_offset;
+                output[byte_pos] |= (encoded >> (4 - remaining_bits));
+                if (byte_pos + 1 < byte_len) {
+                    output[byte_pos + 1] |= (encoded << (4 + remaining_bits));
+                }
+            }
+        }
+    }
+    
+    /* Handle remaining characters with scalar */
+    for (i = simd_len; i < len; i++) {
+        uint8_t encoded = kmersearch_dna4_encode_table[(unsigned char)input[i]];
+        int bit_pos = i * 4;
+        int byte_pos = bit_pos / 8;
+        int bit_offset = bit_pos % 8;
+        
+        /* Fixed: Handle byte boundary crossing properly */
+        if (bit_offset <= 4) {
+            output[byte_pos] |= (encoded << (4 - bit_offset));
+        } else {
+            /* bit_offset > 4: split across two bytes */
+            int remaining_bits = 8 - bit_offset;
+            output[byte_pos] |= (encoded >> (4 - remaining_bits));
+            if (byte_pos + 1 < byte_len) {
+                output[byte_pos + 1] |= (encoded << (4 + remaining_bits));
+            }
+        }
+    }
+}
+
+/* SVE implementation for DNA4 decoding */
+__attribute__((target("+sve")))
+void dna4_decode_sve(const uint8_t* input, char* output, int len)
+{
+    /* Get SVE vector length */
+    int sve_len = svcntb();
+    int simd_len = len & ~(sve_len - 1);  /* Round down to SVE vector multiple */
+    int i, j, b;
+    
+    for (i = 0; i < simd_len; i += sve_len) {
+        /* Fixed: Load correct number of bytes for sve_len characters */
+        int bytes_needed = (sve_len * 4 + 7) / 8;
+        uint8_t temp[bytes_needed];
+        
+        /* Fixed: Load from correct position in input array */
+        for (b = 0; b < bytes_needed && (i * 4 / 8 + b) < (len * 4 + 7) / 8; b++) {
+            temp[b] = input[i * 4 / 8 + b];
+        }
+        
+        /* Decode each 4-bit nibble using relative positions in temp array */
+        for (j = 0; j < sve_len && (i + j) < len; j++) {
+            int rel_bit_pos = j * 4;  /* Relative position within temp array */
+            int byte_pos = rel_bit_pos / 8;  /* Byte position within temp array */
+            int bit_offset = rel_bit_pos % 8;
+            uint8_t encoded;
+            
+            /* Fixed: Handle byte boundary crossing properly */
+            if (bit_offset <= 4) {
+                encoded = (temp[byte_pos] >> (4 - bit_offset)) & 0xF;
+            } else {
+                /* bit_offset > 4: bits span across two bytes */
+                int remaining_bits = 8 - bit_offset;
+                encoded = (temp[byte_pos] & ((1 << remaining_bits) - 1)) << (4 - remaining_bits);
+                if (byte_pos + 1 < bytes_needed) {
+                    encoded |= (temp[byte_pos + 1] >> (4 + remaining_bits)) & 0xF;
+                }
+                encoded &= 0xF;
+            }
+            
+            /* Range check */
+            if (encoded >= 16) {
+                encoded = 0; /* Default to '?' */
+            }
+            
+            output[i + j] = kmersearch_dna4_decode_table[encoded];
+        }
+    }
+    
+    /* Handle remaining characters with scalar */
+    for (i = simd_len; i < len; i++) {
+        int bit_pos = i * 4;
+        int byte_pos = bit_pos / 8;
+        int bit_offset = bit_pos % 8;
+        uint8_t encoded;
+        
+        /* Fixed: Handle byte boundary crossing properly */
+        if (bit_offset <= 4) {
+            encoded = (input[byte_pos] >> (4 - bit_offset)) & 0xF;
+        } else {
+            /* bit_offset > 4: bits span across two bytes */
+            int remaining_bits = 8 - bit_offset;
+            encoded = (input[byte_pos] & ((1 << remaining_bits) - 1)) << (4 - remaining_bits);
+            if (byte_pos + 1 < (len * 4 + 7) / 8) {
+                encoded |= (input[byte_pos + 1] >> (4 + remaining_bits)) & 0xF;
+            }
+            encoded &= 0xF;
+        }
+        
+        /* Range check */
+        if (encoded >= 16) {
+            encoded = 0; /* Default to '?' */
+        }
+        
+        output[i] = kmersearch_dna4_decode_table[encoded];
+    }
+    output[len] = '\0';
+}
+#endif /* __aarch64__ */
