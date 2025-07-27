@@ -240,7 +240,6 @@ static void dna4_decode_scalar(const uint8_t* input, char* output, int len);
 static Datum *kmersearch_extract_dna2_kmer2_direct_scalar(VarBit *seq, int k, int *nkeys);
 
 #ifdef __x86_64__
-static void dna2_encode_avx2(const char* input, uint8_t* output, int len);
 static void dna2_decode_avx2(const uint8_t* input, char* output, int len);
 static void dna4_encode_avx2(const char* input, uint8_t* output, int len);
 static void dna4_decode_avx2(const uint8_t* input, char* output, int len);
@@ -2611,85 +2610,6 @@ static void dna4_decode_scalar(const uint8_t* input, char* output, int len)
 
 #ifdef __x86_64__
 /* AVX2 implementations */
-__attribute__((target("avx2")))
-static void dna2_encode_avx2(const char* input, uint8_t* output, int len)
-{
-    int byte_len = (len * 2 + 7) / 8;
-    int simd_len;
-    
-    memset(output, 0, byte_len);
-    
-    /* Process 32 characters at a time with AVX2 */
-    simd_len = len & ~31;  /* Round down to multiple of 32 */
-    
-    for (int i = 0; i < simd_len; i += 32) {
-        __m256i chars = _mm256_loadu_si256((__m256i*)(input + i));
-        
-        /* Create comparison masks for each DNA base */
-        __m256i mask_A = _mm256_or_si256(_mm256_cmpeq_epi8(chars, _mm256_set1_epi8('A')),
-                                         _mm256_cmpeq_epi8(chars, _mm256_set1_epi8('a')));
-        __m256i mask_C = _mm256_or_si256(_mm256_cmpeq_epi8(chars, _mm256_set1_epi8('C')),
-                                         _mm256_cmpeq_epi8(chars, _mm256_set1_epi8('c')));
-        __m256i mask_G = _mm256_or_si256(_mm256_cmpeq_epi8(chars, _mm256_set1_epi8('G')),
-                                         _mm256_cmpeq_epi8(chars, _mm256_set1_epi8('g')));
-        __m256i mask_T = _mm256_or_si256(_mm256_cmpeq_epi8(chars, _mm256_set1_epi8('T')),
-                                         _mm256_cmpeq_epi8(chars, _mm256_set1_epi8('t')));
-        __m256i mask_U = _mm256_or_si256(_mm256_cmpeq_epi8(chars, _mm256_set1_epi8('U')),
-                                         _mm256_cmpeq_epi8(chars, _mm256_set1_epi8('u')));
-        
-        /* Combine T and U masks */
-        __m256i encoded;
-        uint8_t temp[32];
-        
-        mask_T = _mm256_or_si256(mask_T, mask_U);
-        
-        /* Generate 2-bit encoded values */
-        encoded = _mm256_setzero_si256();
-        encoded = _mm256_or_si256(encoded, _mm256_and_si256(mask_C, _mm256_set1_epi8(1)));
-        encoded = _mm256_or_si256(encoded, _mm256_and_si256(mask_G, _mm256_set1_epi8(2)));
-        encoded = _mm256_or_si256(encoded, _mm256_and_si256(mask_T, _mm256_set1_epi8(3)));
-        
-        /* Pack 2-bit values into bytes - simplified approach */
-        /* For full implementation, we'd need complex bit packing */
-        /* Fall back to scalar for bit packing part */
-        _mm256_storeu_si256((__m256i*)temp, encoded);
-        
-        for (int j = 0; j < 32; j++) {
-            int bit_pos = (i + j) * 2;
-            int byte_pos = bit_pos / 8;
-            int bit_offset = bit_pos % 8;
-            
-            if (bit_offset <= 6) {
-                output[byte_pos] |= (temp[j] << (6 - bit_offset));
-            } else {
-                /* bit_offset == 7: 1st bit to current byte, 2nd bit to next byte */
-                output[byte_pos] |= (temp[j] >> 1);
-                if (byte_pos + 1 < byte_len) {
-                    output[byte_pos + 1] |= (temp[j] & 0x1) << 7;
-                }
-            }
-        }
-    }
-    
-    /* Handle remaining characters with scalar */
-    for (int i = simd_len; i < len; i++) {
-        uint8_t encoded = kmersearch_dna2_encode_table[(unsigned char)input[i]];
-        int bit_pos = i * 2;
-        int byte_pos = bit_pos / 8;
-        int bit_offset = bit_pos % 8;
-        
-        if (bit_offset <= 6) {
-            output[byte_pos] |= (encoded << (6 - bit_offset));
-        } else {
-            /* bit_offset == 7: 1st bit to current byte, 2nd bit to next byte */
-            output[byte_pos] |= (encoded >> 1);
-            if (byte_pos + 1 < byte_len) {
-                output[byte_pos + 1] |= (encoded & 0x1) << 7;
-            }
-        }
-    }
-}
-
 __attribute__((target("avx2")))
 static void dna2_decode_avx2(const uint8_t* input, char* output, int len)
 {

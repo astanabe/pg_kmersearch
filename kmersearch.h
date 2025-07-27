@@ -511,6 +511,9 @@ char *kmersearch_dna4_to_string(VarBit *dna);
 
 /* DNA encoding/decoding functions */
 void dna2_encode_scalar(const char* input, uint8_t* output, int len);
+#ifdef __x86_64__
+void dna2_encode_avx2(const char* input, uint8_t* output, int len);
+#endif
 
 /* GIN operator class functions */
 Datum kmersearch_extract_value_dna2(PG_FUNCTION_ARGS);
