@@ -6,10 +6,10 @@ This document outlines the optimization plan for SIMD versions of key functions 
 
 1. K-mer extraction functions
    - `kmersearch_extract_dna2_kmer2_direct()` ✅ **COMPLETED**
-   - `kmersearch_extract_dna4_kmer2_with_expansion_direct()`
-   - `kmersearch_extract_dna2_kmer2_as_uint_direct()`
-   - `kmersearch_extract_dna4_kmer2_as_uint_with_expansion_direct()`
-   - `kmersearch_expand_dna4_kmer2_to_dna2_direct()`
+   - `kmersearch_extract_dna4_kmer2_with_expansion_direct()` ✅ **COMPLETED**
+   - `kmersearch_extract_dna2_kmer2_as_uint_direct()` ✅ **COMPLETED** 
+   - `kmersearch_extract_dna4_kmer2_as_uint_with_expansion_direct()` ✅ **COMPLETED**
+   - `kmersearch_expand_dna4_kmer2_to_dna2_direct()` ⚠️ **PARTIALLY COMPLETED** (AVX2 version has BMI2 for phase 1)
 
 2. Encoding/Decoding functions
    - `dna2_encode()`
@@ -38,6 +38,33 @@ _mm_prefetch(&seq_data[(i + 16) / 4], _MM_HINT_T0);
 // 3. Fast path for byte-aligned data with memcpy and bswap
 memcpy(&src_bits, &seq_data[start_byte], 8);
 src_bits = __builtin_bswap64(src_bits);
+```
+
+##### kmersearch_extract_dna4_kmer2_with_expansion_direct_avx2 ✅ **COMPLETED**
+```c
+// Implemented optimizations:
+// 1. Batch degenerate base detection using BMI2
+// 2. Direct DNA4 to DNA2 conversion for non-degenerate k-mers
+// 3. Prefetching for better cache utilization
+// 4. Process 8 k-mers at a time with expansion support
+```
+
+##### kmersearch_extract_dna2_kmer2_as_uint_direct_avx2 ✅ **COMPLETED**
+```c
+// Implemented optimizations:
+// 1. Use PEXT for efficient 2-bit extraction
+// 2. Prefetching for better cache performance
+// 3. Process 16/8/4 k-mers at a time based on k size
+// 4. Multiple PEXT operations for k > 16
+```
+
+##### kmersearch_extract_dna4_kmer2_as_uint_with_expansion_direct_avx2 ✅ **COMPLETED**
+```c
+// Implemented optimizations:
+// 1. Batch degenerate base detection
+// 2. Direct conversion for non-degenerate k-mers
+// 3. Prefetching and batch processing (8 k-mers)
+// 4. Efficient DNA4 to DNA2 bit conversion
 ```
 
 ##### dna2_encode_avx2
@@ -269,6 +296,9 @@ svbool_t valid = svmatch_u8(pg, decoded, valid_bases);
    - ✅ `kmersearch_extract_dna2_kmer2_direct_avx2` (PEXT/PDEP) - **COMPLETED**
    - ✅ `kmersearch_extract_dna2_kmer2_direct_avx512` (Memory optimization) - **COMPLETED**
    - ✅ `kmersearch_extract_dna2_kmer2_direct_neon` (VTBL/VEXT) - **COMPLETED**
+   - ✅ `kmersearch_extract_dna2_kmer2_as_uint_direct_avx2` (PEXT/PDEP) - **COMPLETED**
+   - ✅ `kmersearch_extract_dna4_kmer2_with_expansion_direct_avx2` (BMI2) - **COMPLETED**
+   - ✅ `kmersearch_extract_dna4_kmer2_as_uint_with_expansion_direct_avx2` (BMI2) - **COMPLETED**
    - `kmersearch_extract_dna2_kmer2_direct_sve2` (SVBEXT)
    - `dna2_encode_avx512` (VPMULTISHIFTQB)
    - `kmersearch_expand_dna4_kmer2_to_dna2_direct_neon` (VTBL/VTBX)

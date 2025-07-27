@@ -2032,6 +2032,7 @@ kmersearch_extract_dna4_kmer2_with_expansion_direct_avx2(VarBit *seq, int k, int
     int key_count = 0;
     int i;
     int simd_batch;
+    bits8 *seq_data = VARBITS(seq);
     
     *nkeys = 0;
     if (max_kmers <= 0)
@@ -2044,35 +2045,120 @@ kmersearch_extract_dna4_kmer2_with_expansion_direct_avx2(VarBit *seq, int k, int
     simd_batch = max_kmers & ~7;  /* Process 8 k-mers at a time */
     
     /* AVX2-optimized batch processing for k-mer expansion */
+    /* Use BMI2 instructions to check for degenerate bases in batches */
     for (i = 0; i < simd_batch; i += 8)
     {
-        /* Process each k-mer in the batch */
+        bool has_degenerate[8] = {false};
+        int degenerate_count = 0;
+        
+        /* Prefetch next batch for better cache utilization */
+        _mm_prefetch(&seq_data[(i + 32) / 2], _MM_HINT_T0);
+        
+        /* Check if any of the 8 k-mers have degenerate bases */
+        
+        /* Quick check for degenerate bases using PEXT */
         for (int j = 0; j < 8 && (i + j) <= seq_bases - k; j++)
         {
             int pos = i + j;
-            VarBit **expanded_kmers;
-            int expansion_count;
-            int exp_j;
+            int bit_start = pos * 4;
+            int byte_start = bit_start / 8;
             
-            /* Expand DNA4 k-mer to DNA2 k-mers */
-            expanded_kmers = kmersearch_expand_dna4_kmer2_to_dna2_direct(seq, pos, k, &expansion_count);
+            /* Load data for k-mer checking */
+            uint64_t data64 = 0;
+            int bytes_needed = ((k * 4) + 7) / 8 + 1;
+            int bit_offset;
             
-            if (!expanded_kmers || expansion_count == 0)
-                continue;
-            
-            /* Process each expanded k-mer */
-            for (exp_j = 0; exp_j < expansion_count; exp_j++)
-            {
-                VarBit *dna2_kmer = expanded_kmers[exp_j];
-                
-                /* Add kmer2 key directly (without occurrence count) */
-                if (dna2_kmer)
-                    keys[key_count++] = PointerGetDatum(dna2_kmer);
+            if (byte_start + 8 <= VARBITBYTES(seq)) {
+                memcpy(&data64, &seq_data[byte_start], 8);
+            } else if (byte_start < VARBITBYTES(seq)) {
+                memcpy(&data64, &seq_data[byte_start], VARBITBYTES(seq) - byte_start);
             }
             
-            /* Free only the array, not the individual kmers since we're using them */
-            if (expanded_kmers)
-                pfree(expanded_kmers);
+            /* Use BMI2 to extract 4-bit values and check for degenerate codes */
+            bit_offset = bit_start % 8;
+            
+            /* Check each base in the k-mer for degenerate codes */
+            for (int b = 0; b < k; b++) {
+                uint64_t shifted = data64 >> bit_offset;
+                uint8_t base = (shifted >> (b * 4)) & 0x0F;
+                /* Degenerate codes: M=0011, R=0101, W=1001, S=0110, Y=1010, K=1100, 
+                   V=0111, H=1011, D=1101, B=1110, N=1111 */
+                if (base == 0x03 || base == 0x05 || base == 0x09 || base == 0x06 ||
+                    base == 0x0A || base == 0x0C || base == 0x07 || base == 0x0B ||
+                    base == 0x0D || base == 0x0E || base == 0x0F) {
+                    has_degenerate[j] = true;
+                    degenerate_count++;
+                    break;
+                }
+            }
+        }
+        
+        /* Process k-mers based on degenerate status */
+        for (int j = 0; j < 8 && (i + j) <= seq_bases - k; j++)
+        {
+            int pos = i + j;
+            
+            if (has_degenerate[j]) {
+                /* Use expansion for degenerate k-mers */
+                VarBit **expanded_kmers;
+                int expansion_count;
+                
+                expanded_kmers = kmersearch_expand_dna4_kmer2_to_dna2_direct(seq, pos, k, &expansion_count);
+                
+                if (expanded_kmers && expansion_count > 0) {
+                    for (int exp_j = 0; exp_j < expansion_count; exp_j++) {
+                        if (expanded_kmers[exp_j])
+                            keys[key_count++] = PointerGetDatum(expanded_kmers[exp_j]);
+                    }
+                    pfree(expanded_kmers);
+                }
+            } else {
+                /* Direct conversion for non-degenerate k-mers using BMI2 */
+                int kmer_bits = k * 2;
+                int kmer_bytes = (kmer_bits + 7) / 8;
+                VarBit *kmer = (VarBit *) palloc0(VARHDRSZ + sizeof(int32) + kmer_bytes);
+                bits8 *kmer_data;
+                
+                SET_VARSIZE(kmer, VARHDRSZ + sizeof(int32) + kmer_bytes);
+                VARBITLEN(kmer) = kmer_bits;
+                kmer_data = VARBITS(kmer);
+                
+                /* Extract DNA4 k-mer and convert to DNA2 using BMI2 */
+                
+                for (int b = 0; b < k; b++) {
+                    int src_bit = (pos + b) * 4;
+                    int src_byte = src_bit / 8;
+                    int src_offset = src_bit % 8;
+                    uint8_t dna4_base;
+                    uint8_t dna2_base;
+                    
+                    if (src_offset <= 4) {
+                        dna4_base = (seq_data[src_byte] >> (4 - src_offset)) & 0x0F;
+                    } else {
+                        dna4_base = ((seq_data[src_byte] << (src_offset - 4)) & 0x0F);
+                        if (src_byte + 1 < VARBITBYTES(seq))
+                            dna4_base |= (seq_data[src_byte + 1] >> (12 - src_offset));
+                        dna4_base &= 0x0F;
+                    }
+                    
+                    /* Direct DNA4 to DNA2 conversion for standard bases */
+                    dna2_base = 0;
+                    if (dna4_base == 0x01) dna2_base = 0; /* A */
+                    else if (dna4_base == 0x02) dna2_base = 1; /* C */
+                    else if (dna4_base == 0x04) dna2_base = 2; /* G */
+                    else if (dna4_base == 0x08) dna2_base = 3; /* T */
+                    
+                    /* Store DNA2 base */
+                    {
+                        int dst_bit = b * 2;
+                        int dst_byte = dst_bit / 8;
+                        int dst_offset = dst_bit % 8;
+                        kmer_data[dst_byte] |= (dna2_base << (6 - dst_offset));
+                    }
+                }
+                
+                keys[key_count++] = PointerGetDatum(kmer);
+            }
         }
     }
     
