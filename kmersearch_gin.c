@@ -23,6 +23,62 @@ PG_FUNCTION_INFO_V1(kmersearch_compare_partial);
  */
 static bool kmersearch_is_highfreq_kmer_parallel(VarBit *ngram_key);
 
+/*
+ * Get index information from index OID
+ */
+bool
+kmersearch_get_index_info(Oid index_oid, Oid *table_oid, char **column_name, int *k_size)
+{
+    int ret;
+    bool found = false;
+    StringInfoData query;
+    
+    /* Connect to SPI */
+    if (SPI_connect() != SPI_OK_CONNECT)
+        return false;
+    
+    /* Build query to get index information */
+    initStringInfo(&query);
+    appendStringInfo(&query,
+        "SELECT table_oid, column_name, kmer_size FROM kmersearch_index_info "
+        "WHERE index_oid = %u",
+        index_oid);
+    
+    /* Execute query */
+    ret = SPI_execute(query.data, true, 1);
+    if (ret != SPI_OK_SELECT)
+        ereport(ERROR, (errmsg("SPI_execute failed with code %d", ret)));
+    if (ret == SPI_OK_SELECT && SPI_processed > 0)
+    {
+        Datum table_oid_datum, column_name_datum, k_size_datum;
+        bool isnull;
+        
+        table_oid_datum = SPI_getbinval(SPI_tuptable->vals[0], SPI_tuptable->tupdesc, 1, &isnull);
+        if (!isnull && table_oid)
+            *table_oid = DatumGetObjectId(table_oid_datum);
+        
+        column_name_datum = SPI_getbinval(SPI_tuptable->vals[0], SPI_tuptable->tupdesc, 2, &isnull);
+        (void) column_name_datum;  /* Suppress unused variable warning */
+        if (!isnull && column_name)
+        {
+            char *col_name = SPI_getvalue(SPI_tuptable->vals[0], SPI_tuptable->tupdesc, 2);
+            *column_name = pstrdup(col_name);
+        }
+        
+        k_size_datum = SPI_getbinval(SPI_tuptable->vals[0], SPI_tuptable->tupdesc, 3, &isnull);
+        if (!isnull && k_size)
+            *k_size = DatumGetInt32(k_size_datum);
+        
+        found = true;
+    }
+    
+    /* Cleanup */
+    pfree(query.data);
+    SPI_finish();
+    
+    return found;
+}
+
 
 /*
  * GIN extract_value function for DNA2
@@ -501,4 +557,145 @@ kmersearch_is_highfreq_kmer_parallel(VarBit *ngram_key)
     
     /* Look up in parallel cache using complete ngram_key2 */
     return kmersearch_parallel_cache_lookup(ngram_hash);
+}
+
+/*
+ * Evaluate optimized match condition
+ */
+bool
+evaluate_optimized_match_condition(VarBit **query_keys, int nkeys, int shared_count, const char *query_string, int query_total_kmers)
+{
+    int actual_min_score;
+    
+    
+    /* Get cached actual min score (with TopMemoryContext caching for performance) */
+    actual_min_score = get_cached_actual_min_score(query_keys, nkeys);
+    elog(LOG, "evaluate_optimized_match_condition: get_cached_actual_min_score returned %d", actual_min_score);
+    
+    /* Use optimized condition check with cached actual_min_score */
+    return (shared_count >= actual_min_score);
+}
+
+/*
+ * K-mer based matching for DNA2 sequences
+ */
+bool
+kmersearch_kmer_based_match_dna2(VarBit *sequence, const char *query_string)
+{
+    VarBit **seq_keys;
+    VarBit **query_keys;
+    int seq_nkeys, query_nkeys;
+    int shared_count;
+    int k = kmersearch_kmer_size;
+    bool result;
+    
+    /* Extract k-mers from DNA2 sequence (no degenerate expansion) */
+    seq_keys = (VarBit **)kmersearch_extract_dna2_ngram_key2_direct(sequence, k, &seq_nkeys);
+    if (seq_keys == NULL || seq_nkeys == 0) {
+        return false;
+    }
+    
+    /* Extract k-mers from query (with degenerate expansion) */
+    query_keys = get_cached_query_kmer(query_string, k, &query_nkeys);
+    if (query_keys == NULL || query_nkeys == 0) {
+        /* Free sequence keys */
+        if (seq_keys) {
+            int i;
+            for (i = 0; i < seq_nkeys; i++) {
+                if (seq_keys[i])
+                    pfree(seq_keys[i]);
+            }
+            pfree(seq_keys);
+        }
+        return false;
+    }
+    
+    /* Count shared keys */
+    shared_count = kmersearch_count_matching_kmer_fast(seq_keys, seq_nkeys, query_keys, query_nkeys);
+    
+    /* Evaluate match conditions using optimized method */
+    result = evaluate_optimized_match_condition(query_keys, query_nkeys, shared_count, query_string, query_nkeys);
+    
+    /* Free memory */
+    if (seq_keys) {
+        int i;
+        for (i = 0; i < seq_nkeys; i++) {
+            if (seq_keys[i])
+                pfree(seq_keys[i]);
+        }
+        pfree(seq_keys);
+    }
+    
+    if (query_keys) {
+        int i;
+        for (i = 0; i < query_nkeys; i++) {
+            if (query_keys[i])
+                pfree(query_keys[i]);
+        }
+        pfree(query_keys);
+    }
+    
+    return result;
+}
+
+/*
+ * K-mer based matching for DNA4 sequences
+ */
+bool
+kmersearch_kmer_based_match_dna4(VarBit *sequence, const char *query_string)
+{
+    VarBit **seq_keys;
+    VarBit **query_keys;
+    int seq_nkeys, query_nkeys;
+    int shared_count;
+    int k = kmersearch_kmer_size;
+    bool result;
+    
+    /* Extract k-mers from DNA4 sequence (with degenerate expansion) */
+    seq_keys = (VarBit **)kmersearch_extract_dna4_ngram_key2_with_expansion_direct(sequence, k, &seq_nkeys);
+    if (seq_keys == NULL || seq_nkeys == 0) {
+        return false;
+    }
+    
+    /* Extract k-mers from query (with degenerate expansion) */
+    query_keys = get_cached_query_kmer(query_string, k, &query_nkeys);
+    if (query_keys == NULL || query_nkeys == 0) {
+        /* Free sequence keys */
+        if (seq_keys) {
+            int i;
+            for (i = 0; i < seq_nkeys; i++) {
+                if (seq_keys[i])
+                    pfree(seq_keys[i]);
+            }
+            pfree(seq_keys);
+        }
+        return false;
+    }
+    
+    /* Count shared keys */
+    shared_count = kmersearch_count_matching_kmer_fast(seq_keys, seq_nkeys, query_keys, query_nkeys);
+    
+    /* Evaluate match conditions using optimized method */
+    result = evaluate_optimized_match_condition(query_keys, query_nkeys, shared_count, query_string, query_nkeys);
+    
+    /* Free memory */
+    if (seq_keys) {
+        int i;
+        for (i = 0; i < seq_nkeys; i++) {
+            if (seq_keys[i])
+                pfree(seq_keys[i]);
+        }
+        pfree(seq_keys);
+    }
+    
+    if (query_keys) {
+        int i;
+        for (i = 0; i < query_nkeys; i++) {
+            if (query_keys[i])
+                pfree(query_keys[i]);
+        }
+        pfree(query_keys);
+    }
+    
+    return result;
 }

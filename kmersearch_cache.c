@@ -2820,7 +2820,7 @@ kmersearch_parallel_highfreq_kmer_cache_free_internal(void)
 /*
  * Check if parallel high-frequency k-mer cache is valid
  */
-static bool
+bool
 kmersearch_parallel_highfreq_kmer_cache_is_valid(Oid table_oid, const char *column_name, int k_value)
 {
     /* Check if parallel cache exists and is valid */

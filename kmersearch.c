@@ -84,17 +84,15 @@ RawscoreCacheManager *rawscore_cache_manager = NULL;
 /* Functions moved to other modules - declarations remain for compatibility */
 
 /* Helper function declarations */
-Oid get_dna2_type_oid(void);
-Oid get_dna4_type_oid(void);
+/* Functions moved to kmersearch_util.c */
 static bool tuple_in_worker_range(HeapTuple tuple, KmerWorkerState *worker);
 static VarBit *extract_sequence_from_tuple(HeapTuple tuple, int attno, TupleDesc tupdesc);
-static void create_worker_ngram_temp_table(const char *table_name);
+/* Function moved to kmersearch_freq.c */
 /* Moved to kmersearch_freq.c */
 /* Moved to kmersearch_kmer.c */
 static int get_processed_row_count(KmerWorkerState *worker);
 
-/* Parallel high-frequency k-mer cache management functions */
-static bool kmersearch_parallel_highfreq_kmer_cache_is_valid(Oid table_oid, const char *column_name, int k_value);
+/* Function moved to kmersearch_cache.c */
 
 /* Analysis dshash functions (defined in kmersearch_freq.c) */
 /* B-2: Other functions */
@@ -103,25 +101,24 @@ Datum *kmersearch_extract_dna4_kmer2_with_expansion_direct(VarBit *seq, int k, i
 Datum *kmersearch_extract_dna2_ngram_key2_direct(VarBit *seq, int k, int *nkeys);
 Datum *kmersearch_extract_dna4_ngram_key2_with_expansion_direct(VarBit *seq, int k, int *nkeys);
 /* Moved to kmersearch_kmer.c */
-static bool kmersearch_kmer_based_match_dna2(VarBit *sequence, const char *query_string);
-static bool kmersearch_kmer_based_match_dna4(VarBit *sequence, const char *query_string);
+/* Function moved to kmersearch_gin.c */
 static bool kmersearch_evaluate_match_conditions(int shared_count, int query_total);
 
 /* Actual min score cache functions */
-static bool evaluate_optimized_match_condition(VarBit **query_keys, int nkeys, int shared_count, const char *query_string, int query_total_kmers);
+/* Function moved to kmersearch_gin.c */
 
 /* New parallel analysis functions */
 /* Moved to kmersearch_freq.c */
 /* Moved to kmersearch_freq.c */
-static void kmersearch_persist_highfreq_kmers_from_temp(Oid table_oid, const char *column_name, int k_size, const char *temp_table_name);
+/* Function moved to kmersearch_freq.c */
 
 /* New memory-efficient k-mer functions */
 static size_t kmersearch_get_kmer_data_size(int k_size);
-static bool kmersearch_get_index_info(Oid index_oid, Oid *table_oid, char **column_name, int *k_size);
+/* Function moved to kmersearch_gin.c */
 /* Buffer functions moved to kmersearch_freq.c */
-static void kmersearch_add_to_buffer(KmerBuffer *buffer, KmerData kmer_data, const char *temp_table_name);
-static void kmersearch_flush_buffer_to_table(KmerBuffer *buffer, const char *temp_table_name);
-static void kmersearch_aggregate_buffer_entries(KmerBuffer *buffer);
+/* Function moved to kmersearch_freq.c */
+/* Function moved to kmersearch_freq.c */
+/* Function moved to kmersearch_freq.c */
 
 /* Custom GUC variables */
 void _PG_init(void);
@@ -1039,146 +1036,13 @@ kmersearch_evaluate_match_conditions(int shared_count, int query_total)
     /* AND condition */
     return (score_condition && rate_condition);
 }
-/*
- * Optimized match condition evaluation using pre-calculated actual minimum score
- */
-static bool
-evaluate_optimized_match_condition(VarBit **query_keys, int nkeys, int shared_count, const char *query_string, int query_total_kmers)
-{
-    int actual_min_score;
-    
-    
-    /* Get cached actual min score (with TopMemoryContext caching for performance) */
-    actual_min_score = get_cached_actual_min_score(query_keys, nkeys);
-    elog(LOG, "evaluate_optimized_match_condition: get_cached_actual_min_score returned %d", actual_min_score);
-    
-    /* Use optimized condition check with cached actual_min_score */
-    return (shared_count >= actual_min_score);
-}
+/* Function moved to kmersearch_gin.c */
 
-/*
- * K-mer based matching for DNA2 sequences
- */
-static bool
-kmersearch_kmer_based_match_dna2(VarBit *sequence, const char *query_string)
-{
-    VarBit **seq_keys;
-    VarBit **query_keys;
-    int seq_nkeys, query_nkeys;
-    int shared_count;
-    int k = kmersearch_kmer_size;
-    bool result;
-    
-    /* Extract k-mers from DNA2 sequence (no degenerate expansion) */
-    seq_keys = (VarBit **)kmersearch_extract_dna2_ngram_key2_direct(sequence, k, &seq_nkeys);
-    if (seq_keys == NULL || seq_nkeys == 0) {
-        return false;
-    }
-    
-    /* Extract k-mers from query (with degenerate expansion) */
-    query_keys = get_cached_query_kmer(query_string, k, &query_nkeys);
-    if (query_keys == NULL || query_nkeys == 0) {
-        /* Free sequence keys */
-        if (seq_keys) {
-            int i;
-            for (i = 0; i < seq_nkeys; i++) {
-                if (seq_keys[i])
-                    pfree(seq_keys[i]);
-            }
-            pfree(seq_keys);
-        }
-        return false;
-    }
-    
-    /* Count shared keys */
-    shared_count = kmersearch_count_matching_kmer_fast(seq_keys, seq_nkeys, query_keys, query_nkeys);
-    
-    /* Evaluate match conditions using optimized method */
-    result = evaluate_optimized_match_condition(query_keys, query_nkeys, shared_count, query_string, query_nkeys);
-    
-    /* Free memory */
-    if (seq_keys) {
-        int i;
-        for (i = 0; i < seq_nkeys; i++) {
-            if (seq_keys[i])
-                pfree(seq_keys[i]);
-        }
-        pfree(seq_keys);
-    }
-    
-    if (query_keys) {
-        int i;
-        for (i = 0; i < query_nkeys; i++) {
-            if (query_keys[i])
-                pfree(query_keys[i]);
-        }
-        pfree(query_keys);
-    }
-    
-    return result;
-}
+/* Function moved to kmersearch_gin.c */
 
 /*
  * K-mer based matching for DNA4 sequences
  */
-static bool
-kmersearch_kmer_based_match_dna4(VarBit *sequence, const char *query_string)
-{
-    VarBit **seq_keys;
-    VarBit **query_keys;
-    int seq_nkeys, query_nkeys;
-    int shared_count;
-    int k = kmersearch_kmer_size;
-    bool result;
-    
-    /* Extract k-mers from DNA4 sequence (with degenerate expansion) */
-    seq_keys = (VarBit **)kmersearch_extract_dna4_ngram_key2_with_expansion_direct(sequence, k, &seq_nkeys);
-    if (seq_keys == NULL || seq_nkeys == 0) {
-        return false;
-    }
-    
-    /* Extract k-mers from query (with degenerate expansion) */
-    query_keys = get_cached_query_kmer(query_string, k, &query_nkeys);
-    if (query_keys == NULL || query_nkeys == 0) {
-        /* Free sequence keys */
-        if (seq_keys) {
-            int i;
-            for (i = 0; i < seq_nkeys; i++) {
-                if (seq_keys[i])
-                    pfree(seq_keys[i]);
-            }
-            pfree(seq_keys);
-        }
-        return false;
-    }
-    
-    /* Count shared keys */
-    shared_count = kmersearch_count_matching_kmer_fast(seq_keys, seq_nkeys, query_keys, query_nkeys);
-    
-    /* Evaluate match conditions using optimized method */
-    result = evaluate_optimized_match_condition(query_keys, query_nkeys, shared_count, query_string, query_nkeys);
-    
-    /* Free memory */
-    if (seq_keys) {
-        int i;
-        for (i = 0; i < seq_nkeys; i++) {
-            if (seq_keys[i])
-                pfree(seq_keys[i]);
-        }
-        pfree(seq_keys);
-    }
-    
-    if (query_keys) {
-        int i;
-        for (i = 0; i < query_nkeys; i++) {
-            if (query_keys[i])
-                pfree(query_keys[i]);
-        }
-        pfree(query_keys);
-    }
-    
-    return result;
-}
 
 /*
  * Helper function to clean up kmer match resources
@@ -1364,61 +1228,7 @@ kmersearch_get_kmer_data_size(int k_size)
     }
 }
 
-/*
- * Get index information from index OID
- */
-static bool
-kmersearch_get_index_info(Oid index_oid, Oid *table_oid, char **column_name, int *k_size)
-{
-    int ret;
-    bool found = false;
-    StringInfoData query;
-    
-    /* Connect to SPI */
-    if (SPI_connect() != SPI_OK_CONNECT)
-        return false;
-    
-    /* Build query to get index information */
-    initStringInfo(&query);
-    appendStringInfo(&query,
-        "SELECT table_oid, column_name, kmer_size FROM kmersearch_index_info "
-        "WHERE index_oid = %u",
-        index_oid);
-    
-    /* Execute query */
-    ret = SPI_execute(query.data, true, 1);
-    if (ret != SPI_OK_SELECT)
-        ereport(ERROR, (errmsg("SPI_execute failed with code %d", ret)));
-    if (ret == SPI_OK_SELECT && SPI_processed > 0)
-    {
-        Datum table_oid_datum, column_name_datum, k_size_datum;
-        bool isnull;
-        
-        table_oid_datum = SPI_getbinval(SPI_tuptable->vals[0], SPI_tuptable->tupdesc, 1, &isnull);
-        if (!isnull && table_oid)
-            *table_oid = DatumGetObjectId(table_oid_datum);
-        
-        column_name_datum = SPI_getbinval(SPI_tuptable->vals[0], SPI_tuptable->tupdesc, 2, &isnull);
-        (void) column_name_datum;  /* Suppress unused variable warning */
-        if (!isnull && column_name)
-        {
-            char *col_name = SPI_getvalue(SPI_tuptable->vals[0], SPI_tuptable->tupdesc, 2);
-            *column_name = pstrdup(col_name);
-        }
-        
-        k_size_datum = SPI_getbinval(SPI_tuptable->vals[0], SPI_tuptable->tupdesc, 3, &isnull);
-        if (!isnull && k_size)
-            *k_size = DatumGetInt32(k_size_datum);
-        
-        found = true;
-    }
-    
-    /* Cleanup */
-    pfree(query.data);
-    SPI_finish();
-    
-    return found;
-}
+/* Function moved to kmersearch_gin.c */
 
 
 
@@ -1426,139 +1236,13 @@ kmersearch_get_index_info(Oid index_oid, Oid *table_oid, char **column_name, int
 
 /* Function moved to kmersearch_freq.c */
 
-/*
- * Aggregate buffer entries with same kmer_data to prevent ON CONFLICT issues
- */
-static void
-kmersearch_aggregate_buffer_entries(KmerBuffer *buffer)
-{
-    int i, j;
-    int write_pos = 0;
-    bool merged;
-    
-    if (buffer->count <= 1) return;
-    
-    for (i = 0; i < buffer->count; i++) {
-        merged = false;
-        
-        /* Check if this entry can be merged with any previous entry */
-        for (j = 0; j < write_pos; j++) {
-            bool same_kmer = false;
-            
-            if (buffer->kmer_size <= 8) {
-                same_kmer = (buffer->entries[i].kmer_data.k8_data == buffer->entries[j].kmer_data.k8_data);
-            } else if (buffer->kmer_size <= 16) {
-                same_kmer = (buffer->entries[i].kmer_data.k16_data == buffer->entries[j].kmer_data.k16_data);
-            } else if (buffer->kmer_size <= 32) {
-                same_kmer = (buffer->entries[i].kmer_data.k32_data == buffer->entries[j].kmer_data.k32_data);
-            } else {
-                /* k > 32 not supported */
-                ereport(ERROR,
-                        (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-                         errmsg("k-mer length must be between 4 and 32"),
-                         errdetail("Provided k-mer length: %d", buffer->kmer_size)));
-            }
-            
-            if (same_kmer) {
-                /* Merge frequency counts */
-                buffer->entries[j].frequency_count += buffer->entries[i].frequency_count;
-                merged = true;
-                break;
-            }
-        }
-        
-        /* If not merged, add to write position */
-        if (!merged) {
-            if (write_pos != i) {
-                buffer->entries[write_pos] = buffer->entries[i];
-            }
-            write_pos++;
-        }
-    }
-    
-    /* Update count to reflect aggregated entries */
-    buffer->count = write_pos;
-}
-
-/*
- * Flush buffer contents to temporary table
- */
-static void
-kmersearch_flush_buffer_to_table(KmerBuffer *buffer, const char *temp_table_name)
-{
-    StringInfoData query;
-    int i;
-    
-    if (buffer->count == 0) return;
-    
-    /* Aggregate entries with same kmer_data before insertion */
-    kmersearch_aggregate_buffer_entries(buffer);
-    
-    initStringInfo(&query);
-    
-    /* Build bulk INSERT statement */
-    appendStringInfo(&query, "INSERT INTO %s (kmer_data, frequency_count) VALUES ", temp_table_name);
-    
-    for (i = 0; i < buffer->count; i++) {
-        if (i > 0) appendStringInfoString(&query, ", ");
-        
-        if (buffer->kmer_size <= 8) {
-            appendStringInfo(&query, "(%u, %d)", 
-                           buffer->entries[i].kmer_data.k8_data,
-                           buffer->entries[i].frequency_count);
-        } else if (buffer->kmer_size <= 16) {
-            appendStringInfo(&query, "(%u, %d)", 
-                           buffer->entries[i].kmer_data.k16_data,
-                           buffer->entries[i].frequency_count);
-        } else if (buffer->kmer_size <= 32) {
-            appendStringInfo(&query, "(%lu, %d)", 
-                           buffer->entries[i].kmer_data.k32_data,
-                           buffer->entries[i].frequency_count);
-        } else {
-            /* k > 32 not supported */
-            ereport(ERROR,
-                    (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-                     errmsg("k-mer length must be between 4 and 32"),
-                     errdetail("Provided k-mer length: %d", buffer->kmer_size)));
-        }
-    }
-    
-    /* Handle conflict resolution */
-    appendStringInfo(&query, " ON CONFLICT (kmer_data) DO UPDATE SET frequency_count = %s.frequency_count + EXCLUDED.frequency_count", temp_table_name);
-    
-    /* Execute the query */
-    SPI_connect();
-    SPI_exec(query.data, 0);
-    SPI_finish();
-    
-    /* Reset buffer */
-    buffer->count = 0;
-    
-    pfree(query.data);
-}
+/* Function moved to kmersearch_freq.c */
 
 /* Function moved to kmersearch_freq.c */
 
-/*
- * Add k-mer to buffer, flush to temp table if full
- */
-static void
-kmersearch_add_to_buffer(KmerBuffer *buffer, KmerData kmer_data, const char *temp_table_name)
-{
-    CompactKmerFreq *entry;
-    
-    /* Check if buffer is full */
-    if (buffer->count >= buffer->capacity) {
-        kmersearch_flush_buffer_to_table(buffer, temp_table_name);
-    }
-    
-    /* Add new entry */
-    entry = &buffer->entries[buffer->count];
-    entry->kmer_data = kmer_data;
-    entry->frequency_count = 1;
-    entry->is_highfreq = false;
-    buffer->count++;
-}
+/* Function moved to kmersearch_freq.c */
+
+/* Function moved to kmersearch_freq.c */
 
 /* Function moved to kmersearch_freq.c */
 
@@ -1606,145 +1290,10 @@ kmersearch_determine_parallel_workers(int requested_workers, Relation target_rel
 
 /* Function moved to kmersearch_freq.c */
 /*
- * Persist highly frequent k-mers from temporary table to permanent tables
- */
-static void
-kmersearch_persist_highfreq_kmers_from_temp(Oid table_oid, const char *column_name, int k_size,
-                                           const char *temp_table_name)
-{
-    StringInfoData query;
-    int ret;
-    
-    initStringInfo(&query);
-    
-    /* Insert highly frequent k-mers into permanent table */
-    /* Note: Converting integer values to bit strings for ngram_key */
-    ereport(DEBUG1, (errmsg("Building INSERT query for %s with occur_bitlen=%d", temp_table_name, kmersearch_occur_bitlen)));
-    
-    if (k_size > 32) {
-        /* k > 32 not supported */
-        ereport(ERROR,
-                (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-                 errmsg("k-mer length must be between 4 and 32"),
-                 errdetail("Provided k-mer length: %d", k_size)));
-    }
-    
-    /* For k <= 32, use single column approach */
-    appendStringInfo(&query,
-        "INSERT INTO kmersearch_highfreq_kmer (table_oid, column_name, ngram_key, detection_reason) "
-        "SELECT %u, '%s', "
-        "  CASE "
-        "    WHEN %d <= 8 THEN (kmer_data::integer)::bit(32) || (frequency_count::integer)::bit(%d) "
-        "    WHEN %d <= 16 THEN (kmer_data::bigint)::bit(64) || (frequency_count::integer)::bit(%d) "
-        "    ELSE (kmer_data::bigint)::bit(64) || (frequency_count::integer)::bit(%d) "
-        "  END AS ngram_key, "
-        "  'high_frequency' "
-        "FROM %s "
-        "WHERE kmer_data IS NOT NULL AND frequency_count > 0",
-        table_oid, column_name, 
-        k_size, kmersearch_occur_bitlen,
-        k_size, kmersearch_occur_bitlen,
-        kmersearch_occur_bitlen,
-        temp_table_name);
-    
-    ereport(DEBUG1, (errmsg("Generated INSERT query: %s", query.data)));
-    
-    SPI_connect();
-    
-    /* Validate source table has data before insertion */
-    {
-        StringInfoData count_query;
-        int count_ret;
-        
-        initStringInfo(&count_query);
-        appendStringInfo(&count_query, "SELECT COUNT(*) FROM %s", temp_table_name);
-        
-        count_ret = SPI_exec(count_query.data, 0);
-        if (count_ret == SPI_OK_SELECT && SPI_processed == 1) {
-            bool isnull;
-            int64 source_count = DatumGetInt64(SPI_getbinval(SPI_tuptable->vals[0], 
-                                                             SPI_tuptable->tupdesc, 1, &isnull));
-            ereport(NOTICE, (errmsg("Source table %s contains %ld high-frequency k-mer records", 
-                                    temp_table_name, source_count)));
-            
-            if (source_count == 0) {
-                ereport(WARNING, (errmsg("No high-frequency k-mers found in source table %s", temp_table_name)));
-            }
-        }
-        pfree(count_query.data);
-    }
-    
-    /* Execute high-frequency k-mer insertion with error checking */
-    ereport(DEBUG1, (errmsg("Executing high-frequency k-mer insertion query")));
-    ret = SPI_exec(query.data, 0);
-    if (ret != SPI_OK_INSERT && ret != SPI_OK_INSERT_RETURNING) {
-        ereport(ERROR, 
-                (errcode(ERRCODE_INTERNAL_ERROR),
-                 errmsg("Failed to insert high-frequency k-mers into kmersearch_highfreq_kmer"),
-                 errdetail("SPI_exec returned %d for INSERT query", ret),
-                 errhint("Check table structure and permissions")));
-    }
-    
-    /* Validate insertion results */
-    if (SPI_processed == 0) {
-        ereport(WARNING, (errmsg("No records were inserted into kmersearch_highfreq_kmer. Check data compatibility and SQL query syntax.")));
-    } else {
-        ereport(NOTICE, (errmsg("Successfully inserted %lu high-frequency k-mer records", SPI_processed)));
-    }
-    
-    /* Insert metadata record */
-    pfree(query.data);
-    initStringInfo(&query);
-    appendStringInfo(&query,
-        "INSERT INTO kmersearch_highfreq_kmer_meta "
-        "(table_oid, column_name, kmer_size, occur_bitlen, max_appearance_rate, max_appearance_nrow) "
-        "VALUES (%u, '%s', %d, %d, %f, %d) "
-        "ON CONFLICT (table_oid, column_name, kmer_size) DO UPDATE SET "
-        "occur_bitlen = EXCLUDED.occur_bitlen, "
-        "max_appearance_rate = EXCLUDED.max_appearance_rate, "
-        "max_appearance_nrow = EXCLUDED.max_appearance_nrow, "
-        "analysis_timestamp = now()",
-        table_oid, column_name, k_size, kmersearch_occur_bitlen, 
-        kmersearch_max_appearance_rate, kmersearch_max_appearance_nrow);
-    
-    /* Execute metadata insertion with error checking */
-    ereport(DEBUG1, (errmsg("Executing metadata insertion query")));
-    ret = SPI_exec(query.data, 0);
-    if (ret != SPI_OK_INSERT && ret != SPI_OK_UPDATE && ret != SPI_OK_INSERT_RETURNING) {
-        ereport(ERROR, 
-                (errcode(ERRCODE_INTERNAL_ERROR),
-                 errmsg("Failed to insert/update metadata in kmersearch_highfreq_kmer_meta"),
-                 errdetail("SPI_exec returned %d for metadata INSERT/UPDATE query", ret),
-                 errhint("Check table structure and permissions")));
-    }
-    ereport(DEBUG1, (errmsg("Successfully inserted/updated %lu metadata records", SPI_processed)));
-    
-    SPI_finish();
-    
-    pfree(query.data);
-}
-
-/*
  * Helper functions implementation
  */
 
-/*
- * Get DNA2 type OID
- */
-Oid
-get_dna2_type_oid(void)
-{
-    return TypenameGetTypid("dna2");
-}
-
-/*
- * Get DNA4 type OID  
- */
-Oid
-get_dna4_type_oid(void)
-{
-    return TypenameGetTypid("dna4");
-}
+/* Functions moved to kmersearch_util.c */
 
 /*
  * Check if tuple is in worker's processing range
@@ -1772,37 +1321,7 @@ extract_sequence_from_tuple(HeapTuple tuple, int attno, TupleDesc tupdesc)
     return DatumGetVarBitP(value);
 }
 
-/*
- * Create worker temporary table for n-gram keys
- */
-static void
-create_worker_ngram_temp_table(const char *table_name)
-{
-    StringInfoData query;
-    int ret;
-    
-    initStringInfo(&query);
-    
-    /* First try to drop table if it exists to avoid conflicts */
-    appendStringInfo(&query, "DROP TABLE IF EXISTS %s", table_name);
-    
-    ret = SPI_exec(query.data, 0);
-    if (ret < 0)
-        ereport(ERROR, (errmsg("Failed to drop existing temp table %s", table_name)));
-    
-    /* Create the temp table */
-    resetStringInfo(&query);
-    appendStringInfo(&query,
-        "CREATE TEMP TABLE %s ("
-        "ngram_key varbit NOT NULL"
-        ")", table_name);
-    
-    ret = SPI_exec(query.data, 0);
-    if (ret < 0)
-        ereport(ERROR, (errmsg("Failed to create temp table %s", table_name)));
-    
-    pfree(query.data);
-}
+/* Function moved to kmersearch_freq.c */
 
 /* Function moved to kmersearch_freq.c */
 
@@ -1869,23 +1388,7 @@ _PG_fini(void)
 
 
 
-/*
- * Check if parallel high-frequency k-mer cache is valid
- */
-static bool
-kmersearch_parallel_highfreq_kmer_cache_is_valid(Oid table_oid, const char *column_name, int k_value)
-{
-    /* Check if parallel cache exists and is valid */
-    if (parallel_highfreq_cache == NULL || !parallel_highfreq_cache->is_initialized)
-        return false;
-    
-    /* Check if cache matches the requested parameters */
-    if (parallel_highfreq_cache->cache_key.table_oid != table_oid || 
-        parallel_highfreq_cache->cache_key.kmer_size != k_value)
-        return false;
-    
-    return true;
-}
+/* Function moved to kmersearch_cache.c */
 
 /*
  * Lookup entry in parallel high-frequency k-mer cache

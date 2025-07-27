@@ -646,6 +646,22 @@ void kmersearch_merge_worker_results_sql(KmerWorkerState *workers, int num_worke
 /* Parallel worker function for k-mer analysis */
 PGDLLEXPORT void kmersearch_analysis_worker(dsm_segment *seg, shm_toc *toc);
 
+/* Frequency analysis persistence function (implemented in kmersearch_freq.c) */
+void kmersearch_persist_highfreq_kmers_from_temp(Oid table_oid, const char *column_name, int k_size, const char *temp_table_name);
+void create_worker_ngram_temp_table(const char *table_name);
+void kmersearch_aggregate_buffer_entries(KmerBuffer *buffer);
+void kmersearch_flush_buffer_to_table(KmerBuffer *buffer, const char *temp_table_name);
+void kmersearch_add_to_buffer(KmerBuffer *buffer, KmerData kmer_data, const char *temp_table_name);
+
+/* Cache validity check function (implemented in kmersearch_cache.c) */
+bool kmersearch_parallel_highfreq_kmer_cache_is_valid(Oid table_oid, const char *column_name, int k_value);
+
+/* GIN index support function (implemented in kmersearch_gin.c) */
+bool kmersearch_get_index_info(Oid index_oid, Oid *table_oid, char **column_name, int *k_size);
+bool kmersearch_kmer_based_match_dna2(VarBit *sequence, const char *query_string);
+bool kmersearch_kmer_based_match_dna4(VarBit *sequence, const char *query_string);
+bool evaluate_optimized_match_condition(VarBit **query_keys, int nkeys, int shared_count, const char *query_string, int query_total_kmers);
+
 /* Type OID helper functions */
 Oid get_dna2_type_oid(void);
 Oid get_dna4_type_oid(void);

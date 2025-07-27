@@ -145,31 +145,31 @@ pg_kmersearchプロジェクトのソースコード精査の結果、以下の�
 - `kmersearch_worker_analyze_blocks()` ✅ (with helper functions: `kmersearch_calculate_buffer_size`, `kmersearch_init_buffer`, `kmersearch_add_hash_to_buffer`, `kmersearch_flush_hash_buffer_to_table`, `kmersearch_create_worker_temp_table`)
 - `kmersearch_merge_worker_results_sql()` ✅
 - `process_extracted_kmer2()` ✅ (with helper functions: `is_kmer2_in_highfreq_table`, `is_kmer2_in_analysis_dshash`)
-- `kmersearch_persist_highfreq_kmers_from_temp()`
-- `create_worker_ngram_temp_table()`
+- `kmersearch_persist_highfreq_kmers_from_temp()` ✅
+- `create_worker_ngram_temp_table()` ✅
 - バッファ関連関数群：
-  - `kmersearch_init_buffer()`
-  - `kmersearch_add_to_buffer()`
-  - `kmersearch_add_hash_to_buffer()`
-  - `kmersearch_flush_buffer_to_table()`
-  - `kmersearch_flush_hash_buffer_to_table()`
-  - `kmersearch_aggregate_buffer_entries()`
-  - `kmersearch_create_worker_temp_table()`
+  - `kmersearch_init_buffer()` ✅ (already in kmersearch_freq.c)
+  - `kmersearch_add_to_buffer()` ✅
+  - `kmersearch_add_hash_to_buffer()` ✅ (already in kmersearch_freq.c)
+  - `kmersearch_flush_buffer_to_table()` ✅
+  - `kmersearch_flush_hash_buffer_to_table()` ✅ (already in kmersearch_freq.c)
+  - `kmersearch_aggregate_buffer_entries()` ✅
+  - `kmersearch_create_worker_temp_table()` ✅ (already in kmersearch_freq.c)
 
 #### kmersearch.c → kmersearch_cache.c（キャッシュ関連）
-- `kmersearch_parallel_highfreq_kmer_cache_is_valid()`
+- `kmersearch_parallel_highfreq_kmer_cache_is_valid()` ✅ (already existed in kmersearch_cache.c, just removed static)
 - rawscore/correctedscore計算で使用されるキャッシュアクセス関数
 
 #### kmersearch.c → kmersearch_gin.c（GINインデックス関連）
-- `kmersearch_get_index_info()`
-- `kmersearch_kmer_based_match_dna2()`
-- `kmersearch_kmer_based_match_dna4()`
+- `kmersearch_get_index_info()` ✅
+- `kmersearch_kmer_based_match_dna2()` ✅
+- `kmersearch_kmer_based_match_dna4()` ✅
 - `kmersearch_evaluate_match_conditions()`
-- `evaluate_optimized_match_condition()`
+- `evaluate_optimized_match_condition()` ✅
 
 #### kmersearch.c → kmersearch_util.c（ユーティリティ関数）
-- `get_dna2_type_oid()`
-- `get_dna4_type_oid()`
+- `get_dna2_type_oid()` ✅
+- `get_dna4_type_oid()` ✅
 
 #### kmersearch.cに残す関数
 - `detect_cpu_capabilities()` - CPU機能検出は初期化処理の一部として中央管理
