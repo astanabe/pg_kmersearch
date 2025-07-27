@@ -32,7 +32,6 @@ pg_kmersearchは、PostgreSQL用のDNA配列データを効率的に格納・処
 - **スコア計算関数**: 個別配列のスコア算出用の`kmersearch_rawscore()`と`kmersearch_correctedscore()`関数（現在の実装では両関数は同一の値を返します）
 - **高頻出k-mer管理**: `kmersearch_perform_highfreq_analysis()`による高頻出k-mer解析と`kmersearch_undo_highfreq_analysis()`による解析データ削除、`kmersearch_highfreq_kmer_cache_load()`および`kmersearch_highfreq_kmer_cache_free()`によるキャッシュ管理
 - **テーブルパーティション化**: `kmersearch_partition_table()`による大規模配列データベースのハッシュパーティション化サポート
-- **並列インデックス作成**: `kmersearch_parallel_create_index()`によるパーティションテーブルへの効率的なインデックス作成
 
 ## インストール
 
@@ -475,9 +474,19 @@ SELECT kmersearch_partition_table(
     4                  -- パーティション数
 );
 
+-- テーブルスペースを指定してパーティションテーブルを作成
+SELECT kmersearch_partition_table(
+    'sequences',        -- テーブル名
+    4,                 -- パーティション数
+    'fast_ssd'         -- テーブルスペース名（省略可能）
+);
+
 -- 例：大規模シーケンステーブルの変換
 -- 注：変換中すべてのデータは保持されます
 SELECT kmersearch_partition_table('large_sequences', 16);
+
+-- NULLを使用して元のテーブルのテーブルスペースを明示的に使用
+SELECT kmersearch_partition_table('large_sequences', 16, NULL);
 ```
 
 要件：
@@ -485,26 +494,7 @@ SELECT kmersearch_partition_table('large_sequences', 16);
 - テーブルはすでにパーティション化されていないこと
 - 移行中の一時データ用に十分なディスク容量が必要
 
-#### kmersearch_parallel_create_index()
-パーティションテーブルのすべてのパーティションにGINインデックスを作成します：
-
-```sql
--- すべてのパーティションにインデックスを作成
-SELECT * FROM kmersearch_parallel_create_index(
-    'sequences',        -- パーティションテーブル名
-    'dna_seq'          -- DNA2/DNA4カラム名
-);
-
--- 出力例：
---  partition_name | index_name | rows_processed | execution_time_ms | worker_pid | success | error_message
--- ----------------+------------+----------------+-------------------+------------+---------+---------------
---  [Summary]      | [All partitions] |        0 |                 0 |          0 | t       | Created indexes on 4 partitions
-```
-
-要件：
-- テーブルはパーティションテーブルである必要があります
-- カラムはDNA2またはDNA4型である必要があります
-- 高頻度k-mer除外を使用する場合、適切なGUC設定が必要
+注意：PostgreSQLはパーティションテーブルに対して'pg_default'テーブルスペースを明示的に指定することを許可しません。デフォルトテーブルスペースを使用する場合は、NULLを指定するかパラメータを省略してください。
 
 ### 高頻出k-merキャッシュ管理
 

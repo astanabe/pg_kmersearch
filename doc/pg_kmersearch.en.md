@@ -31,6 +31,7 @@ pg_kmersearch is a PostgreSQL extension that provides custom data types for effi
 - **Score-based filtering**: Minimum score thresholds with automatic adjustment for excluded k-mers
 - **Score calculation functions**: `kmersearch_rawscore()` and `kmersearch_correctedscore()` for individual sequence scoring (both functions return identical values in current implementation)
 - **High-frequency k-mer management**: `kmersearch_perform_highfreq_analysis()` for high-frequency k-mer analysis and `kmersearch_highfreq_kmer_cache_load()` and `kmersearch_highfreq_kmer_cache_free()` for cache management
+- **Table partitioning**: `kmersearch_partition_table()` for hash partitioning of large sequence databases
 
 ## Installation
 
@@ -473,9 +474,19 @@ SELECT kmersearch_partition_table(
     4                  -- number of partitions
 );
 
+-- Specify a tablespace for the partitioned table
+SELECT kmersearch_partition_table(
+    'sequences',        -- table name
+    4,                 -- number of partitions
+    'fast_ssd'         -- tablespace name (optional)
+);
+
 -- Example: Converting a large sequence table
 -- Note: This preserves all data during conversion
 SELECT kmersearch_partition_table('large_sequences', 16);
+
+-- Use NULL to explicitly use the source table's tablespace
+SELECT kmersearch_partition_table('large_sequences', 16, NULL);
 ```
 
 Requirements:
@@ -483,26 +494,8 @@ Requirements:
 - Table must not already be partitioned
 - Sufficient disk space for temporary data during migration
 
-#### kmersearch_parallel_create_index()
-Creates GIN indexes on all partitions of a partitioned table:
+Note: PostgreSQL does not allow explicitly specifying 'pg_default' tablespace for partitioned tables. Use NULL or omit the parameter to use the default tablespace.
 
-```sql
--- Create indexes on all partitions
-SELECT * FROM kmersearch_parallel_create_index(
-    'sequences',        -- partitioned table name
-    'dna_seq'          -- DNA2/DNA4 column name
-);
-
--- Example output:
---  partition_name | index_name | rows_processed | execution_time_ms | worker_pid | success | error_message
--- ----------------+------------+----------------+-------------------+------------+---------+---------------
---  [Summary]      | [All partitions] |        0 |                 0 |          0 | t       | Created indexes on 4 partitions
-```
-
-Requirements:
-- Table must be a partitioned table
-- Column must be DNA2 or DNA4 type
-- When using high-frequency k-mer exclusion, appropriate GUC settings must be configured
 
 ### High-Frequency K-mer Cache Management
 

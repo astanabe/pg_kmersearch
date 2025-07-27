@@ -24,6 +24,7 @@
 #include "funcapi.h"
 #include "miscadmin.h"
 #include "nodes/makefuncs.h"
+#include "storage/ipc.h"
 #include "storage/lmgr.h"
 #include "utils/builtins.h"
 #include "utils/lsyscache.h"
@@ -32,32 +33,21 @@
 #include "utils/snapmgr.h"
 #include "utils/syscache.h"
 #include "utils/timestamp.h"
-#include "utils/fmgroids.h"
 
 #include "kmersearch.h"
 
 /* Function declarations */
 PG_FUNCTION_INFO_V1(kmersearch_partition_table);
-PG_FUNCTION_INFO_V1(kmersearch_parallel_create_index);
 
 /* Helper function prototypes */
 static void validate_table_for_partitioning(Oid table_oid, char **dna_column_name, Oid *dna_column_type);
 static int calculate_partition_batch_size(Oid table_oid);
 static void create_partition_table(const char *temp_table_name, const char *table_name, 
-                                   const char *dna_column_name, int partition_count);
+                                   const char *dna_column_name, int partition_count, const char *tablespace_name);
 static void migrate_data_in_batches(const char *table_name, const char *temp_table_name, Oid table_oid);
 static void replace_table_with_partition(const char *table_name, const char *temp_table_name);
 static void cleanup_temp_partitions(const char *temp_table_name, int partition_count);
 
-/* Parallel create index helper function prototypes */
-static bool is_partitioned_table(Oid table_oid);
-static List *get_table_partitions(Oid table_oid, const char *column_name);
-static void validate_guc_settings_for_parallel(void);
-static void create_partition_indexes(List *partitions, const char *column_name);
-
-/* External GUC variables from kmersearch.c */
-extern bool kmersearch_preclude_highfreq_kmer;
-extern bool kmersearch_force_use_parallel_highfreq_kmer_cache;
 
 /*
  * kmersearch_partition_table
@@ -69,12 +59,15 @@ kmersearch_partition_table(PG_FUNCTION_ARGS)
 {
     text *table_name_text = PG_GETARG_TEXT_PP(0);
     int32 partition_count = PG_GETARG_INT32(1);
+    text *tablespace_name_text = PG_ARGISNULL(2) ? NULL : PG_GETARG_TEXT_PP(2);
     char *table_name;
+    char *tablespace_name = NULL;
     Oid table_oid;
     Oid dna_column_type;
     char *dna_column_name = NULL;
     char temp_table_name[NAMEDATALEN];
     int ret;
+    LOCKMODE lockmode = AccessExclusiveLock;
     
     /* Parameter validation */
     if (partition_count < 1)
@@ -84,7 +77,11 @@ kmersearch_partition_table(PG_FUNCTION_ARGS)
     
     /* Get table name and OID */
     table_name = text_to_cstring(table_name_text);
-    table_oid = RangeVarGetRelid(makeRangeVar(NULL, table_name, -1), NoLock, false);
+    table_oid = RangeVarGetRelid(makeRangeVar(NULL, table_name, -1), lockmode, false);
+    
+    /* Get tablespace name if provided */
+    if (tablespace_name_text != NULL)
+        tablespace_name = text_to_cstring(tablespace_name_text);
     
     /* Validate table for partitioning */
     validate_table_for_partitioning(table_oid, &dna_column_name, &dna_column_type);
@@ -97,19 +94,51 @@ kmersearch_partition_table(PG_FUNCTION_ARGS)
     if ((ret = SPI_connect()) != SPI_OK_CONNECT)
         elog(ERROR, "SPI_connect failed: %s", SPI_result_code_string(ret));
     
-    /* Create partition table */
-    create_partition_table(temp_table_name, table_name, dna_column_name, partition_count);
-    
-    /* Migrate data in batches */
-    migrate_data_in_batches(table_name, temp_table_name, table_oid);
-    
-    /* Replace table with partition */
-    replace_table_with_partition(table_name, temp_table_name);
-    
-    SPI_finish();
+    PG_TRY();
+    {
+        /* Create partition table */
+        create_partition_table(temp_table_name, table_name, dna_column_name, partition_count, tablespace_name);
+        
+        /* Migrate data in batches */
+        migrate_data_in_batches(table_name, temp_table_name, table_oid);
+        
+        /* Replace table with partition */
+        replace_table_with_partition(table_name, temp_table_name);
+        
+        SPI_finish();
+    }
+    PG_CATCH();
+    {
+        /* Clean up temporary tables on error */
+        StringInfoData query;
+        int i;
+        
+        initStringInfo(&query);
+        
+        /* Try to drop partitions */
+        for (i = 0; i < partition_count; i++)
+        {
+            resetStringInfo(&query);
+            appendStringInfo(&query, "DROP TABLE IF EXISTS %s_%d", table_name, i);
+            SPI_execute(query.data, false, 0);
+        }
+        
+        /* Try to drop temporary parent table */
+        resetStringInfo(&query);
+        appendStringInfo(&query, "DROP TABLE IF EXISTS %s", temp_table_name);
+        SPI_execute(query.data, false, 0);
+        
+        pfree(query.data);
+        
+        SPI_finish();
+        PG_RE_THROW();
+    }
+    PG_END_TRY();
     
     if (dna_column_name)
         pfree(dna_column_name);
+    if (tablespace_name)
+        pfree(tablespace_name);
     
     PG_RETURN_VOID();
 }
@@ -235,22 +264,31 @@ calculate_partition_batch_size(Oid table_oid)
  */
 static void
 create_partition_table(const char *temp_table_name, const char *table_name, 
-                       const char *dna_column_name, int partition_count)
+                       const char *dna_column_name, int partition_count, const char *tablespace_name)
 {
     StringInfoData query;
     int ret;
     int i;
     Oid table_oid;
     Oid tablespace_oid;
-    char *tablespace_name = NULL;
+    char *target_tablespace = NULL;
     
     initStringInfo(&query);
     
-    /* Get tablespace of original table */
-    table_oid = RangeVarGetRelid(makeRangeVar(NULL, (char *)table_name, -1), NoLock, false);
-    tablespace_oid = get_rel_tablespace(table_oid);
-    if (OidIsValid(tablespace_oid))
-        tablespace_name = get_tablespace_name(tablespace_oid);
+    /* Determine target tablespace */
+    if (tablespace_name != NULL && strlen(tablespace_name) > 0)
+    {
+        /* Use explicitly provided tablespace */
+        target_tablespace = (char *)tablespace_name;
+    }
+    else
+    {
+        /* Get tablespace of original table */
+        table_oid = RangeVarGetRelid(makeRangeVar(NULL, (char *)table_name, -1), NoLock, false);
+        tablespace_oid = get_rel_tablespace(table_oid);
+        if (OidIsValid(tablespace_oid))
+            target_tablespace = get_tablespace_name(tablespace_oid);
+    }
     
     /* Create parent partitioned table */
     /* Note: We use INCLUDING DEFAULTS INCLUDING GENERATED INCLUDING IDENTITY INCLUDING STATISTICS
@@ -261,8 +299,8 @@ create_partition_table(const char *temp_table_name, const char *table_name,
         "INCLUDING IDENTITY INCLUDING STATISTICS) PARTITION BY HASH (%s)",
         temp_table_name, table_name, dna_column_name);
         
-    if (tablespace_name)
-        appendStringInfo(&query, " TABLESPACE %s", tablespace_name);
+    if (target_tablespace)
+        appendStringInfo(&query, " TABLESPACE %s", target_tablespace);
         
     ret = SPI_execute(query.data, false, 0);
     if (ret != SPI_OK_UTILITY)
@@ -277,8 +315,8 @@ create_partition_table(const char *temp_table_name, const char *table_name,
             "FOR VALUES WITH (modulus %d, remainder %d)",
             table_name, i, temp_table_name, partition_count, i);
             
-        if (tablespace_name)
-            appendStringInfo(&query, " TABLESPACE %s", tablespace_name);
+        if (target_tablespace)
+            appendStringInfo(&query, " TABLESPACE %s", target_tablespace);
             
         ret = SPI_execute(query.data, false, 0);
         if (ret != SPI_OK_UTILITY)
@@ -286,8 +324,9 @@ create_partition_table(const char *temp_table_name, const char *table_name,
     }
     
     pfree(query.data);
-    if (tablespace_name)
-        pfree(tablespace_name);
+    /* Only free if we allocated it ourselves */
+    if (tablespace_name == NULL && target_tablespace != NULL)
+        pfree(target_tablespace);
 }
 
 /*
@@ -301,22 +340,208 @@ migrate_data_in_batches(const char *table_name, const char *temp_table_name, Oid
     StringInfoData query;
     int ret;
     uint64 total_rows_processed = 0;
+    int batch_size;
+    SPITupleTable *tuptable;
+    uint64 total_rows = 0;
+    uint64 rows_migrated = 0;
+    Oid seq_oid = InvalidOid;
+    char *seq_column = NULL;
+    bool has_suitable_index = false;
     
     initStringInfo(&query);
     
-    /* Simple approach: copy all data at once, then truncate original table
-     * We're already in a transaction, so this will be atomic */
+    /* Calculate batch size based on maintenance_work_mem */
+    batch_size = calculate_partition_batch_size(table_oid);
     
-    /* Copy all data to the partitioned table */
+    /* Check if table has a suitable index for batch processing */
+    /* Look for primary key or unique index to enable ordered batching */
     appendStringInfo(&query,
-        "INSERT INTO %s SELECT * FROM %s",
-        temp_table_name, table_name);
+        "SELECT a.attname "
+        "FROM pg_index i "
+        "JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey) "
+        "WHERE i.indrelid = %u AND i.indisprimary "
+        "ORDER BY array_position(i.indkey, a.attnum) "
+        "LIMIT 1", table_oid);
+    
+    ret = SPI_execute(query.data, true, 1);
+    if (ret == SPI_OK_SELECT && SPI_processed > 0)
+    {
+        bool isnull;
+        Datum column_datum;
         
-    ret = SPI_execute(query.data, false, 0);
-    if (ret != SPI_OK_INSERT)
-        elog(ERROR, "Data migration failed: %s", SPI_result_code_string(ret));
+        tuptable = SPI_tuptable;
+        column_datum = SPI_getbinval(tuptable->vals[0], tuptable->tupdesc, 1, &isnull);
+        if (!isnull)
+        {
+            seq_column = TextDatumGetCString(column_datum);
+            has_suitable_index = true;
+        }
+    }
+    
+    if (!has_suitable_index)
+    {
+        /* Look for any unique index as fallback */
+        resetStringInfo(&query);
+        appendStringInfo(&query,
+            "SELECT a.attname "
+            "FROM pg_index i "
+            "JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey) "
+            "WHERE i.indrelid = %u AND i.indisunique AND NOT i.indisprimary "
+            "ORDER BY i.indexrelid, array_position(i.indkey, a.attnum) "
+            "LIMIT 1", table_oid);
         
-    total_rows_processed = SPI_processed;
+        ret = SPI_execute(query.data, true, 1);
+        if (ret == SPI_OK_SELECT && SPI_processed > 0)
+        {
+            bool isnull;
+            Datum column_datum;
+            
+            tuptable = SPI_tuptable;
+            column_datum = SPI_getbinval(tuptable->vals[0], tuptable->tupdesc, 1, &isnull);
+            if (!isnull)
+            {
+                seq_column = TextDatumGetCString(column_datum);
+                has_suitable_index = true;
+            }
+        }
+    }
+    
+    /* Get total row count */
+    resetStringInfo(&query);
+    appendStringInfo(&query, "SELECT COUNT(*) FROM %s", table_name);
+    ret = SPI_execute(query.data, true, 1);
+    if (ret == SPI_OK_SELECT && SPI_processed == 1)
+    {
+        bool isnull;
+        Datum count_datum;
+        
+        tuptable = SPI_tuptable;
+        count_datum = SPI_getbinval(tuptable->vals[0], tuptable->tupdesc, 1, &isnull);
+        if (!isnull)
+            total_rows = DatumGetInt64(count_datum);
+    }
+    
+    if (has_suitable_index && total_rows > batch_size)
+    {
+        /* Batch processing with ordering by indexed column */
+        Datum last_value = (Datum)0;
+        bool first_batch = true;
+        Oid column_type = InvalidOid;
+        
+        /* Get column type for proper comparison */
+        resetStringInfo(&query);
+        appendStringInfo(&query,
+            "SELECT atttypid FROM pg_attribute "
+            "WHERE attrelid = %u AND attname = '%s'",
+            table_oid, seq_column);
+        
+        ret = SPI_execute(query.data, true, 1);
+        if (ret == SPI_OK_SELECT && SPI_processed == 1)
+        {
+            bool isnull;
+            Datum type_datum;
+            
+            tuptable = SPI_tuptable;
+            type_datum = SPI_getbinval(tuptable->vals[0], tuptable->tupdesc, 1, &isnull);
+            if (!isnull)
+                column_type = DatumGetObjectId(type_datum);
+        }
+        
+        /* If we couldn't get column type, fall back to simple migration */
+        if (!OidIsValid(column_type))
+        {
+            elog(WARNING, "Could not determine column type for %s, falling back to simple migration", seq_column);
+            goto simple_migration;
+        }
+        
+        elog(NOTICE, "Starting batch migration of " UINT64_FORMAT " rows (batch size: %d)",
+             total_rows, batch_size);
+        
+        while (rows_migrated < total_rows)
+        {
+            resetStringInfo(&query);
+            
+            if (first_batch)
+            {
+                /* First batch - no WHERE clause needed */
+                appendStringInfo(&query,
+                    "INSERT INTO %s SELECT * FROM %s "
+                    "ORDER BY %s LIMIT %d",
+                    temp_table_name, table_name, seq_column, batch_size);
+                first_batch = false;
+            }
+            else
+            {
+                /* Subsequent batches - use WHERE clause with last value */
+                appendStringInfo(&query,
+                    "INSERT INTO %s SELECT * FROM %s "
+                    "WHERE %s > ",
+                    temp_table_name, table_name, seq_column);
+                
+                /* Append last value based on type */
+                if (column_type == INT4OID)
+                    appendStringInfo(&query, "%d", DatumGetInt32(last_value));
+                else if (column_type == INT8OID)
+                    appendStringInfo(&query, INT64_FORMAT, DatumGetInt64(last_value));
+                else
+                    appendStringInfo(&query, "'%s'", TextDatumGetCString(last_value));
+                
+                appendStringInfo(&query, " ORDER BY %s LIMIT %d", seq_column, batch_size);
+            }
+            
+            ret = SPI_execute(query.data, false, 0);
+            if (ret != SPI_OK_INSERT)
+                elog(ERROR, "Batch data migration failed: %s", SPI_result_code_string(ret));
+            
+            rows_migrated += SPI_processed;
+            
+            /* If we processed fewer rows than batch size, we're done */
+            if (SPI_processed < batch_size)
+                break;
+            
+            /* Get the last value for next batch */
+            resetStringInfo(&query);
+            appendStringInfo(&query,
+                "SELECT MAX(%s) FROM ("
+                "SELECT %s FROM %s ORDER BY %s LIMIT %d OFFSET " UINT64_FORMAT
+                ") AS batch",
+                seq_column, seq_column, table_name, seq_column, batch_size, rows_migrated - batch_size);
+            
+            ret = SPI_execute(query.data, true, 1);
+            if (ret == SPI_OK_SELECT && SPI_processed == 1)
+            {
+                bool isnull;
+                tuptable = SPI_tuptable;
+                last_value = SPI_getbinval(tuptable->vals[0], tuptable->tupdesc, 1, &isnull);
+                if (isnull)
+                    break;
+            }
+            
+            /* Progress reporting */
+            if (rows_migrated % (batch_size * 10) == 0)
+            {
+                elog(NOTICE, "Migration progress: " UINT64_FORMAT "/" UINT64_FORMAT " rows (%.1f%%)",
+                     rows_migrated, total_rows, (double)rows_migrated * 100.0 / total_rows);
+            }
+        }
+        
+        total_rows_processed = rows_migrated;
+    }
+    else
+    {
+simple_migration:
+        /* Fall back to simple approach for small tables or tables without suitable index */
+        resetStringInfo(&query);
+        appendStringInfo(&query,
+            "INSERT INTO %s SELECT * FROM %s",
+            temp_table_name, table_name);
+            
+        ret = SPI_execute(query.data, false, 0);
+        if (ret != SPI_OK_INSERT)
+            elog(ERROR, "Data migration failed: %s", SPI_result_code_string(ret));
+            
+        total_rows_processed = SPI_processed;
+    }
     
     /* Now truncate the original table */
     resetStringInfo(&query);
@@ -330,6 +555,8 @@ migrate_data_in_batches(const char *table_name, const char *temp_table_name, Oid
          total_rows_processed);
          
     pfree(query.data);
+    if (seq_column)
+        pfree(seq_column);
 }
 
 /*
@@ -407,345 +634,9 @@ cleanup_temp_partitions(const char *temp_table_name, int partition_count)
      */
 }
 
-/*
- * PartitionInfo structure for tracking partition details
- */
-typedef struct PartitionInfo {
-    Oid partition_oid;
-    char partition_name[NAMEDATALEN];
-    bool has_target_column;
-    Oid column_type_oid;
-    bool is_dna4_type;
-} PartitionInfo;
 
-/*
- * is_partitioned_table
- *
- * Check if a table is a partitioned table
- */
-static bool
-is_partitioned_table(Oid table_oid)
-{
-    HeapTuple tuple;
-    Form_pg_class classForm;
-    bool is_partitioned;
-    
-    tuple = SearchSysCache1(RELOID, ObjectIdGetDatum(table_oid));
-    if (!HeapTupleIsValid(tuple))
-        elog(ERROR, "cache lookup failed for relation %u", table_oid);
-        
-    classForm = (Form_pg_class) GETSTRUCT(tuple);
-    is_partitioned = (classForm->relkind == RELKIND_PARTITIONED_TABLE);
-    
-    ReleaseSysCache(tuple);
-    
-    return is_partitioned;
-}
 
-/*
- * get_table_partitions
- *
- * Get list of partitions for a partitioned table
- */
-static List *
-get_table_partitions(Oid table_oid, const char *column_name)
-{
-    List *partitions = NIL;
-    Relation pg_inherits;
-    SysScanDesc scan;
-    HeapTuple tuple;
-    ScanKeyData key[1];
-    Oid dna2_type_oid;
-    Oid dna4_type_oid;
-    
-    /* Get DNA type OIDs */
-    dna2_type_oid = get_dna2_type_oid();
-    dna4_type_oid = get_dna4_type_oid();
-    
-    /* Scan pg_inherits for partitions */
-    ScanKeyInit(&key[0],
-                Anum_pg_inherits_inhparent,
-                BTEqualStrategyNumber, F_OIDEQ,
-                ObjectIdGetDatum(table_oid));
-                
-    pg_inherits = table_open(InheritsRelationId, AccessShareLock);
-    scan = systable_beginscan(pg_inherits, InheritsParentIndexId, true,
-                              NULL, 1, key);
-                              
-    while ((tuple = systable_getnext(scan)) != NULL)
-    {
-        Form_pg_inherits inherit = (Form_pg_inherits) GETSTRUCT(tuple);
-        Oid partition_oid = inherit->inhrelid;
-        PartitionInfo *pinfo;
-        Relation partition_rel;
-        TupleDesc tupdesc;
-        int i;
-        
-        /* Allocate partition info */
-        pinfo = (PartitionInfo *) palloc(sizeof(PartitionInfo));
-        pinfo->partition_oid = partition_oid;
-        pinfo->has_target_column = false;
-        
-        /* Get partition name */
-        partition_rel = table_open(partition_oid, AccessShareLock);
-        strncpy(pinfo->partition_name, RelationGetRelationName(partition_rel),
-                NAMEDATALEN - 1);
-        pinfo->partition_name[NAMEDATALEN - 1] = '\0';
-        
-        /* Check for target column */
-        tupdesc = RelationGetDescr(partition_rel);
-        for (i = 0; i < tupdesc->natts; i++)
-        {
-            Form_pg_attribute attr = TupleDescAttr(tupdesc, i);
-            
-            if (attr->attisdropped)
-                continue;
-                
-            if (strcmp(NameStr(attr->attname), column_name) == 0)
-            {
-                pinfo->has_target_column = true;
-                pinfo->column_type_oid = attr->atttypid;
-                pinfo->is_dna4_type = (attr->atttypid == dna4_type_oid);
-                
-                /* Validate column type */
-                if (attr->atttypid != dna2_type_oid && attr->atttypid != dna4_type_oid)
-                {
-                    table_close(partition_rel, AccessShareLock);
-                    systable_endscan(scan);
-                    table_close(pg_inherits, AccessShareLock);
-                    ereport(ERROR,
-                            (errcode(ERRCODE_WRONG_OBJECT_TYPE),
-                             errmsg("column \"%s\" in partition \"%s\" is not DNA2 or DNA4 type",
-                                    column_name, pinfo->partition_name)));
-                }
-                break;
-            }
-        }
-        
-        table_close(partition_rel, AccessShareLock);
-        
-        /* Only add partitions that have the target column */
-        if (pinfo->has_target_column)
-            partitions = lappend(partitions, pinfo);
-        else
-            pfree(pinfo);
-    }
-    
-    systable_endscan(scan);
-    table_close(pg_inherits, AccessShareLock);
-    
-    return partitions;
-}
 
-/*
- * validate_guc_settings_for_parallel
- *
- * Validate GUC settings for parallel index creation
- */
-static void
-validate_guc_settings_for_parallel(void)
-{
-    /* Check if high-frequency k-mer exclusion is enabled */
-    if (kmersearch_preclude_highfreq_kmer)
-    {
-        /* Ensure force_use_parallel_highfreq_kmer_cache is true */
-        if (!kmersearch_force_use_parallel_highfreq_kmer_cache)
-        {
-            ereport(ERROR,
-                    (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-                     errmsg("kmersearch.force_use_parallel_highfreq_kmer_cache must be true when kmersearch.preclude_highfreq_kmer is true"),
-                     errhint("Set kmersearch.force_use_parallel_highfreq_kmer_cache = true")));
-        }
-        
-        elog(NOTICE, "High-frequency k-mer exclusion enabled for parallel index creation");
-    }
-    else
-    {
-        elog(NOTICE, "High-frequency k-mer exclusion disabled (kmersearch.preclude_highfreq_kmer = false)");
-    }
-}
 
-/*
- * create_partition_indexes
- *
- * Create GIN indexes on partitions (sequentially for now)
- */
-static void
-create_partition_indexes(List *partitions, const char *column_name)
-{
-    ListCell *lc;
-    StringInfoData query;
-    int ret;
-    int success_count = 0;
-    int failure_count = 0;
-    
-    initStringInfo(&query);
-    
-    foreach(lc, partitions)
-    {
-        PartitionInfo *pinfo = (PartitionInfo *) lfirst(lc);
-        char index_name[NAMEDATALEN];
-        
-        /* Generate index name */
-        snprintf(index_name, sizeof(index_name), "%s_%s_gin_idx",
-                 pinfo->partition_name, column_name);
-        
-        /* Create GIN index */
-        resetStringInfo(&query);
-        appendStringInfo(&query,
-            "CREATE INDEX %s ON %s USING gin (%s)",
-            index_name, pinfo->partition_name, column_name);
-            
-        PG_TRY();
-        {
-            ret = SPI_execute(query.data, false, 0);
-            if (ret != SPI_OK_UTILITY)
-                elog(ERROR, "CREATE INDEX failed: %s", SPI_result_code_string(ret));
-                
-            success_count++;
-            elog(NOTICE, "Created index %s on partition %s",
-                 index_name, pinfo->partition_name);
-        }
-        PG_CATCH();
-        {
-            failure_count++;
-            elog(WARNING, "Failed to create index on partition %s",
-                 pinfo->partition_name);
-            /* Continue with other partitions */
-            FlushErrorState();
-        }
-        PG_END_TRY();
-    }
-    
-    pfree(query.data);
-    
-    elog(NOTICE, "Index creation completed: %d successful, %d failed",
-         success_count, failure_count);
-}
 
-/*
- * kmersearch_parallel_create_index
- *
- * Create GIN indexes on all partitions of a partitioned table
- */
-Datum
-kmersearch_parallel_create_index(PG_FUNCTION_ARGS)
-{
-    text *table_name_text = PG_GETARG_TEXT_PP(0);
-    text *column_name_text = PG_GETARG_TEXT_PP(1);
-    char *table_name;
-    char *column_name;
-    Oid table_oid;
-    List *partitions;
-    ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
-    TupleDesc tupdesc;
-    Tuplestorestate *tupstore;
-    MemoryContext per_query_ctx;
-    MemoryContext oldcontext;
-    int ret;
-    
-    /* Get table and column names */
-    table_name = text_to_cstring(table_name_text);
-    column_name = text_to_cstring(column_name_text);
-    
-    /* Get table OID */
-    table_oid = RangeVarGetRelid(makeRangeVar(NULL, table_name, -1), NoLock, false);
-    
-    /* Check if table is partitioned */
-    if (!is_partitioned_table(table_oid))
-    {
-        ereport(ERROR,
-                (errcode(ERRCODE_WRONG_OBJECT_TYPE),
-                 errmsg("table \"%s\" is not a partitioned table", table_name)));
-    }
-    
-    /* Validate GUC settings */
-    validate_guc_settings_for_parallel();
-    
-    /* Get list of partitions */
-    partitions = get_table_partitions(table_oid, column_name);
-    
-    if (partitions == NIL)
-    {
-        ereport(ERROR,
-                (errcode(ERRCODE_UNDEFINED_COLUMN),
-                 errmsg("no partitions found with column \"%s\"", column_name)));
-    }
-    
-    /* Setup return tuple store */
-    if (rsinfo == NULL || !IsA(rsinfo, ReturnSetInfo))
-        ereport(ERROR,
-                (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-                 errmsg("set-valued function called in context that cannot accept a set")));
-                 
-    if (!(rsinfo->allowedModes & SFRM_Materialize))
-        ereport(ERROR,
-                (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-                 errmsg("materialize mode required, but it is not allowed in this context")));
-                 
-    /* Build tuple descriptor */
-    tupdesc = CreateTemplateTupleDesc(7);
-    TupleDescInitEntry(tupdesc, (AttrNumber) 1, "partition_name",
-                       TEXTOID, -1, 0);
-    TupleDescInitEntry(tupdesc, (AttrNumber) 2, "index_name",
-                       TEXTOID, -1, 0);
-    TupleDescInitEntry(tupdesc, (AttrNumber) 3, "rows_processed",
-                       INT8OID, -1, 0);
-    TupleDescInitEntry(tupdesc, (AttrNumber) 4, "execution_time_ms",
-                       INT8OID, -1, 0);
-    TupleDescInitEntry(tupdesc, (AttrNumber) 5, "worker_pid",
-                       INT4OID, -1, 0);
-    TupleDescInitEntry(tupdesc, (AttrNumber) 6, "success",
-                       BOOLOID, -1, 0);
-    TupleDescInitEntry(tupdesc, (AttrNumber) 7, "error_message",
-                       TEXTOID, -1, 0);
-                       
-    per_query_ctx = rsinfo->econtext->ecxt_per_query_memory;
-    oldcontext = MemoryContextSwitchTo(per_query_ctx);
-    
-    tupstore = tuplestore_begin_heap(true, false, work_mem);
-    rsinfo->returnMode = SFRM_Materialize;
-    rsinfo->setResult = tupstore;
-    rsinfo->setDesc = tupdesc;
-    
-    MemoryContextSwitchTo(oldcontext);
-    
-    /* Connect to SPI */
-    if ((ret = SPI_connect()) != SPI_OK_CONNECT)
-        elog(ERROR, "SPI_connect failed: %s", SPI_result_code_string(ret));
-        
-    /* Create indexes (sequentially for now - parallel execution to be implemented) */
-    create_partition_indexes(partitions, column_name);
-    
-    /* For now, return a single summary row */
-    {
-        Datum values[7];
-        bool nulls[7];
-        HeapTuple tuple;
-        int partition_count = list_length(partitions);
-        
-        MemSet(values, 0, sizeof(values));
-        MemSet(nulls, 0, sizeof(nulls));
-        
-        values[0] = CStringGetTextDatum("[Summary]");
-        values[1] = CStringGetTextDatum("[All partitions]");
-        values[2] = Int64GetDatum(0);  /* rows_processed - not tracked yet */
-        values[3] = Int64GetDatum(0);  /* execution_time_ms - not tracked yet */
-        values[4] = Int32GetDatum(0);  /* Use 0 as placeholder for consistent test output */
-        values[5] = BoolGetDatum(true);
-        values[6] = CStringGetTextDatum(psprintf("Created indexes on %d partitions", partition_count));
-        
-        tuple = heap_form_tuple(tupdesc, values, nulls);
-        tuplestore_puttuple(tupstore, tuple);
-    }
-    
-    /* Clean up */
-    SPI_finish();
-    
-    /* Clean up partitions list */
-    list_free_deep(partitions);
-    
-    tuplestore_donestoring(tupstore);
-    
-    PG_RETURN_NULL();
-}
+

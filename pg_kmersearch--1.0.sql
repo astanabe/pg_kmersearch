@@ -666,20 +666,7 @@ GROUP BY m.table_oid, pg_class.relname, m.column_name, m.kmer_size,
          m.analysis_timestamp;
 
 -- Partitioning support functions
-CREATE FUNCTION kmersearch_partition_table(table_name text, partition_count int)
+CREATE FUNCTION kmersearch_partition_table(table_name text, partition_count int, tablespace_name text DEFAULT NULL)
 RETURNS void
 AS 'MODULE_PATHNAME', 'kmersearch_partition_table'
-LANGUAGE C STRICT;
-
-CREATE FUNCTION kmersearch_parallel_create_index(table_name text, column_name text)
-RETURNS TABLE(
-    partition_name text,
-    index_name text,
-    rows_processed bigint,
-    execution_time_ms bigint,
-    worker_pid int,
-    success boolean,
-    error_message text
-)
-AS 'MODULE_PATHNAME', 'kmersearch_parallel_create_index'
-LANGUAGE C STRICT;
+LANGUAGE C;

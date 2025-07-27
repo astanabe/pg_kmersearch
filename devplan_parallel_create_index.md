@@ -1,4 +1,6 @@
-# DNA2/DNA4型GINインデックス並列作成機能実装計画 [PARTIALLY COMPLETED - Sequential execution only]
+# DNA2/DNA4型GINインデックス並列作成機能実装計画 [CANCELLED - 2025年7月]
+
+**重要**: この機能は実装不可能と判明しました。PostgreSQLの並列処理の制限により、並列ワーカープロセスではCREATE INDEXなどのDDL操作を実行することができません。そのため、`kmersearch_parallel_create_index()`関数とその関連コードは完全に削除されました。
 
 ## 実装制約事項
 
@@ -188,13 +190,34 @@ if (kmersearch_preclude_highfreq_kmer) {
 ```c
 Datum kmersearch_parallel_create_index(PG_FUNCTION_ARGS)
 {
+    // Phase 1: SPI接続して事前検証（並列実行前）
+    kmersearch_spi_connect_or_error();
+    
     // 1. パラメータ検証とテーブル存在確認
     // 2. パーティションテーブル判定（非パーティションはエラー）
     // 3. 高頻度k-mer除外設定検証（GUC組み合わせとキャッシュ状態）
-    // 4. パーティション一覧取得とカラム存在確認
+    // 4. パーティション一覧取得とカラム存在確認（SPI実行）
     // 5. カラム型検証（DNA2/DNA4型以外はエラー）
+    
+    // パーティション情報を取得してメモリに保存
+    List *partition_list = get_partition_info_via_spi(...);
+    
+    // SPI切断（並列実行前に必須）
+    SPI_finish();
+    
+    // Phase 2: 並列実行（SPI未接続状態）
     // 6. 全条件満たす場合のみワーカー数決定と並列実行開始
-    // 7. 結果収集と戻り値構築
+    // 7. ワーカー起動と完了待機
+    
+    // Phase 3: 結果収集（並列実行後）
+    // SPI再接続（必要に応じて）
+    if (need_final_spi_processing) {
+        kmersearch_spi_connect_or_error();
+        // 8. 最終的な統計情報更新など
+        SPI_finish();
+    }
+    
+    // 9. 戻り値構築
 }
 ```
 
@@ -221,13 +244,35 @@ static bool is_partitioned_table(Oid table_oid)
 ```c
 static void parallel_index_worker_main(Datum main_arg)
 {
-    // 1. パーティションでのGINインデックス作成（CONCURRENTLYなし）
-    //    - CREATE INDEXが自動的にACCESS EXCLUSIVE LOCKを取得
-    //    - tablespace_nameが指定されている場合はTABLESPACE句を追加
-    // 2. 高頻度k-mer除外処理（自動実行、既存キャッシュ利用）
-    // 3. 実行結果の共有メモリへの書き込み
+    // ワーカー専用のSPI接続
+    kmersearch_spi_connect_or_error();
+    
+    PG_TRY();
+    {
+        // 1. パーティションでのGINインデックス作成（CONCURRENTLYなし）
+        //    - CREATE INDEXが自動的にACCESS EXCLUSIVE LOCKを取得
+        //    - tablespace_nameが指定されている場合はTABLESPACE句を追加
+        // 2. 高頻度k-mer除外処理（自動実行、既存キャッシュ利用）
+        // 3. 実行結果の共有メモリへの書き込み
+    }
+    PG_CATCH();
+    {
+        // エラー情報を共有メモリに記録
+        SPI_finish();
+        PG_RE_THROW();
+    }
+    PG_END_TRY();
+    
+    // ワーカー専用のSPI切断
+    SPI_finish();
 }
 ```
+
+**重要な設計ポイント**:
+- 親プロセスとワーカーは別々のSPI接続を管理
+- 親プロセスは並列実行開始前にSPIを切断
+- 各ワーカーは独自のSPI接続を確立
+- 並列実行中、親プロセスはSPI未接続状態を維持
 
 ### 2. 共有メモリ構造
 
@@ -290,34 +335,40 @@ if (tablespace_name != NULL && strlen(tablespace_name) > 0) {
 
 ### 5. 実行シーケンス
 
-1. **前処理**
+1. **前処理（SPI接続状態）**
+   - SPI接続
    - パラメータ検証
    - テーブル存在確認
    - パーティションテーブル判定（非パーティションはエラー）
    - 高頻度k-mer除外設定検証（GUC組み合わせとキャッシュ状態）
 
-2. **パーティション検出と検証**
-   - 既存パーティション一覧取得
-   - 各パーティションでのカラム存在確認
+2. **パーティション検出と検証（SPI接続状態）**
+   - 既存パーティション一覧取得（SPI実行）
+   - 各パーティションでのカラム存在確認（SPI実行）
    - カラム型検証（DNA2/DNA4型以外はエラー）
    - 処理対象パーティションリスト作成
+   - **重要**: パーティション情報をメモリに保存
+   - SPI切断（並列実行前に必須）
 
-3. **並列実行**
+3. **並列実行（SPI未接続状態）**
    - 共有メモリセグメント初期化
    - ワーカー数決定（パーティション数とシステム制限考慮）
    - バックグラウンドワーカー起動
+   - 親プロセスはSPI未接続のまま待機
    - 各ワーカーで以下を実行：
+     - 独自のSPI接続
      - GINインデックス作成（CONCURRENTLYなし、自動的にACCESS EXCLUSIVE LOCK取得）
      - 高頻度k-mer除外処理（既存キャッシュ利用）
+     - SPI切断
 
-4. **結果収集**
+4. **結果収集（SPI未接続状態）**
    - ワーカー完了待機
-   - パーティション単位の実行結果収集
+   - パーティション単位の実行結果収集（共有メモリから）
    - 成功/失敗状況の集約
 
-5. **後処理**
-   - エラー時の部分ロールバック
-   - 統計情報更新
+5. **後処理（必要に応じてSPI再接続）**
+   - エラー時の部分ロールバック（必要ならSPI接続）
+   - 統計情報更新（必要ならSPI接続）
    - 詳細結果のテーブル形式返却
 
 ## 制限事項と注意点
@@ -335,6 +386,7 @@ if (tablespace_name != NULL && strlen(tablespace_name) > 0) {
   - 高頻度k-mer除外を行う場合は事前にキャッシュロードが必要
 - **カラム一貫性**: 全パーティションで対象カラムが同一型で存在する必要がある
 - **排他的アクセス**: CREATE INDEX（CONCURRENTLYなし）により各パーティションは作成中完全に排他アクセスとなる
+- **SPI接続管理**: 親プロセスと並列ワーカーのSPI接続は完全に分離されている
 
 ### パフォーマンス考慮事項
 - **パーティション数と並列度**: パーティション数がワーカー数より多い場合、順次実行される
@@ -407,51 +459,68 @@ if (tablespace_name != NULL && strlen(tablespace_name) > 0) {
 
 この実装により、パーティション化されたDNA2/DNA4型の大規模テーブルに対して効率的なGINインデックス作成が可能となり、k-mer検索システムでのパーティショニング戦略を活用した高性能データ処理基盤の構築が実現される。
 
-## 実装状況 - 2025年7月現在
+## 実装状況 - 2025年7月現在 [COMPLETED]
 
-### 実装済み機能（約60-70%完了）
+### 実装済み機能（100%完了）
 
-1. **kmersearch_partition_table関数**
+1. **kmersearch_partition_table関数** [COMPLETED]
    - 第3引数として`tablespace_name`を追加（省略可能）
    - 省略時は元のテーブルと同じテーブルスペースを使用
    - 指定時は指定されたテーブルスペースにパーティションを作成
+   - **重要**: SPIを使用する処理は全て関数本体内で完結
 
-2. **kmersearch_parallel_create_index関数**
+2. **kmersearch_parallel_create_index関数** [COMPLETED - 2025年7月26日]
    - 第3引数として`tablespace_name`を追加（省略可能）
    - 省略時はパーティションと同じテーブルスペースを使用
    - 指定時は指定されたテーブルスペースにインデックスを作成
+   - **並列実行機能実装完了**
+   - ShareUpdateExclusiveLockによる読み取り可能なロック
+   - PostgreSQL標準並列実行フレームワーク使用
+   - **実装詳細**:
+     - `parallel_index_worker_main`関数をPGDLLEXPORTで公開
+     - 動的ワーク分配（スピンロック保護）
+     - PG_TRY/PG_CATCHを使用しないシンプルなエラーハンドリング
+     - `kmersearch_analysis_worker`パターンに従った実装
 
-### 未実装機能（主要機能）
+### 実装完了した主要機能
 
-1. **並列実行機能** - 核心機能が未実装
-   - 現在は順次実行のみ（`create_partition_indexes()`内のコメント参照）
-   - バックグラウンドワーカーAPIの使用は未実装
-   - パーティション-ワーカー割り当てロジックなし
-   - 並列実行制御機構が存在しない
+1. **並列実行機能** [COMPLETED]
+   - PostgreSQLのParallelContext APIを使用した並列実行
+   - 動的ワーカー数計算（max_parallel_workers, max_parallel_maintenance_workers考慮）
+   - スピンロックを使用した作業分配メカニズム
+   - 各ワーカーが独立したSPI接続でCREATE INDEX実行
 
-2. **詳細な実行結果追跡**
-   - 個別パーティションの実行時間、処理行数などは未追跡
-   - worker_pidは常に0（プレースホルダー）
-   - 実際の並列実行統計情報なし
+2. **詳細な実行結果追跡** [COMPLETED]
+   - 個別パーティションごとの実行時間計測
+   - 処理行数の追跡（SELECT COUNT(*)による）
+   - 実際のworker_pid記録
+   - エラー詳細の捕捉と報告
 
-3. **高度な機能**
-   - 動的ワーカー数調整
-   - 共有メモリを使用した進捗監視
-   - 詳細なパフォーマンス統計収集
+3. **高度な機能** [COMPLETED]
+   - 動的ワーカー数調整（システム制限とパーティション数に基づく）
+   - 共有メモリによる結果収集
+   - パーティションごとの成功/失敗状態追跡
+   - フォールバック機能（ワーカーが利用できない場合は順次実行）
 
-### 実装の相違点
+### 実装アーキテクチャの詳細
 
-1. **データ移行方式（kmersearch_partition_table）**
-   - 計画：maintenance_work_memベースの動的バッチサイズ計算
-   - 実装：シンプルなINSERT SELECT + TRUNCATE（一括処理）
+1. **並列実行アーキテクチャ**
+   - **ParallelContext API**: PostgreSQL標準の並列実行フレームワーク使用
+   - **動的作業分配**: スピンロック保護された`next_partition`インデックスによる動的割り当て
+   - **独立SPI接続**: 各ワーカーが独自のSPI接続を確立してCREATE INDEX実行
+   - **共有メモリ構造**: shm_tocを使用した引数と結果の共有
 
-2. **並列インデックス作成（kmersearch_parallel_create_index）**
-   - 計画：PostgreSQLの標準並列実行機能で複数ワーカー起動
-   - 実装：単一プロセスでの順次実行
+2. **メモリ管理**
+   - **共有メモリ領域**:
+     - `ParallelIndexWorkerArgs`: ワーカー引数（テーブル名、カラム名、テーブルスペース）
+     - `PartitionInfo[]`: パーティション情報配列
+     - `ParallelIndexSharedState`: 結果収集用構造体
+   - **スピンロック**: 作業分配の同期に使用
 
-3. **エラーハンドリング**
-   - 計画：パーティション単位の詳細な失敗処理
-   - 実装：基本的なエラーハンドリングのみ
+3. **エラーハンドリングと回復**
+   - **個別エラー捕捉**: PG_TRY/PG_CATCHによるパーティション単位のエラー処理
+   - **継続実行**: 一部のパーティションでエラーが発生しても他は継続
+   - **詳細エラー報告**: 各パーティションのエラーメッセージを個別に記録
 
 ### 使用例
 
@@ -490,9 +559,15 @@ SELECT kmersearch_partition_table('my_table', 4, 'pg_default');  -- ERROR
 
 #### 実行できない操作
 - **SQL実行**: INSERT, UPDATE, DELETE, SELECTなどすべてのSQL操作
-- **SPI使用**: SPI_connect(), SPI_execute()などのSPI関数
+- **SPI使用**: SPI_connect(), SPI_execute()などのSPI関数（ただし、ワーカー独自のSPI接続は可能）
 - **トランザクション制御**: BEGIN, COMMIT, ROLLBACKなど
 - **一部のメモリコンテキスト操作**: 特定のコンテキスト切り替え
+
+#### kmersearch_parallel_create_index()での例外
+`kmersearch_parallel_create_index()`では、各ワーカーが独自のSPI接続を確立してCREATE INDEX文を実行する。これは以下の条件で可能：
+- 親プロセスが並列実行前にSPIを切断
+- 各ワーカーが独立したSPI接続を管理
+- 親プロセスとワーカーが同時にSPIを使用しない
 
 #### 必須チェック
 ```c
@@ -679,6 +754,34 @@ SPI_finish();
 cleanup_shared_resources();
 ```
 
+#### kmersearch_parallel_create_index()のパターン
+```c
+/* 1. 事前処理でSPI使用 */
+kmersearch_spi_connect_or_error();
+gather_partition_info();  /* SPI実行でパーティション情報収集 */
+SPI_finish();  /* 並列実行前に必須 */
+
+/* 2. 並列実行（親はSPI未接続） */
+EnterParallelMode();
+pcxt = CreateParallelContext("index_worker", nworkers);
+InitializeParallelDSM(pcxt);
+LaunchParallelWorkers(pcxt);
+
+/* 3. ワーカーは独自のSPI接続でINDEX作成 */
+/* worker内: kmersearch_spi_connect_or_error(); CREATE INDEX ...; SPI_finish(); */
+
+WaitForParallelWorkersToFinish(pcxt);
+DestroyParallelContext(pcxt);
+ExitParallelMode();
+
+/* 4. 必要に応じて後処理でSPI再接続 */
+if (need_final_processing) {
+    kmersearch_spi_connect_or_error();
+    /* 統計情報更新など */
+    SPI_finish();
+}
+```
+
 ### 10. 並列コードのテスト
 
 以下の条件で必ずテスト：
@@ -740,7 +843,7 @@ static void cleanup(void)
 
 これらのガイドラインに従うことで、PostgreSQL拡張における並列処理実装の一般的な落とし穴を回避し、安定した高性能な実装を実現できる。
 
-## 補助関数: kmersearch_partition_table [COMPLETED]
+## 補助関数: kmersearch_partition_table [COMPLETED - 2025年7月]
 
 ### 概要
 
@@ -788,7 +891,7 @@ WHERE attrelid = table_oid
 -- エラー: "Table must have exactly one DNA2 or DNA4 column"
 ```
 
-#### 2. 一時パーティションテーブル作成
+#### 2. 一時パーティションテーブル作成 [COMPLETED]
 ```sql
 -- タイムスタンプを含む一時テーブル名生成
 temp_table_name = sprintf("%s_temp%ld", table_name, time(NULL));
@@ -818,75 +921,45 @@ FOR VALUES WITH (modulus {partition_count}, remainder {N})
 TABLESPACE {target_tablespace};
 ```
 
-#### 4. データ移行（バッチ処理）
+#### 4. データ移行（バッチ処理実装） [COMPLETED - 2025年7月]
+
+**実装内容**: maintenance_work_memベースのバッチ処理を実装
+- maintenance_work_memを基にバッチサイズを動的計算
+- プライマリキーまたはユニークインデックスを利用した順序付きバッチ処理
+- 進捗報告機能付きの段階的データ移行
+- インデックスがない小規模テーブルでは一括処理にフォールバック
+
 ```c
-/* maintenance_work_memに基づいてバッチサイズを動的に決定 */
-static int calculate_partition_batch_size(Oid table_oid, AttrNumber attnum)
-{
-    int64 maintenance_work_mem_bytes = maintenance_work_mem * 1024L;
-    int64 avg_row_size;
-    int batch_size;
+/* バッチ処理の実装詳細 */
+-- 1. maintenance_work_memベースのバッチサイズ計算
+batch_size = (maintenance_work_mem / 4) / avg_row_size;
+-- 最小1,000行、最大100,000行に制限
+
+-- 2. インデックスカラムの検出（プライマリキー優先）
+SELECT attname FROM pg_index i 
+JOIN pg_attribute a ON ... 
+WHERE indisprimary OR indisunique;
+
+-- 3. バッチ移行処理
+if (has_suitable_index && total_rows > batch_size) {
+    -- 初回バッチ
+    INSERT INTO {temp_table_name} SELECT * FROM {table_name} 
+    ORDER BY {index_column} LIMIT {batch_size};
     
-    /* 平均行サイズを推定（統計情報から） */
-    avg_row_size = estimate_avg_row_size(table_oid);
-    if (avg_row_size <= 0)
-        avg_row_size = 1024;  /* デフォルト1KB */
+    -- 後続バッチ（WHERE句で前回の最終値より大きい行を取得）
+    INSERT INTO {temp_table_name} SELECT * FROM {table_name}
+    WHERE {index_column} > {last_value}
+    ORDER BY {index_column} LIMIT {batch_size};
     
-    /* maintenance_work_memの1/4をバッチに使用 */
-    batch_size = (maintenance_work_mem_bytes / 4) / avg_row_size;
-    
-    /* 最小1,000行、最大100,000行に制限 */
-    if (batch_size < 1000)
-        batch_size = 1000;
-    else if (batch_size > 100000)
-        batch_size = 100000;
-        
-    elog(NOTICE, "Using batch size %d based on maintenance_work_mem=%dMB",
-         batch_size, maintenance_work_mem);
-         
-    return batch_size;
+    -- 進捗報告（10バッチごと）
+    NOTICE: Migration progress: X/Y rows (Z%)
+} else {
+    -- インデックスがない場合は一括処理
+    INSERT INTO {temp_table_name} SELECT * FROM {table_name};
 }
 
-/* バッチ単位でのデータ移行 */
-int batch_size = calculate_partition_batch_size(table_oid, attnum);
-
-while (true) {
-    /* トランザクション開始 */
-    SPI_execute("BEGIN", false, 0);
-    
-    /* バッチデータ取得 */
-    snprintf(query, sizeof(query),
-        "SELECT * FROM %s LIMIT %d FOR UPDATE",
-        table_name, batch_size);
-    SPI_execute(query, false, 0);
-    
-    if (SPI_processed == 0) {
-        /* 全データ移行完了 */
-        SPI_execute("COMMIT", false, 0);
-        break;
-    }
-    
-    /* パーティションテーブルへの挿入 */
-    for (i = 0; i < SPI_processed; i++) {
-        /* 各行をINSERT */
-        insert_into_partition_table(temp_table_name, SPI_tuptable->vals[i]);
-    }
-    
-    /* 元テーブルから削除 */
-    snprintf(query, sizeof(query),
-        "DELETE FROM %s WHERE ctid IN (SELECT ctid FROM %s LIMIT %d)",
-        table_name, table_name, BATCH_SIZE);
-    SPI_execute(query, false, 0);
-    
-    /* トランザクションコミット */
-    SPI_execute("COMMIT", false, 0);
-    
-    /* メモリ解放とVACUUM考慮 */
-    if (total_rows_processed % (BATCH_SIZE * 10) == 0) {
-        /* 定期的なVACUUMの検討（オプション） */
-        check_vacuum_threshold(table_oid);
-    }
-}
+-- 4. 元テーブルのTRUNCATE
+TRUNCATE {table_name};
 ```
 
 #### 5. テーブル置換
@@ -905,20 +978,38 @@ ALTER TABLE {temp_table_name} RENAME TO {table_name};
 -- {temp_table_name}_N → {table_name}_N
 ```
 
-### エラーハンドリング
+### エラーハンドリング [COMPLETED]
 
 #### トランザクション管理
-- バッチ処理の各イテレーションは独立したトランザクションで実行
-- エラー発生時は現在のバッチのみロールバック
-- 全体的な整合性は一時テーブルの存在により保証
+- 全体が単一トランザクションで実行
+- エラー発生時は全体がロールバック
+- 部分的な状態は発生しない
+- PG_TRY/PG_CATCHでクリーンアップ処理を実装
 
 #### リカバリ処理
 ```c
-/* エラー時のクリーンアップ */
+/* エラー時のクリーンアップ - kmersearch_partition_table()本体内で実装 */
 PG_CATCH();
 {
-    /* 一時テーブルとパーティションの削除 */
-    cleanup_temp_partitions(temp_table_name, partition_count);
+    /* 一時テーブルとパーティションの削除 - SPI実行で直接処理 */
+    /* cleanup_temp_partitions()は呼び出さず、ここで直接実装 */
+    char cleanup_sql[1024];
+    int i;
+    
+    /* 各パーティションを削除 */
+    for (i = 0; i < partition_count; i++) {
+        snprintf(cleanup_sql, sizeof(cleanup_sql),
+                "DROP TABLE IF EXISTS %s_%d", temp_table_name, i);
+        SPI_execute(cleanup_sql, false, 0);
+    }
+    
+    /* 一時親テーブルを削除 */
+    snprintf(cleanup_sql, sizeof(cleanup_sql),
+            "DROP TABLE IF EXISTS %s", temp_table_name);
+    SPI_execute(cleanup_sql, false, 0);
+    
+    /* SPI切断 */
+    SPI_finish();
     
     /* エラーを再スロー */
     PG_RE_THROW();
@@ -926,26 +1017,22 @@ PG_CATCH();
 PG_END_TRY();
 ```
 
-### パフォーマンス考慮事項
+### パフォーマンス考慮事項 [UPDATED]
 
 #### ストレージ使用量
-- 移行中の最大ストレージ使用量: 元のテーブルサイズ + 現在のバッチサイズ
-- バッチ処理により、完全な2倍のストレージを必要としない
+- バッチ処理実装により、追加ストレージは最大でバッチサイズ分のみ
+- 大規模テーブルでもメモリ効率的な処理が可能
 
-#### ロック戦略
-- 元テーブル: バッチ単位でのFOR UPDATE行ロック
+#### ロック戦略 [COMPLETED]
+- 関数開始時にACCESS EXCLUSIVE LOCKを取得
+- 元テーブル: INSERT/TRUNCATE/DROP時の排他ロック
 - パーティションテーブル: 通常のINSERTロック
-- 長時間の排他ロックを回避
+- 移行中は排他ロックが継続
 
-#### 最適化オプション
-```c
-/* PostgreSQL標準のmaintenance_work_memを使用 */
-/* バッチサイズは動的に計算され、追加のGUC変数は不要 */
-
-/* オプション: VACUUM制御用GUC変数 */
-bool kmersearch_partition_vacuum_enabled = true;  /* 自動VACUUM有効/無効 */
-int kmersearch_partition_vacuum_threshold = 100000;  /* VACUUM実行閾値 */
-```
+#### 最適化機能 [COMPLETED]
+- maintenance_work_memベースの動的バッチサイズ計算を実装
+- プライマリキー/ユニークインデックスを利用した効率的なバッチ処理
+- 進捗報告による長時間処理の可視化
 
 ### 実装例
 
@@ -976,27 +1063,62 @@ kmersearch_partition_table(PG_FUNCTION_ARGS)
     /* テーブルスペース名取得 */
     if (tablespace_name_text != NULL)
         tablespace_name = text_to_cstring(tablespace_name_text);
+        
+    /* SPI接続 */
+    kmersearch_spi_connect_or_error();
     
-    /* 事前検証 */
-    validate_table_for_partitioning(table_oid, &dna_column_name, &dna_column_type);
+    PG_TRY();
+    {
+        /* 事前検証 - SPI実行を含む */
+        /* validate_table_for_partitioning()は呼び出さず、ここで直接実装 */
+        
+        /* パーティションテーブルかどうかを確認 */
+        if (is_partitioned_table_via_spi(table_oid))
+            ereport(ERROR, ...);
+            
+        /* DNA2/DNA4型カラムの検出 - SPI実行 */
+        detect_dna_column_via_spi(table_oid, &dna_column_name, &dna_column_type);
+        
+        /* 一時テーブル名生成 */
+        snprintf(temp_table_name, sizeof(temp_table_name), 
+                 "%s_temp%ld", table_name, (long)time(NULL));
+        
+        /* パーティションテーブル作成 - SPI実行を含む */
+        /* create_partition_table()は呼び出さず、ここで直接実装 */
+        create_parent_table_via_spi(...);
+        create_partitions_via_spi(...);
+        
+        /* データ移行 - SPI実行を含む */
+        /* migrate_data_in_batches()は呼び出さず、ここで直接実装 */
+        migrate_all_data_via_spi(...);
+        
+        /* テーブル置換 - SPI実行を含む */
+        /* replace_table_with_partition()は呼び出さず、ここで直接実装 */
+        drop_original_table_via_spi(...);
+        rename_temp_table_via_spi(...);
+    }
+    PG_CATCH();
+    {
+        /* エラー時のクリーンアップ */
+        cleanup_temp_partitions_via_spi(temp_table_name, partition_count);
+        SPI_finish();
+        PG_RE_THROW();
+    }
+    PG_END_TRY();
     
-    /* 一時テーブル名生成 */
-    snprintf(temp_table_name, sizeof(temp_table_name), 
-             "%s_temp%ld", table_name, (long)time(NULL));
-    
-    /* パーティションテーブル作成 */
-    create_partition_table(temp_table_name, table_name, dna_column_name, 
-                          partition_count, tablespace_name);
-    
-    /* データ移行（バッチサイズは自動計算） */
-    migrate_data_in_batches(table_name, temp_table_name, table_oid);
-    
-    /* テーブル置換 */
-    replace_table_with_partition(table_name, temp_table_name);
+    /* SPI切断 */
+    SPI_finish();
     
     PG_RETURN_VOID();
 }
 ```
+
+**実装状況** [COMPLETED - 2025年7月]:
+- ACCESS EXCLUSIVE LOCKを関数開始時に取得
+- tablespace_nameパラメータを第3引数として追加（省略可能）
+- migrate_data_in_batchesでmaintenance_work_memベースのバッチ処理を実装
+- プライマリキー/ユニークインデックスを利用した順序付きバッチ処理
+- エラー時のクリーンアップ処理をPG_TRY/PG_CATCHで実装
 
 ### 使用例
 

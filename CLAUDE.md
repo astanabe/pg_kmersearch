@@ -220,19 +220,15 @@ Removes analysis data and frees storage
 
 ### Table Partitioning Functions
 
-#### kmersearch_partition_table(table_name text, partition_count int)
+#### kmersearch_partition_table(table_name text, partition_count int, tablespace_name text DEFAULT NULL)
 Converts a non-partitioned table to a hash-partitioned table based on DNA2/DNA4 column
 - Requires exactly one DNA2 or DNA4 column in the table
 - Creates hash partitions based on the DNA column
 - Preserves all data during conversion
 - Handles SERIAL column dependencies with CASCADE
+- Optional tablespace_name parameter to specify target tablespace (NULL uses source table's tablespace)
+- Note: Cannot explicitly specify 'pg_default' tablespace for partitioned tables (use NULL instead)
 
-#### kmersearch_parallel_create_index(table_name text, column_name text)
-Creates GIN indexes on all partitions of a partitioned table
-- Table must be a partitioned table
-- Column must be DNA2 or DNA4 type
-- Currently creates indexes sequentially (parallel execution planned for future)
-- Returns detailed results for each partition
 
 ### High-Frequency K-mer Cache Management
 

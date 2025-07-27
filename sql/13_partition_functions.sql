@@ -3,6 +3,9 @@
 SET client_min_messages = WARNING;
 CREATE EXTENSION IF NOT EXISTS pg_kmersearch;
 
+-- Set maintenance_work_mem for batch processing
+SET maintenance_work_mem = '64MB';
+
 -- Test 1: Create test table with DNA2 column
 CREATE TABLE test_sequences (
     id serial PRIMARY KEY,
@@ -50,28 +53,12 @@ SELECT sequence, description FROM test_sequences ORDER BY id;
 -- Test 7: Error case - try to partition already partitioned table
 SELECT kmersearch_partition_table('test_sequences', 4);
 
--- Test 8: Create GIN indexes on all partitions
+-- Test 8: Test search functionality on partitioned table
 SET kmersearch.kmer_size = 4;
 SET kmersearch.preclude_highfreq_kmer = false;
-SET client_min_messages = NOTICE;
-SELECT * FROM kmersearch_parallel_create_index('test_sequences', 'sequence');
-SET client_min_messages = WARNING;
-
--- Test 9: Verify indexes were created
-SELECT i.indexrelid::regclass as index_name, 
-       c.relname as table_name
-FROM pg_index i
-JOIN pg_class c ON i.indrelid = c.oid
-WHERE c.relname LIKE 'test_sequences_%'
-  AND i.indrelid IN (
-    SELECT inhrelid FROM pg_inherits WHERE inhparent = 'test_sequences'::regclass
-  )
-ORDER BY c.relname;
-
--- Test 10: Test search functionality on partitioned table
 SELECT COUNT(*) FROM test_sequences WHERE sequence =% 'ATCGATCG';
 
--- Test 11: Create test table with DNA4 column
+-- Test 9: Create test table with DNA4 column
 CREATE TABLE test_sequences_dna4 (
     id serial PRIMARY KEY,
     sequence dna4 NOT NULL
@@ -83,25 +70,12 @@ INSERT INTO test_sequences_dna4 (sequence) VALUES
     ('MMMMMMMMMMMMMMMM'),
     ('NNNNNNNNNNNNNNNN');
 
--- Test 12: Convert DNA4 table to partitioned
+-- Test 10: Convert DNA4 table to partitioned
 SET client_min_messages = NOTICE;
 SELECT kmersearch_partition_table('test_sequences_dna4', 2);
 SET client_min_messages = WARNING;
 
--- Test 13: Create indexes on DNA4 partitioned table
-SET client_min_messages = NOTICE;
-SELECT * FROM kmersearch_parallel_create_index('test_sequences_dna4', 'sequence');
-SET client_min_messages = WARNING;
-
--- Test 14: Error case - non-partitioned table
-CREATE TABLE test_regular_table (
-    id serial PRIMARY KEY,
-    sequence dna2
-);
-
-SELECT * FROM kmersearch_parallel_create_index('test_regular_table', 'sequence');
-
--- Test 15: Error case - table without DNA column
+-- Test 11: Error case - table without DNA column
 CREATE TABLE test_no_dna_table (
     id serial PRIMARY KEY,
     name text
@@ -109,7 +83,7 @@ CREATE TABLE test_no_dna_table (
 
 SELECT kmersearch_partition_table('test_no_dna_table', 2);
 
--- Test 16: Error case - table with multiple DNA columns
+-- Test 12: Error case - table with multiple DNA columns
 CREATE TABLE test_multi_dna_table (
     id serial PRIMARY KEY,
     seq1 dna2,
@@ -118,16 +92,56 @@ CREATE TABLE test_multi_dna_table (
 
 SELECT kmersearch_partition_table('test_multi_dna_table', 2);
 
--- Test 17: Test with high-frequency k-mer exclusion
-SET kmersearch.preclude_highfreq_kmer = true;
-SET kmersearch.force_use_parallel_highfreq_kmer_cache = false;
+-- Test 13: Test partition_count validation
+CREATE TABLE test_regular_table (
+    id serial PRIMARY KEY,
+    sequence dna2
+);
 
--- This should fail because force_use_parallel_highfreq_kmer_cache must be true
-SELECT * FROM kmersearch_parallel_create_index('test_sequences', 'sequence');
-
--- Test 18: Test partition_count validation
 SELECT kmersearch_partition_table('test_regular_table', 0);
 SELECT kmersearch_partition_table('test_regular_table', -1);
+
+-- Test 14: Test tablespace parameter (test with default behavior)
+CREATE TABLE test_tablespace_table (
+    id serial PRIMARY KEY,
+    sequence dna2 NOT NULL
+);
+
+INSERT INTO test_tablespace_table (sequence) VALUES
+    ('ATCGATCGATCGATCG'),
+    ('GCTAGCTAGCTAGCTA');
+
+-- Convert to partitioned table without specifying tablespace (uses default)
+SET client_min_messages = NOTICE;
+SELECT kmersearch_partition_table('test_tablespace_table', 2);
+SET client_min_messages = WARNING;
+
+-- Verify partitions were created
+SELECT c.relname as partition_name
+FROM pg_inherits i
+JOIN pg_class c ON i.inhrelid = c.oid
+WHERE i.inhparent = 'test_tablespace_table'::regclass
+ORDER BY c.relname;
+
+-- Test 15: Test with NULL tablespace parameter (should work same as default)
+CREATE TABLE test_null_tablespace (
+    id serial PRIMARY KEY,
+    sequence dna2 NOT NULL
+);
+
+INSERT INTO test_null_tablespace (sequence) VALUES
+    ('ATCGATCGATCGATCG'),
+    ('GCTAGCTAGCTAGCTA');
+
+-- Convert to partitioned table with NULL tablespace
+SELECT kmersearch_partition_table('test_null_tablespace', 2, NULL);
+
+-- Verify it worked
+SELECT c.relname as partition_name
+FROM pg_inherits i
+JOIN pg_class c ON i.inhrelid = c.oid
+WHERE i.inhparent = 'test_null_tablespace'::regclass
+ORDER BY c.relname;
 
 -- Cleanup
 DROP TABLE IF EXISTS test_sequences CASCADE;
@@ -135,6 +149,8 @@ DROP TABLE IF EXISTS test_sequences_dna4 CASCADE;
 DROP TABLE IF EXISTS test_regular_table CASCADE;
 DROP TABLE IF EXISTS test_no_dna_table CASCADE;
 DROP TABLE IF EXISTS test_multi_dna_table CASCADE;
+DROP TABLE IF EXISTS test_tablespace_table CASCADE;
+DROP TABLE IF EXISTS test_null_tablespace CASCADE;
 
 DROP EXTENSION pg_kmersearch CASCADE;
 SET client_min_messages = NOTICE;
