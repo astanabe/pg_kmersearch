@@ -126,7 +126,7 @@ pg_kmersearchプロジェクトのソースコード精査の結果、以下の�
 ### 6.2 関数移動計画
 
 #### kmersearch.c → kmersearch_kmer.c（k-mer抽出・変換関連）
-- `kmersearch_extract_dna2_kmer2_direct()` およびそのSIMDバリアント（scalar ✅, avx2, avx512, neon, sve）
+- `kmersearch_extract_dna2_kmer2_direct()` およびそのSIMDバリアント（scalar ✅, avx2 ✅, avx512 ✅, neon ✅, sve ✅）
 - `kmersearch_extract_dna4_kmer2_with_expansion_direct()` およびそのSIMDバリアント（scalar ✅, avx2, avx512, neon, sve）
 - `kmersearch_extract_dna2_ngram_key2_direct()` ✅
 - `kmersearch_extract_dna4_ngram_key2_direct()` ✅ 
@@ -202,3 +202,19 @@ pg_kmersearchプロジェクトのソースコード精査の結果、以下の�
 - SQL関数インターフェースの変更は後方互換性に注意
 - 並列処理関連の修正は特に慎重にテストする
 - パフォーマンス測定を行い、改善を確認する
+
+## SIMD実装の再有効化
+
+現在、`kmersearch_extract_dna2_kmer2_direct()`関数は常にscalarバージョンを使用するようにハードコードされています（kmersearch_kmer.c:928）。SIMD関数の移動が完了した後、以下の作業が必要です：
+
+1. **ディスパッチロジックの実装**:
+   - `kmersearch_extract_dna2_kmer2_direct()`にSIMDディスパッチロジックを追加
+   - CPU機能に基づいて適切なSIMD実装を選択
+
+2. **グローバル変数のアクセス**:
+   - `simd_capability`変数へのアクセスを確保
+   - 必要に応じてextern宣言を追加
+
+3. **テストの実施**:
+   - 各プラットフォームでSIMD実装が正しく動作することを確認
+   - パフォーマンステストを実施してSIMD最適化の効果を検証
