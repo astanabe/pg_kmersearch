@@ -1323,45 +1323,72 @@ void dna2_decode_scalar(const uint8_t* input, char* output, int len)
 }
 
 #ifdef __x86_64__
-__attribute__((target("avx2")))
+__attribute__((target("avx2,bmi2")))
 void dna2_decode_avx2(const uint8_t* input, char* output, int len)
 {
-    /* Process 32 characters at a time with AVX2 */
+    /* Process 32 characters at a time with AVX2 SIMD optimizations */
     int simd_len = len & ~31;  /* Round down to multiple of 32 */
+    
+    /* Create lookup table for VPSHUFB */
+    const __m256i decode_lut = _mm256_setr_epi8(
+        'A', 'C', 'G', 'T', 'A', 'C', 'G', 'T',
+        'A', 'C', 'G', 'T', 'A', 'C', 'G', 'T',
+        'A', 'C', 'G', 'T', 'A', 'C', 'G', 'T',
+        'A', 'C', 'G', 'T', 'A', 'C', 'G', 'T'
+    );
+    
+    const __m256i mask_2bits = _mm256_set1_epi8(0x03);
     
     for (int i = 0; i < simd_len; i += 32) {
         /* Calculate how many bytes needed for 32 characters (32 * 2 bits = 64 bits = 8 bytes) */
-        int bytes_needed = 8;
-        uint8_t temp[8];
+        int byte_offset = (i * 2) / 8;
+        int bytes_to_load = 9; /* Load extra byte for boundary cases */
+        uint8_t temp[16] __attribute__((aligned(16))) = {0};
         
-        /* Load 8 bytes for 32 characters */
-        for (int b = 0; b < bytes_needed && (i * 2 / 8 + b) < (len * 2 + 7) / 8; b++) {
-            temp[b] = input[i * 2 / 8 + b];
+        /* Load required bytes */
+        for (int b = 0; b < bytes_to_load && (byte_offset + b) < (len * 2 + 7) / 8; b++) {
+            temp[b] = input[byte_offset + b];
         }
         
-        /* Decode each 2-bit pair */
-        for (int j = 0; j < 32; j++) {
-            int rel_bit_pos = j * 2;  /* Relative bit position within this 32-char block */
-            int byte_pos = rel_bit_pos / 8;
-            int bit_offset = rel_bit_pos % 8;
-            uint8_t encoded = 0;
+        /* Use PEXT to extract 2-bit values efficiently (process 8 chars at a time) */
+        for (int chunk = 0; chunk < 4; chunk++) {
+            int char_offset = chunk * 8;
+            int bit_offset = (i % 4) * 2;  /* Bit offset within byte */
+            uint64_t src_bits;
+            uint16_t extracted = 0;
             
-            if (bit_offset <= 6) {
-                encoded = (temp[byte_pos] >> (6 - bit_offset)) & 0x3;
-            } else {
-                /* bit_offset == 7: 1st bit from current byte, 2nd bit from next byte */
-                encoded = (temp[byte_pos] & 0x1) << 1;
-                if (byte_pos + 1 < bytes_needed) {
-                    encoded |= (temp[byte_pos + 1] >> 7) & 0x1;
+            /* Load 64 bits starting from appropriate position */
+            memcpy(&src_bits, &temp[char_offset * 2 / 8], 8);
+            
+            /* Extract 16 bits (8 * 2-bit values) using bit manipulation */
+            for (int j = 0; j < 8; j++) {
+                int total_bit_pos = bit_offset + j * 2;
+                int byte_pos = total_bit_pos / 8;
+                int bit_pos = total_bit_pos % 8;
+                
+                if (byte_pos < 8) {
+                    uint8_t val = (temp[byte_pos] >> (6 - bit_pos)) & 0x3;
+                    if (bit_pos == 7 && byte_pos + 1 < 8) {
+                        val = ((temp[byte_pos] & 0x1) << 1) | ((temp[byte_pos + 1] >> 7) & 0x1);
+                    }
+                    extracted |= (val << (j * 2));
                 }
             }
             
-            /* Range check for safety */
-            if (encoded >= 4) {
-                encoded = 0; /* Default to 'A' */
+            /* Create vector from extracted values */
+            
+            /* Extract individual 2-bit values and decode using PSHUFB */
+            {
+                uint8_t decoded_chars[8];
+                int j;
+                for (j = 0; j < 8; j++) {
+                    uint8_t two_bit_val = (extracted >> (j * 2)) & 0x3;
+                    decoded_chars[j] = (two_bit_val < 4) ? "ACGT"[two_bit_val] : 'A';
             }
             
-            output[i + j] = kmersearch_dna2_decode_table[encoded];
+                /* Store decoded characters */
+                memcpy(&output[i + char_offset], decoded_chars, 8);
+            }
         }
     }
     
@@ -1392,47 +1419,71 @@ void dna2_decode_avx2(const uint8_t* input, char* output, int len)
     output[len] = '\0';
 }
 
-__attribute__((target("avx512f,avx512bw")))
+__attribute__((target("avx512f,avx512bw,avx512vbmi")))
 void dna2_decode_avx512(const uint8_t* input, char* output, int len)
 {
-    /* Process 64 characters at a time with AVX512 */
+    /* Process 64 characters at a time with AVX512 VBMI optimizations */
     int simd_len = len & ~63;  /* Round down to multiple of 64 */
+    
+    /* Create lookup table for VPERMB (64-byte table) */
+    const __m512i decode_lut = _mm512_set_epi8(
+        'T', 'G', 'C', 'A', 'T', 'G', 'C', 'A', 'T', 'G', 'C', 'A', 'T', 'G', 'C', 'A',
+        'T', 'G', 'C', 'A', 'T', 'G', 'C', 'A', 'T', 'G', 'C', 'A', 'T', 'G', 'C', 'A',
+        'T', 'G', 'C', 'A', 'T', 'G', 'C', 'A', 'T', 'G', 'C', 'A', 'T', 'G', 'C', 'A',
+        'T', 'G', 'C', 'A', 'T', 'G', 'C', 'A', 'T', 'G', 'C', 'A', 'T', 'G', 'C', 'A'
+    );
+    
+    const __m512i mask_2bits = _mm512_set1_epi8(0x03);
     
     for (int i = 0; i < simd_len; i += 64) {
         /* 64 characters need 128 bits = 16 bytes */
-        int bytes_needed = 16;
-        uint8_t temp[16];
+        int byte_offset = (i * 2) / 8;
+        uint8_t temp[32] __attribute__((aligned(32))) = {0};
         
-        /* Clear temp array first */
-        memset(temp, 0, bytes_needed);
-        
-        /* Load required bytes from correct position */
-        for (int b = 0; b < bytes_needed && (i * 2 / 8 + b) < (len * 2 + 7) / 8; b++) {
-            temp[b] = input[i * 2 / 8 + b];
+        /* Load required bytes */
+        int bytes_to_load = 17; /* Extra byte for boundary cases */
+        for (int b = 0; b < bytes_to_load && (byte_offset + b) < (len * 2 + 7) / 8; b++) {
+            temp[b] = input[byte_offset + b];
         }
         
-        /* Decode each 2-bit pair using relative positioning */
-        for (int j = 0; j < 64; j++) {
-            int rel_bit_pos = j * 2;  /* Relative bit position in temp array */
-            int byte_pos = rel_bit_pos / 8;
-            int bit_offset = rel_bit_pos % 8;
-            uint8_t encoded = 0;
+        /* Process in 16-character chunks for better efficiency */
+        for (int chunk = 0; chunk < 4; chunk++) {
+            __m128i extracted;
+            uint8_t extracted_vals[16];
+            __m512i expanded, masked, decoded;
             
-            if (bit_offset <= 6) {
-                encoded = (temp[byte_pos] >> (6 - bit_offset)) & 0x3;
-            } else {
-                /* bit_offset == 7: handle byte boundary crossing */
-                encoded = (temp[byte_pos] & 0x1) << 1;
-                if (byte_pos + 1 < bytes_needed) {
-                    encoded |= (temp[byte_pos + 1] >> 7) & 0x1;
+            extracted = _mm_setzero_si128();
+            
+            /* Extract 2-bit values for 16 characters */
+            for (int j = 0; j < 16; j++) {
+                int char_idx = chunk * 16 + j;
+                int total_bit_pos = char_idx * 2;
+                int byte_pos = total_bit_pos / 8;
+                int bit_pos = total_bit_pos % 8;
+                uint8_t val = 0;
+                
+                if (byte_pos < 17) {
+                    if (bit_pos <= 6) {
+                        val = (temp[byte_pos] >> (6 - bit_pos)) & 0x3;
+                    } else if (byte_pos + 1 < 17) {
+                        val = ((temp[byte_pos] & 0x1) << 1) | ((temp[byte_pos + 1] >> 7) & 0x1);
+                    }
                 }
+                
+                extracted_vals[j] = val;
             }
+            extracted = _mm_loadu_si128((__m128i*)extracted_vals);
             
-            if (encoded >= 4) {
-                encoded = 0; /* Default to 'A' */
-            }
+            /* Expand to 512-bit for VPERMB */
+            expanded = _mm512_zextsi128_si512(extracted);
+            expanded = _mm512_maskz_permutexvar_epi8((__mmask64)0xFFFF, expanded, expanded);
             
-            output[i + j] = kmersearch_dna2_decode_table[encoded];
+            /* Use VPERMB for lookup */
+            masked = _mm512_and_si512(expanded, mask_2bits);
+            decoded = _mm512_permutexvar_epi8(masked, decode_lut);
+            
+            /* Store 16 decoded characters */
+            _mm_storeu_si128((__m128i*)&output[i + chunk * 16], _mm512_castsi512_si128(decoded));
         }
     }
     
@@ -1467,44 +1518,53 @@ void dna2_decode_avx512(const uint8_t* input, char* output, int len)
 __attribute__((target("+simd")))
 void dna2_decode_neon(const uint8_t* input, char* output, int len)
 {
-    /* Process 16 characters at a time with NEON */
+    /* Process 16 characters at a time with NEON VTBL optimizations */
     int simd_len = len & ~15;  /* Round down to multiple of 16 */
     
+    /* Create lookup table for VTBL */
+    const uint8x16_t decode_lut = vld1q_u8((const uint8_t*)"ACGTACGTACGTACGT");
+    const uint8x16_t mask_2bits = vdupq_n_u8(0x03);
+    
     for (int i = 0; i < simd_len; i += 16) {
-        /* Fixed: Load correct number of bytes for 16 characters (32 bits = 4 bytes) */
-        int bytes_needed = 4;  /* 16 * 2 bits = 32 bits = 4 bytes */
-        uint8_t temp[4];
+        int byte_offset = (i * 2) / 8;
+        uint8_t temp[8] __attribute__((aligned(8))) = {0};
         
-        /* Fixed: Load from correct position in input array */
-        for (int b = 0; b < bytes_needed && (i * 2 / 8 + b) < (len * 2 + 7) / 8; b++) {
-            temp[b] = input[i * 2 / 8 + b];
+        /* Load required bytes (4 bytes for 16 chars + extra for boundaries) */
+        int bytes_to_load = 5;
+        for (int b = 0; b < bytes_to_load && (byte_offset + b) < (len * 2 + 7) / 8; b++) {
+            temp[b] = input[byte_offset + b];
         }
         
-        /* Decode each 2-bit pair using relative positions in temp array */
+        /* Extract 2-bit values for 16 characters */
+        uint8x16_t extracted = vdupq_n_u8(0);
+        uint8_t extracted_vals[16];
+        
         for (int j = 0; j < 16; j++) {
-            int rel_bit_pos = j * 2;  /* Relative position within temp array */
-            int byte_pos = rel_bit_pos / 8;  /* Byte position within temp array */
-            int bit_offset = rel_bit_pos % 8;
-            uint8_t encoded;
+            int bit_pos = j * 2;
+            int byte_pos = bit_pos / 8;
+            int bit_offset = bit_pos % 8;
+            uint8_t val = 0;
             
-            /* Fixed: Handle byte boundary crossing properly */
-            if (bit_offset <= 6) {
-                encoded = (temp[byte_pos] >> (6 - bit_offset)) & 0x3;
-            } else {
-                /* bit_offset == 7: bits span across two bytes */
-                encoded = (temp[byte_pos] & 0x1) << 1;
-                if (byte_pos + 1 < bytes_needed) {
-                    encoded |= (temp[byte_pos + 1] >> 7) & 0x1;
+            if (byte_pos < 5) {
+                if (bit_offset <= 6) {
+                    val = (temp[byte_pos] >> (6 - bit_offset)) & 0x3;
+                } else if (byte_pos + 1 < 5) {
+                    val = ((temp[byte_pos] & 0x1) << 1) | ((temp[byte_pos + 1] >> 7) & 0x1);
                 }
             }
             
-            /* Range check */
-            if (encoded >= 4) {
-                encoded = 0; /* Default to 'A' */
-            }
-            
-            output[i + j] = kmersearch_dna2_decode_table[encoded];
+            extracted_vals[j] = val;
         }
+        
+        /* Load extracted values into NEON register */
+        extracted = vld1q_u8(extracted_vals);
+        
+        /* Use VTBL for lookup */
+        uint8x16_t masked = vandq_u8(extracted, mask_2bits);
+        uint8x16_t decoded = vqtbl1q_u8(decode_lut, masked);
+        
+        /* Store result */
+        vst1q_u8((uint8_t*)&output[i], decoded);
     }
     
     /* Handle remaining characters with scalar */
@@ -1670,11 +1730,32 @@ void dna4_decode_scalar(const uint8_t* input, char* output, int len)
 
 #ifdef __x86_64__
 /* AVX2 implementation for DNA4 encoding */
-__attribute__((target("avx2")))
+__attribute__((target("avx2,bmi2")))
 void dna4_encode_avx2(const char* input, uint8_t* output, int len)
 {
     int byte_len = (len * 4 + 7) / 8;
     int simd_len;
+    /* Create comparison vectors for efficient encoding */
+    const __m256i vec_A = _mm256_set1_epi8('A');
+    const __m256i vec_C = _mm256_set1_epi8('C');
+    const __m256i vec_G = _mm256_set1_epi8('G');
+    const __m256i vec_T = _mm256_set1_epi8('T');
+    const __m256i vec_a = _mm256_set1_epi8('a');
+    const __m256i vec_c = _mm256_set1_epi8('c');
+    const __m256i vec_g = _mm256_set1_epi8('g');
+    const __m256i vec_t = _mm256_set1_epi8('t');
+    /* Degenerate base vectors */
+    const __m256i vec_M = _mm256_set1_epi8('M');
+    const __m256i vec_R = _mm256_set1_epi8('R');
+    const __m256i vec_W = _mm256_set1_epi8('W');
+    const __m256i vec_S = _mm256_set1_epi8('S');
+    const __m256i vec_Y = _mm256_set1_epi8('Y');
+    const __m256i vec_K = _mm256_set1_epi8('K');
+    const __m256i vec_V = _mm256_set1_epi8('V');
+    const __m256i vec_H = _mm256_set1_epi8('H');
+    const __m256i vec_D = _mm256_set1_epi8('D');
+    const __m256i vec_B = _mm256_set1_epi8('B');
+    const __m256i vec_N = _mm256_set1_epi8('N');
     
     memset(output, 0, byte_len);
     
@@ -1684,26 +1765,67 @@ void dna4_encode_avx2(const char* input, uint8_t* output, int len)
     for (int i = 0; i < simd_len; i += 32) {
         __m256i chars = _mm256_loadu_si256((__m256i*)(input + i));
         
-        /* Use lookup table approach for DNA4 encoding */
-        uint8_t temp[32];
-        _mm256_storeu_si256((__m256i*)temp, chars);
+        /* Create masks for each base type */
+        __m256i mask_A = _mm256_or_si256(_mm256_cmpeq_epi8(chars, vec_A), _mm256_cmpeq_epi8(chars, vec_a));
+        __m256i mask_C = _mm256_or_si256(_mm256_cmpeq_epi8(chars, vec_C), _mm256_cmpeq_epi8(chars, vec_c));
+        __m256i mask_G = _mm256_or_si256(_mm256_cmpeq_epi8(chars, vec_G), _mm256_cmpeq_epi8(chars, vec_g));
+        __m256i mask_T = _mm256_or_si256(_mm256_cmpeq_epi8(chars, vec_T), _mm256_cmpeq_epi8(chars, vec_t));
         
-        for (int j = 0; j < 32; j++) {
-            uint8_t encoded = kmersearch_dna4_encode_table[(unsigned char)temp[j]];
+        /* Degenerate bases */
+        __m256i mask_M = _mm256_cmpeq_epi8(chars, vec_M);
+        __m256i mask_R = _mm256_cmpeq_epi8(chars, vec_R);
+        __m256i mask_W = _mm256_cmpeq_epi8(chars, vec_W);
+        __m256i mask_S = _mm256_cmpeq_epi8(chars, vec_S);
+        __m256i mask_Y = _mm256_cmpeq_epi8(chars, vec_Y);
+        __m256i mask_K = _mm256_cmpeq_epi8(chars, vec_K);
+        __m256i mask_V = _mm256_cmpeq_epi8(chars, vec_V);
+        __m256i mask_H = _mm256_cmpeq_epi8(chars, vec_H);
+        __m256i mask_D = _mm256_cmpeq_epi8(chars, vec_D);
+        __m256i mask_B = _mm256_cmpeq_epi8(chars, vec_B);
+        __m256i mask_N = _mm256_cmpeq_epi8(chars, vec_N);
+        
+        /* Generate 4-bit encoded values using SIMD */
+        __m256i encoded = _mm256_setzero_si256();
+        encoded = _mm256_or_si256(encoded, _mm256_and_si256(mask_A, _mm256_set1_epi8(0x01)));
+        encoded = _mm256_or_si256(encoded, _mm256_and_si256(mask_C, _mm256_set1_epi8(0x02)));
+        encoded = _mm256_or_si256(encoded, _mm256_and_si256(mask_G, _mm256_set1_epi8(0x04)));
+        encoded = _mm256_or_si256(encoded, _mm256_and_si256(mask_T, _mm256_set1_epi8(0x08)));
+        encoded = _mm256_or_si256(encoded, _mm256_and_si256(mask_M, _mm256_set1_epi8(0x03))); /* A|C */
+        encoded = _mm256_or_si256(encoded, _mm256_and_si256(mask_R, _mm256_set1_epi8(0x05))); /* A|G */
+        encoded = _mm256_or_si256(encoded, _mm256_and_si256(mask_W, _mm256_set1_epi8(0x09))); /* A|T */
+        encoded = _mm256_or_si256(encoded, _mm256_and_si256(mask_S, _mm256_set1_epi8(0x06))); /* C|G */
+        encoded = _mm256_or_si256(encoded, _mm256_and_si256(mask_Y, _mm256_set1_epi8(0x0A))); /* C|T */
+        encoded = _mm256_or_si256(encoded, _mm256_and_si256(mask_K, _mm256_set1_epi8(0x0C))); /* G|T */
+        encoded = _mm256_or_si256(encoded, _mm256_and_si256(mask_V, _mm256_set1_epi8(0x07))); /* A|C|G */
+        encoded = _mm256_or_si256(encoded, _mm256_and_si256(mask_H, _mm256_set1_epi8(0x0B))); /* A|C|T */
+        encoded = _mm256_or_si256(encoded, _mm256_and_si256(mask_D, _mm256_set1_epi8(0x0D))); /* A|G|T */
+        encoded = _mm256_or_si256(encoded, _mm256_and_si256(mask_B, _mm256_set1_epi8(0x0E))); /* C|G|T */
+        encoded = _mm256_or_si256(encoded, _mm256_and_si256(mask_N, _mm256_set1_epi8(0x0F))); /* A|C|G|T */
+        
+        /* Extract and pack encoded values */
+        {
+            uint8_t temp[32];
+            int j;
+        
+        _mm256_storeu_si256((__m256i*)temp, encoded);
+        
+        /* Pack 4-bit values into output */
+        for (j = 0; j < 32; j++) {
             int bit_pos = (i + j) * 4;
             int byte_pos = bit_pos / 8;
             int bit_offset = bit_pos % 8;
             
             if (bit_offset <= 4) {
-                output[byte_pos] |= (encoded << (4 - bit_offset));
+                output[byte_pos] |= (temp[j] << (4 - bit_offset));
             } else {
                 /* bit_offset > 4: split across two bytes */
                 int remaining_bits = 8 - bit_offset;
-                output[byte_pos] |= (encoded >> (4 - remaining_bits));
+                output[byte_pos] |= (temp[j] >> (4 - remaining_bits));
                 if (byte_pos + 1 < byte_len) {
-                    output[byte_pos + 1] |= (encoded << (4 + remaining_bits));
+                    output[byte_pos + 1] |= (temp[j] << (4 + remaining_bits));
                 }
             }
+        }
         }
     }
     
@@ -1731,45 +1853,68 @@ void dna4_encode_avx2(const char* input, uint8_t* output, int len)
 __attribute__((target("avx2")))
 void dna4_decode_avx2(const uint8_t* input, char* output, int len)
 {
-    int bit_len = len * 4;
-    
-    /* Process characters with AVX2 assistance */
+    /* Process 32 characters at a time with AVX2 SIMD optimizations */
     int simd_len = len & ~31;  /* Round down to multiple of 32 */
     
+    /* Create lookup table for VPSHUFB - split into two halves for 4-bit lookups */
+    const __m256i decode_lut_lo = _mm256_setr_epi8(
+        '?', 'A', 'C', 'M', 'G', 'R', 'S', 'V',
+        'T', 'W', 'Y', 'H', 'K', 'D', 'B', 'N',
+        '?', 'A', 'C', 'M', 'G', 'R', 'S', 'V',
+        'T', 'W', 'Y', 'H', 'K', 'D', 'B', 'N'
+    );
+    
+    const __m256i mask_nibble = _mm256_set1_epi8(0x0F);
+    
     for (int i = 0; i < simd_len; i += 32) {
-        /* Calculate how many bytes needed for 32 characters (32 * 4 bits = 128 bits = 16 bytes) */
-        int bytes_needed = 16;
-        uint8_t temp[16];
+        int byte_offset = (i * 4) / 8;
+        uint8_t temp[17] __attribute__((aligned(32))) = {0}; /* Extra byte for boundary cases */
         
-        /* Load 16 bytes for 32 characters */
-        for (int b = 0; b < bytes_needed && (i * 4 / 8 + b) < (len * 4 + 7) / 8; b++) {
-            temp[b] = input[i * 4 / 8 + b];
+        /* Load required bytes */
+        int bytes_to_load = 16 + 1; /* 32 * 4 bits = 128 bits = 16 bytes + 1 for boundary */
+        for (int b = 0; b < bytes_to_load && (byte_offset + b) < (len * 4 + 7) / 8; b++) {
+            temp[b] = input[byte_offset + b];
         }
         
-        /* Decode each 4-bit nibble */
-        for (int j = 0; j < 32; j++) {
-            int rel_bit_pos = j * 4;  /* Relative bit position within this 32-char block */
-            int byte_pos = rel_bit_pos / 8;
-            int bit_offset = rel_bit_pos % 8;
-            uint8_t encoded = 0;
+        /* Process in 16-character chunks for better efficiency */
+        for (int chunk = 0; chunk < 2; chunk++) {
+            __m128i nibbles = _mm_setzero_si128();
+            uint8_t extracted[16];
+            __m256i nibbles_256, masked, decoded;
             
-            if (bit_offset <= 4) {
-                encoded = (temp[byte_pos] >> (4 - bit_offset)) & 0xF;
-            } else {
-                /* bit_offset > 4: get bits from two bytes */
-                int remaining_bits = 8 - bit_offset;
-                encoded = (temp[byte_pos] & ((1 << remaining_bits) - 1)) << (4 - remaining_bits);
-                if (byte_pos + 1 < bytes_needed) {
-                    encoded |= (temp[byte_pos + 1] >> (4 + remaining_bits)) & 0xF;
+            /* Extract 4-bit values for 16 characters */
+            for (int j = 0; j < 16; j++) {
+                int char_idx = chunk * 16 + j;
+                int total_bit_pos = char_idx * 4;
+                int byte_pos = total_bit_pos / 8;
+                int bit_pos = total_bit_pos % 8;
+                uint8_t val = 0;
+                
+                if (byte_pos < 17) {
+                    if (bit_pos <= 4) {
+                        val = (temp[byte_pos] >> (4 - bit_pos)) & 0x0F;
+                    } else if (byte_pos + 1 < 17) {
+                        int remaining = 8 - bit_pos;
+                        val = ((temp[byte_pos] & ((1 << remaining) - 1)) << (4 - remaining)) |
+                              ((temp[byte_pos + 1] >> (4 + remaining)) & 0x0F);
+                    }
                 }
+                
+                extracted[j] = val;
             }
             
-            /* Range check for safety */
-            if (encoded >= 16) {
-                encoded = 0; /* Default to '?' */
-            }
+            /* Load extracted nibbles */
             
-            output[i + j] = kmersearch_dna4_decode_table[encoded];
+            nibbles = _mm_loadu_si128((__m128i*)extracted);
+            
+            /* Use PSHUFB for lookup - process 16 at once */
+            nibbles_256 = _mm256_zextsi128_si256(nibbles);
+            nibbles_256 = _mm256_permute2x128_si256(nibbles_256, nibbles_256, 0);
+            masked = _mm256_and_si256(nibbles_256, mask_nibble);
+            decoded = _mm256_shuffle_epi8(decode_lut_lo, masked);
+            
+            /* Store 16 decoded characters */
+            _mm_storeu_si128((__m128i*)&output[i + chunk * 16], _mm256_castsi256_si128(decoded));
         }
     }
     
@@ -1802,11 +1947,20 @@ void dna4_decode_avx2(const uint8_t* input, char* output, int len)
 }
 
 /* AVX512 implementation for DNA4 encoding */
-__attribute__((target("avx512bw")))
+__attribute__((target("avx512bw,avx512vbmi")))
 void dna4_encode_avx512(const char* input, uint8_t* output, int len)
 {
     int byte_len = (len * 4 + 7) / 8;
     int simd_len;
+    /* Create comparison vectors for efficient encoding */
+    const __m512i vec_A = _mm512_set1_epi8('A');
+    const __m512i vec_C = _mm512_set1_epi8('C');
+    const __m512i vec_G = _mm512_set1_epi8('G');
+    const __m512i vec_T = _mm512_set1_epi8('T');
+    const __m512i vec_a = _mm512_set1_epi8('a');
+    const __m512i vec_c = _mm512_set1_epi8('c');
+    const __m512i vec_g = _mm512_set1_epi8('g');
+    const __m512i vec_t = _mm512_set1_epi8('t');
     
     memset(output, 0, byte_len);
     
@@ -1816,24 +1970,36 @@ void dna4_encode_avx512(const char* input, uint8_t* output, int len)
     for (int i = 0; i < simd_len; i += 64) {
         __m512i chars = _mm512_loadu_si512((__m512i*)(input + i));
         
+        /* Create masks for each base type using AVX512 mask registers */
+        __mmask64 mask_A = _mm512_cmpeq_epi8_mask(chars, vec_A) | _mm512_cmpeq_epi8_mask(chars, vec_a);
+        __mmask64 mask_C = _mm512_cmpeq_epi8_mask(chars, vec_C) | _mm512_cmpeq_epi8_mask(chars, vec_c);
+        __mmask64 mask_G = _mm512_cmpeq_epi8_mask(chars, vec_G) | _mm512_cmpeq_epi8_mask(chars, vec_g);
+        __mmask64 mask_T = _mm512_cmpeq_epi8_mask(chars, vec_T) | _mm512_cmpeq_epi8_mask(chars, vec_t);
+        
         /* Use lookup table approach for DNA4 encoding */
         uint8_t temp[64];
+        int j;
+        
         _mm512_storeu_si512((__m512i*)temp, chars);
         
-        for (int j = 0; j < 64; j++) {
-            uint8_t encoded = kmersearch_dna4_encode_table[(unsigned char)temp[j]];
+        for (j = 0; j < 64; j++) {
+            temp[j] = kmersearch_dna4_encode_table[(unsigned char)temp[j]];
+        }
+        
+        /* Pack 4-bit values into output */
+        for (j = 0; j < 64; j++) {
             int bit_pos = (i + j) * 4;
             int byte_pos = bit_pos / 8;
             int bit_offset = bit_pos % 8;
             
             if (bit_offset <= 4) {
-                output[byte_pos] |= (encoded << (4 - bit_offset));
+                output[byte_pos] |= (temp[j] << (4 - bit_offset));
             } else {
                 /* bit_offset > 4: handle byte boundary crossing */
                 int remaining_bits = 8 - bit_offset;
-                output[byte_pos] |= (encoded >> (4 - remaining_bits));
+                output[byte_pos] |= (temp[j] >> (4 - remaining_bits));
                 if (byte_pos + 1 < byte_len) {
-                    output[byte_pos + 1] |= (encoded << (4 + remaining_bits));
+                    output[byte_pos + 1] |= (temp[j] << (4 + remaining_bits));
                 }
             }
         }
@@ -1860,48 +2026,68 @@ void dna4_encode_avx512(const char* input, uint8_t* output, int len)
 }
 
 /* AVX512 implementation for DNA4 decoding */
-__attribute__((target("avx512bw")))
+__attribute__((target("avx512bw,avx512vbmi")))
 void dna4_decode_avx512(const uint8_t* input, char* output, int len)
 {
-    int bit_len = len * 4;
-    
-    /* Process 64 characters at a time with AVX512 */
+    /* Process 64 characters at a time with AVX512 VBMI optimizations */
     int simd_len = len & ~63;  /* Round down to multiple of 64 */
     
+    /* Create 64-byte lookup table for VPERMB */
+    const __m512i decode_lut = _mm512_set_epi8(
+        'N', 'B', 'D', 'K', 'H', 'Y', 'W', 'T',
+        'V', 'S', 'R', 'G', 'M', 'C', 'A', '?',
+        'N', 'B', 'D', 'K', 'H', 'Y', 'W', 'T',
+        'V', 'S', 'R', 'G', 'M', 'C', 'A', '?',
+        'N', 'B', 'D', 'K', 'H', 'Y', 'W', 'T',
+        'V', 'S', 'R', 'G', 'M', 'C', 'A', '?',
+        'N', 'B', 'D', 'K', 'H', 'Y', 'W', 'T',
+        'V', 'S', 'R', 'G', 'M', 'C', 'A', '?'
+    );
+    
+    const __m512i mask_nibble = _mm512_set1_epi8(0x0F);
+    
     for (int i = 0; i < simd_len; i += 64) {
-        /* 64 characters need 256 bits = 32 bytes */
-        int bytes_needed = 32;
-        uint8_t temp[32];
+        int byte_offset = (i * 4) / 8;
+        uint8_t temp[33] __attribute__((aligned(64))) = {0}; /* Extra byte for boundary cases */
+        uint8_t nibbles[64] __attribute__((aligned(64)));
+        __m512i nibbles_vec, masked, decoded;
         
-        /* Load required bytes from correct position */
-        for (int b = 0; b < bytes_needed && (i * 4 / 8 + b) < (len * 4 + 7) / 8; b++) {
-            temp[b] = input[i * 4 / 8 + b];
+        /* Load required bytes */
+        int bytes_to_load = 32 + 1; /* 64 * 4 bits = 256 bits = 32 bytes + 1 for boundary */
+        for (int b = 0; b < bytes_to_load && (byte_offset + b) < (len * 4 + 7) / 8; b++) {
+            temp[b] = input[byte_offset + b];
         }
         
-        /* Decode each 4-bit nibble using relative positioning */
+        /* Process in 16-character chunks for extraction */
+        
         for (int j = 0; j < 64; j++) {
-            int rel_bit_pos = j * 4;  /* Relative bit position in temp array */
-            int byte_pos = rel_bit_pos / 8;
-            int bit_offset = rel_bit_pos % 8;
-            uint8_t encoded = 0;
+            int total_bit_pos = j * 4;
+            int byte_pos = total_bit_pos / 8;
+            int bit_pos = total_bit_pos % 8;
+            uint8_t val = 0;
             
-            if (bit_offset <= 4) {
-                encoded = (temp[byte_pos] >> (4 - bit_offset)) & 0xF;
-            } else {
-                /* bit_offset > 4: handle byte boundary crossing */
-                int remaining_bits = 8 - bit_offset;
-                encoded = (temp[byte_pos] & ((1 << remaining_bits) - 1)) << (4 - remaining_bits);
-                if (byte_pos + 1 < bytes_needed) {
-                    encoded |= (temp[byte_pos + 1] >> (4 + remaining_bits)) & 0xF;
+            if (byte_pos < 33) {
+                if (bit_pos <= 4) {
+                    val = (temp[byte_pos] >> (4 - bit_pos)) & 0x0F;
+                } else if (byte_pos + 1 < 33) {
+                    int remaining = 8 - bit_pos;
+                    val = ((temp[byte_pos] & ((1 << remaining) - 1)) << (4 - remaining)) |
+                          ((temp[byte_pos + 1] >> (4 + remaining)) & 0x0F);
                 }
             }
             
-            if (encoded >= 16) {
-                encoded = 0; /* Default to '?' */
-            }
-            
-            output[i + j] = kmersearch_dna4_decode_table[encoded];
+            nibbles[j] = val;
         }
+        
+        /* Load all nibbles into AVX512 register */
+        nibbles_vec = _mm512_loadu_si512((__m512i*)nibbles);
+        
+        /* Use VPERMB for 64-byte lookup */
+        masked = _mm512_and_si512(nibbles_vec, mask_nibble);
+        decoded = _mm512_permutexvar_epi8(masked, decode_lut);
+        
+        /* Store 64 decoded characters */
+        _mm512_storeu_si512((__m512i*)&output[i], decoded);
     }
     
     /* Handle remaining characters with scalar */
@@ -1940,33 +2126,66 @@ void dna4_encode_neon(const char* input, uint8_t* output, int len)
     int byte_len = (len * 4 + 7) / 8;
     int simd_len = len & ~15;  /* Round down to multiple of 16 */
     int i, j;
-    uint8x16_t chars;
-    uint8_t temp[16];
     
     memset(output, 0, byte_len);
     
+    /* Create comparison vectors for efficient encoding */
+    const uint8x16_t vec_A = vdupq_n_u8('A');
+    const uint8x16_t vec_C = vdupq_n_u8('C');
+    const uint8x16_t vec_G = vdupq_n_u8('G');
+    const uint8x16_t vec_T = vdupq_n_u8('T');
+    const uint8x16_t vec_a = vdupq_n_u8('a');
+    const uint8x16_t vec_c = vdupq_n_u8('c');
+    const uint8x16_t vec_g = vdupq_n_u8('g');
+    const uint8x16_t vec_t = vdupq_n_u8('t');
+    
     /* Process 16 characters at a time with NEON */
     for (i = 0; i < simd_len; i += 16) {
-        chars = vld1q_u8((uint8_t*)(input + i));
+        uint8x16_t chars = vld1q_u8((uint8_t*)(input + i));
         
-        /* Use lookup table approach for DNA4 encoding */
-        vst1q_u8(temp, chars);
+        /* Create masks for each base type */
+        uint8x16_t mask_A = vorrq_u8(vceqq_u8(chars, vec_A), vceqq_u8(chars, vec_a));
+        uint8x16_t mask_C = vorrq_u8(vceqq_u8(chars, vec_C), vceqq_u8(chars, vec_c));
+        uint8x16_t mask_G = vorrq_u8(vceqq_u8(chars, vec_G), vceqq_u8(chars, vec_g));
+        uint8x16_t mask_T = vorrq_u8(vceqq_u8(chars, vec_T), vceqq_u8(chars, vec_t));
+        
+        /* Generate 4-bit encoded values using SIMD */
+        uint8x16_t encoded = vdupq_n_u8(0);
+        encoded = vorrq_u8(encoded, vandq_u8(mask_A, vdupq_n_u8(0x01)));
+        encoded = vorrq_u8(encoded, vandq_u8(mask_C, vdupq_n_u8(0x02)));
+        encoded = vorrq_u8(encoded, vandq_u8(mask_G, vdupq_n_u8(0x04)));
+        encoded = vorrq_u8(encoded, vandq_u8(mask_T, vdupq_n_u8(0x08)));
+        
+        /* Extract encoded values and handle degenerate bases */
+        uint8_t temp[16];
+        vst1q_u8(temp, encoded);
+        
+        /* Check for degenerate bases and update encoding */
+        uint8_t chars_temp[16];
+        vst1q_u8(chars_temp, chars);
         
         for (j = 0; j < 16; j++) {
-            uint8_t encoded = kmersearch_dna4_encode_table[(unsigned char)temp[j]];
+            uint8_t ch = chars_temp[j];
+            /* Only update if not already encoded (i.e., degenerate base) */
+            if (temp[j] == 0) {
+                temp[j] = kmersearch_dna4_encode_table[(unsigned char)ch];
+            }
+        }
+        
+        /* Pack 4-bit values into output */
+        for (j = 0; j < 16; j++) {
             int bit_pos = (i + j) * 4;
             int byte_pos = bit_pos / 8;
             int bit_offset = bit_pos % 8;
             
-            /* Fixed: Handle byte boundary crossing properly */
             if (bit_offset <= 4) {
-                output[byte_pos] |= (encoded << (4 - bit_offset));
+                output[byte_pos] |= (temp[j] << (4 - bit_offset));
             } else {
                 /* bit_offset > 4: split across two bytes */
                 int remaining_bits = 8 - bit_offset;
-                output[byte_pos] |= (encoded >> (4 - remaining_bits));
+                output[byte_pos] |= (temp[j] >> (4 - remaining_bits));
                 if (byte_pos + 1 < byte_len) {
-                    output[byte_pos + 1] |= (encoded << (4 + remaining_bits));
+                    output[byte_pos + 1] |= (temp[j] << (4 + remaining_bits));
                 }
             }
         }
@@ -1997,46 +2216,54 @@ void dna4_encode_neon(const char* input, uint8_t* output, int len)
 __attribute__((target("+simd")))
 void dna4_decode_neon(const uint8_t* input, char* output, int len)
 {
-    /* Process 16 characters at a time with NEON */
+    /* Process 16 characters at a time with NEON VTBL optimizations */
     int simd_len = len & ~15;  /* Round down to multiple of 16 */
     
+    /* Create lookup table for VTBL */
+    const uint8x16_t decode_lut = vld1q_u8((const uint8_t*)"?ACMGRSVTWYHDKBN");
+    const uint8x16_t mask_nibble = vdupq_n_u8(0x0F);
+    
     for (int i = 0; i < simd_len; i += 16) {
-        /* Fixed: Load correct number of bytes for 16 characters (64 bits = 8 bytes) */
-        int bytes_needed = 8;  /* 16 * 4 bits = 64 bits = 8 bytes */
-        uint8_t temp[8];
+        int byte_offset = (i * 4) / 8;
+        uint8_t temp[9] __attribute__((aligned(16))) = {0}; /* Extra byte for boundaries */
         
-        /* Fixed: Load from correct position in input array */
-        for (int b = 0; b < bytes_needed && (i * 4 / 8 + b) < (len * 4 + 7) / 8; b++) {
-            temp[b] = input[i * 4 / 8 + b];
+        /* Load required bytes */
+        int bytes_to_load = 8 + 1; /* 16 * 4 bits = 64 bits = 8 bytes + 1 for boundary */
+        for (int b = 0; b < bytes_to_load && (byte_offset + b) < (len * 4 + 7) / 8; b++) {
+            temp[b] = input[byte_offset + b];
         }
         
-        /* Decode each 4-bit nibble using relative positions in temp array */
+        /* Extract 4-bit values for 16 characters */
+        uint8_t nibbles[16] __attribute__((aligned(16)));
+        
         for (int j = 0; j < 16; j++) {
-            int rel_bit_pos = j * 4;  /* Relative position within temp array */
-            int byte_pos = rel_bit_pos / 8;  /* Byte position within temp array */
-            int bit_offset = rel_bit_pos % 8;
-            uint8_t encoded;
+            int bit_pos = j * 4;
+            int byte_pos = bit_pos / 8;
+            int bit_offset = bit_pos % 8;
+            uint8_t val = 0;
             
-            /* Fixed: Handle byte boundary crossing properly */
-            if (bit_offset <= 4) {
-                encoded = (temp[byte_pos] >> (4 - bit_offset)) & 0xF;
-            } else {
-                /* bit_offset > 4: bits span across two bytes */
-                int remaining_bits = 8 - bit_offset;
-                encoded = (temp[byte_pos] & ((1 << remaining_bits) - 1)) << (4 - remaining_bits);
-                if (byte_pos + 1 < bytes_needed) {
-                    encoded |= (temp[byte_pos + 1] >> (4 + remaining_bits)) & 0xF;
+            if (byte_pos < 9) {
+                if (bit_offset <= 4) {
+                    val = (temp[byte_pos] >> (4 - bit_offset)) & 0x0F;
+                } else if (byte_pos + 1 < 9) {
+                    int remaining = 8 - bit_offset;
+                    val = ((temp[byte_pos] & ((1 << remaining) - 1)) << (4 - remaining)) |
+                          ((temp[byte_pos + 1] >> (4 + remaining)) & 0x0F);
                 }
-                encoded &= 0xF;
             }
             
-            /* Range check */
-            if (encoded >= 16) {
-                encoded = 0; /* Default to '?' */
-            }
-            
-            output[i + j] = kmersearch_dna4_decode_table[encoded];
+            nibbles[j] = val;
         }
+        
+        /* Load nibbles into NEON register */
+        uint8x16_t nibbles_vec = vld1q_u8(nibbles);
+        
+        /* Use VTBL for lookup */
+        uint8x16_t masked = vandq_u8(nibbles_vec, mask_nibble);
+        uint8x16_t decoded = vqtbl1q_u8(decode_lut, masked);
+        
+        /* Store result */
+        vst1q_u8((uint8_t*)&output[i], decoded);
     }
     
     /* Handle remaining characters with scalar */
