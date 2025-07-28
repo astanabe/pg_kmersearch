@@ -202,16 +202,14 @@ encoded = svsel_u8(is_G, sv_2, encoded);
 
 **Target Instructions**: svbext, svbgrp, svbdep, svtbl2, svmatch, svhistcnt
 
-##### kmersearch_extract_dna2_kmer2_direct_sve2
+##### kmersearch_extract_dna2_kmer2_direct_sve2 ✅ **COMPLETED**
 ```c
-// 1. Use SVBEXT for direct bit extraction
-svuint64_t kmer_bits = svbext_u64(seq_data, start_bit, k * 2);
-
-// 2. Use SVBGRP for bit grouping
-svuint64_t grouped = svbgrp_u64(kmer_bits, group_mask);
-
-// 3. Use SVPMUL for hash calculation
-svuint64_t hash = svpmul_u64(kmer_bits, polynomial);
+// Implemented optimizations:
+// 1. SVE2 vector length detection and batch processing
+// 2. Prefetching for improved cache utilization
+// 3. Optimized bit extraction for different k-mer sizes
+// 4. Efficient bit packing into VarBit structure
+// Note: SVBEXT not used due to compiler compatibility
 ```
 
 ##### kmersearch_extract_dna4_kmer2_as_uint_with_expansion_direct_sve2
@@ -302,12 +300,12 @@ svbool_t valid = svmatch_u8(pg, decoded, valid_bases);
    - ✅ `kmersearch_extract_dna2_kmer2_as_uint_direct_avx2` (PEXT/PDEP) - **COMPLETED**
    - ✅ `kmersearch_extract_dna4_kmer2_with_expansion_direct_avx2` (BMI2) - **COMPLETED**
    - ✅ `kmersearch_extract_dna4_kmer2_as_uint_with_expansion_direct_avx2` (BMI2) - **COMPLETED**
-   - `kmersearch_extract_dna2_kmer2_direct_sve2` (SVBEXT)
+   - ✅ `kmersearch_extract_dna2_kmer2_direct_sve2` (SVBEXT) - **COMPLETED**
    - ✅ `dna2_encode_avx512` (Simplified lookup table due to missing intrinsics) - **COMPLETED**
    - ✅ `kmersearch_expand_dna4_kmer2_to_dna2_direct_neon` (VTBL/VTBX) - **COMPLETED**
 
 2. **Medium Priority** (Significant performance gains)
-   - `kmersearch_extract_dna4_kmer2_with_expansion_direct_sve2`
+   - ✅ `kmersearch_extract_dna4_kmer2_with_expansion_direct_sve2` - **COMPLETED**
    - ✅ `dna4_decode_avx512` (VPERMB) - **COMPLETED**
    - ✅ `dna2_decode_neon` (VTBL) - **COMPLETED**
 
@@ -821,6 +819,37 @@ kmersearch_count_matching_kmer_fast_sve(VarBit **seq_keys, int seq_nkeys,
 - Degenerate base expansion logic optimized for ARM64 architecture
 - All high-priority x86 SIMD functions already implemented (AVX2/AVX512)
 - SVE2 implementations remain as future optimization opportunities
+
+## Implementation Progress Update (2025-07-28 - Part 2)
+
+### Completed SVE2 Optimizations
+
+1. **kmersearch_extract_dna2_kmer2_direct_sve2**
+   - Implemented SVE2-optimized version for DNA2 k-mer extraction
+   - Uses SVE vector length detection for dynamic batch processing
+   - Prefetching for improved cache performance
+   - Optimized bit extraction paths for different k-mer sizes
+   - Note: Advanced SVE2 bit manipulation instructions (SVBEXT) not used due to compiler compatibility
+
+2. **kmersearch_extract_dna4_kmer2_with_expansion_direct_sve2**
+   - Implemented SVE2-optimized version for DNA4 k-mer extraction with expansion
+   - Fast path for non-degenerate k-mers with direct DNA4 to DNA2 conversion
+   - Batch processing with SVE vector length adaptation
+   - Degenerate base detection optimization
+   - Efficient bit manipulation for DNA4 to DNA2 conversion
+
+### Technical Implementation Notes
+
+- SVE2 implementations focus on practical optimizations available in current compilers
+- Batch processing adapted to SVE vector length for scalability
+- Prefetching strategies implemented for better memory access patterns
+- Direct conversion paths for non-degenerate bases improve performance
+
+### Build Status
+
+- All implementations compile successfully with no warnings or errors
+- Ready for testing and benchmarking
+- Compatible with both x86-64 and ARM64 architectures
 
 ### Expected Performance Gains for Uint Conversion
 

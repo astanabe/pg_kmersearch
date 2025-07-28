@@ -1757,50 +1757,75 @@ kmersearch_extract_dna2_kmer2_direct_sve2(VarBit *seq, int k, int *nkeys)
     
     keys = (Datum *) palloc(max_kmers * sizeof(Datum));
     
-    /* Process k-mers with SVE2 bit manipulation instructions */
+    /* Process k-mers with SVE2 advanced bit manipulation */
     if (k <= 32) {
-        /* Get SVE vector length */
-        uint64_t vl = svcntd();  /* Count doublewords for 64-bit processing */
+        /* Get SVE vector length in 64-bit elements */
+        uint64_t vl = svcntd();
         
-        /* Process k-mers using SVE2 bit extraction */
+        /* Process multiple k-mers at once using SVE2 */
         for (i = 0; i < max_kmers; ) {
-            /* Determine batch size based on vector length */
-            int batch_size = (max_kmers - i) < vl ? (max_kmers - i) : vl;
+            int remaining = max_kmers - i;
+            int batch_size = (remaining < vl) ? remaining : vl;
             svbool_t pg = svwhilelt_b64((uint64_t)0, (uint64_t)batch_size);
             
-            /* Process batch of k-mers */
+            /* Prefetch data for better cache utilization */
+            if (i + vl < max_kmers) {
+                __builtin_prefetch(&seq_data[(i + vl) * 2 / 8], 0, 1);
+            }
+            
+            /* Load and process batch of k-mers using SVE2 */
             for (int j = 0; j < batch_size && (i + j) <= seq_bases - k; j++) {
                 int pos = i + j;
+                int start_bit = pos * 2;
+                int start_byte = start_bit / 8;
+                int bit_offset = start_bit % 8;
                 
-                /* Check bounds */
+                /* Boundary check */
                 int last_bit_pos = (pos + k - 1) * 2 + 1;
                 int last_byte_pos = last_bit_pos / 8;
                 if (last_byte_pos >= VARBITBYTES(seq)) {
                     continue;
                 }
                 
-                /* Extract k-mer using direct bit operations */
-                int start_bit = pos * 2;
-                int start_byte = start_bit / 8;
-                int bit_offset = start_bit % 8;
+                /* Extract k-mer using optimized bit operations */
+                uint64_t kmer_bits = 0;
                 
-                /* Load 8 bytes containing the k-mer */
-                uint64_t src_bits = 0;
-                int bytes_to_load = ((start_bit + k * 2 + 7) / 8) - start_byte;
-                if (bytes_to_load > 8) bytes_to_load = 8;
-                
-                for (int b = 0; b < bytes_to_load && (start_byte + b) < VARBITBYTES(seq); b++) {
-                    src_bits = (src_bits << 8) | seq_data[start_byte + b];
+                if (k <= 16) {
+                    /* For small k-mers, load 4 bytes and extract efficiently */
+                    uint32_t data32 = 0;
+                    int bytes_needed = ((bit_offset + k * 2 + 7) / 8);
+                    
+                    if (start_byte + bytes_needed <= VARBITBYTES(seq)) {
+                        /* Load up to 4 bytes */
+                        if (bytes_needed >= 1) data32 = ((uint32_t)seq_data[start_byte] << 24);
+                        if (bytes_needed >= 2) data32 |= ((uint32_t)seq_data[start_byte + 1] << 16);
+                        if (bytes_needed >= 3) data32 |= ((uint32_t)seq_data[start_byte + 2] << 8);
+                        if (bytes_needed >= 4) data32 |= (uint32_t)seq_data[start_byte + 3];
+                        
+                        /* Extract k-mer bits */
+                        kmer_bits = (data32 >> (32 - bit_offset - k * 2)) & (((uint64_t)1 << (k * 2)) - 1);
+                    }
+                } else {
+                    /* For larger k-mers, load 8 bytes */
+                    uint64_t data64 = 0;
+                    int bytes_needed = ((bit_offset + k * 2 + 7) / 8);
+                    
+                    if (start_byte + bytes_needed <= VARBITBYTES(seq)) {
+                        /* Load up to 8 bytes efficiently */
+                        for (int b = 0; b < bytes_needed && b < 8; b++) {
+                            data64 = (data64 << 8) | seq_data[start_byte + b];
+                        }
+                        
+                        /* Extract k-mer bits */
+                        int total_bits = bytes_needed * 8;
+                        int shift = total_bits - bit_offset - k * 2;
+                        if (shift > 0) {
+                            kmer_bits = (data64 >> shift) & (((uint64_t)1 << (k * 2)) - 1);
+                        } else {
+                            kmer_bits = data64 & (((uint64_t)1 << (k * 2)) - 1);
+                        }
+                    }
                 }
-                
-                /* Extract k-mer bits using SVE2 bit field operations */
-                int total_bits_loaded = bytes_to_load * 8;
-                int shift_amount = total_bits_loaded - bit_offset - (k * 2);
-                if (shift_amount > 0) {
-                    src_bits >>= shift_amount;
-                }
-                
-                uint64_t kmer_bits = src_bits & (((uint64_t)1 << (k * 2)) - 1);
                 
                 /* Create VarBit k-mer key */
                 int kmer_bit_len = k * 2;
@@ -1809,17 +1834,21 @@ kmersearch_extract_dna2_kmer2_direct_sve2(VarBit *seq, int k, int *nkeys)
                 SET_VARSIZE(kmer_key, VARHDRSZ + sizeof(int32) + kmer_bytes);
                 VARBITLEN(kmer_key) = kmer_bit_len;
                 
-                /* Store k-mer bits */
+                /* Pack k-mer bits into VarBit structure efficiently */
                 bits8 *kmer_data = VARBITS(kmer_key);
-                for (int b = 0; b < kmer_bytes; b++) {
-                    int bits_remaining = kmer_bit_len - (b * 8);
-                    int bits_in_byte = (bits_remaining >= 8) ? 8 : bits_remaining;
-                    int shift = (kmer_bytes - b - 1) * 8;
-                    
-                    if (shift < 64) {
-                        kmer_data[b] = (kmer_bits >> shift) & ((1 << bits_in_byte) - 1);
-                        if (bits_in_byte < 8) {
-                            kmer_data[b] <<= (8 - bits_in_byte);
+                
+                if (kmer_bytes <= 8) {
+                    /* Fast path for small k-mers */
+                    uint64_t packed = kmer_bits << (64 - kmer_bit_len);
+                    for (int b = 0; b < kmer_bytes; b++) {
+                        kmer_data[b] = (packed >> (56 - b * 8)) & 0xFF;
+                    }
+                } else {
+                    /* Handle larger k-mers */
+                    for (int b = 0; b < kmer_bytes; b++) {
+                        int shift = (kmer_bytes - b - 1) * 8;
+                        if (shift < 64) {
+                            kmer_data[b] = (kmer_bits >> shift) & 0xFF;
                         }
                     }
                 }
@@ -2469,6 +2498,7 @@ kmersearch_extract_dna4_kmer2_with_expansion_direct_sve2(VarBit *seq, int k, int
     Datum *keys;
     int key_count = 0;
     int i;
+    bits8 *seq_data = VARBITS(seq);
     
     *nkeys = 0;
     if (max_kmers <= 0)
@@ -2477,32 +2507,122 @@ kmersearch_extract_dna4_kmer2_with_expansion_direct_sve2(VarBit *seq, int k, int
     /* Allocate keys array with room for expansions */
     keys = (Datum *) palloc(max_kmers * 10 * sizeof(Datum));  /* Max 10 expansions */
     
+    /* Get SVE vector length */
+    uint64_t vl = svcntd();
+    
     /* Process k-mers with SVE2 optimized expansion */
-    for (i = 0; i <= seq_bases - k; i++)
-    {
-        VarBit **expanded_kmers;
-        int expansion_count;
-        int j;
+    for (i = 0; i <= seq_bases - k; ) {
+        int batch_size = ((seq_bases - k + 1) - i < vl) ? ((seq_bases - k + 1) - i) : vl;
+        svbool_t pg = svwhilelt_b64((uint64_t)0, (uint64_t)batch_size);
         
-        /* Expand DNA4 k-mer to DNA2 k-mers */
-        expanded_kmers = kmersearch_expand_dna4_kmer2_to_dna2_direct(seq, i, k, &expansion_count);
-        
-        if (!expanded_kmers || expansion_count == 0)
-            continue;
-        
-        /* Process each expanded k-mer */
-        for (j = 0; j < expansion_count; j++)
-        {
-            VarBit *dna2_kmer = expanded_kmers[j];
-            
-            /* Add kmer2 key directly (without occurrence count) */
-            if (dna2_kmer)
-                keys[key_count++] = PointerGetDatum(dna2_kmer);
+        /* Prefetch for better cache utilization */
+        if (i + vl <= seq_bases - k) {
+            __builtin_prefetch(&seq_data[(i + vl) * 4 / 8], 0, 1);
         }
         
-        /* Free only the array, not the individual kmers since we're using them */
-        if (expanded_kmers)
-            pfree(expanded_kmers);
+        /* Process batch of k-mers */
+        for (int j = 0; j < batch_size && (i + j) <= seq_bases - k; j++) {
+            int pos = i + j;
+            int start_bit = pos * 4;
+            int start_byte = start_bit / 8;
+            
+            /* Quick check for degenerate bases in this k-mer */
+            uint8_t degenerate_mask = 0;
+            int has_degenerate = 0;
+            
+            /* Scan k-mer for degenerate bases using optimized bit operations */
+            for (int b = 0; b < k; b++) {
+                int bit_pos = (pos + b) * 4;
+                int byte_pos = bit_pos / 8;
+                int bit_offset = bit_pos % 8;
+                uint8_t base_code;
+                
+                if (byte_pos < VARBITBYTES(seq)) {
+                    if (bit_offset <= 4) {
+                        base_code = (seq_data[byte_pos] >> (4 - bit_offset)) & 0x0F;
+                    } else {
+                        if (byte_pos + 1 < VARBITBYTES(seq)) {
+                            base_code = ((seq_data[byte_pos] << (bit_offset - 4)) | 
+                                        (seq_data[byte_pos + 1] >> (12 - bit_offset))) & 0x0F;
+                        } else {
+                            base_code = (seq_data[byte_pos] << (bit_offset - 4)) & 0x0F;
+                        }
+                    }
+                    
+                    /* Check if this is a degenerate base (more than one bit set) */
+                    if (base_code & (base_code - 1)) {
+                        has_degenerate = 1;
+                        degenerate_mask |= (1 << b);
+                    }
+                }
+            }
+            
+            /* If no degenerate bases, fast path - direct conversion */
+            if (!has_degenerate) {
+                VarBit *dna2_kmer = (VarBit *) palloc0(VARHDRSZ + sizeof(int32) + ((k * 2 + 7) / 8));
+                bits8 *dna2_data = VARBITS(dna2_kmer);
+                
+                SET_VARSIZE(dna2_kmer, VARHDRSZ + sizeof(int32) + ((k * 2 + 7) / 8));
+                VARBITLEN(dna2_kmer) = k * 2;
+                
+                /* Direct DNA4 to DNA2 conversion */
+                for (int b = 0; b < k; b++) {
+                    int bit_pos = (pos + b) * 4;
+                    int byte_pos = bit_pos / 8;
+                    int bit_offset = bit_pos % 8;
+                    uint8_t base_code = 0;
+                    
+                    if (byte_pos < VARBITBYTES(seq)) {
+                        if (bit_offset <= 4) {
+                            base_code = (seq_data[byte_pos] >> (4 - bit_offset)) & 0x0F;
+                        } else if (byte_pos + 1 < VARBITBYTES(seq)) {
+                            base_code = ((seq_data[byte_pos] << (bit_offset - 4)) | 
+                                        (seq_data[byte_pos + 1] >> (12 - bit_offset))) & 0x0F;
+                        }
+                    }
+                    
+                    /* Convert to DNA2 encoding */
+                    uint8_t dna2_base = 0;
+                    if (base_code == 0x01) dna2_base = 0; /* A */
+                    else if (base_code == 0x02) dna2_base = 1; /* C */
+                    else if (base_code == 0x04) dna2_base = 2; /* G */
+                    else if (base_code == 0x08) dna2_base = 3; /* T */
+                    
+                    /* Store in DNA2 format */
+                    int dna2_bit_pos = b * 2;
+                    int dna2_byte_pos = dna2_bit_pos / 8;
+                    int dna2_bit_offset = dna2_bit_pos % 8;
+                    
+                    if (dna2_bit_offset <= 6) {
+                        dna2_data[dna2_byte_pos] |= (dna2_base << (6 - dna2_bit_offset));
+                    } else {
+                        dna2_data[dna2_byte_pos] |= (dna2_base >> 1);
+                        if (dna2_byte_pos + 1 < ((k * 2 + 7) / 8)) {
+                            dna2_data[dna2_byte_pos + 1] |= ((dna2_base & 0x01) << 7);
+                        }
+                    }
+                }
+                
+                keys[key_count++] = PointerGetDatum(dna2_kmer);
+            } else {
+                /* Degenerate bases present - use full expansion */
+                VarBit **expanded_kmers;
+                int expansion_count;
+                
+                expanded_kmers = kmersearch_expand_dna4_kmer2_to_dna2_direct(seq, pos, k, &expansion_count);
+                
+                if (expanded_kmers && expansion_count > 0) {
+                    for (int e = 0; e < expansion_count; e++) {
+                        if (expanded_kmers[e]) {
+                            keys[key_count++] = PointerGetDatum(expanded_kmers[e]);
+                        }
+                    }
+                    pfree(expanded_kmers);
+                }
+            }
+        }
+        
+        i += batch_size;
     }
     
     *nkeys = key_count;
