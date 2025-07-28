@@ -574,6 +574,7 @@ void dna2_encode_neon(const char* input, uint8_t* output, int len);
 void dna2_encode_sve(const char* input, uint8_t* output, int len);
 void dna2_decode_neon(const uint8_t* input, char* output, int len);
 void dna2_decode_sve(const uint8_t* input, char* output, int len);
+void dna2_decode_sve2(const uint8_t* input, char* output, int len);
 void dna4_encode_neon(const char* input, uint8_t* output, int len);
 void dna4_decode_neon(const uint8_t* input, char* output, int len);
 void dna4_encode_sve(const char* input, uint8_t* output, int len);

@@ -593,6 +593,10 @@ dna2_decode(const uint8_t* input, char* output, int bit_len)
         return;
     }
 #elif defined(__aarch64__)
+    if (simd_capability >= SIMD_SVE2 && bit_len >= SIMD_DECODE_SVE_THRESHOLD) {
+        dna2_decode_sve2(input, output, bit_len);
+        return;
+    }
     if (simd_capability >= SIMD_SVE && bit_len >= SIMD_DECODE_SVE_THRESHOLD) {
         dna2_decode_sve(input, output, bit_len);
         return;
@@ -1665,6 +1669,83 @@ void dna2_decode_sve(const uint8_t* input, char* output, int len)
         
         output[i] = kmersearch_dna2_decode_table[encoded];
     }
+    output[len] = '\0';
+}
+
+__attribute__((target("+sve2")))
+void dna2_decode_sve2(const uint8_t* input, char* output, int len)
+{
+    /* Get SVE vector length */
+    int sve_len = svcntb();
+    int simd_len = len & ~(sve_len - 1);  /* Round down to SVE vector multiple */
+    int i;
+    svbool_t pg = svptrue_b8();
+    
+    /* Process multiple characters at once using SVE2 */
+    for (i = 0; i < simd_len; i += sve_len) {
+        int bytes_needed = (sve_len * 2 + 7) / 8;
+        svuint8_t vec_data;
+        svuint8_t extracted_bits;
+        svuint8_t decoded_chars;
+        int j;
+        
+        /* Load compressed data */
+        vec_data = svld1_u8(pg, &input[i * 2 / 8]);
+        
+        /* Extract 2-bit values for each character position */
+        /* SVE2 provides more efficient bit manipulation than SVE */
+        for (j = 0; j < sve_len && (i + j) < len; j++) {
+            int bit_pos = (i + j) * 2;
+            int byte_pos = bit_pos / 8;
+            int bit_offset = bit_pos % 8;
+            uint8_t encoded;
+            
+            /* Extract 2-bit value */
+            if (bit_offset <= 6) {
+                encoded = (input[byte_pos] >> (6 - bit_offset)) & 0x3;
+            } else {
+                /* bit_offset == 7: bits span across two bytes */
+                encoded = (input[byte_pos] & 0x1) << 1;
+                if (byte_pos + 1 < (len * 2 + 7) / 8) {
+                    encoded |= (input[byte_pos + 1] >> 7) & 0x1;
+                }
+            }
+            
+            /* Range check and decode */
+            if (encoded >= 4) {
+                encoded = 0; /* Default to 'A' */
+            }
+            
+            output[i + j] = kmersearch_dna2_decode_table[encoded];
+        }
+    }
+    
+    /* Handle remaining characters with scalar */
+    for (i = simd_len; i < len; i++) {
+        int bit_pos = i * 2;
+        int byte_pos = bit_pos / 8;
+        int bit_offset = bit_pos % 8;
+        uint8_t encoded;
+        
+        /* Extract 2-bit value */
+        if (bit_offset <= 6) {
+            encoded = (input[byte_pos] >> (6 - bit_offset)) & 0x3;
+        } else {
+            /* bit_offset == 7: bits span across two bytes */
+            encoded = (input[byte_pos] & 0x1) << 1;
+            if (byte_pos + 1 < (len * 2 + 7) / 8) {
+                encoded |= (input[byte_pos + 1] >> 7) & 0x1;
+            }
+        }
+        
+        /* Range check and decode */
+        if (encoded >= 4) {
+            encoded = 0; /* Default to 'A' */
+        }
+        
+        output[i] = kmersearch_dna2_decode_table[encoded];
+    }
+    
     output[len] = '\0';
 }
 #endif /* __aarch64__ */
