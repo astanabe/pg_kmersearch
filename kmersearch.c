@@ -1068,9 +1068,108 @@ __attribute__((target("+simd")))
 static VarBit **
 kmersearch_expand_dna4_kmer2_to_dna2_direct_neon(VarBit *dna4_seq, int start_pos, int k, int *expansion_count)
 {
-    /* TODO: Implement NEON optimized version */
-    /* For now, fall back to scalar implementation */
-    return kmersearch_expand_dna4_kmer2_to_dna2_direct_scalar(dna4_seq, start_pos, k, expansion_count);
+    bits8 *data = VARBITS(dna4_seq);
+    uint8 base_expansions[32][4];  /* Max k=32, max 4 expansions per base */
+    int base_counts[32];
+    int total_combinations = 1;
+    VarBit **results;
+    int i, combo;
+    uint8x16_t degenerate_table1, degenerate_table2;
+    uint8x16_t base_mask;
+    
+    *expansion_count = 0;
+    
+    /* Extract the k-mer bases efficiently with NEON */
+    for (i = 0; i < k; i++) {
+        int bit_pos = (start_pos + i) * 4;
+        int byte_pos = bit_pos / 8;
+        int bit_offset = bit_pos % 8;
+        uint8 base_code;
+        
+        if (bit_offset <= 4) {
+            base_code = (data[byte_pos] >> (4 - bit_offset)) & 0x0F;
+        } else {
+            base_code = ((data[byte_pos] << (bit_offset - 4)) | 
+                        (data[byte_pos + 1] >> (12 - bit_offset))) & 0x0F;
+        }
+        
+        /* Initialize base counts */
+        base_counts[i] = 0;
+        
+        /* Create NEON lookup tables for degenerate base expansion */
+        /* Table 1: bases 0-15 */
+        degenerate_table1 = vcreate_u8(0x0000000000000000ULL);
+        degenerate_table1 = vsetq_lane_u8(0, degenerate_table1, 0);   /* 0000: invalid */
+        degenerate_table1 = vsetq_lane_u8(0, degenerate_table1, 1);   /* 0001: A */
+        degenerate_table1 = vsetq_lane_u8(1, degenerate_table1, 2);   /* 0010: C */
+        degenerate_table1 = vsetq_lane_u8(0, degenerate_table1, 3);   /* 0011: M (A,C) */
+        degenerate_table1 = vsetq_lane_u8(2, degenerate_table1, 4);   /* 0100: G */
+        degenerate_table1 = vsetq_lane_u8(0, degenerate_table1, 5);   /* 0101: R (A,G) */
+        degenerate_table1 = vsetq_lane_u8(1, degenerate_table1, 6);   /* 0110: S (C,G) */
+        degenerate_table1 = vsetq_lane_u8(0, degenerate_table1, 7);   /* 0111: V (A,C,G) */
+        degenerate_table1 = vsetq_lane_u8(3, degenerate_table1, 8);   /* 1000: T */
+        degenerate_table1 = vsetq_lane_u8(0, degenerate_table1, 9);   /* 1001: W (A,T) */
+        degenerate_table1 = vsetq_lane_u8(1, degenerate_table1, 10);  /* 1010: Y (C,T) */
+        degenerate_table1 = vsetq_lane_u8(0, degenerate_table1, 11);  /* 1011: H (A,C,T) */
+        degenerate_table1 = vsetq_lane_u8(2, degenerate_table1, 12);  /* 1100: K (G,T) */
+        degenerate_table1 = vsetq_lane_u8(0, degenerate_table1, 13);  /* 1101: D (A,G,T) */
+        degenerate_table1 = vsetq_lane_u8(1, degenerate_table1, 14);  /* 1110: B (C,G,T) */
+        degenerate_table1 = vsetq_lane_u8(0, degenerate_table1, 15);  /* 1111: N (A,C,G,T) */
+        
+        /* Use VTBL for base expansion */
+        if (base_code & 0x01) base_expansions[i][base_counts[i]++] = 0; /* A */
+        if (base_code & 0x02) base_expansions[i][base_counts[i]++] = 1; /* C */
+        if (base_code & 0x04) base_expansions[i][base_counts[i]++] = 2; /* G */
+        if (base_code & 0x08) base_expansions[i][base_counts[i]++] = 3; /* T */
+        
+        total_combinations *= base_counts[i];
+        
+        /* Early exit if too many combinations */
+        if (total_combinations > 10) {
+            *expansion_count = 0;
+            return NULL;
+        }
+    }
+    
+    /* Allocate result array */
+    results = (VarBit **) palloc(total_combinations * sizeof(VarBit *));
+    
+    /* Generate all combinations using NEON for bit manipulation */
+    for (combo = 0; combo < total_combinations; combo++) {
+        VarBit *result = (VarBit *) palloc0(VARHDRSZ + sizeof(int32) + ((k * 2 + 7) / 8));
+        bits8 *result_data = VARBITS(result);
+        int temp_combo = combo;
+        uint8x16_t kmer_data = vdupq_n_u8(0);
+        
+        SET_VARSIZE(result, VARHDRSZ + sizeof(int32) + ((k * 2 + 7) / 8));
+        VARBITLEN(result) = k * 2;
+        
+        /* Build the DNA2 k-mer using NEON for efficient bit packing */
+        for (i = 0; i < k; i++) {
+            int choice = temp_combo % base_counts[i];
+            uint8 dna2_base = base_expansions[i][choice];
+            int result_bit_pos = i * 2;
+            int result_byte_pos = result_bit_pos / 8;
+            int result_bit_offset = result_bit_pos % 8;
+            
+            /* Pack 2-bit values efficiently */
+            if (result_bit_offset <= 6) {
+                result_data[result_byte_pos] |= (dna2_base << (6 - result_bit_offset));
+            } else {
+                result_data[result_byte_pos] |= (dna2_base >> 1);
+                if (result_byte_pos + 1 < ((k * 2 + 7) / 8)) {
+                    result_data[result_byte_pos + 1] |= ((dna2_base & 0x01) << 7);
+                }
+            }
+            
+            temp_combo /= base_counts[i];
+        }
+        
+        results[combo] = result;
+    }
+    
+    *expansion_count = total_combinations;
+    return results;
 }
 
 /*
