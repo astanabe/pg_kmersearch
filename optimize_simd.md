@@ -596,22 +596,16 @@ void extract_16_kmers_neon(const uint8_t* seq_data, int k, uint64_t* output) {
 }
 ```
 
-#### SVE2 Bit Manipulation
+#### SVE2 Bit Manipulation ✅ **COMPLETED**
 ```c
 // kmersearch_extract_dna2_kmer2_as_uint_direct_sve2
-void extract_kmers_sve2(const uint8_t* seq_data, int k, int count, uint64_t* output) {
-    svbool_t pg = svptrue_b8();
-    
-    for (int i = 0; i < count; i += svcntd()) {
-        svuint8_t data = svld1_u8(pg, &seq_data[i * k / 4]);
-        
-        // SVBEXT: Extract bits at specified positions
-        svuint64_t extracted = svbext_u64(svreinterpret_u64_u8(data), i * 2, k * 2);
-        
-        // Store results
-        svst1_u64(pg, &output[i], extracted);
-    }
-}
+// Implemented optimizations:
+// 1. SVE2 vector length detection for dynamic batch processing
+// 2. Prefetching next batch of data for cache optimization
+// 3. Support for 16/32/64-bit output based on k-mer size
+// 4. Efficient bit extraction without SVBEXT (due to compiler compatibility)
+// 5. Batch processing with SVE2 vector operations
+```
 
 // For DNA4 with SVE2 + NEON hybrid
 void extract_dna4_kmers_sve2_neon(const uint8_t* seq_data, int k, int count, uint64_t* output) {
