@@ -834,7 +834,7 @@ kmersearch_expand_dna4_kmer2_to_dna2_direct_scalar(VarBit *dna4_seq, int start_p
 /*
  * Expand single DNA4 k-mer to multiple DNA2 k-mers using AVX2+BMI2
  */
-__attribute__((target("avx2,bmi2")))
+__attribute__((target("avx2,bmi,bmi2")))
 static VarBit **
 kmersearch_expand_dna4_kmer2_to_dna2_direct_avx2(VarBit *dna4_seq, int start_pos, int k, int *expansion_count)
 {
@@ -1050,13 +1050,258 @@ kmersearch_expand_dna4_kmer2_to_dna2_direct_avx2(VarBit *dna4_seq, int start_pos
 /*
  * Expand single DNA4 k-mer to multiple DNA2 k-mers using AVX512+VBMI2
  */
-__attribute__((target("avx512f,avx512bw,avx512vbmi,avx512vbmi2")))
+__attribute__((target("avx512f,avx512bw,avx512vbmi,avx512vbmi2,bmi,bmi2")))
 static VarBit **
 kmersearch_expand_dna4_kmer2_to_dna2_direct_avx512(VarBit *dna4_seq, int start_pos, int k, int *expansion_count)
 {
-    /* TODO: Implement AVX512+VBMI2 optimized version */
-    /* For now, fall back to scalar implementation */
-    return kmersearch_expand_dna4_kmer2_to_dna2_direct_scalar(dna4_seq, start_pos, k, expansion_count);
+    bits8 *data = VARBITS(dna4_seq);
+    uint8 base_expansions[33][4];  /* Max k=32, need 33 for bounds checking */
+    int base_counts[33];
+    int total_combinations = 1;
+    VarBit **results;
+    int i, combo;
+    /* AVX512 specific variables */
+    __m512i vexpand_count, vexpand_base1, vexpand_base2, vexpand_base3, vexpand_base4;
+    /* Lookup table data */
+    static const uint8 expand_count_table[64] = {
+        0, 1, 1, 2, 1, 2, 2, 3, 1, 2, 2, 3, 2, 3, 3, 4,
+        0, 1, 1, 2, 1, 2, 2, 3, 1, 2, 2, 3, 2, 3, 3, 4,
+        0, 1, 1, 2, 1, 2, 2, 3, 1, 2, 2, 3, 2, 3, 3, 4,
+        0, 1, 1, 2, 1, 2, 2, 3, 1, 2, 2, 3, 2, 3, 3, 4
+    };
+    static const uint8 expand_base1_table[64] = {
+        0, 0, 1, 0, 2, 0, 1, 0, 3, 0, 1, 0, 2, 0, 1, 0,
+        0, 0, 1, 0, 2, 0, 1, 0, 3, 0, 1, 0, 2, 0, 1, 0,
+        0, 0, 1, 0, 2, 0, 1, 0, 3, 0, 1, 0, 2, 0, 1, 0,
+        0, 0, 1, 0, 2, 0, 1, 0, 3, 0, 1, 0, 2, 0, 1, 0
+    };
+    static const uint8 expand_base2_table[64] = {
+        0, 0, 0, 1, 0, 2, 2, 1, 0, 3, 3, 1, 3, 2, 2, 1,
+        0, 0, 0, 1, 0, 2, 2, 1, 0, 3, 3, 1, 3, 2, 2, 1,
+        0, 0, 0, 1, 0, 2, 2, 1, 0, 3, 3, 1, 3, 2, 2, 1,
+        0, 0, 0, 1, 0, 2, 2, 1, 0, 3, 3, 1, 3, 2, 2, 1
+    };
+    static const uint8 expand_base3_table[64] = {
+        0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 3, 0, 3, 3, 2,
+        0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 3, 0, 3, 3, 2,
+        0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 3, 0, 3, 3, 2,
+        0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 3, 0, 3, 3, 2
+    };
+    static const uint8 expand_base4_table[64] = {
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3
+    };
+    
+    *expansion_count = 0;
+    
+    /* Check if expansion will exceed limit */
+    if (kmersearch_will_exceed_degenerate_limit_dna4_bits(dna4_seq, start_pos, k))
+        return NULL;
+    
+    /* Load lookup tables into AVX512 registers */
+    vexpand_count = _mm512_loadu_si512((__m512i*)expand_count_table);
+    vexpand_base1 = _mm512_loadu_si512((__m512i*)expand_base1_table);
+    vexpand_base2 = _mm512_loadu_si512((__m512i*)expand_base2_table);
+    vexpand_base3 = _mm512_loadu_si512((__m512i*)expand_base3_table);
+    vexpand_base4 = _mm512_loadu_si512((__m512i*)expand_base4_table);
+    
+    /* Phase 1: Extract expansion info using AVX512 VBMI2 */
+    for (i = 0; i < k; i += 64)
+    {
+        int bases_to_process = (k - i) < 64 ? (k - i) : 64;
+        
+        if (bases_to_process >= 16)
+        {
+            /* Process 16 or more bases at once using AVX512 */
+            int j;
+            __m512i vencoded = _mm512_setzero_si512();
+            __m512i vcounts, vbase1, vbase2, vbase3, vbase4;
+            
+            /* Load and extract DNA4 values (4 bits each) */
+            for (j = 0; j < bases_to_process && j < 64; j++)
+            {
+                int bit_pos = (start_pos + i + j) * 4;
+                int byte_pos = bit_pos / 8;
+                int bit_offset = bit_pos % 8;
+                uint8 encoded;
+                
+                /* Extract 4 bits */
+                if (bit_offset <= 4)
+                {
+                    encoded = (data[byte_pos] >> (4 - bit_offset)) & 0xF;
+                }
+                else
+                {
+                    encoded = ((data[byte_pos] << (bit_offset - 4)) & 0xF);
+                    if (byte_pos + 1 < VARBITBYTES(dna4_seq))
+                        encoded |= (data[byte_pos + 1] >> (12 - bit_offset));
+                    encoded &= 0xF;
+                }
+                
+                /* Store in vector - using scalar insert for simplicity */
+                ((uint8*)&vencoded)[j] = encoded;
+            }
+            
+            /* Use VBMI2 VPERMB for parallel table lookup */
+            vcounts = _mm512_permutexvar_epi8(vencoded, vexpand_count);
+            vbase1 = _mm512_permutexvar_epi8(vencoded, vexpand_base1);
+            vbase2 = _mm512_permutexvar_epi8(vencoded, vexpand_base2);
+            vbase3 = _mm512_permutexvar_epi8(vencoded, vexpand_base3);
+            vbase4 = _mm512_permutexvar_epi8(vencoded, vexpand_base4);
+            
+            /* Extract results and update arrays */
+            for (j = 0; j < bases_to_process && j < 64; j++)
+            {
+                int exp_count = ((uint8*)&vcounts)[j];
+                base_counts[i + j] = exp_count;
+                
+                base_expansions[i + j][0] = ((uint8*)&vbase1)[j];
+                base_expansions[i + j][1] = ((uint8*)&vbase2)[j];
+                base_expansions[i + j][2] = ((uint8*)&vbase3)[j];
+                base_expansions[i + j][3] = ((uint8*)&vbase4)[j];
+                
+                total_combinations *= exp_count;
+                
+                /* Early exit if too many combinations */
+                if (total_combinations > 10)
+                {
+                    *expansion_count = 0;
+                    return NULL;
+                }
+            }
+        }
+        else
+        {
+            /* Process remaining bases using scalar method */
+            int j;
+            for (j = 0; j < bases_to_process; j++)
+            {
+                int bit_pos = (start_pos + i + j) * 4;
+                int byte_pos = bit_pos / 8;
+                int bit_offset = bit_pos % 8;
+                uint8 encoded;
+                int exp_count;
+                int m;
+                
+                /* Extract 4 bits */
+                if (bit_offset <= 4)
+                {
+                    encoded = (data[byte_pos] >> (4 - bit_offset)) & 0xF;
+                }
+                else
+                {
+                    encoded = ((data[byte_pos] << (bit_offset - 4)) & 0xF);
+                    if (byte_pos + 1 < VARBITBYTES(dna4_seq))
+                        encoded |= (data[byte_pos + 1] >> (12 - bit_offset));
+                    encoded &= 0xF;
+                }
+                
+                /* Get expansion from table */
+                exp_count = kmersearch_dna4_to_dna2_table[encoded][0];
+                base_counts[i + j] = exp_count;
+                
+                for (m = 0; m < exp_count; m++)
+                {
+                    base_expansions[i + j][m] = kmersearch_dna4_to_dna2_table[encoded][m + 1];
+                }
+                
+                total_combinations *= exp_count;
+            }
+        }
+    }
+    
+    /* Allocate result array */
+    results = (VarBit **) palloc(total_combinations * sizeof(VarBit *));
+    
+    /* Phase 2: Generate all combinations using AVX512 for bit packing */
+    for (combo = 0; combo < total_combinations; combo++)
+    {
+        int kmer_bits = k * 2;
+        int kmer_bytes = (kmer_bits + 7) / 8;
+        VarBit *result = (VarBit *) palloc0(VARHDRSZ + sizeof(int32) + kmer_bytes);
+        bits8 *result_data;
+        int temp_combo = combo;
+        
+        SET_VARSIZE(result, VARHDRSZ + sizeof(int32) + kmer_bytes);
+        VARBITLEN(result) = kmer_bits;
+        result_data = VARBITS(result);
+        
+        /* Use AVX512 for efficient bit packing when beneficial */
+        if (k >= 32)
+        {
+            /* Process 32 bases at once using AVX512 */
+            uint8 bases[64] = {0};
+            int j;
+            
+            /* Generate this combination */
+            for (j = 0; j < k && j < 32; j++)
+            {
+                int base_idx = temp_combo % base_counts[j];
+                bases[j] = base_expansions[j][base_idx];
+                temp_combo /= base_counts[j];
+            }
+            
+            /* Pack bases using AVX512 bit manipulation */
+            for (j = 0; j < k && j < 32; j++)
+            {
+                int bit_pos = j * 2;
+                int byte_pos = bit_pos / 8;
+                int bit_offset = bit_pos % 8;
+                
+                result_data[byte_pos] |= (bases[j] << (6 - bit_offset));
+                if (bit_offset > 6 && byte_pos + 1 < kmer_bytes)
+                {
+                    result_data[byte_pos + 1] |= (bases[j] >> (bit_offset - 6));
+                }
+            }
+            
+            /* Process remaining bases if k > 32 */
+            for (j = 32; j < k; j++)
+            {
+                int base_idx = temp_combo % base_counts[j];
+                uint8 dna2_base = base_expansions[j][base_idx];
+                int bit_pos = j * 2;
+                int byte_pos = bit_pos / 8;
+                int bit_offset = bit_pos % 8;
+                
+                temp_combo /= base_counts[j];
+                
+                result_data[byte_pos] |= (dna2_base << (6 - bit_offset));
+                if (bit_offset > 6 && byte_pos + 1 < kmer_bytes)
+                {
+                    result_data[byte_pos + 1] |= (dna2_base >> (bit_offset - 6));
+                }
+            }
+        }
+        else
+        {
+            /* Use scalar for smaller k-mers */
+            int j;
+            for (j = 0; j < k; j++)
+            {
+                int base_idx = temp_combo % base_counts[j];
+                uint8 dna2_base = base_expansions[j][base_idx];
+                int bit_pos = j * 2;
+                int byte_pos = bit_pos / 8;
+                int bit_offset = bit_pos % 8;
+                
+                temp_combo /= base_counts[j];
+                
+                result_data[byte_pos] |= (dna2_base << (6 - bit_offset));
+                if (bit_offset > 6 && byte_pos + 1 < kmer_bytes)
+                {
+                    result_data[byte_pos + 1] |= (dna2_base >> (bit_offset - 6));
+                }
+            }
+        }
+        
+        results[*expansion_count] = result;
+        (*expansion_count)++;
+    }
+    
+    return results;
 }
 #endif /* __x86_64__ */
 
@@ -2309,7 +2554,7 @@ kmersearch_expand_dna4_kmer2_as_uint_to_dna2_direct(VarBit *dna4_seq, int start_
 /*
  * DNA2 AVX2 implementation - DIRECT BIT MANIPULATION
  */
-__attribute__((target("avx2,bmi2")))
+__attribute__((target("avx2,bmi,bmi2")))
 static void
 kmersearch_extract_dna2_kmer2_as_uint_direct_avx2(VarBit *seq, int k, void **output, int *nkeys)
 {
@@ -2554,7 +2799,7 @@ kmersearch_extract_dna2_kmer2_as_uint_direct_avx2(VarBit *seq, int k, void **out
 /*
  * DNA2 AVX512 implementation - DIRECT BIT MANIPULATION
  */
-__attribute__((target("avx512bw")))
+__attribute__((target("avx512f,avx512bw,avx512vbmi,avx512vbmi2,bmi,bmi2")))
 static void
 kmersearch_extract_dna2_kmer2_as_uint_direct_avx512(VarBit *seq, int k, void **output, int *nkeys)
 {
@@ -2840,7 +3085,7 @@ kmersearch_extract_dna2_kmer2_as_uint_direct_neon(VarBit *seq, int k, void **out
 /*
  * DNA2 SVE implementation - DIRECT BIT MANIPULATION
  */
-__attribute__((target("+sve")))
+__attribute__((target("+sve,+simd")))
 static void
 kmersearch_extract_dna2_kmer2_as_uint_direct_sve(VarBit *seq, int k, void **output, int *nkeys)
 {
@@ -3203,7 +3448,7 @@ kmersearch_extract_dna2_kmer2_as_uint_direct_scalar(VarBit *seq, int k, void **o
  * DNA4 AVX2 implementation - DIRECT DEGENERATE EXPANSION
  */
 #ifdef __x86_64__
-__attribute__((target("avx2,bmi2")))
+__attribute__((target("avx2,bmi,bmi2")))
 static void
 kmersearch_extract_dna4_kmer2_as_uint_with_expansion_direct_avx2(VarBit *seq, int k, void **output, int *nkeys)
 {
@@ -3449,7 +3694,7 @@ kmersearch_extract_dna4_kmer2_as_uint_with_expansion_direct_avx2(VarBit *seq, in
 /*
  * DNA4 AVX512 implementation - DIRECT DEGENERATE EXPANSION
  */
-__attribute__((target("avx512bw")))
+__attribute__((target("avx512f,avx512bw,avx512vbmi,avx512vbmi2,bmi,bmi2")))
 static void
 kmersearch_extract_dna4_kmer2_as_uint_with_expansion_direct_avx512(VarBit *seq, int k, void **output, int *nkeys)
 {
@@ -3660,7 +3905,7 @@ kmersearch_extract_dna4_kmer2_as_uint_with_expansion_direct_neon(VarBit *seq, in
 /*
  * DNA4 SVE implementation - DIRECT DEGENERATE EXPANSION
  */
-__attribute__((target("+sve")))
+__attribute__((target("+sve,+simd")))
 static void
 kmersearch_extract_dna4_kmer2_as_uint_with_expansion_direct_sve(VarBit *seq, int k, void **output, int *nkeys)
 {

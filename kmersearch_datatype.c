@@ -418,25 +418,35 @@ dna_compare_scalar(const uint8_t* a, const uint8_t* b, int bit_len)
 
 #ifdef __x86_64__
 /* AVX2 comparison function */
-__attribute__((target("avx2")))
+__attribute__((target("avx2,bmi,bmi2")))
 int
 dna_compare_avx2(const uint8_t* a, const uint8_t* b, int bit_len)
 {
     int byte_len = (bit_len + 7) / 8;
     int simd_len = byte_len & ~31;  /* Process 32 bytes at a time */
     
+    /* Prefetch data for better performance */
+    _mm_prefetch((const char*)a, _MM_HINT_T0);
+    _mm_prefetch((const char*)b, _MM_HINT_T0);
+    
     for (int i = 0; i < simd_len; i += 32) {
         __m256i va = _mm256_loadu_si256((const __m256i*)(a + i));
         __m256i vb = _mm256_loadu_si256((const __m256i*)(b + i));
         __m256i cmp = _mm256_cmpeq_epi8(va, vb);
         
-        if (_mm256_movemask_epi8(cmp) != 0xFFFFFFFF) {
-            /* Found difference, need detailed comparison */
-            for (int j = 0; j < 32; j++) {
-                if (a[i + j] != b[i + j]) {
-                    return (a[i + j] < b[i + j]) ? -1 : 1;
-                }
-            }
+        uint32_t mask = _mm256_movemask_epi8(cmp);
+        if (mask != 0xFFFFFFFF) {
+            /* Use BMI tzcnt to find first differing byte */
+            uint32_t diff_pos = _tzcnt_u32(~mask);
+            uint8_t val_a = a[i + diff_pos];
+            uint8_t val_b = b[i + diff_pos];
+            return (val_a < val_b) ? -1 : 1;
+        }
+        
+        /* Prefetch next cache line */
+        if (i + 64 < byte_len) {
+            _mm_prefetch((const char*)(a + i + 64), _MM_HINT_T0);
+            _mm_prefetch((const char*)(b + i + 64), _MM_HINT_T0);
         }
     }
     
@@ -451,7 +461,7 @@ dna_compare_avx2(const uint8_t* a, const uint8_t* b, int bit_len)
 }
 
 /* AVX512 comparison function */
-__attribute__((target("avx512f,avx512bw")))
+__attribute__((target("avx512f,avx512bw,avx512vbmi,avx512vbmi2,bmi,bmi2")))
 int
 dna_compare_avx512(const uint8_t* a, const uint8_t* b, int bit_len)
 {
@@ -459,18 +469,27 @@ dna_compare_avx512(const uint8_t* a, const uint8_t* b, int bit_len)
     int simd_len = byte_len & ~63;  /* Process 64 bytes at a time */
     int remaining;
     
+    /* Prefetch data for better performance */
+    _mm_prefetch((const char*)a, _MM_HINT_T0);
+    _mm_prefetch((const char*)b, _MM_HINT_T0);
+    
     for (int i = 0; i < simd_len; i += 64) {
         __m512i va = _mm512_loadu_si512((const __m512i*)(a + i));
         __m512i vb = _mm512_loadu_si512((const __m512i*)(b + i));
         __mmask64 cmp = _mm512_cmpeq_epi8_mask(va, vb);
         
         if (cmp != 0xFFFFFFFFFFFFFFFF) {
-            /* Found difference, need detailed comparison */
-            for (int j = 0; j < 64; j++) {
-                if (a[i + j] != b[i + j]) {
-                    return (a[i + j] < b[i + j]) ? -1 : 1;
-                }
-            }
+            /* Use BMI tzcnt to find first differing byte */
+            uint64_t diff_pos = _tzcnt_u64(~cmp);
+            uint8_t val_a = a[i + diff_pos];
+            uint8_t val_b = b[i + diff_pos];
+            return (val_a < val_b) ? -1 : 1;
+        }
+        
+        /* Prefetch next cache line */
+        if (i + 128 < byte_len) {
+            _mm_prefetch((const char*)(a + i + 128), _MM_HINT_T0);
+            _mm_prefetch((const char*)(b + i + 128), _MM_HINT_T0);
         }
     }
     
@@ -478,9 +497,22 @@ dna_compare_avx512(const uint8_t* a, const uint8_t* b, int bit_len)
     remaining = byte_len - simd_len;
     if (remaining >= 32) {
         return dna_compare_avx2(a + simd_len, b + simd_len, remaining * 8);
-    } else {
-        return dna_compare_scalar(a + simd_len, b + simd_len, remaining * 8);
+    } else if (remaining > 0) {
+        /* Use AVX512 mask operations for tail processing */
+        __mmask64 mask = (1ULL << remaining) - 1;
+        __m512i va = _mm512_maskz_loadu_epi8(mask, a + simd_len);
+        __m512i vb = _mm512_maskz_loadu_epi8(mask, b + simd_len);
+        __mmask64 cmp = _mm512_mask_cmpeq_epi8_mask(mask, va, vb);
+        
+        if ((cmp & mask) != mask) {
+            uint64_t diff_pos = _tzcnt_u64(~cmp & mask);
+            uint8_t val_a = a[simd_len + diff_pos];
+            uint8_t val_b = b[simd_len + diff_pos];
+            return (val_a < val_b) ? -1 : 1;
+        }
     }
+    
+    return 0;
 }
 #endif
 
@@ -493,21 +525,48 @@ dna_compare_neon(const uint8_t* a, const uint8_t* b, int bit_len)
     int byte_len = (bit_len + 7) / 8;
     int simd_len = byte_len & ~15;  /* Process 16 bytes at a time */
     
+    /* Prefetch data for better performance */
+    __builtin_prefetch(a, 0, 1);
+    __builtin_prefetch(b, 0, 1);
+    
     for (int i = 0; i < simd_len; i += 16) {
         uint8x16_t va = vld1q_u8(a + i);
         uint8x16_t vb = vld1q_u8(b + i);
         uint8x16_t cmp = vceqq_u8(va, vb);
         
-        /* Check if all elements are equal */
-        uint64x2_t cmp64 = vreinterpretq_u64_u8(cmp);
-        if (vgetq_lane_u64(cmp64, 0) != 0xFFFFFFFFFFFFFFFF ||
-            vgetq_lane_u64(cmp64, 1) != 0xFFFFFFFFFFFFFFFF) {
-            /* Found difference, need detailed comparison */
-            for (int j = 0; j < 16; j++) {
-                if (a[i + j] != b[i + j]) {
-                    return (a[i + j] < b[i + j]) ? -1 : 1;
-                }
+        /* Use NEON reduction to check if all bytes match */
+        uint8x16_t not_cmp = vmvnq_u8(cmp);
+        uint64x2_t sum = vpaddlq_u32(vpaddlq_u16(vpaddlq_u8(not_cmp)));
+        
+        if (vgetq_lane_u64(sum, 0) || vgetq_lane_u64(sum, 1)) {
+            /* Found difference, use CLZ to find first differing byte */
+            uint8x16_t diff_mask = not_cmp;
+            
+            /* Convert to 64-bit for CLZ operation */
+            uint64x2_t mask64 = vreinterpretq_u64_u8(diff_mask);
+            uint64_t mask_low = vgetq_lane_u64(mask64, 0);
+            uint64_t mask_high = vgetq_lane_u64(mask64, 1);
+            
+            /* Find first differing byte using CLZ */
+            int diff_pos;
+            if (mask_low) {
+                diff_pos = __builtin_clzll(mask_low) / 8;
+            } else {
+                diff_pos = 8 + __builtin_clzll(mask_high) / 8;
             }
+            
+            /* Ensure we don't go out of bounds */
+            if (diff_pos < 16) {
+                uint8_t val_a = a[i + diff_pos];
+                uint8_t val_b = b[i + diff_pos];
+                return (val_a < val_b) ? -1 : 1;
+            }
+        }
+        
+        /* Prefetch next cache line */
+        if (i + 32 < byte_len) {
+            __builtin_prefetch(a + i + 32, 0, 1);
+            __builtin_prefetch(b + i + 32, 0, 1);
         }
     }
     
@@ -522,12 +581,16 @@ dna_compare_neon(const uint8_t* a, const uint8_t* b, int bit_len)
 }
 
 /* SVE comparison function */
-__attribute__((target("+sve")))
+__attribute__((target("+sve,+simd")))
 int
 dna_compare_sve(const uint8_t* a, const uint8_t* b, int bit_len)
 {
     int byte_len = (bit_len + 7) / 8;
     int vector_len = svcntb();
+    
+    /* Prefetch data */
+    svprfb(svptrue_b8(), a, SV_PLDL1STRM);
+    svprfb(svptrue_b8(), b, SV_PLDL1STRM);
     
     for (int i = 0; i < byte_len; i += vector_len) {
         svbool_t pg = svwhilelt_b8(i, byte_len);
@@ -535,14 +598,72 @@ dna_compare_sve(const uint8_t* a, const uint8_t* b, int bit_len)
         svuint8_t vb = svld1_u8(pg, b + i);
         svbool_t cmp = svcmpeq_u8(pg, va, vb);
         
-        if (!svptest_any(svptrue_b8(), cmp)) {
-            /* Found difference, need detailed comparison */
-            int remaining = (byte_len - i < vector_len) ? byte_len - i : vector_len;
-            for (int j = 0; j < remaining; j++) {
-                if (a[i + j] != b[i + j]) {
-                    return (a[i + j] < b[i + j]) ? -1 : 1;
-                }
+        /* Check if any elements differ */
+        svbool_t neq = svnot_b_z(pg, cmp);
+        if (svptest_any(pg, neq)) {
+            /* Use SVE first-faulting load and comparison to find first difference */
+            svbool_t first_diff = svbrka_b_z(pg, neq);
+            uint64_t idx = svcntp_b8(pg, first_diff);
+            
+            if (idx > 0 && i + idx - 1 < byte_len) {
+                uint8_t val_a = a[i + idx - 1];
+                uint8_t val_b = b[i + idx - 1];
+                return (val_a < val_b) ? -1 : 1;
             }
+        }
+        
+        /* Prefetch next data */
+        if (i + vector_len < byte_len) {
+            svprfb_gather_offset(pg, a + i + vector_len, svindex_u8(0, 1), SV_PLDL1STRM);
+            svprfb_gather_offset(pg, b + i + vector_len, svindex_u8(0, 1), SV_PLDL1STRM);
+        }
+    }
+    
+    return 0;
+}
+
+/* SVE2 comparison function */
+__attribute__((target("+sve2")))
+int
+dna_compare_sve2(const uint8_t* a, const uint8_t* b, int bit_len)
+{
+    int byte_len = (bit_len + 7) / 8;
+    int vector_len = svcntb();
+    
+    /* Prefetch data with SVE2 instructions */
+    svprfb(svptrue_b8(), a, SV_PLDL1STRM);
+    svprfb(svptrue_b8(), b, SV_PLDL1STRM);
+    
+    for (int i = 0; i < byte_len; i += vector_len) {
+        svbool_t pg = svwhilelt_b8(i, byte_len);
+        svuint8_t va = svld1_u8(pg, a + i);
+        svuint8_t vb = svld1_u8(pg, b + i);
+        
+        /* SVE2 provides match instruction for efficient comparison */
+        svbool_t match = svmatch_u8(pg, va, vb);
+        
+        if (!svptest_all(pg, match)) {
+            /* Found difference, use SVE2 bit manipulation for finding first mismatch */
+            svbool_t neq = svbic_b_z(pg, pg, match);
+            
+            /* Use SVE2 BRKB instruction to isolate first mismatch */
+            svbool_t first_neq = svbrkb_b_z(pg, neq);
+            
+            /* Count leading zeros to find position */
+            svuint8_t indices = svindex_u8(0, 1);
+            uint8_t first_idx = svclastb_u8(first_neq, 0, indices);
+            
+            if (first_idx < vector_len && i + first_idx < byte_len) {
+                uint8_t val_a = a[i + first_idx];
+                uint8_t val_b = b[i + first_idx];
+                return (val_a < val_b) ? -1 : 1;
+            }
+        }
+        
+        /* Prefetch next data with SVE2 gather */
+        if (i + vector_len < byte_len) {
+            svprfb_gather_offset(pg, a + i + vector_len, svindex_u8(0, 1), SV_PLDL1STRM);
+            svprfb_gather_offset(pg, b + i + vector_len, svindex_u8(0, 1), SV_PLDL1STRM);
         }
     }
     
@@ -685,6 +806,9 @@ dna_compare(const uint8_t* a, const uint8_t* b, int bit_len)
         return dna_compare_avx2(a, b, bit_len);
     }
 #elif defined(__aarch64__)
+    if (simd_capability >= SIMD_SVE2 && bit_len >= SIMD_COMPARE_SVE2_THRESHOLD) {
+        return dna_compare_sve2(a, b, bit_len);
+    }
     if (simd_capability >= SIMD_SVE && bit_len >= SIMD_COMPARE_SVE_THRESHOLD) {
         return dna_compare_sve(a, b, bit_len);
     }
@@ -1002,7 +1126,7 @@ void dna2_encode_scalar(const char* input, uint8_t* output, int len)
 }
 
 #ifdef __x86_64__
-__attribute__((target("avx2,bmi2")))
+__attribute__((target("avx2,bmi,bmi2")))
 void dna2_encode_avx2(const char* input, uint8_t* output, int len)
 {
     int byte_len = (len * 2 + 7) / 8;
@@ -1115,7 +1239,7 @@ void dna2_encode_avx2(const char* input, uint8_t* output, int len)
     }
 }
 
-__attribute__((target("avx512f,avx512bw,avx512vbmi,avx512vbmi2,bmi2")))
+__attribute__((target("avx512f,avx512bw,avx512vbmi,avx512vbmi2,bmi,bmi2")))
 void dna2_encode_avx512(const char* input, uint8_t* output, int len)
 {
     int byte_len = (len * 2 + 7) / 8;
@@ -1410,7 +1534,7 @@ void dna2_encode_neon(const char* input, uint8_t* output, int len)
     }
 }
 
-__attribute__((target("+sve")))
+__attribute__((target("+sve,+simd")))
 void dna2_encode_sve(const char* input, uint8_t* output, int len)
 {
     int byte_len = (len * 2 + 7) / 8;
@@ -1675,7 +1799,7 @@ void dna2_decode_scalar(const uint8_t* input, char* output, int len)
 }
 
 #ifdef __x86_64__
-__attribute__((target("avx2,bmi2")))
+__attribute__((target("avx2,bmi,bmi2")))
 void dna2_decode_avx2(const uint8_t* input, char* output, int len)
 {
     /* Process 32 characters at a time with AVX2 SIMD optimizations */
@@ -1771,7 +1895,7 @@ void dna2_decode_avx2(const uint8_t* input, char* output, int len)
     output[len] = '\0';
 }
 
-__attribute__((target("avx512f,avx512bw,avx512vbmi")))
+__attribute__((target("avx512f,avx512bw,avx512vbmi,avx512vbmi2,bmi,bmi2")))
 void dna2_decode_avx512(const uint8_t* input, char* output, int len)
 {
     /* Process 64 characters at a time with AVX512 VBMI optimizations */
@@ -1947,7 +2071,7 @@ void dna2_decode_neon(const uint8_t* input, char* output, int len)
     output[len] = '\0';
 }
 
-__attribute__((target("+sve")))
+__attribute__((target("+sve,+simd")))
 void dna2_decode_sve(const uint8_t* input, char* output, int len)
 {
     /* Get SVE vector length */
@@ -2180,7 +2304,7 @@ void dna4_decode_scalar(const uint8_t* input, char* output, int len)
 
 #ifdef __x86_64__
 /* AVX2 implementation for DNA4 encoding */
-__attribute__((target("avx2,bmi2")))
+__attribute__((target("avx2,bmi,bmi2")))
 void dna4_encode_avx2(const char* input, uint8_t* output, int len)
 {
     int byte_len = (len * 4 + 7) / 8;
@@ -2300,7 +2424,7 @@ void dna4_encode_avx2(const char* input, uint8_t* output, int len)
 }
 
 /* AVX2 implementation for DNA4 decoding */
-__attribute__((target("avx2")))
+__attribute__((target("avx2,bmi,bmi2")))
 void dna4_decode_avx2(const uint8_t* input, char* output, int len)
 {
     /* Process 32 characters at a time with AVX2 SIMD optimizations */
@@ -2397,7 +2521,7 @@ void dna4_decode_avx2(const uint8_t* input, char* output, int len)
 }
 
 /* AVX512 implementation for DNA4 encoding */
-__attribute__((target("avx512bw,avx512vbmi")))
+__attribute__((target("avx512f,avx512bw,avx512vbmi,avx512vbmi2,bmi,bmi2")))
 void dna4_encode_avx512(const char* input, uint8_t* output, int len)
 {
     int byte_len = (len * 4 + 7) / 8;
@@ -2476,7 +2600,7 @@ void dna4_encode_avx512(const char* input, uint8_t* output, int len)
 }
 
 /* AVX512 implementation for DNA4 decoding */
-__attribute__((target("avx512bw,avx512vbmi")))
+__attribute__((target("avx512f,avx512bw,avx512vbmi,avx512vbmi2,bmi,bmi2")))
 void dna4_decode_avx512(const uint8_t* input, char* output, int len)
 {
     /* Process 64 characters at a time with AVX512 VBMI optimizations */
@@ -2747,7 +2871,7 @@ void dna4_decode_neon(const uint8_t* input, char* output, int len)
 }
 
 /* SVE implementation for DNA4 encoding */
-__attribute__((target("+sve")))
+__attribute__((target("+sve,+simd")))
 void dna4_encode_sve(const char* input, uint8_t* output, int len)
 {
     int byte_len = (len * 4 + 7) / 8;
@@ -2807,7 +2931,7 @@ void dna4_encode_sve(const char* input, uint8_t* output, int len)
 }
 
 /* SVE implementation for DNA4 decoding */
-__attribute__((target("+sve")))
+__attribute__((target("+sve,+simd")))
 void dna4_decode_sve(const uint8_t* input, char* output, int len)
 {
     /* Get SVE vector length */

@@ -114,6 +114,7 @@ typedef enum {
 #define SIMD_COMPARE_AVX512_THRESHOLD  256     /* 256 bits: Use AVX512 */
 #define SIMD_COMPARE_NEON_THRESHOLD    64      /* 64 bits: Use NEON */
 #define SIMD_COMPARE_SVE_THRESHOLD     128     /* 128 bits: Use SVE */
+#define SIMD_COMPARE_SVE2_THRESHOLD    128     /* 128 bits: Use SVE2 */
 
 /*
  * SIMD k-mer extraction thresholds (sequence bit length)
@@ -123,6 +124,7 @@ typedef enum {
 #define SIMD_EXTRACT_AVX512_THRESHOLD  1024    /* 1024 bits: Use AVX512 for extraction */
 #define SIMD_EXTRACT_NEON_THRESHOLD    256     /* 256 bits: Use NEON for extraction */
 #define SIMD_EXTRACT_SVE_THRESHOLD     512     /* 512 bits: Use SVE for extraction */
+#define SIMD_EXTRACT_SVE2_THRESHOLD    512     /* 512 bits: Use SVE2 for extraction */
 
 /*
  * SIMD k-mer matching thresholds (key combination count)
@@ -132,6 +134,7 @@ typedef enum {
 #define SIMD_KEYCOMB_AVX512_THRESHOLD  256     /* 256 combinations: Use AVX512 for matching */
 #define SIMD_KEYCOMB_NEON_THRESHOLD    64      /* 64 combinations: Use NEON for matching */
 #define SIMD_KEYCOMB_SVE_THRESHOLD     128     /* 128 combinations: Use SVE for matching */
+#define SIMD_KEYCOMB_SVE2_THRESHOLD    128     /* 128 combinations: Use SVE2 for matching */
 
 /*
  * SIMD encoding thresholds (input character length)
@@ -142,6 +145,7 @@ typedef enum {
 #define SIMD_ENCODE_AVX512_THRESHOLD   1024    /* 1024 chars: Use AVX512 for encoding */
 #define SIMD_ENCODE_NEON_THRESHOLD     256     /* 256 chars: Use NEON for encoding */
 #define SIMD_ENCODE_SVE_THRESHOLD      512     /* 512 chars: Use SVE for encoding */
+#define SIMD_ENCODE_SVE2_THRESHOLD     512     /* 512 chars: Use SVE2 for encoding */
 
 /*
  * SIMD decoding thresholds (bit length)
@@ -152,6 +156,7 @@ typedef enum {
 #define SIMD_DECODE_AVX512_THRESHOLD   1024    /* 1024 bits: Use AVX512 for decoding */
 #define SIMD_DECODE_NEON_THRESHOLD     256     /* 256 bits: Use NEON for decoding */
 #define SIMD_DECODE_SVE_THRESHOLD      512     /* 512 bits: Use SVE for decoding */
+#define SIMD_DECODE_SVE2_THRESHOLD     512     /* 512 bits: Use SVE2 for decoding */
 
 /*
  * SIMD DNA4 k-mer expansion thresholds (bit length)
@@ -166,6 +171,7 @@ typedef enum {
 #define SIMD_DNA4KMER2_AVX512_THRESHOLD  1024    /* 1024 bits: Use AVX512 for expansion */
 #define SIMD_DNA4KMER2_NEON_THRESHOLD    256     /* 256 bits: Use NEON for expansion */
 #define SIMD_DNA4KMER2_SVE_THRESHOLD     512     /* 512 bits: Use SVE for expansion */
+#define SIMD_DNA4KMER2_SVE2_THRESHOLD    512     /* 512 bits: Use SVE2 for expansion */
 
 /* Removed SIMD dispatch table - now using direct threshold-based dispatch */
 
