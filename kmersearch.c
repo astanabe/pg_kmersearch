@@ -2278,39 +2278,6 @@ kmersearch_calculate_kmer_match_and_score_dna4(VarBit *sequence, const char *que
 
 /* Function moved to kmersearch_freq.c */
 
-/*
- * Determine the optimal number of parallel workers for k-mer analysis
- */
-static int
-kmersearch_determine_parallel_workers(int requested_workers, Relation target_relation)
-{
-    int max_workers;
-    int table_size_factor;
-    int auto_workers;
-    BlockNumber total_blocks;
-    
-    /* Use the smaller of the two limits */
-    max_workers = Min(max_parallel_workers, max_parallel_maintenance_workers);
-    
-    if (max_workers <= 0) {
-        return 1;  /* No parallel processing allowed */
-    }
-    
-    /* Estimate table size in blocks */
-    total_blocks = RelationGetNumberOfBlocksInFork(target_relation, MAIN_FORKNUM);
-    
-    /* Calculate workers based on table size (minimum 1000 blocks per worker) */
-    table_size_factor = Max(1, total_blocks / 1000);
-    auto_workers = Min(max_workers, table_size_factor);
-    
-    if (requested_workers > 0) {
-        /* User specified workers - respect limits */
-        return Min(requested_workers, max_workers);
-    } else {
-        /* Auto-determine workers */
-        return auto_workers;
-    }
-}
 
 /* Function moved to kmersearch_freq.c */
 /*

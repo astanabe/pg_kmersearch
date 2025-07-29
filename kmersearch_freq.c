@@ -20,7 +20,6 @@ PG_FUNCTION_INFO_V1(kmersearch_undo_highfreq_analysis);
 
 /* Frequency analysis functions */
 /* kmersearch_perform_highfreq_analysis_parallel declared in header */
-static int kmersearch_determine_parallel_workers(int requested_workers, Relation target_relation);
 
 /* High-frequency k-mer filtering functions */
 static bool kmersearch_is_kmer_highfreq(VarBit *kmer_key);
@@ -453,6 +452,7 @@ kmersearch_perform_highfreq_analysis(PG_FUNCTION_ARGS)
     }
     
     /* Get configuration from GUC variables */
+    /* PostgreSQL will automatically limit based on max_parallel_workers and max_parallel_maintenance_workers */
     parallel_workers = max_parallel_maintenance_workers;
     
     /* Comprehensive parameter validation */
@@ -984,26 +984,6 @@ kmersearch_validate_analysis_parameters(Oid table_oid, const char *column_name, 
     }
 }
 
-/*
- * Determine optimal number of parallel workers
- */
-static int
-kmersearch_determine_parallel_workers(int requested_workers, Relation target_relation)
-{
-    if (requested_workers <= 0) {
-        return 1; /* Default to single worker */
-    }
-    
-    /* Check against system max_parallel_workers GUC */
-    {
-        int max_workers = 8; /* Default PostgreSQL max_parallel_workers */
-        if (requested_workers > max_workers) {
-            return max_workers;
-        }
-    }
-    
-    return requested_workers;
-}
 
 /*
  * Calculate adjusted minimum score based on highly frequent k-mers in query
