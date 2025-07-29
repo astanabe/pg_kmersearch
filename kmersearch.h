@@ -678,6 +678,10 @@ void kmersearch_expand_degenerate_sequence(const char *kmer, int k, char **expan
 VarBit *kmersearch_create_ngram_key2(const char *kmer, int k, int occurrence);
 VarBit *kmersearch_kmer2_as_uint_to_kmer2(uint64 kmer2_as_uint, int kmer_size);
 VarBit *kmersearch_create_ngram_key2_from_kmer2_as_uint(uint64 kmer2_as_uint, int kmer_size, int occurrence);
+VarBit *kmersearch_remove_occurrence_from_ngram_key2(VarBit *ngram_key2);
+void kmersearch_convert_kmer2_to_uint16(VarBit *kmer2, uint16 *result);
+void kmersearch_convert_kmer2_to_uint32(VarBit *kmer2, uint32 *result);
+void kmersearch_convert_kmer2_to_uint64(VarBit *kmer2, uint64 *result);
 Datum *kmersearch_extract_dna2_kmer2_direct(VarBit *dna, int k, int *nkeys);
 Datum *kmersearch_extract_dna4_kmer2_with_expansion_direct(VarBit *dna, int k, int *nkeys);
 Datum *kmersearch_extract_dna2_ngram_key2_direct(VarBit *dna, int k, int *nkeys);

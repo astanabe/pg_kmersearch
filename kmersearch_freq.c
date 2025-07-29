@@ -1123,9 +1123,14 @@ kmersearch_spi_connect_or_error(void)
 static bool
 kmersearch_is_kmer_highfreq(VarBit *kmer_key)
 {
+    uint64 kmer_uint = 0;
+    bool is_highfreq = false;
+    int ret;
+    
     if (!kmer_key) {
         return false;
     }
+    
     /* Step 1: Validate GUC settings against metadata table */
     if (!kmersearch_validate_guc_against_all_metadata()) {
         ereport(ERROR, 
@@ -1133,56 +1138,70 @@ kmersearch_is_kmer_highfreq(VarBit *kmer_key)
                  errmsg("Current GUC settings do not match kmersearch_highfreq_kmer_meta table"),
                  errhint("Current cache may be invalid. Please reload cache or run kmersearch_perform_highfreq_analysis() again.")));
     }
-    /* Step 2: Check in global cache first */
+    
+    /* kmer_key is already a kmer2 (without occurrence count), convert directly to uint */
+    if (kmersearch_kmer_size <= 8) {
+        uint16 value = 0;
+        kmersearch_convert_kmer2_to_uint16(kmer_key, &value);
+        kmer_uint = value;
+    } else if (kmersearch_kmer_size <= 16) {
+        uint32 value = 0;
+        kmersearch_convert_kmer2_to_uint32(kmer_key, &value);
+        kmer_uint = value;
+    } else {
+        kmersearch_convert_kmer2_to_uint64(kmer_key, &kmer_uint);
+    }
+    
+    /* Priority 1: Check in global cache */
     if (global_highfreq_cache.is_valid && global_highfreq_cache.highfreq_hash) {
-        VarBit *search_key;
-        uint64 hash_value;
-        bool found;
-        
-        /* Use ngram_key2 (kmer_key) directly for cache lookup - no occurrence bits removal needed */
-        search_key = kmer_key;
-        
-        /* Validate VarBit structure */
-        if (VARSIZE(search_key) < VARHDRSZ) {
-            ereport(DEBUG1, (errmsg("Invalid VarBit structure in high-frequency k-mer check")));
-            return false;
-        }
-        
-        /* Validate bit length */
-        if (VARBITLEN(search_key) < 0) {
-            ereport(DEBUG1, (errmsg("Invalid bit length in high-frequency k-mer check")));
-            return false;
-        }
-        
-        /* Calculate hash value for lookup */
-        {
-            int bit_length = VARBITLEN(search_key);
-            int byte_count = (bit_length + 7) / 8;  /* Round up to next byte */
-            
-            /* Validate the calculated byte count */
-            if (byte_count <= 0 || byte_count > VARSIZE(search_key) - VARHDRSZ) {
-                ereport(DEBUG1, (errmsg("Invalid byte count in high-frequency k-mer hash calculation")));
-                return false;
-            }
-            
-            hash_value = DatumGetUInt64(hash_any((unsigned char *) VARBITS(search_key), byte_count));
-        }
-        
-        found = (hash_search(global_highfreq_cache.highfreq_hash, 
-                           (void *) &hash_value, HASH_FIND, NULL) != NULL);
-        
-        /* No need to free search_key since it points to kmer_key */
-        
-        return found;
+        is_highfreq = kmersearch_lookup_kmer2_as_uint_in_global_cache(kmer_uint, NULL, NULL);
+        return is_highfreq;
     }
     
-    /* Step 3: Check in parallel cache if available */
+    /* Priority 2: Check in parallel cache */
     if (kmersearch_is_parallel_highfreq_cache_loaded()) {
-        return kmersearch_lookup_in_parallel_cache(kmer_key);
+        is_highfreq = kmersearch_lookup_kmer2_as_uint_in_parallel_cache(kmer_uint, NULL, NULL);
+        return is_highfreq;
     }
     
-    /* No cache available */
-    return false;
+    /* Priority 3: Check kmersearch_highfreq_kmer table directly */
+    ret = SPI_connect();
+    if (ret == SPI_OK_CONNECT) {
+        StringInfoData query;
+        
+        initStringInfo(&query);
+        
+        /* Build query based on k-mer size */
+        if (kmersearch_kmer_size <= 8) {
+            appendStringInfo(&query,
+                "SELECT 1 FROM kmersearch_highfreq_kmer "
+                "WHERE (ngram_key::bit(%d)::integer) = %u "
+                "LIMIT 1",
+                kmersearch_kmer_size * 2, (unsigned int)kmer_uint);
+        } else if (kmersearch_kmer_size <= 16) {
+            appendStringInfo(&query,
+                "SELECT 1 FROM kmersearch_highfreq_kmer "
+                "WHERE (ngram_key::bit(%d)::bigint) = %u "
+                "LIMIT 1", 
+                kmersearch_kmer_size * 2, (unsigned int)kmer_uint);
+        } else {
+            appendStringInfo(&query,
+                "SELECT 1 FROM kmersearch_highfreq_kmer "
+                "WHERE (ngram_key::bit(%d)::bigint) = %lu "
+                "LIMIT 1",
+                kmersearch_kmer_size * 2, kmer_uint);
+        }
+        
+        ret = SPI_execute(query.data, true, 1);
+        if (ret == SPI_OK_SELECT && SPI_processed > 0) {
+            is_highfreq = true;
+        }
+        
+        pfree(query.data);
+        SPI_finish();
+    }
+    
+    return is_highfreq;
 }
 
 /*

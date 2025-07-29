@@ -3210,3 +3210,134 @@ kmersearch_count_matching_kmer_fast_scalar_hashtable(VarBit **seq_keys, int seq_
     
     return match_count;
 }
+
+/*
+ * Remove occurrence count from ngram_key2 to get k-mer only
+ */
+VarBit *
+kmersearch_remove_occurrence_from_ngram_key2(VarBit *ngram_key2)
+{
+    int total_bits = VARBITLEN(ngram_key2);
+    int kmer_bits = total_bits - kmersearch_occur_bitlen;
+    int kmer_bytes = (kmer_bits + 7) / 8;
+    VarBit *result;
+    bits8 *src_data, *dst_data;
+    int alloc_size;
+    
+    if (kmer_bits < 8 || kmer_bits > 64) {
+        ereport(ERROR,
+                (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+                 errmsg("Invalid ngram_key2 size for k-mer extraction"),
+                 errdetail("k-mer bits: %d", kmer_bits)));
+    }
+    
+    alloc_size = VARHDRSZ + sizeof(int32) + kmer_bytes;
+    result = (VarBit *) palloc0(alloc_size);
+    SET_VARSIZE(result, alloc_size);
+    VARBITLEN(result) = kmer_bits;
+    
+    src_data = VARBITS(ngram_key2);
+    dst_data = VARBITS(result);
+    
+    /* Copy only the k-mer bits (excluding occurrence bits) */
+    memcpy(dst_data, src_data, kmer_bytes);
+    
+    /* Clear any trailing bits in the last byte */
+    if (kmer_bits % 8 != 0) {
+        int valid_bits = kmer_bits % 8;
+        uint8 mask = (0xFF << (8 - valid_bits));
+        dst_data[kmer_bytes - 1] &= mask;
+    }
+    
+    return result;
+}
+
+/*
+ * Convert VarBit k-mer to uint16 (for k <= 8)
+ */
+void
+kmersearch_convert_kmer2_to_uint16(VarBit *kmer2, uint16 *result)
+{
+    bits8 *data = VARBITS(kmer2);
+    int kmer_bits = VARBITLEN(kmer2);
+    int kmer_size = kmer_bits / 2;
+    
+    if (kmer_size > 8) {
+        ereport(ERROR,
+                (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+                 errmsg("k-mer too large for uint16 conversion"),
+                 errdetail("k-mer size: %d, max allowed: 8", kmer_size)));
+    }
+    
+    *result = 0;
+    
+    /* Extract bits and pack into uint16 */
+    for (int i = 0; i < kmer_size; i++) {
+        int bit_pos = i * 2;
+        int byte_pos = bit_pos / 8;
+        int bit_offset = bit_pos % 8;
+        uint8 nucleotide = (data[byte_pos] >> (6 - bit_offset)) & 0x3;
+        
+        *result = (*result << 2) | nucleotide;
+    }
+}
+
+/*
+ * Convert VarBit k-mer to uint32 (for k <= 16)
+ */
+void
+kmersearch_convert_kmer2_to_uint32(VarBit *kmer2, uint32 *result)
+{
+    bits8 *data = VARBITS(kmer2);
+    int kmer_bits = VARBITLEN(kmer2);
+    int kmer_size = kmer_bits / 2;
+    
+    if (kmer_size > 16) {
+        ereport(ERROR,
+                (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+                 errmsg("k-mer too large for uint32 conversion"),
+                 errdetail("k-mer size: %d, max allowed: 16", kmer_size)));
+    }
+    
+    *result = 0;
+    
+    /* Extract bits and pack into uint32 */
+    for (int i = 0; i < kmer_size; i++) {
+        int bit_pos = i * 2;
+        int byte_pos = bit_pos / 8;
+        int bit_offset = bit_pos % 8;
+        uint8 nucleotide = (data[byte_pos] >> (6 - bit_offset)) & 0x3;
+        
+        *result = (*result << 2) | nucleotide;
+    }
+}
+
+/*
+ * Convert VarBit k-mer to uint64 (for k <= 32)
+ */
+void
+kmersearch_convert_kmer2_to_uint64(VarBit *kmer2, uint64 *result)
+{
+    bits8 *data = VARBITS(kmer2);
+    int kmer_bits = VARBITLEN(kmer2);
+    int kmer_size = kmer_bits / 2;
+    
+    if (kmer_size > 32) {
+        ereport(ERROR,
+                (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+                 errmsg("k-mer too large for uint64 conversion"),
+                 errdetail("k-mer size: %d, max allowed: 32", kmer_size)));
+    }
+    
+    *result = 0;
+    
+    /* Extract bits and pack into uint64 */
+    for (int i = 0; i < kmer_size; i++) {
+        int bit_pos = i * 2;
+        int byte_pos = bit_pos / 8;
+        int bit_offset = bit_pos % 8;
+        uint8 nucleotide = (data[byte_pos] >> (6 - bit_offset)) & 0x3;
+        
+        *result = (*result << 2) | nucleotide;
+    }
+}
