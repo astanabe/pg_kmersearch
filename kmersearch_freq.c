@@ -23,8 +23,6 @@ PG_FUNCTION_INFO_V1(kmersearch_undo_highfreq_analysis);
 
 /* High-frequency k-mer filtering functions */
 static bool kmersearch_is_kmer_highfreq(VarBit *kmer_key);
-static int kmersearch_count_highfreq_kmer_in_query(VarBit **query_keys, int nkeys);
-static bool kmersearch_is_highfreq_filtering_enabled(void);
 /* Utility functions */
 
 /* Analysis dshash functions */
@@ -574,7 +572,7 @@ kmersearch_undo_highfreq_analysis(PG_FUNCTION_ARGS)
 /*
  * Count high-frequency k-mers in query
  */
-static int
+int
 kmersearch_count_highfreq_kmer_in_query(VarBit **query_keys, int nkeys)
 {
     int highfreq_count = 0;
@@ -607,7 +605,7 @@ kmersearch_count_highfreq_kmer_in_query(VarBit **query_keys, int nkeys)
 /*
  * Check if high-frequency k-mer filtering is enabled for current context
  */
-static bool
+bool
 kmersearch_is_highfreq_filtering_enabled(void)
 {
     /* Check if global cache is valid and contains high-frequency k-mers */
@@ -982,37 +980,6 @@ kmersearch_validate_analysis_parameters(Oid table_oid, const char *column_name, 
     if (k_size < 1 || k_size > 32) {
         ereport(ERROR, (errmsg("k-mer size must be between 1 and 32")));
     }
-}
-
-
-/*
- * Calculate adjusted minimum score based on highly frequent k-mers in query
- * Only applies adjustment when high-frequency filtering is actually enabled
- */
-int
-kmersearch_get_adjusted_min_score(VarBit **query_keys, int nkeys)
-{
-    int highfreq_count;
-    int adjusted_score;
-    
-    
-    /* Check if high-frequency filtering is enabled for this context */
-    elog(LOG, "kmersearch_get_adjusted_min_score: Checking if high-frequency filtering is enabled");
-    if (!kmersearch_is_highfreq_filtering_enabled()) {
-        elog(LOG, "kmersearch_get_adjusted_min_score: High-frequency filtering disabled, returning default min score %d", kmersearch_min_score);
-        return kmersearch_min_score;  /* No adjustment needed */
-    }
-    
-    elog(LOG, "kmersearch_get_adjusted_min_score: High-frequency filtering enabled, counting high-freq k-mers");
-    highfreq_count = kmersearch_count_highfreq_kmer_in_query(query_keys, nkeys);
-    elog(LOG, "kmersearch_get_adjusted_min_score: Found %d high-frequency k-mers", highfreq_count);
-    adjusted_score = kmersearch_min_score - highfreq_count;
-    
-    /* Ensure adjusted score is not negative */
-    if (adjusted_score < 0)
-        adjusted_score = 0;
-    
-    return adjusted_score;
 }
 
 /*

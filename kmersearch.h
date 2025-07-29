@@ -749,7 +749,8 @@ KmerMatchResult get_cached_rawscore_dna2(VarBit *sequence, const char *query_str
 KmerMatchResult get_cached_rawscore_dna4(VarBit *sequence, const char *query_string);
 
 /* Internal functions that should be declared (implemented in kmersearch_freq.c) */
-int kmersearch_get_adjusted_min_score(VarBit **query_keys, int nkeys);
+bool kmersearch_is_highfreq_filtering_enabled(void);
+int kmersearch_count_highfreq_kmer_in_query(VarBit **query_keys, int nkeys);
 
 /* Cache key validation functions (implemented in kmersearch_cache.c) */
 bool kmersearch_validate_cache_key_match(Oid table_oid, const char *column_name);

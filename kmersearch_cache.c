@@ -411,31 +411,40 @@ free_actual_min_score_cache_manager(ActualMinScoreCacheManager **manager)
 int
 calculate_actual_min_score(VarBit **query_keys, int nkeys, int query_total_kmers)
 {
-    int absolute_min;
-    int relative_min;
-    
+    int base_min_score;
+    int highfreq_count;
+    int actual_min_score;
+    int absolute_min = kmersearch_min_score;
+    int relative_min = 0;
     
     /* Validate input parameters */
     if (query_keys == NULL) {
         return kmersearch_min_score;
     }
     
-    /* Use adjusted minimum score that considers high-frequency k-mer filtering */
-    absolute_min = kmersearch_get_adjusted_min_score(query_keys, nkeys);
-    elog(LOG, "calculate_actual_min_score: kmersearch_get_adjusted_min_score returned %d", absolute_min);
+    /* Calculate base minimum score (maximum of absolute and relative) */
     
     if (query_total_kmers > 0) {
-        /* Calculate minimum score from relative threshold */
-        /* kmersearch_min_shared_ngram_key_rate <= shared_count / query_total_kmers */
-        /* shared_count >= kmersearch_min_shared_ngram_key_rate * query_total_kmers */
         double relative_threshold = kmersearch_min_shared_ngram_key_rate * query_total_kmers;
         relative_min = (int)ceil(relative_threshold);
-    } else {
-        relative_min = 0;
     }
     
-    /* Return the maximum of absolute and relative minimums */
-    return (absolute_min > relative_min) ? absolute_min : relative_min;
+    base_min_score = (absolute_min > relative_min) ? absolute_min : relative_min;
+    
+    /* If high-frequency k-mer filtering is enabled, subtract high-frequency k-mer count */
+    if (kmersearch_is_highfreq_filtering_enabled()) {
+        highfreq_count = kmersearch_count_highfreq_kmer_in_query(query_keys, nkeys);
+        actual_min_score = base_min_score - highfreq_count;
+        
+        /* Ensure non-negative value */
+        if (actual_min_score < 0) {
+            actual_min_score = 0;
+        }
+    } else {
+        actual_min_score = base_min_score;
+    }
+    
+    return actual_min_score;
 }
 
 /*
