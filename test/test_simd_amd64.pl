@@ -90,6 +90,130 @@ sub create_base_table {
     $sth->finish();
 }
 
+# Additional Input/Output Tests
+print "=" x 70 . "\n";
+print "Additional Input/Output Tests\n";
+print "=" x 70 . "\n\n";
+
+# Test 1: Scalar input/Scalar output
+print "Test 1: Scalar input (force_simd_capability=0) / Scalar output (force_simd_capability=0)\n";
+{
+    my $table_name = "simd_test_scalar_io";
+    
+    # Set to scalar mode for input
+    $dbh->do("SET kmersearch.force_simd_capability = 0");
+    
+    # Create table and insert data
+    create_base_table($table_name);
+    
+    # Verify with scalar output
+    $dbh->do("SET kmersearch.force_simd_capability = 0");
+    
+    my $sth = $dbh->prepare("SELECT id, seq::text FROM $table_name ORDER BY id");
+    $sth->execute();
+    
+    my $match_count = 0;
+    my $row_count = 0;
+    while (my ($id, $seq) = $sth->fetchrow_array()) {
+        if ($sequences[$id-1] eq $seq) {
+            $match_count++;
+        } else {
+            print "  Mismatch at ID $id: expected '$sequences[$id-1]', got '$seq'\n" if $row_count < 5;
+        }
+        $row_count++;
+    }
+    $sth->finish();
+    
+    printf "  Result: %d/%d sequences match (%.1f%%)\n", 
+           $match_count, $row_count, ($match_count / $row_count) * 100;
+    
+    # Clean up
+    $dbh->do("DROP TABLE $table_name");
+}
+
+# Test 2: Scalar input/SIMD output (all SIMD values)
+print "\nTest 2: Scalar input (force_simd_capability=0) / SIMD output (all force_simd_capability>0)\n";
+{
+    my $table_name = "simd_test_scalar_input";
+    
+    # Set to scalar mode for input
+    $dbh->do("SET kmersearch.force_simd_capability = 0");
+    
+    # Create table and insert data
+    create_base_table($table_name);
+    
+    # Test with each SIMD capability for output
+    foreach my $simd (@simd_capabilities) {
+        next if $simd->{value} == 0;  # Skip scalar
+        
+        $dbh->do("SET kmersearch.force_simd_capability = $simd->{value}");
+        
+        my $sth = $dbh->prepare("SELECT id, seq::text FROM $table_name ORDER BY id");
+        $sth->execute();
+        
+        my $match_count = 0;
+        my $row_count = 0;
+        while (my ($id, $seq) = $sth->fetchrow_array()) {
+            if ($sequences[$id-1] eq $seq) {
+                $match_count++;
+            } else {
+                print "  Mismatch with $simd->{name} output at ID $id\n" if $row_count < 5;
+            }
+            $row_count++;
+        }
+        $sth->finish();
+        
+        printf "  $simd->{name} output: %d/%d sequences match (%.1f%%)\n", 
+               $match_count, $row_count, ($match_count / $row_count) * 100;
+    }
+    
+    # Clean up
+    $dbh->do("DROP TABLE $table_name");
+}
+
+# Test 3: SIMD input/Scalar output (all SIMD values)
+print "\nTest 3: SIMD input (all force_simd_capability>0) / Scalar output (force_simd_capability=0)\n";
+{
+    foreach my $simd (@simd_capabilities) {
+        next if $simd->{value} == 0;  # Skip scalar
+        
+        my $table_name = "simd_test_" . $simd->{name} . "_input";
+        $table_name =~ s/[^a-zA-Z0-9_]/_/g;  # Replace non-alphanumeric chars
+        
+        # Set SIMD mode for input
+        $dbh->do("SET kmersearch.force_simd_capability = $simd->{value}");
+        
+        # Create table and insert data
+        create_base_table($table_name);
+        
+        # Set to scalar mode for output
+        $dbh->do("SET kmersearch.force_simd_capability = 0");
+        
+        my $sth = $dbh->prepare("SELECT id, seq::text FROM $table_name ORDER BY id");
+        $sth->execute();
+        
+        my $match_count = 0;
+        my $row_count = 0;
+        while (my ($id, $seq) = $sth->fetchrow_array()) {
+            if ($sequences[$id-1] eq $seq) {
+                $match_count++;
+            } else {
+                print "  Mismatch with $simd->{name} input at ID $id\n" if $row_count < 5;
+            }
+            $row_count++;
+        }
+        $sth->finish();
+        
+        printf "  $simd->{name} input: %d/%d sequences match (%.1f%%)\n", 
+               $match_count, $row_count, ($match_count / $row_count) * 100;
+        
+        # Clean up
+        $dbh->do("DROP TABLE $table_name");
+    }
+}
+
+print "\n";
+
 # Test each SIMD capability
 foreach my $simd (@simd_capabilities) {
     print "=" x 70 . "\n";
