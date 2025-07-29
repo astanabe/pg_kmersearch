@@ -20,10 +20,9 @@ SELECT 'Testing kmersearch_cache_summary view...' as test_phase;
 SELECT * FROM kmersearch_cache_summary;
     cache_type    | total_entries | total_hits | total_misses | hit_rate 
 ------------------+---------------+------------+--------------+----------
- rawscore         |             0 |          0 |            0 |        0
  query_pattern    |             0 |          0 |            0 |        0
  actual_min_score |             0 |          0 |            0 |        0
-(3 rows)
+(2 rows)
 
 -- Test analysis status view (should be empty initially)
 SELECT 'Testing kmersearch_analysis_status view...' as test_phase;
@@ -169,8 +168,7 @@ ORDER BY cache_type;
 ------------------+-------------+----------+------------+----------------
  actual_min_score | t           | t        | t          | t
  query_pattern    | t           | t        | t          | t
- rawscore         | t           | t        | t          | t
-(3 rows)
+(2 rows)
 
 -- Clean up
 DROP TABLE IF EXISTS test_analysis_dna2 CASCADE;

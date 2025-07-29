@@ -294,33 +294,6 @@ typedef struct KmerEntry64
 #define KMERSEARCH_KEY_HANDLES       2  /* Combined DSM and hash handles */
 
 /*
- * Rawscore cache entry
- */
-typedef struct RawscoreCacheEntry
-{
-    uint64      hash_key;                  /* Hash key for this entry */
-    VarBit      *sequence_copy;            /* Copy of sequence for exact match */
-    char        *query_string_copy;        /* Copy of query string for exact match */
-    KmerMatchResult result;                /* Cached rawscore calculation result */
-    int         heap_index;                /* Index in min-heap array (-1 if not in heap) */
-} RawscoreCacheEntry;
-
-/*
- * Rawscore cache manager
- */
-typedef struct RawscoreCacheManager
-{
-    HTAB        *hash_table;               /* PostgreSQL hash table */
-    MemoryContext cache_context;           /* Memory context for rawscore cache */
-    int         max_entries;               /* Maximum number of entries */
-    int         current_entries;           /* Current number of entries */
-    uint64      hits;                      /* Cache hit count */
-    uint64      misses;                    /* Cache miss count */
-    RawscoreCacheEntry **min_heap;         /* Min-heap array for score-based eviction */
-    int         heap_size;                 /* Current heap size */
-} RawscoreCacheManager;
-
-/*
  * Query pattern cache entry
  */
 typedef struct QueryPatternCacheEntry
@@ -480,7 +453,6 @@ extern double kmersearch_min_shared_ngram_key_rate;
 extern bool kmersearch_preclude_highfreq_kmer;
 
 /* Cache configuration variables */
-extern int kmersearch_rawscore_cache_max_entries;
 extern int kmersearch_query_pattern_cache_max_entries;
 extern int kmersearch_actual_min_score_cache_max_entries;
 extern int kmersearch_highfreq_kmer_cache_load_batch_size;
@@ -489,7 +461,6 @@ extern int kmersearch_highfreq_analysis_batch_size;
 /* Global cache managers */
 extern ActualMinScoreCacheManager *actual_min_score_cache_manager;
 extern QueryPatternCacheManager *query_pattern_cache_manager;
-extern RawscoreCacheManager *rawscore_cache_manager;
 
 /* Global high-frequency k-mer cache */
 extern HighfreqKmerCache global_highfreq_cache;
@@ -613,16 +584,12 @@ Datum kmersearch_match_dna2(PG_FUNCTION_ARGS);
 Datum kmersearch_match_dna4(PG_FUNCTION_ARGS);
 
 /* Scoring functions */
-Datum kmersearch_rawscore_dna2(PG_FUNCTION_ARGS);
-Datum kmersearch_rawscore_dna4(PG_FUNCTION_ARGS);
 Datum kmersearch_correctedscore_dna2(PG_FUNCTION_ARGS);
 Datum kmersearch_correctedscore_dna4(PG_FUNCTION_ARGS);
 
 /* Cache management functions */
 Datum kmersearch_actual_min_score_cache_stats(PG_FUNCTION_ARGS);
 Datum kmersearch_actual_min_score_cache_free(PG_FUNCTION_ARGS);
-Datum kmersearch_rawscore_cache_stats(PG_FUNCTION_ARGS);
-Datum kmersearch_rawscore_cache_free(PG_FUNCTION_ARGS);
 Datum kmersearch_query_pattern_cache_stats(PG_FUNCTION_ARGS);
 Datum kmersearch_query_pattern_cache_free(PG_FUNCTION_ARGS);
 
@@ -725,8 +692,6 @@ bool kmersearch_parallel_highfreq_kmer_cache_is_valid(Oid table_oid, const char 
 
 /* GIN index support function (implemented in kmersearch_gin.c) */
 bool kmersearch_get_index_info(Oid index_oid, Oid *table_oid, char **column_name, int *k_size);
-bool kmersearch_kmer_based_match_dna2(VarBit *sequence, const char *query_string);
-bool kmersearch_kmer_based_match_dna4(VarBit *sequence, const char *query_string);
 bool evaluate_optimized_match_condition(VarBit **query_keys, int nkeys, int shared_count, const char *query_string, int query_total_kmers);
 
 /* Type OID helper functions */
@@ -742,11 +707,8 @@ VarBit **get_cached_query_kmer(const char *query_string, int k_size, int *nkeys)
 /* Actual min score cache functions (implemented in kmersearch_cache.c) */  
 int get_cached_actual_min_score(VarBit **query_keys, int nkeys);
 
-/* Rawscore cache functions (implemented in kmersearch_cache.c) */
-void kmersearch_rawscore_cache_max_entries_assign_hook(int newval, void *extra);
+/* Cache functions (implemented in kmersearch_cache.c) */
 void kmersearch_query_pattern_cache_max_entries_assign_hook(int newval, void *extra);
-KmerMatchResult get_cached_rawscore_dna2(VarBit *sequence, const char *query_string);
-KmerMatchResult get_cached_rawscore_dna4(VarBit *sequence, const char *query_string);
 
 /* Internal functions that should be declared (implemented in kmersearch_freq.c) */
 bool kmersearch_is_highfreq_filtering_enabled(void);
@@ -758,8 +720,6 @@ bool kmersearch_validate_parallel_cache_key_match(Oid table_oid, const char *col
 bool kmersearch_validate_guc_against_all_metadata(void);
 bool kmersearch_is_parallel_highfreq_cache_loaded(void);
 bool kmersearch_lookup_in_parallel_cache(VarBit *kmer_key);
-KmerMatchResult kmersearch_calculate_kmer_match_and_score_dna2(VarBit *sequence, const char *query_string);
-KmerMatchResult kmersearch_calculate_kmer_match_and_score_dna4(VarBit *sequence, const char *query_string);
 
 /* GIN index support functions (implemented in kmersearch_gin.c) */
 Datum kmersearch_extract_value_dna2(PG_FUNCTION_ARGS);

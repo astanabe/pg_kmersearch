@@ -578,6 +578,8 @@ kmersearch_count_highfreq_kmer_in_query(VarBit **query_keys, int nkeys)
     int highfreq_count = 0;
     int i;
     
+    /* Debug: Log function entry */
+    elog(DEBUG1, "kmersearch_count_highfreq_kmer_in_query: called with nkeys = %d", nkeys);
     
     /* Validate input parameters */
     if (query_keys == NULL) {
@@ -592,6 +594,9 @@ kmersearch_count_highfreq_kmer_in_query(VarBit **query_keys, int nkeys)
             continue;
         }
         
+        /* Debug: Log each key */
+        elog(DEBUG1, "kmersearch_count_highfreq_kmer_in_query: processing key[%d], bit length = %d", 
+             i, VARBITLEN(query_keys[i]));
         
         if (kmersearch_is_kmer_highfreq(query_keys[i]))
         {
@@ -1093,9 +1098,85 @@ kmersearch_is_kmer_highfreq(VarBit *kmer_key)
     uint64 kmer_uint = 0;
     bool is_highfreq = false;
     int ret;
+    int kmer_bit_len;
     
     if (!kmer_key) {
         return false;
+    }
+    
+    /* Debug: Log input key information */
+    kmer_bit_len = VARBITLEN(kmer_key);
+    elog(DEBUG1, "kmersearch_is_kmer_highfreq: input key bit length = %d, kmersearch_occur_bitlen = %d, kmersearch_kmer_size = %d",
+         kmer_bit_len, kmersearch_occur_bitlen, kmersearch_kmer_size);
+    
+    /* Determine if input is ngram_key2 (with occurrence count) or kmer2 (without occurrence count)
+     * by checking if the bit length is exactly k-mer size * 2 (kmer2) or larger (ngram_key2) */
+    if (kmer_bit_len == kmersearch_kmer_size * 2) {
+        /* Input is kmer2 format (without occurrence count) */
+        elog(DEBUG1, "kmersearch_is_kmer_highfreq: input is kmer2 format (no occurrence count)");
+        
+        /* For kmer2, check that k-mer bit length is at least 8 */
+        if (kmer_bit_len < 8) {
+            ereport(ERROR,
+                    (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+                     errmsg("k-mer key is too short"),
+                     errdetail("k-mer bit length is %d, but must be at least 8 bits.", kmer_bit_len)));
+        }
+    } else if (kmer_bit_len == kmersearch_kmer_size * 2 + kmersearch_occur_bitlen) {
+        /* Input is ngram_key2 format (with occurrence count) */
+        elog(DEBUG1, "kmersearch_is_kmer_highfreq: input is ngram_key2 format (with occurrence count)");
+        
+        /* For ngram_key2, check that k-mer portion is at least 8 bits */
+        if (kmersearch_kmer_size * 2 < 8) {
+            ereport(ERROR,
+                    (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+                     errmsg("k-mer portion of key is too short"),
+                     errdetail("k-mer size is %d, resulting in %d-bit k-mer, but must be at least 8 bits.", 
+                              kmersearch_kmer_size, kmersearch_kmer_size * 2)));
+        }
+        
+        /* Extract kmer2 portion by creating a new VarBit with only k-mer bits */
+        {
+            int kmer2_bits = kmersearch_kmer_size * 2;
+            int kmer2_bytes = (kmer2_bits + 7) / 8;
+            VarBit *kmer2_only;
+            bits8 *src_data, *dst_data;
+            int i;
+            
+            /* Allocate new VarBit for kmer2 only */
+            kmer2_only = (VarBit *) palloc0(VARHDRSZ + sizeof(int32) + kmer2_bytes);
+            SET_VARSIZE(kmer2_only, VARHDRSZ + sizeof(int32) + kmer2_bytes);
+            VARBITLEN(kmer2_only) = kmer2_bits;
+            
+            src_data = VARBITS(kmer_key);
+            dst_data = VARBITS(kmer2_only);
+            
+            /* Copy only the k-mer bits (first kmer2_bits) */
+            for (i = 0; i < kmer2_bits; i++) {
+                int byte_pos = i / 8;
+                int bit_offset = i % 8;
+                
+                if (src_data[byte_pos] & (0x80 >> bit_offset)) {
+                    dst_data[byte_pos] |= (0x80 >> bit_offset);
+                }
+            }
+            
+            /* Recursively call with kmer2 format */
+            is_highfreq = kmersearch_is_kmer_highfreq(kmer2_only);
+            
+            /* Clean up */
+            pfree(kmer2_only);
+            
+            return is_highfreq;
+        }
+    } else {
+        /* Unexpected bit length */
+        ereport(ERROR,
+                (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+                 errmsg("invalid k-mer key format"),
+                 errdetail("Key bit length is %d, expected either %d (kmer2) or %d (ngram_key2).", 
+                          kmer_bit_len, kmersearch_kmer_size * 2, 
+                          kmersearch_kmer_size * 2 + kmersearch_occur_bitlen)));
     }
     
     /* Step 1: Validate GUC settings against metadata table */
@@ -1106,7 +1187,7 @@ kmersearch_is_kmer_highfreq(VarBit *kmer_key)
                  errhint("Current cache may be invalid. Please reload cache or run kmersearch_perform_highfreq_analysis() again.")));
     }
     
-    /* kmer_key is already a kmer2 (without occurrence count), convert directly to uint */
+    /* kmer_key is kmer2 (without occurrence count), convert directly to uint */
     if (kmersearch_kmer_size <= 8) {
         uint16 value = 0;
         kmersearch_convert_kmer2_to_uint16(kmer_key, &value);

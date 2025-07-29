@@ -2,7 +2,7 @@ SET client_min_messages = WARNING;
 CREATE EXTENSION IF NOT EXISTS pg_kmersearch;
 
 -- Test cache management functionality
--- This test covers actual min score cache, rawscore cache, and query pattern cache
+-- This test covers actual min score cache and query pattern cache
 
 -- Set k-mer size for consistent cache behavior
 SET kmersearch.kmer_size = 4;
@@ -50,25 +50,17 @@ SHOW kmersearch.actual_min_score_cache_max_entries;
 SET kmersearch.actual_min_score_cache_max_entries = 1000;
 SHOW kmersearch.actual_min_score_cache_max_entries;
 
-SHOW kmersearch.rawscore_cache_max_entries;
-SET kmersearch.rawscore_cache_max_entries = 2000;
-SHOW kmersearch.rawscore_cache_max_entries;
-
 SHOW kmersearch.query_pattern_cache_max_entries;
 SET kmersearch.query_pattern_cache_max_entries = 3000;
 SHOW kmersearch.query_pattern_cache_max_entries;
 
 -- Reset to defaults for consistent testing
 SET kmersearch.actual_min_score_cache_max_entries = 50000;
-SET kmersearch.rawscore_cache_max_entries = 50000;
 SET kmersearch.query_pattern_cache_max_entries = 50000;
 
 -- Test initial cache statistics (should be empty)
 SELECT 'Initial actual min score cache:' as test_phase;
 SELECT * FROM kmersearch_actual_min_score_cache_stats();
-
-SELECT 'Initial rawscore cache:' as test_phase;
-SELECT * FROM kmersearch_rawscore_cache_stats();
 
 SELECT 'Initial query pattern cache:' as test_phase;
 SELECT * FROM kmersearch_query_pattern_cache_stats();
@@ -90,16 +82,13 @@ SELECT COUNT(*) FROM test_cache_dna2 WHERE sequence =% 'GCTAGCTA';
 SELECT COUNT(*) FROM test_cache_dna4 WHERE sequence =% 'ATCGATCG';
 SELECT COUNT(*) FROM test_cache_dna4 WHERE sequence =% 'NNNNNNNN';
 
--- Test scoring functions to populate rawscore cache
+-- Test scoring functions
 SELECT kmersearch_rawscore(sequence, 'ATCGATCG') FROM test_cache_dna2 WHERE id <= 2;
 SELECT kmersearch_rawscore(sequence, 'TTTTTTTT') FROM test_cache_dna2 WHERE id <= 2;
 
 -- Check cache statistics after usage
 SELECT 'After query execution - actual min score cache:' as test_phase;
 SELECT * FROM kmersearch_actual_min_score_cache_stats();
-
-SELECT 'After query execution - rawscore cache:' as test_phase;
-SELECT * FROM kmersearch_rawscore_cache_stats();
 
 SELECT 'After query execution - query pattern cache:' as test_phase;
 SELECT * FROM kmersearch_query_pattern_cache_stats();
@@ -108,15 +97,11 @@ SELECT * FROM kmersearch_query_pattern_cache_stats();
 SELECT 'Testing cache clear functions...' as test_phase;
 
 SELECT 'Clearing actual min score cache:' as action, kmersearch_actual_min_score_cache_free() as freed_entries;
-SELECT 'Clearing rawscore cache:' as action, kmersearch_rawscore_cache_free() as freed_entries;
 SELECT 'Clearing query pattern cache:' as action, kmersearch_query_pattern_cache_free() as freed_entries;
 
 -- Verify caches are cleared
 SELECT 'After clearing - actual min score cache:' as test_phase;
 SELECT * FROM kmersearch_actual_min_score_cache_stats();
-
-SELECT 'After clearing - rawscore cache:' as test_phase;
-SELECT * FROM kmersearch_rawscore_cache_stats();
 
 SELECT 'After clearing - query pattern cache:' as test_phase;
 SELECT * FROM kmersearch_query_pattern_cache_stats();

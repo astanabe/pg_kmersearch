@@ -386,12 +386,12 @@ CREATE TABLE kmersearch_index_info (
 -- Score calculation functions
 CREATE FUNCTION kmersearch_rawscore_dna2(DNA2, text) 
     RETURNS integer
-    AS 'MODULE_PATHNAME', 'kmersearch_rawscore_dna2'
+    AS 'MODULE_PATHNAME', 'kmersearch_correctedscore_dna2'
     LANGUAGE C IMMUTABLE STRICT;
 
 CREATE FUNCTION kmersearch_rawscore_dna4(DNA4, text) 
     RETURNS integer
-    AS 'MODULE_PATHNAME', 'kmersearch_rawscore_dna4'
+    AS 'MODULE_PATHNAME', 'kmersearch_correctedscore_dna4'
     LANGUAGE C IMMUTABLE STRICT;
 
 -- Type-specific correctedscore functions
@@ -419,12 +419,12 @@ CREATE FUNCTION kmersearch_correctedscore(DNA4, text)
 -- Overloaded rawscore functions for backwards compatibility
 CREATE FUNCTION kmersearch_rawscore(DNA2, text) 
     RETURNS integer
-    AS 'MODULE_PATHNAME', 'kmersearch_rawscore_dna2'
+    AS 'MODULE_PATHNAME', 'kmersearch_correctedscore_dna2'
     LANGUAGE C IMMUTABLE STRICT;
 
 CREATE FUNCTION kmersearch_rawscore(DNA4, text) 
     RETURNS integer
-    AS 'MODULE_PATHNAME', 'kmersearch_rawscore_dna4'
+    AS 'MODULE_PATHNAME', 'kmersearch_correctedscore_dna4'
     LANGUAGE C IMMUTABLE STRICT;
 
 -- Length functions for DNA2 and DNA4 types
@@ -515,27 +515,6 @@ CREATE FUNCTION kmersearch_undo_highfreq_analysis(table_name text, column_name t
     LANGUAGE C VOLATILE STRICT;
 
 
--- Rawscore cache statistics function
-CREATE FUNCTION kmersearch_rawscore_cache_stats()
-    RETURNS TABLE (
-        dna2_hits bigint,
-        dna2_misses bigint,
-        dna2_entries integer,
-        dna2_max_entries integer,
-        dna4_hits bigint,
-        dna4_misses bigint,
-        dna4_entries integer,
-        dna4_max_entries integer
-    )
-    AS 'MODULE_PATHNAME', 'kmersearch_rawscore_cache_stats'
-    LANGUAGE C STABLE;
-
--- Rawscore cache management function
-CREATE FUNCTION kmersearch_rawscore_cache_free()
-    RETURNS integer
-    AS 'MODULE_PATHNAME', 'kmersearch_rawscore_cache_free'
-    LANGUAGE C VOLATILE;
-
 -- Query pattern cache statistics function
 CREATE FUNCTION kmersearch_query_pattern_cache_stats()
     RETURNS TABLE (
@@ -618,17 +597,6 @@ CREATE INDEX kmersearch_index_info_idx
 
 -- Management views for easier administration
 CREATE VIEW kmersearch_cache_summary AS
-SELECT 
-    'rawscore' as cache_type,
-    dna2_entries + dna4_entries as total_entries,
-    dna2_hits + dna4_hits as total_hits,
-    dna2_misses + dna4_misses as total_misses,
-    CASE WHEN (dna2_hits + dna4_hits + dna2_misses + dna4_misses) > 0 
-         THEN (dna2_hits + dna4_hits)::float / 
-              (dna2_hits + dna4_hits + dna2_misses + dna4_misses)::float 
-         ELSE 0 END as hit_rate
-FROM kmersearch_rawscore_cache_stats()
-UNION ALL
 SELECT 
     'query_pattern' as cache_type,
     current_entries as total_entries,

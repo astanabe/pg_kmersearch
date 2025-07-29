@@ -742,7 +742,12 @@ kmersearch_extract_query_ngram_key2(const char *query, int k, int *nkeys)
     /* Convert Datum array to VarBit pointer array */
     result_keys = (VarBit **) palloc(*nkeys * sizeof(VarBit *));
     for (i = 0; i < *nkeys; i++) {
-        result_keys[i] = DatumGetVarBitP(datum_keys[i]);
+        /* IMPORTANT: DatumGetVarBitP returns a pointer to the VarBit inside the Datum
+         * We need to make a copy since we're going to free datum_keys */
+        VarBit *src = DatumGetVarBitP(datum_keys[i]);
+        int varsize = VARSIZE(src);
+        result_keys[i] = (VarBit *) palloc(varsize);
+        memcpy(result_keys[i], src, varsize);
     }
     
     /* Cleanup */
