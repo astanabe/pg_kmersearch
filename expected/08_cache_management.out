@@ -184,7 +184,7 @@ SELECT 'After query execution - actual min score cache:' as test_phase;
 SELECT * FROM kmersearch_actual_min_score_cache_stats();
  hits | misses | current_entries | max_entries 
 ------+--------+-----------------+-------------
-   32 |      3 |               3 |       50000
+   39 |      3 |               3 |       50000
 (1 row)
 
 SELECT 'After query execution - query pattern cache:' as test_phase;
@@ -275,7 +275,7 @@ SELECT 'With changed settings - actual min score cache:' as test_phase;
 SELECT * FROM kmersearch_actual_min_score_cache_stats();
  hits | misses | current_entries | max_entries 
 ------+--------+-----------------+-------------
-    9 |      1 |               1 |       50000
+   11 |      1 |               1 |       50000
 (1 row)
 
 -- Reset to defaults
@@ -332,7 +332,7 @@ SELECT 'Final cache state:' as test_phase;
 SELECT * FROM kmersearch_actual_min_score_cache_stats();
  hits | misses | current_entries | max_entries 
 ------+--------+-----------------+-------------
-   16 |      4 |               4 |        1000
+   20 |      4 |               4 |        1000
 (1 row)
 
 -- Clean up

@@ -440,6 +440,7 @@ calculate_actual_min_score(VarBit **query_keys, int nkeys, int query_total_kmers
 
 /*
  * Get cached actual min score using TopMemoryContext cache (global)
+ * Modified to create cache key from filtered keys while calculating with original keys
  */
 int
 get_cached_actual_min_score(VarBit **query_keys, int nkeys)
@@ -449,6 +450,8 @@ get_cached_actual_min_score(VarBit **query_keys, int nkeys)
     bool found;
     MemoryContext old_context;
     int actual_min_score;
+    VarBit **filtered_keys = NULL;
+    int filtered_nkeys = nkeys;
     int i;
     
     /* Validate input parameters */
@@ -483,20 +486,40 @@ get_cached_actual_min_score(VarBit **query_keys, int nkeys)
         MemoryContextSwitchTo(old_context);
     }
     
-    
-    /* Calculate hash value for query keys content (not pointers) */
-    query_hash = 0;
-    for (i = 0; i < nkeys; i++) {
-        uint64 kmer_hash;
+    /* Step 1: Filter high-frequency k-mers for cache key generation */
+    if (kmersearch_preclude_highfreq_kmer && kmersearch_is_highfreq_filtering_enabled()) {
+        filtered_keys = (VarBit **) palloc(nkeys * sizeof(VarBit *));
+        filtered_nkeys = 0;
         
-        /* Validate VarBit structure before accessing */
-        if (query_keys[i] == NULL) {
-            elog(ERROR, "get_cached_actual_min_score: query_keys[%d] is NULL", i);
+        for (i = 0; i < nkeys; i++) {
+            if (!kmersearch_is_kmer_highfreq(query_keys[i])) {
+                filtered_keys[filtered_nkeys++] = query_keys[i];
+            }
         }
         
-        kmer_hash = hash_any_extended((unsigned char *)VARBITS(query_keys[i]), 
-                                      VARBITBYTES(query_keys[i]), query_hash);
-        query_hash = kmer_hash;
+        /* Calculate hash using filtered keys */
+        query_hash = 0;
+        for (i = 0; i < filtered_nkeys; i++) {
+            uint64 kmer_hash;
+            kmer_hash = hash_any_extended((unsigned char *)VARBITS(filtered_keys[i]), 
+                                          VARBITBYTES(filtered_keys[i]), query_hash);
+            query_hash = kmer_hash;
+        }
+    } else {
+        /* No filtering - use original keys for hash */
+        query_hash = 0;
+        for (i = 0; i < nkeys; i++) {
+            uint64 kmer_hash;
+            
+            /* Validate VarBit structure before accessing */
+            if (query_keys[i] == NULL) {
+                elog(ERROR, "get_cached_actual_min_score: query_keys[%d] is NULL", i);
+            }
+            
+            kmer_hash = hash_any_extended((unsigned char *)VARBITS(query_keys[i]), 
+                                          VARBITBYTES(query_keys[i]), query_hash);
+            query_hash = kmer_hash;
+        }
     }
     
     
@@ -507,11 +530,13 @@ get_cached_actual_min_score(VarBit **query_keys, int nkeys)
     
     if (found) {
         actual_min_score_cache_manager->hits++;
+        if (filtered_keys) pfree(filtered_keys);
         return cache_entry->actual_min_score;
     }
     
     /* Not found - calculate and cache */
     actual_min_score_cache_manager->misses++;
+    /* Note: Calculate with original keys (includes high-frequency k-mers) */
     actual_min_score = calculate_actual_min_score(query_keys, nkeys, nkeys);
     
     /* Add to cache if not at capacity */
@@ -539,11 +564,62 @@ get_cached_actual_min_score(VarBit **query_keys, int nkeys)
         MemoryContextSwitchTo(old_context);
     }
     
+    if (filtered_keys) pfree(filtered_keys);
+    
     return actual_min_score;
 }
 
-
-
+/*
+ * Get cached actual_min_score or error if not found
+ * For use in kmersearch_consistent where cache must already be populated
+ * Note: query_keys should already be filtered (high-frequency k-mers removed)
+ */
+int
+get_cached_actual_min_score_or_error(VarBit **query_keys, int nkeys)
+{
+    ActualMinScoreCacheEntry *cache_entry;
+    uint64 query_hash;
+    int i;
+    
+    /* Cache must be initialized */
+    if (actual_min_score_cache_manager == NULL) {
+        ereport(ERROR,
+                (errcode(ERRCODE_INTERNAL_ERROR),
+                 errmsg("actual_min_score cache not initialized"),
+                 errhint("This should not happen. Extract_query should have initialized the cache.")));
+    }
+    
+    /* Calculate hash from query_keys (already filtered) */
+    query_hash = 0;
+    for (i = 0; i < nkeys; i++) {
+        uint64 kmer_hash;
+        
+        if (query_keys[i] == NULL) {
+            elog(ERROR, "get_cached_actual_min_score_or_error: query_keys[%d] is NULL", i);
+        }
+        
+        kmer_hash = hash_any_extended((unsigned char *)VARBITS(query_keys[i]), 
+                                      VARBITBYTES(query_keys[i]), query_hash);
+        query_hash = kmer_hash;
+    }
+    
+    /* Look up in cache */
+    cache_entry = (ActualMinScoreCacheEntry *) hash_search(actual_min_score_cache_manager->cache_hash,
+                                                          &query_hash, HASH_FIND, NULL);
+    
+    if (cache_entry == NULL) {
+        /* Cache miss should not happen - extract_query should have cached it */
+        ereport(ERROR,
+                (errcode(ERRCODE_INTERNAL_ERROR),
+                 errmsg("actual_min_score not found in cache"),
+                 errdetail("Query hash: %lu, nkeys: %d", query_hash, nkeys),
+                 errhint("This should not happen. Extract_query should have cached this value.")));
+    }
+    
+    actual_min_score_cache_manager->hits++;
+    
+    return cache_entry->actual_min_score;
+}
 
 
 

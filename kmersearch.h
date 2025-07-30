@@ -626,7 +626,7 @@ Datum *kmersearch_filter_highfreq_ngram_key2_parallel(Datum *original_keys, int 
 /* High-frequency k-mer cache functions */
 Datum kmersearch_highfreq_kmer_cache_load(PG_FUNCTION_ARGS);
 Datum kmersearch_highfreq_kmer_cache_free(PG_FUNCTION_ARGS);
-/* kmersearch_is_kmer_highfreq now static in kmersearch_freq.c */
+bool kmersearch_is_kmer_highfreq(VarBit *kmer_key);
 
 /* Parallel cache functions */
 Datum kmersearch_parallel_highfreq_kmer_cache_load(PG_FUNCTION_ARGS);
@@ -706,6 +706,10 @@ VarBit **get_cached_query_kmer(const char *query_string, int k_size, int *nkeys)
 
 /* Actual min score cache functions (implemented in kmersearch_cache.c) */  
 int get_cached_actual_min_score(VarBit **query_keys, int nkeys);
+int get_cached_actual_min_score_or_error(VarBit **query_keys, int nkeys);
+
+/* High-frequency k-mer filtering functions (implemented in kmersearch_gin.c) */
+VarBit **filter_ngram_key2_and_set_actual_min_score(VarBit **query_keys, int *nkeys, const char *query_string);
 
 /* Cache functions (implemented in kmersearch_cache.c) */
 void kmersearch_query_pattern_cache_max_entries_assign_hook(int newval, void *extra);

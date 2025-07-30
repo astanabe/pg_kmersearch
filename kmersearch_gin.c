@@ -291,6 +291,59 @@ kmersearch_extract_value_dna4(PG_FUNCTION_ARGS)
     
     PG_RETURN_POINTER(keys);
 }
+
+/*
+ * Filter high-frequency k-mers from query keys and set actual_min_score
+ * 
+ * Input: query_keys containing high-frequency k-mers
+ * Output: filtered query_keys with high-frequency k-mers removed
+ * Side effect: actual_min_score is cached with filtered keys as cache key
+ */
+VarBit **
+filter_ngram_key2_and_set_actual_min_score(VarBit **query_keys, int *nkeys, 
+                                           const char *query_string)
+{
+    VarBit **filtered_keys;
+    int filtered_count = 0;
+    int original_nkeys = *nkeys;
+    int actual_min_score;
+    int i;
+    
+    if (!query_keys || *nkeys <= 0)
+        return query_keys;
+    
+    /* Step 1: Calculate actual_min_score with original keys and cache it */
+    /* Note: get_cached_actual_min_score will internally create cache key from filtered keys */
+    actual_min_score = get_cached_actual_min_score(query_keys, *nkeys);
+    
+    /* Step 2: Filter out high-frequency k-mers if enabled */
+    if (!kmersearch_preclude_highfreq_kmer) {
+        /* High-frequency k-mer exclusion disabled - return original keys */
+        return query_keys;
+    }
+    
+    filtered_keys = (VarBit **) palloc(*nkeys * sizeof(VarBit *));
+    
+    for (i = 0; i < *nkeys; i++) {
+        if (!kmersearch_is_kmer_highfreq(query_keys[i])) {
+            filtered_keys[filtered_count++] = query_keys[i];
+        }
+    }
+    
+    *nkeys = filtered_count;
+    
+    elog(DEBUG1, "filter_ngram_key2_and_set_actual_min_score: filtered %d high-freq k-mers from %d total, "
+                 "cached actual_min_score=%d", 
+         original_nkeys - filtered_count, original_nkeys, actual_min_score);
+    
+    if (filtered_count == 0) {
+        pfree(filtered_keys);
+        return NULL;
+    }
+    
+    return filtered_keys;
+}
+
 /*
  * GIN extract_query function
  */
@@ -322,6 +375,11 @@ kmersearch_extract_query(PG_FUNCTION_ARGS)
     /* Use cached query pattern extraction */
     varbit_keys = get_cached_query_kmer(query_string, kmersearch_kmer_size, nkeys);
     
+    /* Filter high-frequency k-mers and cache actual_min_score */
+    if (varbit_keys != NULL && *nkeys > 0) {
+        varbit_keys = filter_ngram_key2_and_set_actual_min_score(varbit_keys, nkeys, query_string);
+    }
+    
     if (varbit_keys == NULL || *nkeys == 0) {
         keys = NULL;
     } else {
@@ -329,7 +387,7 @@ kmersearch_extract_query(PG_FUNCTION_ARGS)
         for (i = 0; i < *nkeys; i++) {
             keys[i] = PointerGetDatum(varbit_keys[i]);
         }
-        /* NOTE: varbit_keys points to cache-managed array, don't free it */
+        /* NOTE: varbit_keys may be newly allocated by filter function, don't free it */
     }
     
     *pmatch = NULL;
@@ -386,11 +444,11 @@ kmersearch_consistent(PG_FUNCTION_ARGS)
              i, VARBITLEN(query_key_array[i]));
     }
     
-    /* Debug: Log before calling get_cached_actual_min_score */
-    elog(DEBUG1, "kmersearch_gin_consistent: calling get_cached_actual_min_score with nkeys = %d", nkeys);
+    /* Debug: Log before calling get_cached_actual_min_score_or_error */
+    elog(DEBUG1, "kmersearch_gin_consistent: calling get_cached_actual_min_score_or_error with nkeys = %d", nkeys);
     
-    /* Use cached actual minimum score for better performance */
-    actual_min_score = get_cached_actual_min_score(query_key_array, nkeys);
+    /* Query keys are already filtered - use error version to ensure cache hit */
+    actual_min_score = get_cached_actual_min_score_or_error(query_key_array, nkeys);
     
     pfree(query_key_array);
     

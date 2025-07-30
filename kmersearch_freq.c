@@ -21,8 +21,6 @@ PG_FUNCTION_INFO_V1(kmersearch_undo_highfreq_analysis);
 /* Frequency analysis functions */
 /* kmersearch_perform_highfreq_analysis_parallel declared in header */
 
-/* High-frequency k-mer filtering functions */
-static bool kmersearch_is_kmer_highfreq(VarBit *kmer_key);
 /* Utility functions */
 
 /* Analysis dshash functions */
@@ -1092,7 +1090,7 @@ kmersearch_spi_connect_or_error(void)
 /*
  * Check if a k-mer is highly frequent
  */
-static bool
+bool
 kmersearch_is_kmer_highfreq(VarBit *kmer_key)
 {
     uint64 kmer_uint = 0;
@@ -1223,21 +1221,21 @@ kmersearch_is_kmer_highfreq(VarBit *kmer_key)
         if (kmersearch_kmer_size <= 8) {
             appendStringInfo(&query,
                 "SELECT 1 FROM kmersearch_highfreq_kmer "
-                "WHERE (ngram_key::bit(%d)::integer) = %u "
+                "WHERE kmer2_as_uint = %u "
                 "LIMIT 1",
-                kmersearch_kmer_size * 2, (unsigned int)kmer_uint);
+                (unsigned int)kmer_uint);
         } else if (kmersearch_kmer_size <= 16) {
             appendStringInfo(&query,
                 "SELECT 1 FROM kmersearch_highfreq_kmer "
-                "WHERE (ngram_key::bit(%d)::bigint) = %u "
+                "WHERE kmer2_as_uint = %u "
                 "LIMIT 1", 
-                kmersearch_kmer_size * 2, (unsigned int)kmer_uint);
+                (unsigned int)kmer_uint);
         } else {
             appendStringInfo(&query,
                 "SELECT 1 FROM kmersearch_highfreq_kmer "
-                "WHERE (ngram_key::bit(%d)::bigint) = %lu "
+                "WHERE kmer2_as_uint = %lu "
                 "LIMIT 1",
-                kmersearch_kmer_size * 2, kmer_uint);
+                kmer_uint);
         }
         
         ret = SPI_execute(query.data, true, 1);
