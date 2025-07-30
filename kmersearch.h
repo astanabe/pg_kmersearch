@@ -642,7 +642,6 @@ bool kmersearch_is_kmer_hash_in_analysis_dshash(uint64 kmer_hash);
 
 /* K-mer utility functions */
 void kmersearch_expand_degenerate_sequence(const char *kmer, int k, char **expanded, int *expand_count);
-VarBit *kmersearch_create_ngram_key2(const char *kmer, int k, int occurrence);
 VarBit *kmersearch_kmer2_as_uint_to_kmer2(uint64 kmer2_as_uint, int kmer_size);
 VarBit *kmersearch_create_ngram_key2_from_kmer2_as_uint(uint64 kmer2_as_uint, int kmer_size, int occurrence);
 VarBit *kmersearch_remove_occurrence_from_ngram_key2(VarBit *ngram_key2);

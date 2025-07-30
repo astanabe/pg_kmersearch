@@ -177,63 +177,6 @@ kmersearch_will_exceed_degenerate_limit_dna4_bits(VarBit *seq, int start_pos, in
     return false;
 }
 
-/*
- * Create n-gram key with occurrence count for DNA2 k-mer
- */
-VarBit *
-kmersearch_create_ngram_key2(const char *kmer, int k, int occurrence)
-{
-    int kmer_bits = k * 2;  /* 2 bits per base */
-    int total_bits = kmer_bits + kmersearch_occur_bitlen;
-    int total_bytes = (total_bits + 7) / 8;
-    int adj_occurrence = occurrence - 1;  /* 1-offset to 0-offset */
-    VarBit *result;
-    bits8 *data_ptr;
-    int i;
-    int alloc_size;
-    
-    /* Size calculations */
-    
-    /* Adjust occurrence to valid range */
-    if (adj_occurrence < 0)
-        adj_occurrence = 0;
-    if (adj_occurrence >= (1 << kmersearch_occur_bitlen))
-        adj_occurrence = (1 << kmersearch_occur_bitlen) - 1;  /* Cap at max value */
-    
-    /* Calculate correct allocation size */
-    alloc_size = VARHDRSZ + VARBITHDRSZ + total_bytes;
-    
-    result = (VarBit *) palloc0(alloc_size);
-    SET_VARSIZE(result, alloc_size);
-    VARBITLEN(result) = total_bits;
-    
-    data_ptr = VARBITS(result);
-    
-    /* Encode k-mer */
-    for (i = 0; i < k; i++)
-    {
-        uint8 encoded = kmersearch_dna2_encode_table[(unsigned char)kmer[i]];
-        int bit_pos = i * 2;
-        int byte_pos = bit_pos / 8;
-        int bit_offset = bit_pos % 8;
-        
-        data_ptr[byte_pos] |= (encoded << (6 - bit_offset));
-    }
-    
-    /* Encode occurrence count */
-    
-    for (i = 0; i < kmersearch_occur_bitlen; i++)
-    {
-        int bit_pos = kmer_bits + i;
-        int byte_pos = bit_pos / 8;
-        int bit_offset = bit_pos % 8;
-        
-        if (adj_occurrence & (1 << (kmersearch_occur_bitlen - 1 - i)))
-            data_ptr[byte_pos] |= (1 << (7 - bit_offset));
-    }
-    
-    return result;
-}
 
 /*
  * Create k-mer key without occurrence count (for frequency analysis)
