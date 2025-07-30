@@ -37,6 +37,10 @@ dshash_table *parallel_cache_hash = NULL;
  * Forward declarations for internal functions
  */
 
+/* Identity hash functions for k-mer values */
+static uint32 kmersearch_uint16_identity_hash(const void *key, size_t keysize, void *arg);
+static uint32 kmersearch_uint32_identity_hash(const void *key, size_t keysize, void *arg);
+
 /* Query pattern cache functions */
 static void init_query_pattern_cache_manager(QueryPatternCacheManager **manager);
 static uint64 generate_query_pattern_cache_key(const char *query_string, int k_size);
@@ -2096,13 +2100,24 @@ kmersearch_parallel_highfreq_kmer_cache_load_internal(Oid table_oid, const char 
     dsa_pin(parallel_cache_dsa);
     dsa_pin_mapping(parallel_cache_dsa);
     
-    /* Set up dshash parameters for PostgreSQL 16 */
+    /* Set up dshash parameters based on k-mer size */
     memset(&params, 0, sizeof(params));
-    params.key_size = sizeof(uint64);
-    params.entry_size = sizeof(ParallelHighfreqKmerCacheEntry);
     params.compare_function = dshash_memcmp;
-    params.hash_function = dshash_memhash;
     params.tranche_id = LWTRANCHE_KMERSEARCH_CACHE;
+    
+    if (k_value <= 8) {
+        params.key_size = sizeof(uint16);
+        params.entry_size = sizeof(ParallelHighfreqKmerCacheEntry16);
+        params.hash_function = kmersearch_uint16_identity_hash;
+    } else if (k_value <= 16) {
+        params.key_size = sizeof(uint32);
+        params.entry_size = sizeof(ParallelHighfreqKmerCacheEntry32);
+        params.hash_function = kmersearch_uint32_identity_hash;
+    } else {
+        params.key_size = sizeof(uint64);
+        params.entry_size = sizeof(ParallelHighfreqKmerCacheEntry64);
+        params.hash_function = dshash_memhash;
+    }
     
     /* Create dshash table */
     ereport(LOG, (errmsg("dshash_cache_load: Creating dshash table with %d entries", total_kmer_count)));
@@ -2236,44 +2251,74 @@ kmersearch_parallel_highfreq_kmer_cache_load_internal(Oid table_oid, const char 
         
         /* Insert batch k-mers into dshash */
         for (i = 0; i < batch_count; i++) {
-            uint64 kmer_hash;
+            uint64 kmer_value;
+            void *key_ptr;
+            uint16 key16;
+            uint32 key32;
+            uint64 key64;
             
             /* All k-mer values from the database are valid */
             
             /* All k-mer values are valid, including 0 (which represents "AAAA") */
             
-            /* Use kmer2_as_uint value directly as hash */
-            kmer_hash = batch_kmers[i];
+            /* Use kmer2_as_uint value directly */
+            kmer_value = batch_kmers[i];
             
-            ereport(DEBUG1, (errmsg("dshash_cache_load: Inserting k-mer %d/%d from batch %d with hash %lu", 
-                                   i + 1, batch_count, batch_num, kmer_hash)));
+            /* Prepare key based on k-mer size */
+            if (k_value <= 8) {
+                key16 = (uint16)kmer_value;
+                key_ptr = &key16;
+            } else if (k_value <= 16) {
+                key32 = (uint32)kmer_value;
+                key_ptr = &key32;
+            } else {
+                key64 = kmer_value;
+                key_ptr = &key64;
+            }
+            
+            ereport(DEBUG1, (errmsg("dshash_cache_load: Inserting k-mer %d/%d from batch %d with value %lu", 
+                                   i + 1, batch_count, batch_num, kmer_value)));
             
             /* Insert into dshash table with error handling */
             PG_TRY();
             {
-                entry = (ParallelHighfreqKmerCacheEntry *) dshash_find_or_insert(parallel_cache_hash, 
-                                                                                &kmer_hash, 
-                                                                                &found);
-                if (entry) {
-                    entry->kmer2_as_uint = kmer_hash;
-                    entry->frequency_count = 1; /* Mark as high-frequency */
-                    entry->cache_key.table_oid = table_oid;
-                    entry->cache_key.kmer_size = k_value;
-                    /* Must release lock after dshash_find_or_insert() */
-                    dshash_release_lock(parallel_cache_hash, entry);
-                    total_inserted++;
-                    ereport(DEBUG1, (errmsg("dshash_cache_load: Successfully inserted k-mer %d (total: %d)", 
-                                           i + 1, total_inserted)));
+                if (k_value <= 8) {
+                    ParallelHighfreqKmerCacheEntry16 *entry16;
+                    entry16 = (ParallelHighfreqKmerCacheEntry16 *) dshash_find_or_insert(parallel_cache_hash, 
+                                                                                        key_ptr, &found);
+                    if (entry16) {
+                        entry16->kmer2_as_uint = key16;
+                        entry16->frequency_count = 1; /* Mark as high-frequency */
+                        dshash_release_lock(parallel_cache_hash, entry16);
+                        total_inserted++;
+                    }
+                } else if (k_value <= 16) {
+                    ParallelHighfreqKmerCacheEntry32 *entry32;
+                    entry32 = (ParallelHighfreqKmerCacheEntry32 *) dshash_find_or_insert(parallel_cache_hash, 
+                                                                                        key_ptr, &found);
+                    if (entry32) {
+                        entry32->kmer2_as_uint = key32;
+                        entry32->frequency_count = 1; /* Mark as high-frequency */
+                        dshash_release_lock(parallel_cache_hash, entry32);
+                        total_inserted++;
+                    }
                 } else {
-                    ereport(DEBUG1, (errmsg("dshash_cache_load: Got null entry pointer for k-mer %d in batch %d", 
-                                           i + 1, batch_num)));
+                    ParallelHighfreqKmerCacheEntry64 *entry64;
+                    entry64 = (ParallelHighfreqKmerCacheEntry64 *) dshash_find_or_insert(parallel_cache_hash, 
+                                                                                        key_ptr, &found);
+                    if (entry64) {
+                        entry64->kmer2_as_uint = key64;
+                        entry64->frequency_count = 1; /* Mark as high-frequency */
+                        dshash_release_lock(parallel_cache_hash, entry64);
+                        total_inserted++;
+                    }
                 }
+                ereport(DEBUG1, (errmsg("dshash_cache_load: Successfully inserted k-mer %d (total: %d)", 
+                                       i + 1, total_inserted)));
             }
             PG_CATCH();
             {
-                /* Ensure lock is released even in error cases */
-                if (entry)
-                    dshash_release_lock(parallel_cache_hash, entry);
+                /* Error handling is done by PG_RE_THROW */
                 ereport(ERROR,
                         (errcode(ERRCODE_INTERNAL_ERROR),
                          errmsg("Failed to insert k-mer into dshash table at batch %d index %d", batch_num, i)));
@@ -2419,13 +2464,24 @@ kmersearch_parallel_cache_attach(dsm_handle handle)
         return false;
     }
     
-    /* Set up dshash parameters for PostgreSQL 16 */
+    /* Set up dshash parameters based on k-mer size from cache */
     memset(&params, 0, sizeof(params));
-    params.key_size = sizeof(uint64);
-    params.entry_size = sizeof(ParallelHighfreqKmerCacheEntry);
     params.compare_function = dshash_memcmp;
-    params.hash_function = dshash_memhash;
     params.tranche_id = LWTRANCHE_KMERSEARCH_CACHE;
+    
+    if (parallel_highfreq_cache->cache_key.kmer_size <= 8) {
+        params.key_size = sizeof(uint16);
+        params.entry_size = sizeof(ParallelHighfreqKmerCacheEntry16);
+        params.hash_function = kmersearch_uint16_identity_hash;
+    } else if (parallel_highfreq_cache->cache_key.kmer_size <= 16) {
+        params.key_size = sizeof(uint32);
+        params.entry_size = sizeof(ParallelHighfreqKmerCacheEntry32);
+        params.hash_function = kmersearch_uint32_identity_hash;
+    } else {
+        params.key_size = sizeof(uint64);
+        params.entry_size = sizeof(ParallelHighfreqKmerCacheEntry64);
+        params.hash_function = dshash_memhash;
+    }
     
     /* Attach to DSA area */
     cache_struct_size = MAXALIGN(sizeof(ParallelHighfreqKmerCache));
@@ -2493,8 +2549,13 @@ kmersearch_lookup_in_parallel_cache(VarBit *kmer_key)
 {
     MemoryContext oldcontext;
     uint64 kmer_hash;
-    ParallelHighfreqKmerCacheEntry *entry = NULL;
+    void *entry = NULL;
     bool found = false;
+    void *key_ptr;
+    uint16 key16;
+    uint32 key32;
+    uint64 key64;
+    int k_value;
     
     /* Basic validation checks */
     if (!parallel_highfreq_cache || !parallel_highfreq_cache->is_initialized || 
@@ -2504,6 +2565,9 @@ kmersearch_lookup_in_parallel_cache(VarBit *kmer_key)
     if (!parallel_cache_hash)
         return false;
     
+    /* Get k-mer size from cache */
+    k_value = parallel_highfreq_cache->cache_key.kmer_size;
+    
     /* Switch to TopMemoryContext for dshash operations */
     oldcontext = MemoryContextSwitchTo(TopMemoryContext);
     
@@ -2512,8 +2576,20 @@ kmersearch_lookup_in_parallel_cache(VarBit *kmer_key)
         /* Calculate hash using same logic as global cache */
         kmer_hash = kmersearch_ngram_key_to_hash(kmer_key);
         
+        /* Prepare key based on k-mer size */
+        if (k_value <= 8) {
+            key16 = (uint16)kmer_hash;
+            key_ptr = &key16;
+        } else if (k_value <= 16) {
+            key32 = (uint32)kmer_hash;
+            key_ptr = &key32;
+        } else {
+            key64 = kmer_hash;
+            key_ptr = &key64;
+        }
+        
         /* Lookup in dshash table */
-        entry = (ParallelHighfreqKmerCacheEntry *) dshash_find(parallel_cache_hash, &kmer_hash, false);
+        entry = dshash_find(parallel_cache_hash, key_ptr, false);
         
         if (entry != NULL) {
             found = true;
@@ -2558,8 +2634,13 @@ bool
 kmersearch_lookup_kmer2_as_uint_in_parallel_cache(uint64 kmer2_as_uint, const char *table_name, const char *column_name)
 {
     MemoryContext oldcontext;
-    ParallelHighfreqKmerCacheEntry *entry = NULL;
+    void *entry = NULL;
     bool found = false;
+    void *key_ptr;
+    uint16 key16;
+    uint32 key32;
+    uint64 key64;
+    int k_value;
     
     if (!parallel_highfreq_cache || !parallel_highfreq_cache->is_initialized || 
         parallel_highfreq_cache->num_entries == 0)
@@ -2568,11 +2649,26 @@ kmersearch_lookup_kmer2_as_uint_in_parallel_cache(uint64 kmer2_as_uint, const ch
     if (!parallel_cache_hash)
         return false;
     
+    /* Get k-mer size from cache */
+    k_value = parallel_highfreq_cache->cache_key.kmer_size;
+    
+    /* Prepare key based on k-mer size */
+    if (k_value <= 8) {
+        key16 = (uint16)kmer2_as_uint;
+        key_ptr = &key16;
+    } else if (k_value <= 16) {
+        key32 = (uint32)kmer2_as_uint;
+        key_ptr = &key32;
+    } else {
+        key64 = kmer2_as_uint;
+        key_ptr = &key64;
+    }
+    
     oldcontext = MemoryContextSwitchTo(TopMemoryContext);
     
     PG_TRY();
     {
-        entry = (ParallelHighfreqKmerCacheEntry *) dshash_find(parallel_cache_hash, &kmer2_as_uint, false);
+        entry = dshash_find(parallel_cache_hash, key_ptr, false);
         
         if (entry != NULL) {
             found = true;
@@ -2592,5 +2688,20 @@ kmersearch_lookup_kmer2_as_uint_in_parallel_cache(uint64 kmer2_as_uint, const ch
     return found;
 }
 
+/*
+ * Identity hash function for uint16 (kmer2_as_uint is already a hash value)
+ */
+static uint32
+kmersearch_uint16_identity_hash(const void *key, size_t keysize, void *arg)
+{
+    return (uint32)(*(const uint16 *)key);
+}
 
-
+/*
+ * Identity hash function for uint32 (kmer2_as_uint is already a hash value)
+ */
+static uint32
+kmersearch_uint32_identity_hash(const void *key, size_t keysize, void *arg)
+{
+    return *(const uint32 *)key;
+}

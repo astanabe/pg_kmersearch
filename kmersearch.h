@@ -389,8 +389,27 @@ typedef struct HighfreqKmerCache
 } HighfreqKmerCache;
 
 /*
- * Parallel high-frequency k-mer cache entry
+ * Parallel high-frequency k-mer cache entries for different k-mer sizes
  */
+typedef struct ParallelHighfreqKmerCacheEntry16
+{
+    uint16      kmer2_as_uint;           /* Direct kmer2 as uint16 (key) for k <= 8 */
+    int32       frequency_count;         /* frequency count */
+} ParallelHighfreqKmerCacheEntry16;
+
+typedef struct ParallelHighfreqKmerCacheEntry32
+{
+    uint32      kmer2_as_uint;           /* Direct kmer2 as uint32 (key) for k <= 16 */
+    int32       frequency_count;         /* frequency count */
+} ParallelHighfreqKmerCacheEntry32;
+
+typedef struct ParallelHighfreqKmerCacheEntry64
+{
+    uint64      kmer2_as_uint;           /* Direct kmer2 as uint64 (key) for k <= 32 */
+    int32       frequency_count;         /* frequency count */
+} ParallelHighfreqKmerCacheEntry64;
+
+/* Generic entry type for function signatures */
 typedef struct ParallelHighfreqKmerCacheEntry
 {
     uint64      kmer2_as_uint;           /* Direct kmer2 as kmer2_as_uint (key) */
