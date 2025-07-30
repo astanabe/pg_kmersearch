@@ -134,7 +134,7 @@ pg_kmersearch is a PostgreSQL extension that provides custom data types for effi
 - **Scoring search**: Retrieve top matches by similarity, not just exact matches
 - **High-frequency k-mer exclusion**: Automatically excludes overly common k-mers during index creation
 - **Score-based filtering**: Minimum score thresholds with automatic adjustment for excluded k-mers
-- **Score calculation functions**: `kmersearch_rawscore()` and `kmersearch_correctedscore()` for individual sequence scoring
+- **Score calculation functions**: `kmersearch_rawscore()` and `kmersearch_correctedscore()` for individual sequence scoring (both functions return identical values in current implementation)
 - **High-frequency k-mer management**: `kmersearch_perform_highfreq_analysis()` for high-frequency k-mer analysis and `kmersearch_undo_highfreq_analysis()` for analysis data removal, plus cache management functions
 
 ## Configuration System
@@ -146,7 +146,6 @@ Important GUC variables:
 - `kmersearch.max_appearance_nrow` (0-∞): Maximum rows containing k-mer (default: 0, unlimited)
 - `kmersearch.min_score` (0-∞): Minimum similarity score for search results (default: 1)
 - `kmersearch.min_shared_ngram_key_rate` (0.0-1.0): Minimum threshold for shared n-gram key rate (default: 0.9)
-- `kmersearch.rawscore_cache_max_entries` (1000-10000000): Maximum entries for rawscore cache (default: 50000)
 - `kmersearch.query_pattern_cache_max_entries` (1000-10000000): Maximum entries for query pattern cache (default: 50000)
 - `kmersearch.actual_min_score_cache_max_entries` (1000-10000000): Maximum entries for actual min score cache (default: 50000)
 - `kmersearch.preclude_highfreq_kmer` (true/false): Enable high-frequency k-mer exclusion during GIN index construction (default: false)
@@ -162,7 +161,7 @@ Important GUC variables:
 **kmersearch_datatype.c** - DNA2/DNA4 data type implementation with encoding/decoding
 **kmersearch_gin.c** - GIN index support for k-mer indexing and search operators
 **kmersearch_kmer.c** - K-mer extraction, encoding, and utility functions
-**kmersearch_cache.c** - Multi-layered cache system (rawscore, query pattern, actual min score)
+**kmersearch_cache.c** - Multi-layered cache system (query pattern, actual min score)
 **kmersearch_freq.c** - High-frequency k-mer analysis and parallel processing
 
 ### Search Operations
@@ -173,7 +172,11 @@ Important GUC variables:
 
 ### Cache Architecture
 
-Three-tier cache system for performance optimization:
+Two-tier cache system for performance optimization:
+1. **Query pattern cache**: TopMemoryContext-based for query pattern reuse
+2. **Actual min score cache**: TopMemoryContext-based for search condition optimization
+
+Additionally, high-frequency k-mer lookup uses a three-tier hierarchy:
 1. **Global cache**: TopMemoryContext-based for single process
 2. **Parallel cache**: DSM/dshash for cross-process sharing  
 3. **Table fallback**: Direct system table access
@@ -245,12 +248,10 @@ Converts a non-partitioned table to a hash-partitioned table based on DNA2/DNA4 
 ### Cache Statistics and Management
 
 #### Cache Statistics Functions
-- `kmersearch_rawscore_cache_stats()`: View rawscore cache statistics
 - `kmersearch_query_pattern_cache_stats()`: View query pattern cache statistics
 - `kmersearch_actual_min_score_cache_stats()`: View actual min score cache statistics
 
 #### Cache Management Functions
-- `kmersearch_rawscore_cache_free()`: Clear rawscore cache
 - `kmersearch_query_pattern_cache_free()`: Clear query pattern cache
 - `kmersearch_actual_min_score_cache_free()`: Clear actual min score cache
 
@@ -327,19 +328,14 @@ Detailed error messages and hints are provided when settings mismatch.
 
 ## Cache Management Features
 
-pg_kmersearch provides three types of high-performance cache systems to improve search performance:
+pg_kmersearch provides two types of high-performance cache systems to improve search performance:
 
 ### Actual Min Score Cache
 - **Purpose**: Optimization of search condition evaluation for the `=%` operator
 - **Mechanism**: Pre-calculates and caches `actual_min_score = max(kmersearch_min_score, ceil(kmersearch_min_shared_ngram_key_rate × query_total_kmers))`
 - **Use cases**: 
   - Matching condition evaluation in `=%` operator
-  - Value judgment for rawscore cache storage
-- **Memory management**: TopMemoryContext-based implementation
-
-### Rawscore Cache
-- **Purpose**: Fast retrieval of calculated rawscores
-- **Mechanism**: Caches sequence and query combination results
+  - Optimization of search condition evaluation
 - **Memory management**: TopMemoryContext-based implementation
 
 ### Query Pattern Cache

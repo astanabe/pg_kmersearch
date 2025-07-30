@@ -154,7 +154,6 @@ pg_kmersearch provides several configuration variables that can be set using Pos
 | `kmersearch.max_appearance_nrow` | 0 | 0-∞ | Maximum rows containing k-mer (0=unlimited) |
 | `kmersearch.min_score` | 1 | 0-∞ | Minimum similarity score for search results |
 | `kmersearch.min_shared_ngram_key_rate` | 0.9 | 0.0-1.0 | Minimum threshold for shared n-gram key rate |
-| `kmersearch.rawscore_cache_max_entries` | 50000 | 1000-10000000 | Maximum entries for rawscore cache |
 | `kmersearch.query_pattern_cache_max_entries` | 50000 | 1000-10000000 | Maximum entries for query pattern cache |
 | `kmersearch.actual_min_score_cache_max_entries` | 50000 | 1000-10000000 | Maximum entries for actual min score cache |
 | `kmersearch.preclude_highfreq_kmer` | false | true/false | Enable high-frequency k-mer exclusion during GIN index construction |
@@ -328,7 +327,7 @@ Stores high-frequency k-mers that are excluded from GIN indexes:
 
 ```sql
 -- View excluded k-mers for a specific table/column
-SELECT table_oid, column_name, ngram_key, detection_reason, created_at
+SELECT table_oid, column_name, kmer2_as_uint, detection_reason, created_at
 FROM kmersearch_highfreq_kmer 
 WHERE table_oid = 'sequences'::regclass AND column_name = 'dna_seq';
 
@@ -539,27 +538,6 @@ SELECT kmersearch_parallel_highfreq_kmer_cache_free_all();
 
 ### Cache Statistics and Management
 
-#### Rawscore Cache
-
-```sql
--- View rawscore cache statistics
-SELECT * FROM kmersearch_rawscore_cache_stats();
-
--- Monitor cache performance
-SELECT dna2_hits, dna2_misses, 
-       CASE WHEN (dna2_hits + dna2_misses) > 0 
-            THEN dna2_hits::float / (dna2_hits + dna2_misses)::float * 100
-            ELSE 0 END as dna2_hit_rate_percent,
-       dna4_hits, dna4_misses,
-       CASE WHEN (dna4_hits + dna4_misses) > 0 
-            THEN dna4_hits::float / (dna4_hits + dna4_misses)::float * 100
-            ELSE 0 END as dna4_hit_rate_percent
-FROM kmersearch_rawscore_cache_stats();
-
--- Clear rawscore cache
-SELECT kmersearch_rawscore_cache_free();
-```
-
 #### Query Pattern Cache
 
 ```sql
@@ -630,31 +608,11 @@ SELECT cache_type, hit_rate, total_entries,
        total_hits + total_misses as total_requests
 FROM kmersearch_cache_summary;
 
--- Detailed rawscore cache analysis
-WITH cache_stats AS (
-    SELECT dna2_hits, dna2_misses, dna2_entries,
-           dna4_hits, dna4_misses, dna4_entries
-    FROM kmersearch_rawscore_cache_stats()
-)
-SELECT 
-    'DNA2' as type,
-    dna2_entries as entries,
-    dna2_hits as hits,
-    dna2_misses as misses,
-    CASE WHEN (dna2_hits + dna2_misses) > 0 
-         THEN dna2_hits::float / (dna2_hits + dna2_misses)::float 
-         ELSE 0 END as hit_rate
-FROM cache_stats
-UNION ALL
-SELECT 
-    'DNA4' as type,
-    dna4_entries as entries, 
-    dna4_hits as hits,
-    dna4_misses as misses,
-    CASE WHEN (dna4_hits + dna4_misses) > 0 
-         THEN dna4_hits::float / (dna4_hits + dna4_misses)::float 
-         ELSE 0 END as hit_rate
-FROM cache_stats;
+-- Detailed cache performance analysis
+SELECT cache_type, total_entries, total_hits, total_misses,
+       ROUND(hit_rate * 100, 2) as hit_rate_percent
+FROM kmersearch_cache_summary
+ORDER BY cache_type;
 ```
 
 ## Complex Type Definitions
@@ -733,19 +691,14 @@ FROM (
 
 ## Cache Management Features
 
-pg_kmersearch provides three types of high-performance cache systems to improve search performance:
+pg_kmersearch provides two types of high-performance cache systems to improve search performance:
 
 ### Actual Min Score Cache
 - **Purpose**: Optimization of search condition evaluation for the `=%` operator
 - **Mechanism**: Pre-calculates and caches `actual_min_score = max(kmersearch_min_score, ceil(kmersearch_min_shared_ngram_key_rate × query_total_kmers))`
 - **Use cases**: 
   - Matching condition evaluation in `=%` operator
-  - Value judgment for rawscore cache storage
-- **Memory management**: TopMemoryContext-based implementation
-
-### Rawscore Cache
-- **Purpose**: Fast retrieval of calculated rawscores
-- **Mechanism**: Caches sequence and query combination results
+  - Optimization of search condition evaluation
 - **Memory management**: TopMemoryContext-based implementation
 
 ### Query Pattern Cache
@@ -757,7 +710,6 @@ pg_kmersearch provides three types of high-performance cache systems to improve 
 ```sql
 -- Check cache statistics
 SELECT * FROM kmersearch_actual_min_score_cache_stats();
-SELECT * FROM kmersearch_rawscore_cache_stats();
 SELECT * FROM kmersearch_query_pattern_cache_stats();
 
 -- Clear caches
@@ -767,7 +719,6 @@ SELECT kmersearch_highfreq_kmer_cache_free_all();
 
 -- Configure cache sizes
 SET kmersearch.actual_min_score_cache_max_entries = 25000;
-SET kmersearch.rawscore_cache_max_entries = 25000;
 SET kmersearch.query_pattern_cache_max_entries = 25000;
 ```
 

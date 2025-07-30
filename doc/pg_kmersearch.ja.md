@@ -22,7 +22,7 @@ pg_kmersearchは、PostgreSQL用のDNA配列データを効率的に格納・処
 - **ストレージ効率**: 1文字あたり4ビット
 
 ### k-mer検索機能
-- **k-mer長**: 4～64塩基（インデックス作成時に指定）
+- **k-mer長**: 4～32塩基（インデックス作成時に指定）
 - **GINインデックス**: n-gramキーによる高速検索
 - **縮重コード対応**: DNA4型でのMRWSYKVHDBN展開
 - **出現回数追跡**: 同一行内でのk-mer出現回数を考慮（デフォルト8ビット）
@@ -148,13 +148,12 @@ pg_kmersearchは、PostgreSQLの`SET`コマンドで設定可能な複数の設�
 
 | 変数名 | デフォルト値 | 範囲 | 説明 |
 |--------|-------------|------|------|
-| `kmersearch.kmer_size` | 16 | 4-64 | インデックス作成と検索のk-mer長 |
+| `kmersearch.kmer_size` | 16 | 4-32 | インデックス作成と検索のk-mer長 |
 | `kmersearch.occur_bitlen` | 8 | 0-16 | 出現回数格納のビット数 |
 | `kmersearch.max_appearance_rate` | 0.5 | 0.0-1.0 | インデックス化するk-merの最大出現率 |
 | `kmersearch.max_appearance_nrow` | 0 | 0-∞ | k-merが含まれる最大行数（0=無制限） |
 | `kmersearch.min_score` | 1 | 0-∞ | 検索結果の最小類似度スコア |
 | `kmersearch.min_shared_ngram_key_rate` | 0.9 | 0.0-1.0 | 共有n-gramキー率の最小閾値 |
-| `kmersearch.rawscore_cache_max_entries` | 50000 | 1000-10000000 | rawscoreキャッシュの最大エントリ数 |
 | `kmersearch.query_pattern_cache_max_entries` | 50000 | 1000-10000000 | クエリパターンキャッシュの最大エントリ数 |
 | `kmersearch.actual_min_score_cache_max_entries` | 50000 | 1000-10000000 | actual min scoreキャッシュの最大エントリ数 |
 | `kmersearch.preclude_highfreq_kmer` | false | true/false | GINインデックス構築時の高頻出k-mer除外の有効化 |
@@ -175,7 +174,7 @@ SET kmersearch.max_appearance_nrow = 1000;  -- デフォルト: 0（無効）
 CREATE INDEX sequences_kmer_idx ON sequences USING gin (dna_seq);
 
 -- テーブル/カラムの除外k-mer確認
-SELECT ngram_key, detection_reason 
+SELECT kmer2_as_uint, detection_reason 
 FROM kmersearch_highfreq_kmer 
 WHERE table_oid = 'sequences'::regclass AND column_name = 'dna_seq';
 
@@ -328,7 +327,7 @@ GINインデックスから除外される高頻出k-merを格納：
 
 ```sql
 -- 特定テーブル/カラムの除外k-merを表示
-SELECT table_oid, column_name, ngram_key, detection_reason, created_at
+SELECT table_oid, column_name, kmer2_as_uint, detection_reason, created_at
 FROM kmersearch_highfreq_kmer 
 WHERE table_oid = 'sequences'::regclass AND column_name = 'dna_seq';
 
@@ -538,27 +537,6 @@ SELECT kmersearch_parallel_highfreq_kmer_cache_free_all();
 
 ### キャッシュ統計・管理
 
-#### Rawscoreキャッシュ
-
-```sql
--- rawscoreキャッシュ統計を表示
-SELECT * FROM kmersearch_rawscore_cache_stats();
-
--- キャッシュパフォーマンスを監視
-SELECT dna2_hits, dna2_misses, 
-       CASE WHEN (dna2_hits + dna2_misses) > 0 
-            THEN dna2_hits::float / (dna2_hits + dna2_misses)::float * 100
-            ELSE 0 END as dna2_hit_rate_percent,
-       dna4_hits, dna4_misses,
-       CASE WHEN (dna4_hits + dna4_misses) > 0 
-            THEN dna4_hits::float / (dna4_hits + dna4_misses)::float * 100
-            ELSE 0 END as dna4_hit_rate_percent
-FROM kmersearch_rawscore_cache_stats();
-
--- rawscoreキャッシュをクリア
-SELECT kmersearch_rawscore_cache_free();
-```
-
 #### クエリパターンキャッシュ
 
 ```sql
@@ -629,31 +607,11 @@ SELECT cache_type, hit_rate, total_entries,
        total_hits + total_misses as total_requests
 FROM kmersearch_cache_summary;
 
--- rawscoreキャッシュの詳細解析
-WITH cache_stats AS (
-    SELECT dna2_hits, dna2_misses, dna2_entries,
-           dna4_hits, dna4_misses, dna4_entries
-    FROM kmersearch_rawscore_cache_stats()
-)
-SELECT 
-    'DNA2' as type,
-    dna2_entries as entries,
-    dna2_hits as hits,
-    dna2_misses as misses,
-    CASE WHEN (dna2_hits + dna2_misses) > 0 
-         THEN dna2_hits::float / (dna2_hits + dna2_misses)::float 
-         ELSE 0 END as hit_rate
-FROM cache_stats
-UNION ALL
-SELECT 
-    'DNA4' as type,
-    dna4_entries as entries, 
-    dna4_hits as hits,
-    dna4_misses as misses,
-    CASE WHEN (dna4_hits + dna4_misses) > 0 
-         THEN dna4_hits::float / (dna4_hits + dna4_misses)::float 
-         ELSE 0 END as hit_rate
-FROM cache_stats;
+-- キャッシュパフォーマンスの詳細解析
+SELECT cache_type, total_entries, total_hits, total_misses,
+       ROUND(hit_rate * 100, 2) as hit_rate_percent
+FROM kmersearch_cache_summary
+ORDER BY cache_type;
 ```
 
 ## 複合型定義
@@ -732,7 +690,7 @@ FROM (
 
 ## キャッシュ管理機能
 
-pg_kmersearchは、検索性能を向上させるための3種類の高速キャッシュシステムを提供します：
+pg_kmersearchは、検索性能を向上させるための2種類の高速キャッシュシステムを提供します：
 
 ### Actual Min Score Cache
 - **目的**: `=%`演算子での検索条件評価の最適化
@@ -756,7 +714,6 @@ pg_kmersearchは、検索性能を向上させるための3種類の高速キャ
 ```sql
 -- キャッシュ統計情報の確認
 SELECT * FROM kmersearch_actual_min_score_cache_stats();
-SELECT * FROM kmersearch_rawscore_cache_stats();
 SELECT * FROM kmersearch_query_pattern_cache_stats();
 
 -- キャッシュクリア
@@ -766,7 +723,6 @@ SELECT kmersearch_highfreq_kmer_cache_free_all();
 
 -- キャッシュサイズ設定
 SET kmersearch.actual_min_score_cache_max_entries = 25000;
-SET kmersearch.rawscore_cache_max_entries = 25000;
 SET kmersearch.query_pattern_cache_max_entries = 25000;
 ```
 
