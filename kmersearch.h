@@ -545,9 +545,9 @@ char *kmersearch_dna4_to_string(VarBit *dna);
 
 /* Main dispatch functions with threshold-based SIMD selection */
 void dna2_encode(const char* input, uint8_t* output, int len);
-void dna2_decode(const uint8_t* input, char* output, int len);
+void dna2_decode(const uint8_t* input, char* output, int char_len);
 void dna4_encode(const char* input, uint8_t* output, int len);
-void dna4_decode(const uint8_t* input, char* output, int len);
+void dna4_decode(const uint8_t* input, char* output, int char_len);
 int dna_compare(const uint8_t* a, const uint8_t* b, int bit_len);
 
 /* DNA encoding/decoding functions */

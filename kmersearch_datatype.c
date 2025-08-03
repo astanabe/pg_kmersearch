@@ -705,33 +705,34 @@ dna2_encode(const char* input, uint8_t* output, int len)
 }
 
 void
-dna2_decode(const uint8_t* input, char* output, int bit_len)
+dna2_decode(const uint8_t* input, char* output, int char_len)
 {
+    int bit_len = char_len * 2;  /* Convert character length to bit length for threshold checks */
     /* Use SIMD based on runtime capability and data size thresholds */
 #ifdef __x86_64__
     if (simd_capability >= SIMD_AVX512BW && bit_len >= SIMD_DECODE_AVX512_THRESHOLD) {
-        dna2_decode_avx512(input, output, bit_len);
+        dna2_decode_avx512(input, output, char_len);
         return;
     }
     if (simd_capability >= SIMD_AVX2 && bit_len >= SIMD_DECODE_AVX2_THRESHOLD) {
-        dna2_decode_avx2(input, output, bit_len);
+        dna2_decode_avx2(input, output, char_len);
         return;
     }
 #elif defined(__aarch64__)
     if (simd_capability >= SIMD_SVE2 && bit_len >= SIMD_DECODE_SVE_THRESHOLD) {
-        dna2_decode_sve2(input, output, bit_len);
+        dna2_decode_sve2(input, output, char_len);
         return;
     }
     if (simd_capability >= SIMD_SVE && bit_len >= SIMD_DECODE_SVE_THRESHOLD) {
-        dna2_decode_sve(input, output, bit_len);
+        dna2_decode_sve(input, output, char_len);
         return;
     }
     if (simd_capability >= SIMD_NEON && bit_len >= SIMD_DECODE_NEON_THRESHOLD) {
-        dna2_decode_neon(input, output, bit_len);
+        dna2_decode_neon(input, output, char_len);
         return;
     }
 #endif
-    dna2_decode_scalar(input, output, bit_len);
+    dna2_decode_scalar(input, output, char_len);
 }
 
 void
@@ -765,33 +766,34 @@ dna4_encode(const char* input, uint8_t* output, int len)
 }
 
 void
-dna4_decode(const uint8_t* input, char* output, int bit_len)
+dna4_decode(const uint8_t* input, char* output, int char_len)
 {
+    int bit_len = char_len * 4;  /* Convert character length to bit length for threshold checks */
     /* Use SIMD based on runtime capability and data size thresholds */
 #ifdef __x86_64__
     if (simd_capability >= SIMD_AVX512BW && bit_len >= SIMD_DECODE_AVX512_THRESHOLD) {
-        dna4_decode_avx512(input, output, bit_len);
+        dna4_decode_avx512(input, output, char_len);
         return;
     }
     if (simd_capability >= SIMD_AVX2 && bit_len >= SIMD_DECODE_AVX2_THRESHOLD) {
-        dna4_decode_avx2(input, output, bit_len);
+        dna4_decode_avx2(input, output, char_len);
         return;
     }
 #elif defined(__aarch64__)
     if (simd_capability >= SIMD_SVE2 && bit_len >= SIMD_DECODE_SVE_THRESHOLD) {
-        dna4_decode_sve2(input, output, bit_len);
+        dna4_decode_sve2(input, output, char_len);
         return;
     }
     if (simd_capability >= SIMD_SVE && bit_len >= SIMD_DECODE_SVE_THRESHOLD) {
-        dna4_decode_sve(input, output, bit_len);
+        dna4_decode_sve(input, output, char_len);
         return;
     }
     if (simd_capability >= SIMD_NEON && bit_len >= SIMD_DECODE_NEON_THRESHOLD) {
-        dna4_decode_neon(input, output, bit_len);
+        dna4_decode_neon(input, output, char_len);
         return;
     }
 #endif
-    dna4_decode_scalar(input, output, bit_len);
+    dna4_decode_scalar(input, output, char_len);
 }
 
 int
@@ -1104,24 +1106,23 @@ kmersearch_dna4_hash_extended(PG_FUNCTION_ARGS)
 /* Scalar implementation of DNA2 encoding */
 void dna2_encode_scalar(const char* input, uint8_t* output, int len)
 {
-    int byte_len = (len * 2 + 7) / 8;
-    memset(output, 0, byte_len);
+    /* Based on simd_hybrid_fast_avx2.c scalar implementation */
+    static const uint8_t encode_table[256] = {
+        ['A'] = 0, ['a'] = 0,
+        ['C'] = 1, ['c'] = 1,
+        ['G'] = 2, ['g'] = 2,
+        ['T'] = 3, ['t'] = 3,
+        ['U'] = 3, ['u'] = 3
+    };
     
-    for (int i = 0; i < len; i++) {
-        uint8_t encoded = kmersearch_dna2_encode_table[(unsigned char)input[i]];
-        int bit_pos = i * 2;
-        int byte_pos = bit_pos / 8;
-        int bit_offset = bit_pos % 8;
-        
-        if (bit_offset <= 6) {
-            output[byte_pos] |= (encoded << (6 - bit_offset));
-        } else {
-            /* bit_offset == 7: 1st bit to current byte, 2nd bit to next byte */
-            output[byte_pos] |= (encoded >> 1);
-            if (byte_pos + 1 < byte_len) {
-                output[byte_pos + 1] |= (encoded & 0x1) << 7;
-            }
+    size_t out_idx = 0;
+    for (size_t i = 0; i < (size_t)len; i += 4) {
+        uint8_t packed = 0;
+        for (int j = 0; j < 4 && i + j < (size_t)len; j++) {
+            uint8_t code = encode_table[(unsigned char)input[i + j]];
+            packed |= (code << (6 - j * 2));
         }
+        output[out_idx++] = packed;
     }
 }
 
@@ -1129,246 +1130,213 @@ void dna2_encode_scalar(const char* input, uint8_t* output, int len)
 __attribute__((target("avx2")))
 void dna2_encode_avx2(const char* input, uint8_t* output, int len)
 {
-    int byte_len = (len * 2 + 7) / 8;
-    int simd_len;
-    int i;
-    
-    memset(output, 0, byte_len);
-    
-    /* Process 64 characters at a time for better efficiency */
-    simd_len = len & ~63;  /* Round down to multiple of 64 */
-    
-    for (i = 0; i < simd_len; i += 64) {
-        __m256i chars0, chars1;
-        __m256i upper_mask;
-        __m256i base_C, base_G, base_T, base_U;
-        __m256i mask_C0, mask_G0, mask_T0, mask_U0;
-        __m256i mask_C1, mask_G1, mask_T1, mask_U1;
-        __m256i encoded0, encoded1;
-        uint8_t temp0[32], temp1[32];
-        int byte_offset;
-        int j;
+    /* Based on simd_hybrid_fast_avx2.c implementation */
+    const __m256i base_A = _mm256_set1_epi8('A');
+    const __m256i base_C = _mm256_set1_epi8('C');
+    const __m256i base_G = _mm256_set1_epi8('G');
+    const __m256i base_T = _mm256_set1_epi8('T');
+    const __m256i base_U = _mm256_set1_epi8('U');
+    const __m256i upper_mask = _mm256_set1_epi8(0xDF);
+
+    size_t i = 0;
+    /* Process 128 bytes at once using 4 registers in pipeline */
+    for (; i + 128 <= (size_t)len; i += 128) {
+        /* Load 4x32 bytes */
+        __m256i chars0 = _mm256_loadu_si256((__m256i*)(input + i));
+        __m256i chars1 = _mm256_loadu_si256((__m256i*)(input + i + 32));
+        __m256i chars2 = _mm256_loadu_si256((__m256i*)(input + i + 64));
+        __m256i chars3 = _mm256_loadu_si256((__m256i*)(input + i + 96));
         
-        chars0 = _mm256_loadu_si256((__m256i*)(input + i));
-        chars1 = _mm256_loadu_si256((__m256i*)(input + i + 32));
-        
-        /* Convert to uppercase using bit manipulation (faster than comparisons) */
-        upper_mask = _mm256_set1_epi8(0xDF);
+        /* Pipeline: Convert to uppercase */
         chars0 = _mm256_and_si256(chars0, upper_mask);
         chars1 = _mm256_and_si256(chars1, upper_mask);
+        chars2 = _mm256_and_si256(chars2, upper_mask);
+        chars3 = _mm256_and_si256(chars3, upper_mask);
         
-        /* Set encoding values at specific positions: A=65->0, C=67->1, G=71->2, T=84->3, U=85->3 */
-        base_C = _mm256_set1_epi8('C');
-        base_G = _mm256_set1_epi8('G');
-        base_T = _mm256_set1_epi8('T');
-        base_U = _mm256_set1_epi8('U');
+        /* Pipeline: Generate 2-bit codes */
+        __m256i codes0 = _mm256_setzero_si256();
+        __m256i codes1 = _mm256_setzero_si256();
+        __m256i codes2 = _mm256_setzero_si256();
+        __m256i codes3 = _mm256_setzero_si256();
         
-        /* Create masks for each base type */
-        mask_C0 = _mm256_cmpeq_epi8(chars0, base_C);
-        mask_G0 = _mm256_cmpeq_epi8(chars0, base_G);
-        mask_T0 = _mm256_cmpeq_epi8(chars0, base_T);
-        mask_U0 = _mm256_cmpeq_epi8(chars0, base_U);
+        /* Process all 4 registers in parallel using blending */
+        __m256i mask_C0 = _mm256_cmpeq_epi8(chars0, base_C);
+        __m256i mask_C1 = _mm256_cmpeq_epi8(chars1, base_C);
+        __m256i mask_C2 = _mm256_cmpeq_epi8(chars2, base_C);
+        __m256i mask_C3 = _mm256_cmpeq_epi8(chars3, base_C);
+        codes0 = _mm256_blendv_epi8(codes0, _mm256_set1_epi8(1), mask_C0);
+        codes1 = _mm256_blendv_epi8(codes1, _mm256_set1_epi8(1), mask_C1);
+        codes2 = _mm256_blendv_epi8(codes2, _mm256_set1_epi8(1), mask_C2);
+        codes3 = _mm256_blendv_epi8(codes3, _mm256_set1_epi8(1), mask_C3);
         
-        mask_C1 = _mm256_cmpeq_epi8(chars1, base_C);
-        mask_G1 = _mm256_cmpeq_epi8(chars1, base_G);
-        mask_T1 = _mm256_cmpeq_epi8(chars1, base_T);
-        mask_U1 = _mm256_cmpeq_epi8(chars1, base_U);
+        __m256i mask_G0 = _mm256_cmpeq_epi8(chars0, base_G);
+        __m256i mask_G1 = _mm256_cmpeq_epi8(chars1, base_G);
+        __m256i mask_G2 = _mm256_cmpeq_epi8(chars2, base_G);
+        __m256i mask_G3 = _mm256_cmpeq_epi8(chars3, base_G);
+        codes0 = _mm256_blendv_epi8(codes0, _mm256_set1_epi8(2), mask_G0);
+        codes1 = _mm256_blendv_epi8(codes1, _mm256_set1_epi8(2), mask_G1);
+        codes2 = _mm256_blendv_epi8(codes2, _mm256_set1_epi8(2), mask_G2);
+        codes3 = _mm256_blendv_epi8(codes3, _mm256_set1_epi8(2), mask_G3);
         
-        /* Combine T and U masks */
-        mask_T0 = _mm256_or_si256(mask_T0, mask_U0);
-        mask_T1 = _mm256_or_si256(mask_T1, mask_U1);
+        __m256i mask_T0 = _mm256_or_si256(_mm256_cmpeq_epi8(chars0, base_T), _mm256_cmpeq_epi8(chars0, base_U));
+        __m256i mask_T1 = _mm256_or_si256(_mm256_cmpeq_epi8(chars1, base_T), _mm256_cmpeq_epi8(chars1, base_U));
+        __m256i mask_T2 = _mm256_or_si256(_mm256_cmpeq_epi8(chars2, base_T), _mm256_cmpeq_epi8(chars2, base_U));
+        __m256i mask_T3 = _mm256_or_si256(_mm256_cmpeq_epi8(chars3, base_T), _mm256_cmpeq_epi8(chars3, base_U));
+        codes0 = _mm256_blendv_epi8(codes0, _mm256_set1_epi8(3), mask_T0);
+        codes1 = _mm256_blendv_epi8(codes1, _mm256_set1_epi8(3), mask_T1);
+        codes2 = _mm256_blendv_epi8(codes2, _mm256_set1_epi8(3), mask_T2);
+        codes3 = _mm256_blendv_epi8(codes3, _mm256_set1_epi8(3), mask_T3);
+
+        /* Pack 2-bit codes into bytes */
+        uint8_t temp0[32], temp1[32], temp2[32], temp3[32];
+        _mm256_storeu_si256((__m256i*)temp0, codes0);
+        _mm256_storeu_si256((__m256i*)temp1, codes1);
+        _mm256_storeu_si256((__m256i*)temp2, codes2);
+        _mm256_storeu_si256((__m256i*)temp3, codes3);
         
-        /* Generate 2-bit encoded values using blendv for efficiency */
-        encoded0 = _mm256_setzero_si256();
-        encoded0 = _mm256_blendv_epi8(encoded0, _mm256_set1_epi8(1), mask_C0);
-        encoded0 = _mm256_blendv_epi8(encoded0, _mm256_set1_epi8(2), mask_G0);
-        encoded0 = _mm256_blendv_epi8(encoded0, _mm256_set1_epi8(3), mask_T0);
-        
-        encoded1 = _mm256_setzero_si256();
-        encoded1 = _mm256_blendv_epi8(encoded1, _mm256_set1_epi8(1), mask_C1);
-        encoded1 = _mm256_blendv_epi8(encoded1, _mm256_set1_epi8(2), mask_G1);
-        encoded1 = _mm256_blendv_epi8(encoded1, _mm256_set1_epi8(3), mask_T1);
-        
-        /* Extract and pack using BMI2 PDEP with optimized bit patterns */
-        _mm256_storeu_si256((__m256i*)temp0, encoded0);
-        _mm256_storeu_si256((__m256i*)temp1, encoded1);
-        
-        /* Process 64 bases (128 bits) using correct bit packing */
-        byte_offset = (i * 2) / 8;  /* Correct byte offset calculation */
-        
-        /* Pack 16 bases at a time */
-        for (j = 0; j < 4; j++) {
-            uint32_t packed = 0;
-            int k;
-            
-            /* Process 16 characters (each 2 bits = 32 bits total) */
-            for (k = 0; k < 16; k++) {
-                int idx = j * 16 + k;
-                uint8_t val = (idx < 32) ? temp0[idx] : temp1[idx - 32];
-                
-                /* Use same bit layout as scalar implementation */
-                int bit_offset = (k * 2) % 8;
-                int byte_offset_in_packed = k / 4;
-                
-                if (bit_offset <= 6) {
-                    ((uint8_t*)&packed)[byte_offset_in_packed] |= (val << (6 - bit_offset));
-                }
-            }
-            
-            /* Write packed data to output */
-            if (byte_offset + j * 4 < byte_len) {
-                int write_len = ((byte_offset + j * 4 + 4) <= byte_len) ? 4 : (byte_len - byte_offset - j * 4);
-                memcpy(&output[byte_offset + j * 4], &packed, write_len);
-            }
+        for (int j = 0; j < 8; j++) {
+            output[i/4 + j] = (temp0[j*4] << 6) | (temp0[j*4+1] << 4) | 
+                             (temp0[j*4+2] << 2) | temp0[j*4+3];
+            output[i/4 + 8 + j] = (temp1[j*4] << 6) | (temp1[j*4+1] << 4) | 
+                                 (temp1[j*4+2] << 2) | temp1[j*4+3];
+            output[i/4 + 16 + j] = (temp2[j*4] << 6) | (temp2[j*4+1] << 4) | 
+                                  (temp2[j*4+2] << 2) | temp2[j*4+3];
+            output[i/4 + 24 + j] = (temp3[j*4] << 6) | (temp3[j*4+1] << 4) | 
+                                  (temp3[j*4+2] << 2) | temp3[j*4+3];
         }
     }
-    
-    /* Handle remaining characters with optimized scalar code */
-    for (i = simd_len; i < len; i++) {
-        uint8_t encoded = kmersearch_dna2_encode_table[(unsigned char)input[i]];
-        int bit_pos = i * 2;
-        int byte_pos = bit_pos / 8;
-        int bit_offset = bit_pos % 8;
+
+    /* Process remaining in 32-byte chunks */
+    for (; i + 32 <= (size_t)len; i += 32) {
+        __m256i chars = _mm256_loadu_si256((__m256i*)(input + i));
+        chars = _mm256_and_si256(chars, upper_mask);
         
-        if (bit_offset <= 6) {
-            output[byte_pos] |= (encoded << (6 - bit_offset));
-        } else {
-            /* bit_offset == 7: 1st bit to current byte, 2nd bit to next byte */
-            output[byte_pos] |= (encoded >> 1);
-            if (byte_pos + 1 < byte_len) {
-                output[byte_pos + 1] |= (encoded & 0x1) << 7;
-            }
+        __m256i codes = _mm256_setzero_si256();
+        __m256i mask_C = _mm256_cmpeq_epi8(chars, base_C);
+        codes = _mm256_blendv_epi8(codes, _mm256_set1_epi8(1), mask_C);
+        __m256i mask_G = _mm256_cmpeq_epi8(chars, base_G);
+        codes = _mm256_blendv_epi8(codes, _mm256_set1_epi8(2), mask_G);
+        __m256i mask_T = _mm256_or_si256(_mm256_cmpeq_epi8(chars, base_T), _mm256_cmpeq_epi8(chars, base_U));
+        codes = _mm256_blendv_epi8(codes, _mm256_set1_epi8(3), mask_T);
+
+        /* Pack with BMI2 instructions for bit manipulation */
+        uint8_t temp[32];
+        _mm256_storeu_si256((__m256i*)temp, codes);
+        
+        for (int j = 0; j < 8; j++) {
+            output[i/4 + j] = (temp[j*4] << 6) | (temp[j*4+1] << 4) | 
+                             (temp[j*4+2] << 2) | temp[j*4+3];
         }
+    }
+
+    /* Handle remaining bytes */
+    for (; i < (size_t)len; i += 4) {
+        uint8_t packed = 0;
+        for (int j = 0; j < 4 && i + j < (size_t)len; j++) {
+            uint8_t c = input[i + j] & 0xDF;
+            uint8_t code = (c == 'A') ? 0 : (c == 'C') ? 1 : (c == 'G') ? 2 : 3;
+            packed |= (code << (6 - j * 2));
+        }
+        output[i/4] = packed;
     }
 }
 
 __attribute__((target("avx512f,avx512bw")))
 void dna2_encode_avx512(const char* input, uint8_t* output, int len)
 {
-    int byte_len = (len * 2 + 7) / 8;
-    int simd_len;
-    int i;
-    
-    memset(output, 0, byte_len);
-    
-    /* Process 128 characters at a time with dual AVX512 for maximum throughput */
-    simd_len = len & ~127;  /* Round down to multiple of 128 */
-    
-    for (i = 0; i < simd_len; i += 128) {
-        __m512i chars0, chars1;
-        __m512i upper_mask;
-        __m512i base_C, base_G, base_T, base_U;
-        __mmask64 mask_C0, mask_G0, mask_T0, mask_U0;
-        __mmask64 mask_C1, mask_G1, mask_T1, mask_U1;
-        __m512i encoded0, encoded1;
-        uint8_t temp0[64], temp1[64];
-        int byte_offset;
-        int j;
+    /* Based on simd_hybrid_fast.c implementation */
+    const __m512i base_A = _mm512_set1_epi8('A');
+    const __m512i base_C = _mm512_set1_epi8('C');
+    const __m512i base_G = _mm512_set1_epi8('G');
+    const __m512i base_T = _mm512_set1_epi8('T');
+    const __m512i base_U = _mm512_set1_epi8('U');
+    const __m512i upper_mask = _mm512_set1_epi8(0xDF);
+
+    size_t i = 0;
+    /* Process 256 bytes at once using 4 registers in pipeline */
+    for (; i + 256 <= (size_t)len; i += 256) {
+        /* Load 4x64 bytes */
+        __m512i chars0 = _mm512_loadu_si512((__m512i*)(input + i));
+        __m512i chars1 = _mm512_loadu_si512((__m512i*)(input + i + 64));
+        __m512i chars2 = _mm512_loadu_si512((__m512i*)(input + i + 128));
+        __m512i chars3 = _mm512_loadu_si512((__m512i*)(input + i + 192));
         
-        chars0 = _mm512_loadu_si512((__m512i*)(input + i));
-        chars1 = _mm512_loadu_si512((__m512i*)(input + i + 64));
-        
-        /* Convert to uppercase using bit manipulation */
-        upper_mask = _mm512_set1_epi8(0xDF);
+        /* Pipeline: Convert to uppercase */
         chars0 = _mm512_and_si512(chars0, upper_mask);
         chars1 = _mm512_and_si512(chars1, upper_mask);
+        chars2 = _mm512_and_si512(chars2, upper_mask);
+        chars3 = _mm512_and_si512(chars3, upper_mask);
         
-        /* Use VBMI2 compress for efficient encoding */
-        base_C = _mm512_set1_epi8('C');
-        base_G = _mm512_set1_epi8('G');
-        base_T = _mm512_set1_epi8('T');
-        base_U = _mm512_set1_epi8('U');
+        /* Pipeline: Generate 2-bit codes */
+        __m512i codes0 = _mm512_setzero_si512();
+        __m512i codes1 = _mm512_setzero_si512();
+        __m512i codes2 = _mm512_setzero_si512();
+        __m512i codes3 = _mm512_setzero_si512();
         
-        /* Create masks using AVX512BW comparison */
-        mask_C0 = _mm512_cmpeq_epi8_mask(chars0, base_C);
-        mask_G0 = _mm512_cmpeq_epi8_mask(chars0, base_G);
-        mask_T0 = _mm512_cmpeq_epi8_mask(chars0, base_T);
-        mask_U0 = _mm512_cmpeq_epi8_mask(chars0, base_U);
+        /* Process all 4 registers in parallel */
+        codes0 = _mm512_mask_add_epi8(codes0, _mm512_cmpeq_epi8_mask(chars0, base_C), codes0, _mm512_set1_epi8(1));
+        codes1 = _mm512_mask_add_epi8(codes1, _mm512_cmpeq_epi8_mask(chars1, base_C), codes1, _mm512_set1_epi8(1));
+        codes2 = _mm512_mask_add_epi8(codes2, _mm512_cmpeq_epi8_mask(chars2, base_C), codes2, _mm512_set1_epi8(1));
+        codes3 = _mm512_mask_add_epi8(codes3, _mm512_cmpeq_epi8_mask(chars3, base_C), codes3, _mm512_set1_epi8(1));
         
-        mask_C1 = _mm512_cmpeq_epi8_mask(chars1, base_C);
-        mask_G1 = _mm512_cmpeq_epi8_mask(chars1, base_G);
-        mask_T1 = _mm512_cmpeq_epi8_mask(chars1, base_T);
-        mask_U1 = _mm512_cmpeq_epi8_mask(chars1, base_U);
+        codes0 = _mm512_mask_add_epi8(codes0, _mm512_cmpeq_epi8_mask(chars0, base_G), codes0, _mm512_set1_epi8(2));
+        codes1 = _mm512_mask_add_epi8(codes1, _mm512_cmpeq_epi8_mask(chars1, base_G), codes1, _mm512_set1_epi8(2));
+        codes2 = _mm512_mask_add_epi8(codes2, _mm512_cmpeq_epi8_mask(chars2, base_G), codes2, _mm512_set1_epi8(2));
+        codes3 = _mm512_mask_add_epi8(codes3, _mm512_cmpeq_epi8_mask(chars3, base_G), codes3, _mm512_set1_epi8(2));
         
-        /* Combine T and U masks */
-        mask_T0 |= mask_U0;
-        mask_T1 |= mask_U1;
+        codes0 = _mm512_mask_add_epi8(codes0, _mm512_cmpeq_epi8_mask(chars0, base_T) | _mm512_cmpeq_epi8_mask(chars0, base_U), codes0, _mm512_set1_epi8(3));
+        codes1 = _mm512_mask_add_epi8(codes1, _mm512_cmpeq_epi8_mask(chars1, base_T) | _mm512_cmpeq_epi8_mask(chars1, base_U), codes1, _mm512_set1_epi8(3));
+        codes2 = _mm512_mask_add_epi8(codes2, _mm512_cmpeq_epi8_mask(chars2, base_T) | _mm512_cmpeq_epi8_mask(chars2, base_U), codes2, _mm512_set1_epi8(3));
+        codes3 = _mm512_mask_add_epi8(codes3, _mm512_cmpeq_epi8_mask(chars3, base_T) | _mm512_cmpeq_epi8_mask(chars3, base_U), codes3, _mm512_set1_epi8(3));
+
+        /* Pack using scalar for correctness */
+        uint8_t temp0[64], temp1[64], temp2[64], temp3[64];
+        _mm512_storeu_si512((__m512i*)temp0, codes0);
+        _mm512_storeu_si512((__m512i*)temp1, codes1);
+        _mm512_storeu_si512((__m512i*)temp2, codes2);
+        _mm512_storeu_si512((__m512i*)temp3, codes3);
         
-        /* Generate 2-bit encoded values using masked operations */
-        encoded0 = _mm512_setzero_si512();
-        encoded0 = _mm512_mask_mov_epi8(encoded0, mask_C0, _mm512_set1_epi8(1));
-        encoded0 = _mm512_mask_mov_epi8(encoded0, mask_G0, _mm512_set1_epi8(2));
-        encoded0 = _mm512_mask_mov_epi8(encoded0, mask_T0, _mm512_set1_epi8(3));
-        
-        encoded1 = _mm512_setzero_si512();
-        encoded1 = _mm512_mask_mov_epi8(encoded1, mask_C1, _mm512_set1_epi8(1));
-        encoded1 = _mm512_mask_mov_epi8(encoded1, mask_G1, _mm512_set1_epi8(2));
-        encoded1 = _mm512_mask_mov_epi8(encoded1, mask_T1, _mm512_set1_epi8(3));
-        
-        /* Use VBMI2 compress to pack 2-bit values efficiently */
-        /* Process in 32-byte chunks for optimal PDEP usage */
-        _mm512_storeu_si512((__m512i*)temp0, encoded0);
-        _mm512_storeu_si512((__m512i*)temp1, encoded1);
-        
-        /* Pack 128 bases (256 bits) using correct bit packing */
-        byte_offset = (i * 2) / 8;  /* Correct byte offset calculation */
-        
-        /* Process 32 bases at a time */
-        for (j = 0; j < 4; j++) {
-            uint64_t packed = 0;
-            int k;
-            
-            /* Process 32 characters (each 2 bits = 64 bits total) */
-            for (k = 0; k < 32; k++) {
-                int idx = j * 32 + k;
-                uint8_t val = (idx < 64) ? temp0[idx] : temp1[idx - 64];
-                
-                /* Use same bit layout as scalar implementation */
-                int bit_pos = k * 2;
-                int byte_offset_in_packed = bit_pos / 8;
-                int bit_offset = bit_pos % 8;
-                
-                if (bit_offset <= 6) {
-                    ((uint8_t*)&packed)[byte_offset_in_packed] |= (val << (6 - bit_offset));
-                } else {
-                    /* bit_offset == 7: split across byte boundary */
-                    ((uint8_t*)&packed)[byte_offset_in_packed] |= (val >> 1);
-                    if (byte_offset_in_packed + 1 < 8) {
-                        ((uint8_t*)&packed)[byte_offset_in_packed + 1] |= (val & 0x1) << 7;
-                    }
-                }
-            }
-            
-            /* Write packed data to output */
-            if (byte_offset + j * 8 < byte_len) {
-                int write_len = ((byte_offset + j * 8 + 8) <= byte_len) ? 8 : (byte_len - byte_offset - j * 8);
-                memcpy(&output[byte_offset + j * 8], &packed, write_len);
-            }
+        for (int j = 0; j < 16; j++) {
+            output[i/4 + j] = (temp0[j*4] << 6) | (temp0[j*4+1] << 4) | 
+                             (temp0[j*4+2] << 2) | temp0[j*4+3];
+            output[i/4 + 16 + j] = (temp1[j*4] << 6) | (temp1[j*4+1] << 4) | 
+                                  (temp1[j*4+2] << 2) | temp1[j*4+3];
+            output[i/4 + 32 + j] = (temp2[j*4] << 6) | (temp2[j*4+1] << 4) | 
+                                  (temp2[j*4+2] << 2) | temp2[j*4+3];
+            output[i/4 + 48 + j] = (temp3[j*4] << 6) | (temp3[j*4+1] << 4) | 
+                                  (temp3[j*4+2] << 2) | temp3[j*4+3];
         }
     }
-    
-    /* Handle remaining characters with AVX2 if possible */
-    if (simd_len < len && (len - simd_len) >= 32) {
-        dna2_encode_avx2(input + simd_len, output + simd_len / 4, len - simd_len);
-        return;
-    }
-    
-    /* Handle final remaining characters with scalar */
-    for (i = simd_len; i < len; i++) {
-        uint8_t encoded = kmersearch_dna2_encode_table[(unsigned char)input[i]];
-        int bit_pos = i * 2;
-        int byte_pos = bit_pos / 8;
-        int bit_offset = bit_pos % 8;
+
+    /* Process remaining in 64-byte chunks */
+    for (; i + 64 <= (size_t)len; i += 64) {
+        __m512i chars = _mm512_loadu_si512((__m512i*)(input + i));
+        chars = _mm512_and_si512(chars, upper_mask);
         
-        if (bit_offset <= 6) {
-            output[byte_pos] |= (encoded << (6 - bit_offset));
-        } else {
-            /* bit_offset == 7: handle byte boundary crossing */
-            output[byte_pos] |= (encoded >> 1);
-            if (byte_pos + 1 < byte_len) {
-                output[byte_pos + 1] |= (encoded & 0x1) << 7;
-            }
+        __m512i codes = _mm512_setzero_si512();
+        codes = _mm512_mask_add_epi8(codes, _mm512_cmpeq_epi8_mask(chars, base_C), codes, _mm512_set1_epi8(1));
+        codes = _mm512_mask_add_epi8(codes, _mm512_cmpeq_epi8_mask(chars, base_G), codes, _mm512_set1_epi8(2));
+        codes = _mm512_mask_add_epi8(codes, _mm512_cmpeq_epi8_mask(chars, base_T) | _mm512_cmpeq_epi8_mask(chars, base_U), codes, _mm512_set1_epi8(3));
+
+        /* Pack with corrected bit positions */
+        uint8_t temp[64];
+        _mm512_storeu_si512((__m512i*)temp, codes);
+        
+        for (int j = 0; j < 16; j++) {
+            output[i/4 + j] = (temp[j*4] << 6) | (temp[j*4+1] << 4) | 
+                             (temp[j*4+2] << 2) | temp[j*4+3];
         }
+    }
+
+    /* Handle remaining bytes */
+    for (; i < (size_t)len; i += 4) {
+        uint8_t packed = 0;
+        for (int j = 0; j < 4 && i + j < (size_t)len; j++) {
+            uint8_t c = input[i + j] & 0xDF;
+            uint8_t code = (c == 'A') ? 0 : (c == 'C') ? 1 : (c == 'G') ? 2 : 3;
+            packed |= (code << (6 - j * 2));
+        }
+        output[i/4] = packed;
     }
 }
 #endif /* __x86_64__ */
@@ -1826,47 +1794,40 @@ void dna2_decode_avx2(const uint8_t* input, char* output, int len)
         'A', 'C', 'G', 'T', 'A', 'C', 'G', 'T'
     );
     
-    const __m256i mask_2bits = _mm256_set1_epi8(0x03);
+    const __m256i mask_03 = _mm256_set1_epi8(0x03);
+    const __m256i mask_0c = _mm256_set1_epi8(0x0c);
+    const __m256i mask_30 = _mm256_set1_epi8(0x30);
+    const __m256i mask_c0 = _mm256_set1_epi8(0xc0);
     
     for (int i = 0; i < simd_len; i += 32) {
-        /* Calculate how many bytes needed for 32 characters (32 * 2 bits = 64 bits = 8 bytes) */
         int byte_offset = (i * 2) / 8;
-        int bytes_to_load = 9; /* Load extra byte for boundary cases */
-        uint8_t temp[16] __attribute__((aligned(16))) = {0};
         
-        /* Load required bytes */
-        for (int b = 0; b < bytes_to_load && (byte_offset + b) < (len * 2 + 7) / 8; b++) {
-            temp[b] = input[byte_offset + b];
-        }
+        /* Load 8 bytes containing 32 2-bit characters */
+        __m128i packed_data = _mm_loadu_si128((__m128i*)(input + byte_offset));
         
-        /* Extract 2-bit values efficiently (process 8 chars at a time) */
-        for (int chunk = 0; chunk < 4; chunk++) {
-            int char_offset = chunk * 8;
-            uint8_t decoded_chars[8];
-            
-            /* Extract 2-bit values for 8 characters */
-            for (int j = 0; j < 8; j++) {
-                int char_idx = char_offset + j;
-                int total_bit_pos = char_idx * 2;
-                int byte_pos = total_bit_pos / 8;
-                int bit_pos = total_bit_pos % 8;
-                uint8_t val = 0;
-                
-                if (byte_pos < 9) {
-                    if (bit_pos <= 6) {
-                        val = (temp[byte_pos] >> (6 - bit_pos)) & 0x3;
-                    } else if (byte_pos + 1 < 9) {
-                        val = ((temp[byte_pos] & 0x1) << 1) | ((temp[byte_pos + 1] >> 7) & 0x1);
-                    }
-                }
-                
-                /* Decode using lookup table */
-                decoded_chars[j] = (val < 4) ? "ACGT"[val] : 'A';
-            }
-            
-            /* Store decoded characters */
-            memcpy(&output[i + char_offset], decoded_chars, 8);
-        }
+        /* Expand packed data to 256-bit for processing */
+        __m256i packed = _mm256_cvtepu8_epi32(packed_data);
+        
+        /* Extract 2-bit values using SIMD shifts and masks */
+        __m256i val0 = _mm256_and_si256(_mm256_srli_epi32(packed, 6), mask_03);
+        __m256i val1 = _mm256_and_si256(_mm256_srli_epi32(packed, 4), mask_03);
+        __m256i val2 = _mm256_and_si256(_mm256_srli_epi32(packed, 2), mask_03);
+        __m256i val3 = _mm256_and_si256(packed, mask_03);
+        
+        /* Pack extracted values */
+        __m256i pack01 = _mm256_packus_epi32(val0, val1);
+        __m256i pack23 = _mm256_packus_epi32(val2, val3);
+        __m256i all_vals = _mm256_packus_epi16(pack01, pack23);
+        
+        /* Permute to correct order */
+        __m256i perm_idx = _mm256_setr_epi32(0, 4, 1, 5, 2, 6, 3, 7);
+        all_vals = _mm256_permutevar8x32_epi32(all_vals, perm_idx);
+        
+        /* Use shuffle for lookup */
+        __m256i decoded = _mm256_shuffle_epi8(decode_lut, all_vals);
+        
+        /* Store 32 decoded characters */
+        _mm256_storeu_si256((__m256i*)(output + i), decoded);
     }
     
     /* Handle remaining characters with scalar */
@@ -1897,15 +1858,12 @@ void dna2_decode_avx2(const uint8_t* input, char* output, int len)
 }
 
 __attribute__((target("avx512f,avx512bw")))
-void dna2_decode_avx512(const uint8_t* input, char* output, int bit_len)
+void dna2_decode_avx512(const uint8_t* input, char* output, int len)
 {
-    /* Convert bit length to character length */
-    int len = bit_len / 2;
-    
     /* Process 64 characters at a time for AVX512F/BW */
     int simd_len = len & ~63;  /* Round down to multiple of 64 */
     
-    /* Lookup table for DNA2 decoding using standard AVX512F shuffle */
+    /* Lookup table for DNA2 decoding */
     const __m512i decode_lut = _mm512_set_epi8(
         'T', 'G', 'C', 'A', 'T', 'G', 'C', 'A', 'T', 'G', 'C', 'A', 'T', 'G', 'C', 'A',
         'T', 'G', 'C', 'A', 'T', 'G', 'C', 'A', 'T', 'G', 'C', 'A', 'T', 'G', 'C', 'A',
@@ -1914,56 +1872,39 @@ void dna2_decode_avx512(const uint8_t* input, char* output, int bit_len)
     );
     
     const __m512i mask_03 = _mm512_set1_epi8(0x03);
-    const __m512i mask_0c = _mm512_set1_epi8(0x0c);
-    const __m512i mask_30 = _mm512_set1_epi8(0x30);
-    const __m512i mask_c0 = _mm512_set1_epi8(0xc0);
     
-    /* Process 64 characters (16 bytes of input) per iteration */
     for (int i = 0; i < simd_len; i += 64) {
         int byte_offset = (i * 2) / 8;
         
         /* Load 16 bytes containing 64 2-bit characters */
-        __m128i input_data = _mm_loadu_si128((const __m128i*)&input[byte_offset]);
-        __m512i data = _mm512_broadcast_i32x4(input_data);
+        __m128i packed_data = _mm_loadu_si128((__m128i*)(input + byte_offset));
         
-        /* Extract 2-bit values using shifts and masks (AVX512F/BW) */
-        __m512i bits_0 = _mm512_and_si512(_mm512_srli_epi32(data, 6), mask_03);  /* bits 7-6 */
-        __m512i bits_1 = _mm512_and_si512(_mm512_srli_epi32(data, 4), mask_03);  /* bits 5-4 */
-        __m512i bits_2 = _mm512_and_si512(_mm512_srli_epi32(data, 2), mask_03);  /* bits 3-2 */
-        __m512i bits_3 = _mm512_and_si512(data, mask_03);                       /* bits 1-0 */
+        /* Broadcast each byte to 4 bytes for unpacking */
+        __m512i packed = _mm512_broadcast_i32x4(packed_data);
         
-        /* Interleave and arrange bits using AVX512F permute operations */
-        __m512i pair01 = _mm512_unpacklo_epi8(bits_0, bits_1);
-        __m512i pair23 = _mm512_unpacklo_epi8(bits_2, bits_3);
-        __m512i quad0123 = _mm512_unpacklo_epi16(pair01, pair23);
-        
-        /* Replicate pattern across 512-bit register using permutations */
-        const __m512i byte_expand = _mm512_setr_epi32(
-            0x00010203, 0x00010203, 0x04050607, 0x04050607,
-            0x08090a0b, 0x08090a0b, 0x0c0d0e0f, 0x0c0d0e0f,
-            0x00010203, 0x00010203, 0x04050607, 0x04050607,
-            0x08090a0b, 0x08090a0b, 0x0c0d0e0f, 0x0c0d0e0f
+        /* Create shift amounts for extracting 2-bit values */
+        __m512i shifts = _mm512_set_epi8(
+            0, 2, 4, 6, 0, 2, 4, 6, 0, 2, 4, 6, 0, 2, 4, 6,
+            0, 2, 4, 6, 0, 2, 4, 6, 0, 2, 4, 6, 0, 2, 4, 6,
+            0, 2, 4, 6, 0, 2, 4, 6, 0, 2, 4, 6, 0, 2, 4, 6,
+            0, 2, 4, 6, 0, 2, 4, 6, 0, 2, 4, 6, 0, 2, 4, 6
         );
         
-        __m512i expanded = _mm512_shuffle_epi8(quad0123, byte_expand);
-        
-        /* Create index pattern for final reordering using set_epi8 */
-        const __m512i reorder_idx = _mm512_set_epi8(
-            51, 55, 59, 63, 50, 54, 58, 62, 49, 53, 57, 61, 48, 52, 56, 60,
-            35, 39, 43, 47, 34, 38, 42, 46, 33, 37, 41, 45, 32, 36, 40, 44,
-            19, 23, 27, 31, 18, 22, 26, 30, 17, 21, 25, 29, 16, 20, 24, 28,
-             3,  7, 11, 15,  2,  6, 10, 14,  1,  5,  9, 13,  0,  4,  8, 12
+        /* Permute bytes to align for extraction */
+        __m512i perm_idx = _mm512_setr_epi32(
+            0x00000000, 0x01010101, 0x02020202, 0x03030303,
+            0x04040404, 0x05050505, 0x06060606, 0x07070707,
+            0x08080808, 0x09090909, 0x0a0a0a0a, 0x0b0b0b0b,
+            0x0c0c0c0c, 0x0d0d0d0d, 0x0e0e0e0e, 0x0f0f0f0f
         );
+        __m512i expanded = _mm512_permutexvar_epi32(perm_idx, packed);
         
-        __m512i values, decoded;
-        
-        values = _mm512_shuffle_epi8(expanded, reorder_idx);
-        
-        /* Mask to ensure valid indices for lookup table */
-        values = _mm512_and_si512(values, mask_03);
+        /* Extract 2-bit values using variable shifts */
+        __m512i shifted = _mm512_srlv_epi16(expanded, shifts);
+        __m512i values = _mm512_and_si512(shifted, mask_03);
         
         /* Decode using lookup table with regular shuffle */
-        decoded = _mm512_shuffle_epi8(decode_lut, values);
+        __m512i decoded = _mm512_shuffle_epi8(decode_lut, values);
         
         /* Store 64 decoded characters */
         _mm512_storeu_si512((__m512i*)&output[i], decoded);
@@ -2256,25 +2197,33 @@ void dna2_decode_sve2(const uint8_t* input, char* output, int len)
 /* Scalar implementation for DNA4 encoding */
 void dna4_encode_scalar(const char* input, uint8_t* output, int len)
 {
-    int byte_len = (len * 4 + 7) / 8;
-    memset(output, 0, byte_len);
+    /* Based on simd_hybrid_fast_avx2.c scalar implementation */
+    static const uint8_t encode_table[256] = {
+        ['A'] = 0x1, ['a'] = 0x1,
+        ['C'] = 0x2, ['c'] = 0x2,
+        ['G'] = 0x4, ['g'] = 0x4,
+        ['T'] = 0x8, ['t'] = 0x8,
+        ['U'] = 0x8, ['u'] = 0x8,
+        ['M'] = 0x3, ['m'] = 0x3,
+        ['R'] = 0x5, ['r'] = 0x5,
+        ['W'] = 0x9, ['w'] = 0x9,
+        ['S'] = 0x6, ['s'] = 0x6,
+        ['Y'] = 0xA, ['y'] = 0xA,
+        ['K'] = 0xC, ['k'] = 0xC,
+        ['V'] = 0x7, ['v'] = 0x7,
+        ['H'] = 0xB, ['h'] = 0xB,
+        ['D'] = 0xD, ['d'] = 0xD,
+        ['B'] = 0xE, ['b'] = 0xE,
+        ['N'] = 0xF, ['n'] = 0xF
+    };
     
-    for (int i = 0; i < len; i++) {
-        uint8_t encoded = kmersearch_dna4_encode_table[(unsigned char)input[i]];
-        int bit_pos = i * 4;
-        int byte_pos = bit_pos / 8;
-        int bit_offset = bit_pos % 8;
-        
-        if (bit_offset <= 4) {
-            output[byte_pos] |= (encoded << (4 - bit_offset));
-        } else {
-            /* bit_offset > 4: split across two bytes */
-            int remaining_bits = 8 - bit_offset;
-            output[byte_pos] |= (encoded >> (4 - remaining_bits));
-            if (byte_pos + 1 < byte_len) {
-                output[byte_pos + 1] |= (encoded << (4 + remaining_bits));
-            }
+    size_t out_idx = 0;
+    for (size_t i = 0; i < (size_t)len; i += 2) {
+        uint8_t packed = (encode_table[(unsigned char)input[i]] << 4);
+        if (i + 1 < (size_t)len) {
+            packed |= encode_table[(unsigned char)input[i + 1]];
         }
+        output[out_idx++] = packed;
     }
 }
 
@@ -2313,119 +2262,186 @@ void dna4_decode_scalar(const uint8_t* input, char* output, int len)
 __attribute__((target("avx2")))
 void dna4_encode_avx2(const char* input, uint8_t* output, int len)
 {
-    int byte_len = (len * 4 + 7) / 8;
-    int simd_len;
-    /* Create comparison vectors for efficient encoding */
-    const __m256i vec_A = _mm256_set1_epi8('A');
-    const __m256i vec_C = _mm256_set1_epi8('C');
-    const __m256i vec_G = _mm256_set1_epi8('G');
-    const __m256i vec_T = _mm256_set1_epi8('T');
-    const __m256i vec_a = _mm256_set1_epi8('a');
-    const __m256i vec_c = _mm256_set1_epi8('c');
-    const __m256i vec_g = _mm256_set1_epi8('g');
-    const __m256i vec_t = _mm256_set1_epi8('t');
-    /* Degenerate base vectors */
-    const __m256i vec_M = _mm256_set1_epi8('M');
-    const __m256i vec_R = _mm256_set1_epi8('R');
-    const __m256i vec_W = _mm256_set1_epi8('W');
-    const __m256i vec_S = _mm256_set1_epi8('S');
-    const __m256i vec_Y = _mm256_set1_epi8('Y');
-    const __m256i vec_K = _mm256_set1_epi8('K');
-    const __m256i vec_V = _mm256_set1_epi8('V');
-    const __m256i vec_H = _mm256_set1_epi8('H');
-    const __m256i vec_D = _mm256_set1_epi8('D');
-    const __m256i vec_B = _mm256_set1_epi8('B');
-    const __m256i vec_N = _mm256_set1_epi8('N');
+    /* Based on simd_hybrid_fast_avx2.c implementation */
+    const __m256i upper_mask = _mm256_set1_epi8(0xDF);
     
-    memset(output, 0, byte_len);
-    
-    /* Process 32 characters at a time with AVX2 */
-    simd_len = len & ~31;  /* Round down to multiple of 32 */
-    
-    for (int i = 0; i < simd_len; i += 32) {
-        __m256i chars = _mm256_loadu_si256((__m256i*)(input + i));
+    /* DNA4 character constants */
+    const __m256i char_A = _mm256_set1_epi8('A');
+    const __m256i char_C = _mm256_set1_epi8('C');
+    const __m256i char_G = _mm256_set1_epi8('G');
+    const __m256i char_T = _mm256_set1_epi8('T');
+    const __m256i char_U = _mm256_set1_epi8('U');
+    const __m256i char_M = _mm256_set1_epi8('M');
+    const __m256i char_R = _mm256_set1_epi8('R');
+    const __m256i char_W = _mm256_set1_epi8('W');
+    const __m256i char_S = _mm256_set1_epi8('S');
+    const __m256i char_Y = _mm256_set1_epi8('Y');
+    const __m256i char_K = _mm256_set1_epi8('K');
+    const __m256i char_V = _mm256_set1_epi8('V');
+    const __m256i char_H = _mm256_set1_epi8('H');
+    const __m256i char_D = _mm256_set1_epi8('D');
+    const __m256i char_B = _mm256_set1_epi8('B');
+    const __m256i char_N = _mm256_set1_epi8('N');
+
+    size_t i = 0;
+    /* Process 128 bytes at once using 4 registers */
+    for (; i + 128 <= (size_t)len; i += 128) {
+        __m256i chars0 = _mm256_loadu_si256((__m256i*)(input + i));
+        __m256i chars1 = _mm256_loadu_si256((__m256i*)(input + i + 32));
+        __m256i chars2 = _mm256_loadu_si256((__m256i*)(input + i + 64));
+        __m256i chars3 = _mm256_loadu_si256((__m256i*)(input + i + 96));
         
-        /* Create masks for each base type */
-        __m256i mask_A = _mm256_or_si256(_mm256_cmpeq_epi8(chars, vec_A), _mm256_cmpeq_epi8(chars, vec_a));
-        __m256i mask_C = _mm256_or_si256(_mm256_cmpeq_epi8(chars, vec_C), _mm256_cmpeq_epi8(chars, vec_c));
-        __m256i mask_G = _mm256_or_si256(_mm256_cmpeq_epi8(chars, vec_G), _mm256_cmpeq_epi8(chars, vec_g));
-        __m256i mask_T = _mm256_or_si256(_mm256_cmpeq_epi8(chars, vec_T), _mm256_cmpeq_epi8(chars, vec_t));
+        chars0 = _mm256_and_si256(chars0, upper_mask);
+        chars1 = _mm256_and_si256(chars1, upper_mask);
+        chars2 = _mm256_and_si256(chars2, upper_mask);
+        chars3 = _mm256_and_si256(chars3, upper_mask);
         
-        /* Degenerate bases */
-        __m256i mask_M = _mm256_cmpeq_epi8(chars, vec_M);
-        __m256i mask_R = _mm256_cmpeq_epi8(chars, vec_R);
-        __m256i mask_W = _mm256_cmpeq_epi8(chars, vec_W);
-        __m256i mask_S = _mm256_cmpeq_epi8(chars, vec_S);
-        __m256i mask_Y = _mm256_cmpeq_epi8(chars, vec_Y);
-        __m256i mask_K = _mm256_cmpeq_epi8(chars, vec_K);
-        __m256i mask_V = _mm256_cmpeq_epi8(chars, vec_V);
-        __m256i mask_H = _mm256_cmpeq_epi8(chars, vec_H);
-        __m256i mask_D = _mm256_cmpeq_epi8(chars, vec_D);
-        __m256i mask_B = _mm256_cmpeq_epi8(chars, vec_B);
-        __m256i mask_N = _mm256_cmpeq_epi8(chars, vec_N);
+        /* Generate 4-bit codes using mask operations */
+        __m256i codes0 = _mm256_setzero_si256(); /* Default to 0 (unknown) */
+        __m256i codes1 = _mm256_setzero_si256();
+        __m256i codes2 = _mm256_setzero_si256();
+        __m256i codes3 = _mm256_setzero_si256();
         
-        /* Generate 4-bit encoded values using SIMD */
-        __m256i encoded = _mm256_setzero_si256();
-        encoded = _mm256_or_si256(encoded, _mm256_and_si256(mask_A, _mm256_set1_epi8(0x01)));
-        encoded = _mm256_or_si256(encoded, _mm256_and_si256(mask_C, _mm256_set1_epi8(0x02)));
-        encoded = _mm256_or_si256(encoded, _mm256_and_si256(mask_G, _mm256_set1_epi8(0x04)));
-        encoded = _mm256_or_si256(encoded, _mm256_and_si256(mask_T, _mm256_set1_epi8(0x08)));
-        encoded = _mm256_or_si256(encoded, _mm256_and_si256(mask_M, _mm256_set1_epi8(0x03))); /* A|C */
-        encoded = _mm256_or_si256(encoded, _mm256_and_si256(mask_R, _mm256_set1_epi8(0x05))); /* A|G */
-        encoded = _mm256_or_si256(encoded, _mm256_and_si256(mask_W, _mm256_set1_epi8(0x09))); /* A|T */
-        encoded = _mm256_or_si256(encoded, _mm256_and_si256(mask_S, _mm256_set1_epi8(0x06))); /* C|G */
-        encoded = _mm256_or_si256(encoded, _mm256_and_si256(mask_Y, _mm256_set1_epi8(0x0A))); /* C|T */
-        encoded = _mm256_or_si256(encoded, _mm256_and_si256(mask_K, _mm256_set1_epi8(0x0C))); /* G|T */
-        encoded = _mm256_or_si256(encoded, _mm256_and_si256(mask_V, _mm256_set1_epi8(0x07))); /* A|C|G */
-        encoded = _mm256_or_si256(encoded, _mm256_and_si256(mask_H, _mm256_set1_epi8(0x0B))); /* A|C|T */
-        encoded = _mm256_or_si256(encoded, _mm256_and_si256(mask_D, _mm256_set1_epi8(0x0D))); /* A|G|T */
-        encoded = _mm256_or_si256(encoded, _mm256_and_si256(mask_B, _mm256_set1_epi8(0x0E))); /* C|G|T */
-        encoded = _mm256_or_si256(encoded, _mm256_and_si256(mask_N, _mm256_set1_epi8(0x0F))); /* A|C|G|T */
+        /* Process all characters for codes0 (using bit patterns from kmersearch_dna4_encode_table) */
+        codes0 = _mm256_blendv_epi8(codes0, _mm256_set1_epi8(0x1), _mm256_cmpeq_epi8(chars0, char_A));  /* A=0001 */
+        codes0 = _mm256_blendv_epi8(codes0, _mm256_set1_epi8(0x2), _mm256_cmpeq_epi8(chars0, char_C));  /* C=0010 */
+        codes0 = _mm256_blendv_epi8(codes0, _mm256_set1_epi8(0x4), _mm256_cmpeq_epi8(chars0, char_G));  /* G=0100 */
+        codes0 = _mm256_blendv_epi8(codes0, _mm256_set1_epi8(0x8), _mm256_or_si256(_mm256_cmpeq_epi8(chars0, char_T), _mm256_cmpeq_epi8(chars0, char_U)));  /* T=1000 */
+        codes0 = _mm256_blendv_epi8(codes0, _mm256_set1_epi8(0x3), _mm256_cmpeq_epi8(chars0, char_M));  /* M=0011 */
+        codes0 = _mm256_blendv_epi8(codes0, _mm256_set1_epi8(0x5), _mm256_cmpeq_epi8(chars0, char_R));  /* R=0101 */
+        codes0 = _mm256_blendv_epi8(codes0, _mm256_set1_epi8(0x9), _mm256_cmpeq_epi8(chars0, char_W));  /* W=1001 */
+        codes0 = _mm256_blendv_epi8(codes0, _mm256_set1_epi8(0x6), _mm256_cmpeq_epi8(chars0, char_S));  /* S=0110 */
+        codes0 = _mm256_blendv_epi8(codes0, _mm256_set1_epi8(0xA), _mm256_cmpeq_epi8(chars0, char_Y));  /* Y=1010 */
+        codes0 = _mm256_blendv_epi8(codes0, _mm256_set1_epi8(0xC), _mm256_cmpeq_epi8(chars0, char_K));  /* K=1100 */
+        codes0 = _mm256_blendv_epi8(codes0, _mm256_set1_epi8(0x7), _mm256_cmpeq_epi8(chars0, char_V));  /* V=0111 */
+        codes0 = _mm256_blendv_epi8(codes0, _mm256_set1_epi8(0xB), _mm256_cmpeq_epi8(chars0, char_H));  /* H=1011 */
+        codes0 = _mm256_blendv_epi8(codes0, _mm256_set1_epi8(0xD), _mm256_cmpeq_epi8(chars0, char_D));  /* D=1101 */
+        codes0 = _mm256_blendv_epi8(codes0, _mm256_set1_epi8(0xE), _mm256_cmpeq_epi8(chars0, char_B));  /* B=1110 */
+        codes0 = _mm256_blendv_epi8(codes0, _mm256_set1_epi8(0xF), _mm256_cmpeq_epi8(chars0, char_N));  /* N=1111 */
         
-        /* Extract and pack encoded values */
-        {
-            uint8_t temp[32];
-            int j;
+        /* Process all characters for codes1 */
+        codes1 = _mm256_blendv_epi8(codes1, _mm256_set1_epi8(0x1), _mm256_cmpeq_epi8(chars1, char_A));
+        codes1 = _mm256_blendv_epi8(codes1, _mm256_set1_epi8(0x2), _mm256_cmpeq_epi8(chars1, char_C));
+        codes1 = _mm256_blendv_epi8(codes1, _mm256_set1_epi8(0x4), _mm256_cmpeq_epi8(chars1, char_G));
+        codes1 = _mm256_blendv_epi8(codes1, _mm256_set1_epi8(0x8), _mm256_or_si256(_mm256_cmpeq_epi8(chars1, char_T), _mm256_cmpeq_epi8(chars1, char_U)));
+        codes1 = _mm256_blendv_epi8(codes1, _mm256_set1_epi8(0x3), _mm256_cmpeq_epi8(chars1, char_M));
+        codes1 = _mm256_blendv_epi8(codes1, _mm256_set1_epi8(0x5), _mm256_cmpeq_epi8(chars1, char_R));
+        codes1 = _mm256_blendv_epi8(codes1, _mm256_set1_epi8(0x9), _mm256_cmpeq_epi8(chars1, char_W));
+        codes1 = _mm256_blendv_epi8(codes1, _mm256_set1_epi8(0x6), _mm256_cmpeq_epi8(chars1, char_S));
+        codes1 = _mm256_blendv_epi8(codes1, _mm256_set1_epi8(0xA), _mm256_cmpeq_epi8(chars1, char_Y));
+        codes1 = _mm256_blendv_epi8(codes1, _mm256_set1_epi8(0xC), _mm256_cmpeq_epi8(chars1, char_K));
+        codes1 = _mm256_blendv_epi8(codes1, _mm256_set1_epi8(0x7), _mm256_cmpeq_epi8(chars1, char_V));
+        codes1 = _mm256_blendv_epi8(codes1, _mm256_set1_epi8(0xB), _mm256_cmpeq_epi8(chars1, char_H));
+        codes1 = _mm256_blendv_epi8(codes1, _mm256_set1_epi8(0xD), _mm256_cmpeq_epi8(chars1, char_D));
+        codes1 = _mm256_blendv_epi8(codes1, _mm256_set1_epi8(0xE), _mm256_cmpeq_epi8(chars1, char_B));
+        codes1 = _mm256_blendv_epi8(codes1, _mm256_set1_epi8(0xF), _mm256_cmpeq_epi8(chars1, char_N));
         
-        _mm256_storeu_si256((__m256i*)temp, encoded);
+        /* Process all characters for codes2 */
+        codes2 = _mm256_blendv_epi8(codes2, _mm256_set1_epi8(0x1), _mm256_cmpeq_epi8(chars2, char_A));
+        codes2 = _mm256_blendv_epi8(codes2, _mm256_set1_epi8(0x2), _mm256_cmpeq_epi8(chars2, char_C));
+        codes2 = _mm256_blendv_epi8(codes2, _mm256_set1_epi8(0x4), _mm256_cmpeq_epi8(chars2, char_G));
+        codes2 = _mm256_blendv_epi8(codes2, _mm256_set1_epi8(0x8), _mm256_or_si256(_mm256_cmpeq_epi8(chars2, char_T), _mm256_cmpeq_epi8(chars2, char_U)));
+        codes2 = _mm256_blendv_epi8(codes2, _mm256_set1_epi8(0x3), _mm256_cmpeq_epi8(chars2, char_M));
+        codes2 = _mm256_blendv_epi8(codes2, _mm256_set1_epi8(0x5), _mm256_cmpeq_epi8(chars2, char_R));
+        codes2 = _mm256_blendv_epi8(codes2, _mm256_set1_epi8(0x9), _mm256_cmpeq_epi8(chars2, char_W));
+        codes2 = _mm256_blendv_epi8(codes2, _mm256_set1_epi8(0x6), _mm256_cmpeq_epi8(chars2, char_S));
+        codes2 = _mm256_blendv_epi8(codes2, _mm256_set1_epi8(0xA), _mm256_cmpeq_epi8(chars2, char_Y));
+        codes2 = _mm256_blendv_epi8(codes2, _mm256_set1_epi8(0xC), _mm256_cmpeq_epi8(chars2, char_K));
+        codes2 = _mm256_blendv_epi8(codes2, _mm256_set1_epi8(0x7), _mm256_cmpeq_epi8(chars2, char_V));
+        codes2 = _mm256_blendv_epi8(codes2, _mm256_set1_epi8(0xB), _mm256_cmpeq_epi8(chars2, char_H));
+        codes2 = _mm256_blendv_epi8(codes2, _mm256_set1_epi8(0xD), _mm256_cmpeq_epi8(chars2, char_D));
+        codes2 = _mm256_blendv_epi8(codes2, _mm256_set1_epi8(0xE), _mm256_cmpeq_epi8(chars2, char_B));
+        codes2 = _mm256_blendv_epi8(codes2, _mm256_set1_epi8(0xF), _mm256_cmpeq_epi8(chars2, char_N));
         
-        /* Pack 4-bit values into output */
-        for (j = 0; j < 32; j++) {
-            int bit_pos = (i + j) * 4;
-            int byte_pos = bit_pos / 8;
-            int bit_offset = bit_pos % 8;
-            
-            if (bit_offset <= 4) {
-                output[byte_pos] |= (temp[j] << (4 - bit_offset));
-            } else {
-                /* bit_offset > 4: split across two bytes */
-                int remaining_bits = 8 - bit_offset;
-                output[byte_pos] |= (temp[j] >> (4 - remaining_bits));
-                if (byte_pos + 1 < byte_len) {
-                    output[byte_pos + 1] |= (temp[j] << (4 + remaining_bits));
-                }
-            }
-        }
+        /* Process all characters for codes3 */
+        codes3 = _mm256_blendv_epi8(codes3, _mm256_set1_epi8(0x1), _mm256_cmpeq_epi8(chars3, char_A));
+        codes3 = _mm256_blendv_epi8(codes3, _mm256_set1_epi8(0x2), _mm256_cmpeq_epi8(chars3, char_C));
+        codes3 = _mm256_blendv_epi8(codes3, _mm256_set1_epi8(0x4), _mm256_cmpeq_epi8(chars3, char_G));
+        codes3 = _mm256_blendv_epi8(codes3, _mm256_set1_epi8(0x8), _mm256_or_si256(_mm256_cmpeq_epi8(chars3, char_T), _mm256_cmpeq_epi8(chars3, char_U)));
+        codes3 = _mm256_blendv_epi8(codes3, _mm256_set1_epi8(0x3), _mm256_cmpeq_epi8(chars3, char_M));
+        codes3 = _mm256_blendv_epi8(codes3, _mm256_set1_epi8(0x5), _mm256_cmpeq_epi8(chars3, char_R));
+        codes3 = _mm256_blendv_epi8(codes3, _mm256_set1_epi8(0x9), _mm256_cmpeq_epi8(chars3, char_W));
+        codes3 = _mm256_blendv_epi8(codes3, _mm256_set1_epi8(0x6), _mm256_cmpeq_epi8(chars3, char_S));
+        codes3 = _mm256_blendv_epi8(codes3, _mm256_set1_epi8(0xA), _mm256_cmpeq_epi8(chars3, char_Y));
+        codes3 = _mm256_blendv_epi8(codes3, _mm256_set1_epi8(0xC), _mm256_cmpeq_epi8(chars3, char_K));
+        codes3 = _mm256_blendv_epi8(codes3, _mm256_set1_epi8(0x7), _mm256_cmpeq_epi8(chars3, char_V));
+        codes3 = _mm256_blendv_epi8(codes3, _mm256_set1_epi8(0xB), _mm256_cmpeq_epi8(chars3, char_H));
+        codes3 = _mm256_blendv_epi8(codes3, _mm256_set1_epi8(0xD), _mm256_cmpeq_epi8(chars3, char_D));
+        codes3 = _mm256_blendv_epi8(codes3, _mm256_set1_epi8(0xE), _mm256_cmpeq_epi8(chars3, char_B));
+        codes3 = _mm256_blendv_epi8(codes3, _mm256_set1_epi8(0xF), _mm256_cmpeq_epi8(chars3, char_N));
+        
+        /* Pack nibbles */
+        uint8_t temp0[32], temp1[32], temp2[32], temp3[32];
+        _mm256_storeu_si256((__m256i*)temp0, codes0);
+        _mm256_storeu_si256((__m256i*)temp1, codes1);
+        _mm256_storeu_si256((__m256i*)temp2, codes2);
+        _mm256_storeu_si256((__m256i*)temp3, codes3);
+        
+        for (int j = 0; j < 16; j++) {
+            output[i/2 + j] = (temp0[j*2] << 4) | temp0[j*2 + 1];
+            output[i/2 + 16 + j] = (temp1[j*2] << 4) | temp1[j*2 + 1];
+            output[i/2 + 32 + j] = (temp2[j*2] << 4) | temp2[j*2 + 1];
+            output[i/2 + 48 + j] = (temp3[j*2] << 4) | temp3[j*2 + 1];
         }
     }
-    
-    /* Handle remaining characters with scalar */
-    for (int i = simd_len; i < len; i++) {
-        uint8_t encoded = kmersearch_dna4_encode_table[(unsigned char)input[i]];
-        int bit_pos = i * 4;
-        int byte_pos = bit_pos / 8;
-        int bit_offset = bit_pos % 8;
+
+    /* Process remaining 32-byte chunks */
+    for (; i + 32 <= (size_t)len; i += 32) {
+        __m256i chars = _mm256_loadu_si256((__m256i*)(input + i));
+        chars = _mm256_and_si256(chars, upper_mask);
         
-        if (bit_offset <= 4) {
-            output[byte_pos] |= (encoded << (4 - bit_offset));
-        } else {
-            /* bit_offset > 4: split across two bytes */
-            int remaining_bits = 8 - bit_offset;
-            output[byte_pos] |= (encoded >> (4 - remaining_bits));
-            if (byte_pos + 1 < byte_len) {
-                output[byte_pos + 1] |= (encoded << (4 + remaining_bits));
-            }
+        /* Generate 4-bit codes using mask operations */
+        __m256i codes = _mm256_setzero_si256(); /* Default to 0 (unknown) */
+        codes = _mm256_blendv_epi8(codes, _mm256_set1_epi8(0x1), _mm256_cmpeq_epi8(chars, char_A));
+        codes = _mm256_blendv_epi8(codes, _mm256_set1_epi8(0x2), _mm256_cmpeq_epi8(chars, char_C));
+        codes = _mm256_blendv_epi8(codes, _mm256_set1_epi8(0x4), _mm256_cmpeq_epi8(chars, char_G));
+        codes = _mm256_blendv_epi8(codes, _mm256_set1_epi8(0x8), _mm256_or_si256(_mm256_cmpeq_epi8(chars, char_T), _mm256_cmpeq_epi8(chars, char_U)));
+        codes = _mm256_blendv_epi8(codes, _mm256_set1_epi8(0x3), _mm256_cmpeq_epi8(chars, char_M));
+        codes = _mm256_blendv_epi8(codes, _mm256_set1_epi8(0x5), _mm256_cmpeq_epi8(chars, char_R));
+        codes = _mm256_blendv_epi8(codes, _mm256_set1_epi8(0x9), _mm256_cmpeq_epi8(chars, char_W));
+        codes = _mm256_blendv_epi8(codes, _mm256_set1_epi8(0x6), _mm256_cmpeq_epi8(chars, char_S));
+        codes = _mm256_blendv_epi8(codes, _mm256_set1_epi8(0xA), _mm256_cmpeq_epi8(chars, char_Y));
+        codes = _mm256_blendv_epi8(codes, _mm256_set1_epi8(0xC), _mm256_cmpeq_epi8(chars, char_K));
+        codes = _mm256_blendv_epi8(codes, _mm256_set1_epi8(0x7), _mm256_cmpeq_epi8(chars, char_V));
+        codes = _mm256_blendv_epi8(codes, _mm256_set1_epi8(0xB), _mm256_cmpeq_epi8(chars, char_H));
+        codes = _mm256_blendv_epi8(codes, _mm256_set1_epi8(0xD), _mm256_cmpeq_epi8(chars, char_D));
+        codes = _mm256_blendv_epi8(codes, _mm256_set1_epi8(0xE), _mm256_cmpeq_epi8(chars, char_B));
+        codes = _mm256_blendv_epi8(codes, _mm256_set1_epi8(0xF), _mm256_cmpeq_epi8(chars, char_N));
+        
+        /* Pack nibbles */
+        uint8_t temp[32];
+        _mm256_storeu_si256((__m256i*)temp, codes);
+        
+        for (int j = 0; j < 16; j++) {
+            output[i/2 + j] = (temp[j*2] << 4) | temp[j*2 + 1];
         }
+    }
+
+    /* Handle remaining */
+    for (; i < (size_t)len; i += 2) {
+        uint8_t c0 = input[i];
+        uint8_t c1 = (i + 1 < (size_t)len) ? input[i + 1] : 'N';
+        
+        static const uint8_t table[256] = {
+            ['A'] = 0x1, ['a'] = 0x1,
+            ['C'] = 0x2, ['c'] = 0x2,
+            ['G'] = 0x4, ['g'] = 0x4,
+            ['T'] = 0x8, ['t'] = 0x8,
+            ['U'] = 0x8, ['u'] = 0x8,
+            ['M'] = 0x3, ['m'] = 0x3,
+            ['R'] = 0x5, ['r'] = 0x5,
+            ['W'] = 0x9, ['w'] = 0x9,
+            ['S'] = 0x6, ['s'] = 0x6,
+            ['Y'] = 0xA, ['y'] = 0xA,
+            ['K'] = 0xC, ['k'] = 0xC,
+            ['V'] = 0x7, ['v'] = 0x7,
+            ['H'] = 0xB, ['h'] = 0xB,
+            ['D'] = 0xD, ['d'] = 0xD,
+            ['B'] = 0xE, ['b'] = 0xE,
+            ['N'] = 0xF, ['n'] = 0xF
+        };
+        
+        output[i/2] = (table[c0] << 4) | table[c1];
     }
 }
 
@@ -2456,46 +2472,29 @@ void dna4_decode_avx2(const uint8_t* input, char* output, int len)
             temp[b] = input[byte_offset + b];
         }
         
-        /* Process in 16-character chunks for better efficiency */
-        for (int chunk = 0; chunk < 2; chunk++) {
-            __m128i nibbles = _mm_setzero_si128();
-            uint8_t extracted[16];
-            __m256i nibbles_256, masked, decoded;
-            
-            /* Extract 4-bit values for 16 characters */
-            for (int j = 0; j < 16; j++) {
-                int char_idx = chunk * 16 + j;
-                int total_bit_pos = char_idx * 4;
-                int byte_pos = total_bit_pos / 8;
-                int bit_pos = total_bit_pos % 8;
-                uint8_t val = 0;
-                
-                if (byte_pos < 17) {
-                    if (bit_pos <= 4) {
-                        val = (temp[byte_pos] >> (4 - bit_pos)) & 0x0F;
-                    } else if (byte_pos + 1 < 17) {
-                        int remaining = 8 - bit_pos;
-                        val = ((temp[byte_pos] & ((1 << remaining) - 1)) << (4 - remaining)) |
-                              ((temp[byte_pos + 1] >> (4 + remaining)) & 0x0F);
-                    }
-                }
-                
-                extracted[j] = val;
-            }
-            
-            /* Load extracted nibbles */
-            
-            nibbles = _mm_loadu_si128((__m128i*)extracted);
-            
-            /* Use PSHUFB for lookup - process 16 at once */
-            nibbles_256 = _mm256_zextsi128_si256(nibbles);
-            nibbles_256 = _mm256_permute2x128_si256(nibbles_256, nibbles_256, 0);
-            masked = _mm256_and_si256(nibbles_256, mask_nibble);
-            decoded = _mm256_shuffle_epi8(decode_lut_lo, masked);
-            
-            /* Store 16 decoded characters */
-            _mm_storeu_si128((__m128i*)&output[i + chunk * 16], _mm256_castsi256_si128(decoded));
-        }
+        /* SIMD extraction of 4-bit values */
+        __m128i packed_bytes = _mm_loadu_si128((__m128i*)temp);
+        
+        /* Unpack nibbles using SIMD */
+        __m256i packed_256 = _mm256_cvtepu8_epi16(packed_bytes);
+        
+        /* Extract high and low nibbles */
+        __m256i high_nibbles = _mm256_srli_epi16(packed_256, 4);
+        __m256i low_nibbles = _mm256_and_si256(packed_256, _mm256_set1_epi16(0x0F));
+        
+        /* Interleave nibbles */
+        __m256i nibbles_lo = _mm256_unpacklo_epi8(high_nibbles, low_nibbles);
+        __m256i nibbles_hi = _mm256_unpackhi_epi8(high_nibbles, low_nibbles);
+        
+        /* Pack to get all 32 nibbles in order */
+        __m256i all_nibbles = _mm256_permute2x128_si256(nibbles_lo, nibbles_hi, 0x20);
+        
+        /* Mask and use shuffle for lookup */
+        __m256i masked = _mm256_and_si256(all_nibbles, mask_nibble);
+        __m256i decoded = _mm256_shuffle_epi8(decode_lut_lo, masked);
+        
+        /* Store 32 decoded characters */
+        _mm256_storeu_si256((__m256i*)(output + i), decoded);
     }
     
     /* Handle remaining characters with scalar */
@@ -2530,87 +2529,207 @@ void dna4_decode_avx2(const uint8_t* input, char* output, int len)
 __attribute__((target("avx512f,avx512bw")))
 void dna4_encode_avx512(const char* input, uint8_t* output, int len)
 {
-    int byte_len = (len * 4 + 7) / 8;
-    int simd_len;
-    /* Create comparison vectors for efficient encoding */
-    const __m512i vec_A = _mm512_set1_epi8('A');
-    const __m512i vec_C = _mm512_set1_epi8('C');
-    const __m512i vec_G = _mm512_set1_epi8('G');
-    const __m512i vec_T = _mm512_set1_epi8('T');
-    const __m512i vec_a = _mm512_set1_epi8('a');
-    const __m512i vec_c = _mm512_set1_epi8('c');
-    const __m512i vec_g = _mm512_set1_epi8('g');
-    const __m512i vec_t = _mm512_set1_epi8('t');
+    /* Based on simd_hybrid_fast.c implementation - without VBMI */
+    const __m512i upper_mask = _mm512_set1_epi8(0xDF);
     
-    memset(output, 0, byte_len);
-    
-    /* Process 64 characters at a time with AVX512 */
-    simd_len = len & ~63;  /* Round down to multiple of 64 */
-    
-    for (int i = 0; i < simd_len; i += 64) {
-        __m512i chars = _mm512_loadu_si512((__m512i*)(input + i));
+    /* Character constants for comparison */
+    const __m512i base_A = _mm512_set1_epi8('A');
+    const __m512i base_C = _mm512_set1_epi8('C');
+    const __m512i base_G = _mm512_set1_epi8('G');
+    const __m512i base_T = _mm512_set1_epi8('T');
+    const __m512i base_U = _mm512_set1_epi8('U');
+    const __m512i base_M = _mm512_set1_epi8('M');
+    const __m512i base_R = _mm512_set1_epi8('R');
+    const __m512i base_W = _mm512_set1_epi8('W');
+    const __m512i base_S = _mm512_set1_epi8('S');
+    const __m512i base_Y = _mm512_set1_epi8('Y');
+    const __m512i base_K = _mm512_set1_epi8('K');
+    const __m512i base_V = _mm512_set1_epi8('V');
+    const __m512i base_H = _mm512_set1_epi8('H');
+    const __m512i base_D = _mm512_set1_epi8('D');
+    const __m512i base_B = _mm512_set1_epi8('B');
+    const __m512i base_N = _mm512_set1_epi8('N');
+
+    size_t i = 0;
+    /* Process 256 bytes at once using 4 registers */
+    for (; i + 256 <= (size_t)len; i += 256) {
+        __m512i chars0 = _mm512_loadu_si512((__m512i*)(input + i));
+        __m512i chars1 = _mm512_loadu_si512((__m512i*)(input + i + 64));
+        __m512i chars2 = _mm512_loadu_si512((__m512i*)(input + i + 128));
+        __m512i chars3 = _mm512_loadu_si512((__m512i*)(input + i + 192));
         
-        /* Create masks for each base type using AVX512 mask registers */
-        __mmask64 mask_A = _mm512_cmpeq_epi8_mask(chars, vec_A) | _mm512_cmpeq_epi8_mask(chars, vec_a);
-        __mmask64 mask_C = _mm512_cmpeq_epi8_mask(chars, vec_C) | _mm512_cmpeq_epi8_mask(chars, vec_c);
-        __mmask64 mask_G = _mm512_cmpeq_epi8_mask(chars, vec_G) | _mm512_cmpeq_epi8_mask(chars, vec_g);
-        __mmask64 mask_T = _mm512_cmpeq_epi8_mask(chars, vec_T) | _mm512_cmpeq_epi8_mask(chars, vec_t);
+        /* Convert to uppercase */
+        chars0 = _mm512_and_si512(chars0, upper_mask);
+        chars1 = _mm512_and_si512(chars1, upper_mask);
+        chars2 = _mm512_and_si512(chars2, upper_mask);
+        chars3 = _mm512_and_si512(chars3, upper_mask);
         
-        /* Use lookup table approach for DNA4 encoding */
-        uint8_t temp[64];
-        int j;
+        /* Generate 4-bit codes using mask operations */
+        __m512i codes0 = _mm512_setzero_si512(); /* Default to 0 (unknown) */
+        __m512i codes1 = _mm512_setzero_si512();
+        __m512i codes2 = _mm512_setzero_si512();
+        __m512i codes3 = _mm512_setzero_si512();
         
-        _mm512_storeu_si512((__m512i*)temp, chars);
+        /* Basic nucleotides */
+        codes0 = _mm512_mask_blend_epi8(_mm512_cmpeq_epi8_mask(chars0, base_A), codes0, _mm512_set1_epi8(0x1));
+        codes1 = _mm512_mask_blend_epi8(_mm512_cmpeq_epi8_mask(chars1, base_A), codes1, _mm512_set1_epi8(0x1));
+        codes2 = _mm512_mask_blend_epi8(_mm512_cmpeq_epi8_mask(chars2, base_A), codes2, _mm512_set1_epi8(0x1));
+        codes3 = _mm512_mask_blend_epi8(_mm512_cmpeq_epi8_mask(chars3, base_A), codes3, _mm512_set1_epi8(0x1));
         
-        for (j = 0; j < 64; j++) {
-            temp[j] = kmersearch_dna4_encode_table[(unsigned char)temp[j]];
-        }
+        codes0 = _mm512_mask_blend_epi8(_mm512_cmpeq_epi8_mask(chars0, base_C), codes0, _mm512_set1_epi8(0x2));
+        codes1 = _mm512_mask_blend_epi8(_mm512_cmpeq_epi8_mask(chars1, base_C), codes1, _mm512_set1_epi8(0x2));
+        codes2 = _mm512_mask_blend_epi8(_mm512_cmpeq_epi8_mask(chars2, base_C), codes2, _mm512_set1_epi8(0x2));
+        codes3 = _mm512_mask_blend_epi8(_mm512_cmpeq_epi8_mask(chars3, base_C), codes3, _mm512_set1_epi8(0x2));
         
-        /* Pack 4-bit values into output */
-        for (j = 0; j < 64; j++) {
-            int bit_pos = (i + j) * 4;
-            int byte_pos = bit_pos / 8;
-            int bit_offset = bit_pos % 8;
-            
-            if (bit_offset <= 4) {
-                output[byte_pos] |= (temp[j] << (4 - bit_offset));
-            } else {
-                /* bit_offset > 4: handle byte boundary crossing */
-                int remaining_bits = 8 - bit_offset;
-                output[byte_pos] |= (temp[j] >> (4 - remaining_bits));
-                if (byte_pos + 1 < byte_len) {
-                    output[byte_pos + 1] |= (temp[j] << (4 + remaining_bits));
-                }
-            }
+        codes0 = _mm512_mask_blend_epi8(_mm512_cmpeq_epi8_mask(chars0, base_G), codes0, _mm512_set1_epi8(0x4));
+        codes1 = _mm512_mask_blend_epi8(_mm512_cmpeq_epi8_mask(chars1, base_G), codes1, _mm512_set1_epi8(0x4));
+        codes2 = _mm512_mask_blend_epi8(_mm512_cmpeq_epi8_mask(chars2, base_G), codes2, _mm512_set1_epi8(0x4));
+        codes3 = _mm512_mask_blend_epi8(_mm512_cmpeq_epi8_mask(chars3, base_G), codes3, _mm512_set1_epi8(0x4));
+        
+        codes0 = _mm512_mask_blend_epi8(_mm512_cmpeq_epi8_mask(chars0, base_T) | _mm512_cmpeq_epi8_mask(chars0, base_U), codes0, _mm512_set1_epi8(0x8));
+        codes1 = _mm512_mask_blend_epi8(_mm512_cmpeq_epi8_mask(chars1, base_T) | _mm512_cmpeq_epi8_mask(chars1, base_U), codes1, _mm512_set1_epi8(0x8));
+        codes2 = _mm512_mask_blend_epi8(_mm512_cmpeq_epi8_mask(chars2, base_T) | _mm512_cmpeq_epi8_mask(chars2, base_U), codes2, _mm512_set1_epi8(0x8));
+        codes3 = _mm512_mask_blend_epi8(_mm512_cmpeq_epi8_mask(chars3, base_T) | _mm512_cmpeq_epi8_mask(chars3, base_U), codes3, _mm512_set1_epi8(0x8));
+        
+        /* Degenerate bases */
+        codes0 = _mm512_mask_blend_epi8(_mm512_cmpeq_epi8_mask(chars0, base_M), codes0, _mm512_set1_epi8(0x3));
+        codes1 = _mm512_mask_blend_epi8(_mm512_cmpeq_epi8_mask(chars1, base_M), codes1, _mm512_set1_epi8(0x3));
+        codes2 = _mm512_mask_blend_epi8(_mm512_cmpeq_epi8_mask(chars2, base_M), codes2, _mm512_set1_epi8(0x3));
+        codes3 = _mm512_mask_blend_epi8(_mm512_cmpeq_epi8_mask(chars3, base_M), codes3, _mm512_set1_epi8(0x3));
+        
+        codes0 = _mm512_mask_blend_epi8(_mm512_cmpeq_epi8_mask(chars0, base_R), codes0, _mm512_set1_epi8(0x5));
+        codes1 = _mm512_mask_blend_epi8(_mm512_cmpeq_epi8_mask(chars1, base_R), codes1, _mm512_set1_epi8(0x5));
+        codes2 = _mm512_mask_blend_epi8(_mm512_cmpeq_epi8_mask(chars2, base_R), codes2, _mm512_set1_epi8(0x5));
+        codes3 = _mm512_mask_blend_epi8(_mm512_cmpeq_epi8_mask(chars3, base_R), codes3, _mm512_set1_epi8(0x5));
+        
+        codes0 = _mm512_mask_blend_epi8(_mm512_cmpeq_epi8_mask(chars0, base_W), codes0, _mm512_set1_epi8(0x9));
+        codes1 = _mm512_mask_blend_epi8(_mm512_cmpeq_epi8_mask(chars1, base_W), codes1, _mm512_set1_epi8(0x9));
+        codes2 = _mm512_mask_blend_epi8(_mm512_cmpeq_epi8_mask(chars2, base_W), codes2, _mm512_set1_epi8(0x9));
+        codes3 = _mm512_mask_blend_epi8(_mm512_cmpeq_epi8_mask(chars3, base_W), codes3, _mm512_set1_epi8(0x9));
+        
+        codes0 = _mm512_mask_blend_epi8(_mm512_cmpeq_epi8_mask(chars0, base_S), codes0, _mm512_set1_epi8(0x6));
+        codes1 = _mm512_mask_blend_epi8(_mm512_cmpeq_epi8_mask(chars1, base_S), codes1, _mm512_set1_epi8(0x6));
+        codes2 = _mm512_mask_blend_epi8(_mm512_cmpeq_epi8_mask(chars2, base_S), codes2, _mm512_set1_epi8(0x6));
+        codes3 = _mm512_mask_blend_epi8(_mm512_cmpeq_epi8_mask(chars3, base_S), codes3, _mm512_set1_epi8(0x6));
+        
+        codes0 = _mm512_mask_blend_epi8(_mm512_cmpeq_epi8_mask(chars0, base_Y), codes0, _mm512_set1_epi8(0xA));
+        codes1 = _mm512_mask_blend_epi8(_mm512_cmpeq_epi8_mask(chars1, base_Y), codes1, _mm512_set1_epi8(0xA));
+        codes2 = _mm512_mask_blend_epi8(_mm512_cmpeq_epi8_mask(chars2, base_Y), codes2, _mm512_set1_epi8(0xA));
+        codes3 = _mm512_mask_blend_epi8(_mm512_cmpeq_epi8_mask(chars3, base_Y), codes3, _mm512_set1_epi8(0xA));
+        
+        codes0 = _mm512_mask_blend_epi8(_mm512_cmpeq_epi8_mask(chars0, base_K), codes0, _mm512_set1_epi8(0xC));
+        codes1 = _mm512_mask_blend_epi8(_mm512_cmpeq_epi8_mask(chars1, base_K), codes1, _mm512_set1_epi8(0xC));
+        codes2 = _mm512_mask_blend_epi8(_mm512_cmpeq_epi8_mask(chars2, base_K), codes2, _mm512_set1_epi8(0xC));
+        codes3 = _mm512_mask_blend_epi8(_mm512_cmpeq_epi8_mask(chars3, base_K), codes3, _mm512_set1_epi8(0xC));
+        
+        codes0 = _mm512_mask_blend_epi8(_mm512_cmpeq_epi8_mask(chars0, base_V), codes0, _mm512_set1_epi8(0x7));
+        codes1 = _mm512_mask_blend_epi8(_mm512_cmpeq_epi8_mask(chars1, base_V), codes1, _mm512_set1_epi8(0x7));
+        codes2 = _mm512_mask_blend_epi8(_mm512_cmpeq_epi8_mask(chars2, base_V), codes2, _mm512_set1_epi8(0x7));
+        codes3 = _mm512_mask_blend_epi8(_mm512_cmpeq_epi8_mask(chars3, base_V), codes3, _mm512_set1_epi8(0x7));
+        
+        codes0 = _mm512_mask_blend_epi8(_mm512_cmpeq_epi8_mask(chars0, base_H), codes0, _mm512_set1_epi8(0xB));
+        codes1 = _mm512_mask_blend_epi8(_mm512_cmpeq_epi8_mask(chars1, base_H), codes1, _mm512_set1_epi8(0xB));
+        codes2 = _mm512_mask_blend_epi8(_mm512_cmpeq_epi8_mask(chars2, base_H), codes2, _mm512_set1_epi8(0xB));
+        codes3 = _mm512_mask_blend_epi8(_mm512_cmpeq_epi8_mask(chars3, base_H), codes3, _mm512_set1_epi8(0xB));
+        
+        codes0 = _mm512_mask_blend_epi8(_mm512_cmpeq_epi8_mask(chars0, base_D), codes0, _mm512_set1_epi8(0xD));
+        codes1 = _mm512_mask_blend_epi8(_mm512_cmpeq_epi8_mask(chars1, base_D), codes1, _mm512_set1_epi8(0xD));
+        codes2 = _mm512_mask_blend_epi8(_mm512_cmpeq_epi8_mask(chars2, base_D), codes2, _mm512_set1_epi8(0xD));
+        codes3 = _mm512_mask_blend_epi8(_mm512_cmpeq_epi8_mask(chars3, base_D), codes3, _mm512_set1_epi8(0xD));
+        
+        codes0 = _mm512_mask_blend_epi8(_mm512_cmpeq_epi8_mask(chars0, base_B), codes0, _mm512_set1_epi8(0xE));
+        codes1 = _mm512_mask_blend_epi8(_mm512_cmpeq_epi8_mask(chars1, base_B), codes1, _mm512_set1_epi8(0xE));
+        codes2 = _mm512_mask_blend_epi8(_mm512_cmpeq_epi8_mask(chars2, base_B), codes2, _mm512_set1_epi8(0xE));
+        codes3 = _mm512_mask_blend_epi8(_mm512_cmpeq_epi8_mask(chars3, base_B), codes3, _mm512_set1_epi8(0xE));
+        
+        codes0 = _mm512_mask_blend_epi8(_mm512_cmpeq_epi8_mask(chars0, base_N), codes0, _mm512_set1_epi8(0xF));
+        codes1 = _mm512_mask_blend_epi8(_mm512_cmpeq_epi8_mask(chars1, base_N), codes1, _mm512_set1_epi8(0xF));
+        codes2 = _mm512_mask_blend_epi8(_mm512_cmpeq_epi8_mask(chars2, base_N), codes2, _mm512_set1_epi8(0xF));
+        codes3 = _mm512_mask_blend_epi8(_mm512_cmpeq_epi8_mask(chars3, base_N), codes3, _mm512_set1_epi8(0xF));
+        
+        /* Pack nibbles correctly */
+        uint8_t temp0[64], temp1[64], temp2[64], temp3[64];
+        _mm512_storeu_si512((__m512i*)temp0, codes0);
+        _mm512_storeu_si512((__m512i*)temp1, codes1);
+        _mm512_storeu_si512((__m512i*)temp2, codes2);
+        _mm512_storeu_si512((__m512i*)temp3, codes3);
+        
+        for (int j = 0; j < 32; j++) {
+            output[i/2 + j] = (temp0[j*2] << 4) | temp0[j*2 + 1];
+            output[i/2 + 32 + j] = (temp1[j*2] << 4) | temp1[j*2 + 1];
+            output[i/2 + 64 + j] = (temp2[j*2] << 4) | temp2[j*2 + 1];
+            output[i/2 + 96 + j] = (temp3[j*2] << 4) | temp3[j*2 + 1];
         }
     }
-    
-    /* Handle remaining characters with scalar */
-    for (int i = simd_len; i < len; i++) {
-        uint8_t encoded = kmersearch_dna4_encode_table[(unsigned char)input[i]];
-        int bit_pos = i * 4;
-        int byte_pos = bit_pos / 8;
-        int bit_offset = bit_pos % 8;
+
+    /* Process remaining 64-byte chunks */
+    for (; i + 64 <= (size_t)len; i += 64) {
+        __m512i chars = _mm512_loadu_si512((__m512i*)(input + i));
+        chars = _mm512_and_si512(chars, upper_mask);
         
-        if (bit_offset <= 4) {
-            output[byte_pos] |= (encoded << (4 - bit_offset));
-        } else {
-            /* bit_offset > 4: handle byte boundary crossing */
-            int remaining_bits = 8 - bit_offset;
-            output[byte_pos] |= (encoded >> (4 - remaining_bits));
-            if (byte_pos + 1 < byte_len) {
-                output[byte_pos + 1] |= (encoded << (4 + remaining_bits));
-            }
+        /* Generate 4-bit codes using mask operations */
+        __m512i codes = _mm512_setzero_si512(); /* Default to 0 (unknown) */
+        
+        /* Basic nucleotides */
+        codes = _mm512_mask_blend_epi8(_mm512_cmpeq_epi8_mask(chars, base_A), codes, _mm512_set1_epi8(0x1));
+        codes = _mm512_mask_blend_epi8(_mm512_cmpeq_epi8_mask(chars, base_C), codes, _mm512_set1_epi8(0x2));
+        codes = _mm512_mask_blend_epi8(_mm512_cmpeq_epi8_mask(chars, base_G), codes, _mm512_set1_epi8(0x4));
+        codes = _mm512_mask_blend_epi8(_mm512_cmpeq_epi8_mask(chars, base_T) | _mm512_cmpeq_epi8_mask(chars, base_U), codes, _mm512_set1_epi8(0x8));
+        
+        /* Degenerate bases */
+        codes = _mm512_mask_blend_epi8(_mm512_cmpeq_epi8_mask(chars, base_M), codes, _mm512_set1_epi8(0x3));
+        codes = _mm512_mask_blend_epi8(_mm512_cmpeq_epi8_mask(chars, base_R), codes, _mm512_set1_epi8(0x5));
+        codes = _mm512_mask_blend_epi8(_mm512_cmpeq_epi8_mask(chars, base_W), codes, _mm512_set1_epi8(0x9));
+        codes = _mm512_mask_blend_epi8(_mm512_cmpeq_epi8_mask(chars, base_S), codes, _mm512_set1_epi8(0x6));
+        codes = _mm512_mask_blend_epi8(_mm512_cmpeq_epi8_mask(chars, base_Y), codes, _mm512_set1_epi8(0xA));
+        codes = _mm512_mask_blend_epi8(_mm512_cmpeq_epi8_mask(chars, base_K), codes, _mm512_set1_epi8(0xC));
+        codes = _mm512_mask_blend_epi8(_mm512_cmpeq_epi8_mask(chars, base_V), codes, _mm512_set1_epi8(0x7));
+        codes = _mm512_mask_blend_epi8(_mm512_cmpeq_epi8_mask(chars, base_H), codes, _mm512_set1_epi8(0xB));
+        codes = _mm512_mask_blend_epi8(_mm512_cmpeq_epi8_mask(chars, base_D), codes, _mm512_set1_epi8(0xD));
+        codes = _mm512_mask_blend_epi8(_mm512_cmpeq_epi8_mask(chars, base_B), codes, _mm512_set1_epi8(0xE));
+        codes = _mm512_mask_blend_epi8(_mm512_cmpeq_epi8_mask(chars, base_N), codes, _mm512_set1_epi8(0xF));
+        
+        /* Pack nibbles correctly */
+        uint8_t temp[64];
+        _mm512_storeu_si512((__m512i*)temp, codes);
+        
+        for (int j = 0; j < 32; j++) {
+            output[i/2 + j] = (temp[j*2] << 4) | temp[j*2 + 1];
         }
+    }
+
+    /* Handle remaining */
+    for (; i < (size_t)len; i += 2) {
+        uint8_t c0 = input[i];
+        uint8_t c1 = (i + 1 < (size_t)len) ? input[i + 1] : 'N';
+        
+        static const uint8_t table[256] = {
+            ['A'] = 0x1, ['a'] = 0x1,
+            ['C'] = 0x2, ['c'] = 0x2,
+            ['G'] = 0x4, ['g'] = 0x4,
+            ['T'] = 0x8, ['t'] = 0x8,
+            ['U'] = 0x8, ['u'] = 0x8,
+            ['M'] = 0x3, ['m'] = 0x3,
+            ['R'] = 0x5, ['r'] = 0x5,
+            ['W'] = 0x9, ['w'] = 0x9,
+            ['S'] = 0x6, ['s'] = 0x6,
+            ['Y'] = 0xA, ['y'] = 0xA,
+            ['K'] = 0xC, ['k'] = 0xC,
+            ['V'] = 0x7, ['v'] = 0x7,
+            ['H'] = 0xB, ['h'] = 0xB,
+            ['D'] = 0xD, ['d'] = 0xD,
+            ['B'] = 0xE, ['b'] = 0xE,
+            ['N'] = 0xF, ['n'] = 0xF
+        };
+        
+        output[i/2] = (table[c0] << 4) | table[c1];
     }
 }
 
 /* AVX512 implementation for DNA4 decoding */
 __attribute__((target("avx512f,avx512bw")))
-void dna4_decode_avx512(const uint8_t* input, char* output, int bit_len)
+void dna4_decode_avx512(const uint8_t* input, char* output, int len)
 {
-    /* Convert bit length to character length */
-    int len = bit_len / 4;
     
     /* Process 64 characters at a time for AVX512F/BW */
     int simd_len = len & ~63;  /* Round down to multiple of 64 */
@@ -2630,50 +2749,36 @@ void dna4_decode_avx512(const uint8_t* input, char* output, int bit_len)
         int byte_offset = (i * 4) / 8;
         
         /* Load 32 bytes containing 64 4-bit characters */
-        __m256i input_data = _mm256_loadu_si256((const __m256i*)&input[byte_offset]);
-        __m512i data = _mm512_broadcast_i64x4(input_data);
+        uint8_t temp[32] __attribute__((aligned(32))) = {0};
+        for (int b = 0; b < 32 && (byte_offset + b) < (len * 4 + 7) / 8; b++) {
+            temp[b] = input[byte_offset + b];
+        }
         
-        /* Extract high and low nibbles using shifts and masks (AVX512F/BW) */
-        __m512i high_nibbles = _mm512_and_si512(_mm512_srli_epi16(data, 4), mask_0f);
-        __m512i low_nibbles = _mm512_and_si512(data, mask_0f);
+        /* Extract 64 4-bit values into 64 bytes */
+        {
+        uint8_t decoded_chars[64];
         
-        /* Interleave nibbles using standard AVX512F operations */
-        __m512i interleaved_lo = _mm512_unpacklo_epi8(high_nibbles, low_nibbles);
-        __m512i interleaved_hi = _mm512_unpackhi_epi8(high_nibbles, low_nibbles);
+        /* Process each byte of input (2 characters per byte) */
+        for (int b = 0; b < 32; b++) {
+            uint8_t byte_val = temp[b];
+            
+            /* Extract 2 4-bit values from this byte */
+            decoded_chars[b * 2 + 0] = (byte_val >> 4) & 0x0F;  /* high nibble */
+            decoded_chars[b * 2 + 1] = (byte_val >> 0) & 0x0F;  /* low nibble */
+        }
         
-        /* Create reordering pattern for proper nibble sequence using set_epi8 */
-        const __m512i reorder_lo = _mm512_set_epi8(
-            49, 51, 53, 55, 57, 59, 61, 63, 48, 50, 52, 54, 56, 58, 60, 62,
-            33, 35, 37, 39, 41, 43, 45, 47, 32, 34, 36, 38, 40, 42, 44, 46,
-            17, 19, 21, 23, 25, 27, 29, 31, 16, 18, 20, 22, 24, 26, 28, 30,
-             1,  3,  5,  7,  9, 11, 13, 15,  0,  2,  4,  6,  8, 10, 12, 14
-        );
-        
-        const __m512i reorder_hi = _mm512_set_epi8(
-            48, 50, 52, 54, 56, 58, 60, 62, 49, 51, 53, 55, 57, 59, 61, 63,
-            32, 34, 36, 38, 40, 42, 44, 46, 33, 35, 37, 39, 41, 43, 45, 47,
-            16, 18, 20, 22, 24, 26, 28, 30, 17, 19, 21, 23, 25, 27, 29, 31,
-             0,  2,  4,  6,  8, 10, 12, 14,  1,  3,  5,  7,  9, 11, 13, 15
-        );
-        
-        __m512i reordered_lo, reordered_hi, values, decoded;
-        __mmask64 blend_mask = 0xAAAAAAAAAAAAAAAAULL; /* Alternate pattern */
-        
-        /* Reorder bytes to get proper nibble sequence */
-        reordered_lo = _mm512_shuffle_epi8(interleaved_lo, reorder_lo);
-        reordered_hi = _mm512_shuffle_epi8(interleaved_hi, reorder_hi);
-        
-        /* Combine reordered parts using blend operations */
-        values = _mm512_mask_blend_epi8(blend_mask, reordered_lo, reordered_hi);
+        /* Load the extracted values into a 512-bit register */
+        __m512i values = _mm512_loadu_si512((const __m512i*)decoded_chars);
         
         /* Mask to ensure valid indices for lookup table */
         values = _mm512_and_si512(values, mask_0f);
         
         /* Decode using lookup table with regular shuffle */
-        decoded = _mm512_shuffle_epi8(decode_lut, values);
+        __m512i decoded = _mm512_shuffle_epi8(decode_lut, values);
         
         /* Store 64 decoded characters */
         _mm512_storeu_si512((__m512i*)&output[i], decoded);
+        }
     }
     
     /* Handle remaining characters with scalar */

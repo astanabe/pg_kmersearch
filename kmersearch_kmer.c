@@ -932,11 +932,11 @@ kmersearch_extract_dna2_kmer2_direct(VarBit *seq, int k, int *nkeys)
     
     /* Use SIMD based on runtime capability and data size thresholds */
 #ifdef __x86_64__
-    /* AVX512 with VBMI2 - highest performance */
+    /* AVX512 - highest performance */
     if (simd_capability >= SIMD_AVX512VBMI2 && seq_bits >= SIMD_EXTRACT_AVX512_THRESHOLD) {
         return kmersearch_extract_dna2_kmer2_direct_avx512(seq, k, nkeys);
     }
-    /* AVX2 with BMI2 - good performance */
+    /* AVX2 - good performance */
     if (simd_capability >= SIMD_BMI2 && seq_bits >= SIMD_EXTRACT_AVX2_THRESHOLD) {
         return kmersearch_extract_dna2_kmer2_direct_avx2(seq, k, nkeys);
     }
@@ -1212,7 +1212,7 @@ kmersearch_extract_dna2_kmer2_direct_avx512(VarBit *seq, int k, int *nkeys)
     
     keys = (Datum *) palloc(max_kmers * sizeof(Datum));
     
-    /* Process 8 k-mers at a time with AVX512 VBMI2 for maximum performance */
+    /* Process 8 k-mers at a time with AVX512 for maximum performance */
     if (k <= 16 && max_kmers >= 8) {
         int simd_batch = max_kmers & ~7;  /* Process 8 k-mers at a time */
         
@@ -1221,7 +1221,7 @@ kmersearch_extract_dna2_kmer2_direct_avx512(VarBit *seq, int k, int *nkeys)
             _mm_prefetch(&seq_data[(i + 32) / 4], _MM_HINT_T0);
             _mm_prefetch(&seq_data[(i + 64) / 4], _MM_HINT_T1);
             
-            /* Process 8 k-mers in parallel using VBMI2 */
+            /* Process 8 k-mers in parallel */
             for (int j = 0; j < 8 && (i + j) <= seq_bases - k; j++) {
                 int pos = i + j;
                 int start_bit = pos * 2;
@@ -1854,11 +1854,11 @@ kmersearch_extract_dna4_kmer2_with_expansion_direct(VarBit *seq, int k, int *nke
     
     /* Use SIMD based on runtime capability and data size thresholds */
 #ifdef __x86_64__
-    /* AVX512 with VBMI2 - highest performance */
+    /* AVX512 - highest performance */
     if (simd_capability >= SIMD_AVX512VBMI2 && seq_bits >= SIMD_EXTRACT_AVX512_THRESHOLD) {
         return kmersearch_extract_dna4_kmer2_with_expansion_direct_avx512(seq, k, nkeys);
     }
-    /* AVX2 with BMI2 - good performance */
+    /* AVX2 - good performance */
     if (simd_capability >= SIMD_BMI2 && seq_bits >= SIMD_EXTRACT_AVX2_THRESHOLD) {
         return kmersearch_extract_dna4_kmer2_with_expansion_direct_avx2(seq, k, nkeys);
     }
