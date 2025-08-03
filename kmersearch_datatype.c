@@ -418,7 +418,7 @@ dna_compare_scalar(const uint8_t* a, const uint8_t* b, int bit_len)
 
 #ifdef __x86_64__
 /* AVX2 comparison function */
-__attribute__((target("avx2,bmi,bmi2")))
+__attribute__((target("avx2,bmi")))
 int
 dna_compare_avx2(const uint8_t* a, const uint8_t* b, int bit_len)
 {
@@ -436,7 +436,7 @@ dna_compare_avx2(const uint8_t* a, const uint8_t* b, int bit_len)
         
         uint32_t mask = _mm256_movemask_epi8(cmp);
         if (mask != 0xFFFFFFFF) {
-            /* Use BMI tzcnt to find first differing byte */
+            /* Use BMI tzcnt for optimal performance */
             uint32_t diff_pos = _tzcnt_u32(~mask);
             uint8_t val_a = a[i + diff_pos];
             uint8_t val_b = b[i + diff_pos];
@@ -461,7 +461,7 @@ dna_compare_avx2(const uint8_t* a, const uint8_t* b, int bit_len)
 }
 
 /* AVX512 comparison function */
-__attribute__((target("avx512f,avx512bw,avx512vbmi,avx512vbmi2,bmi,bmi2")))
+__attribute__((target("avx512f,avx512bw,bmi")))
 int
 dna_compare_avx512(const uint8_t* a, const uint8_t* b, int bit_len)
 {
@@ -802,7 +802,7 @@ dna_compare(const uint8_t* a, const uint8_t* b, int bit_len)
     if (simd_capability >= SIMD_AVX512BW && bit_len >= SIMD_COMPARE_AVX512_THRESHOLD) {
         return dna_compare_avx512(a, b, bit_len);
     }
-    if (simd_capability >= SIMD_AVX2 && bit_len >= SIMD_COMPARE_AVX2_THRESHOLD) {
+    if (simd_capability >= SIMD_BMI2 && bit_len >= SIMD_COMPARE_AVX2_THRESHOLD) {
         return dna_compare_avx2(a, b, bit_len);
     }
 #elif defined(__aarch64__)
@@ -1126,7 +1126,7 @@ void dna2_encode_scalar(const char* input, uint8_t* output, int len)
 }
 
 #ifdef __x86_64__
-__attribute__((target("avx2,bmi,bmi2")))
+__attribute__((target("avx2")))
 void dna2_encode_avx2(const char* input, uint8_t* output, int len)
 {
     int byte_len = (len * 2 + 7) / 8;
@@ -1193,24 +1193,27 @@ void dna2_encode_avx2(const char* input, uint8_t* output, int len)
         _mm256_storeu_si256((__m256i*)temp0, encoded0);
         _mm256_storeu_si256((__m256i*)temp1, encoded1);
         
-        /* Process 64 bases (128 bits) using PDEP for efficient bit packing */
-        byte_offset = i / 4;
+        /* Process 64 bases (128 bits) using correct bit packing */
+        byte_offset = (i * 2) / 8;  /* Correct byte offset calculation */
         
-        /* Pack 16 bases at a time using PDEP */
+        /* Pack 16 bases at a time */
         for (j = 0; j < 4; j++) {
-            uint64_t base_bits = 0;
-            uint32_t packed;
+            uint32_t packed = 0;
             int k;
             
-            /* Collect 16 2-bit values */
+            /* Process 16 characters (each 2 bits = 32 bits total) */
             for (k = 0; k < 16; k++) {
                 int idx = j * 16 + k;
                 uint8_t val = (idx < 32) ? temp0[idx] : temp1[idx - 32];
-                base_bits |= ((uint64_t)val << (k * 2));
+                
+                /* Use same bit layout as scalar implementation */
+                int bit_offset = (k * 2) % 8;
+                int byte_offset_in_packed = k / 4;
+                
+                if (bit_offset <= 6) {
+                    ((uint8_t*)&packed)[byte_offset_in_packed] |= (val << (6 - bit_offset));
+                }
             }
-            
-            /* Use PDEP to pack bits - spread 32 bits across 32 bits */
-            packed = (uint32_t)_pdep_u64(base_bits, 0xFFFFFFFF);
             
             /* Write packed data to output */
             if (byte_offset + j * 4 < byte_len) {
@@ -1239,7 +1242,7 @@ void dna2_encode_avx2(const char* input, uint8_t* output, int len)
     }
 }
 
-__attribute__((target("avx512f,avx512bw,avx512vbmi,avx512vbmi2,bmi,bmi2")))
+__attribute__((target("avx512f,avx512bw")))
 void dna2_encode_avx512(const char* input, uint8_t* output, int len)
 {
     int byte_len = (len * 2 + 7) / 8;
@@ -1307,24 +1310,34 @@ void dna2_encode_avx512(const char* input, uint8_t* output, int len)
         _mm512_storeu_si512((__m512i*)temp0, encoded0);
         _mm512_storeu_si512((__m512i*)temp1, encoded1);
         
-        /* Pack 128 bases (256 bits) using optimized bit packing */
-        byte_offset = i / 4;
+        /* Pack 128 bases (256 bits) using correct bit packing */
+        byte_offset = (i * 2) / 8;  /* Correct byte offset calculation */
         
-        /* Process 32 bases at a time using PDEP */
+        /* Process 32 bases at a time */
         for (j = 0; j < 4; j++) {
-            uint64_t base_bits = 0;
-            uint64_t packed;
+            uint64_t packed = 0;
             int k;
             
-            /* Collect 32 2-bit values into 64-bit integer */
+            /* Process 32 characters (each 2 bits = 64 bits total) */
             for (k = 0; k < 32; k++) {
                 int idx = j * 32 + k;
                 uint8_t val = (idx < 64) ? temp0[idx] : temp1[idx - 64];
-                base_bits |= ((uint64_t)val << (k * 2));
+                
+                /* Use same bit layout as scalar implementation */
+                int bit_pos = k * 2;
+                int byte_offset_in_packed = bit_pos / 8;
+                int bit_offset = bit_pos % 8;
+                
+                if (bit_offset <= 6) {
+                    ((uint8_t*)&packed)[byte_offset_in_packed] |= (val << (6 - bit_offset));
+                } else {
+                    /* bit_offset == 7: split across byte boundary */
+                    ((uint8_t*)&packed)[byte_offset_in_packed] |= (val >> 1);
+                    if (byte_offset_in_packed + 1 < 8) {
+                        ((uint8_t*)&packed)[byte_offset_in_packed + 1] |= (val & 0x1) << 7;
+                    }
+                }
             }
-            
-            /* Use PDEP to pack bits efficiently - 64 bits to 64 bits */
-            packed = _pdep_u64(base_bits, 0xFFFFFFFFFFFFFFFF);
             
             /* Write packed data to output */
             if (byte_offset + j * 8 < byte_len) {
@@ -1799,7 +1812,7 @@ void dna2_decode_scalar(const uint8_t* input, char* output, int len)
 }
 
 #ifdef __x86_64__
-__attribute__((target("avx2,bmi,bmi2")))
+__attribute__((target("avx2")))
 void dna2_decode_avx2(const uint8_t* input, char* output, int len)
 {
     /* Process 32 characters at a time with AVX2 SIMD optimizations */
@@ -1826,45 +1839,33 @@ void dna2_decode_avx2(const uint8_t* input, char* output, int len)
             temp[b] = input[byte_offset + b];
         }
         
-        /* Use PEXT to extract 2-bit values efficiently (process 8 chars at a time) */
+        /* Extract 2-bit values efficiently (process 8 chars at a time) */
         for (int chunk = 0; chunk < 4; chunk++) {
             int char_offset = chunk * 8;
-            int bit_offset = (i % 4) * 2;  /* Bit offset within byte */
-            uint64_t src_bits;
-            uint16_t extracted = 0;
+            uint8_t decoded_chars[8];
             
-            /* Load 64 bits starting from appropriate position */
-            memcpy(&src_bits, &temp[char_offset * 2 / 8], 8);
-            
-            /* Extract 16 bits (8 * 2-bit values) using bit manipulation */
+            /* Extract 2-bit values for 8 characters */
             for (int j = 0; j < 8; j++) {
-                int total_bit_pos = bit_offset + j * 2;
+                int char_idx = char_offset + j;
+                int total_bit_pos = char_idx * 2;
                 int byte_pos = total_bit_pos / 8;
                 int bit_pos = total_bit_pos % 8;
+                uint8_t val = 0;
                 
-                if (byte_pos < 8) {
-                    uint8_t val = (temp[byte_pos] >> (6 - bit_pos)) & 0x3;
-                    if (bit_pos == 7 && byte_pos + 1 < 8) {
+                if (byte_pos < 9) {
+                    if (bit_pos <= 6) {
+                        val = (temp[byte_pos] >> (6 - bit_pos)) & 0x3;
+                    } else if (byte_pos + 1 < 9) {
                         val = ((temp[byte_pos] & 0x1) << 1) | ((temp[byte_pos + 1] >> 7) & 0x1);
                     }
-                    extracted |= (val << (j * 2));
                 }
+                
+                /* Decode using lookup table */
+                decoded_chars[j] = (val < 4) ? "ACGT"[val] : 'A';
             }
             
-            /* Create vector from extracted values */
-            
-            /* Extract individual 2-bit values and decode using PSHUFB */
-            {
-                uint8_t decoded_chars[8];
-                int j;
-                for (j = 0; j < 8; j++) {
-                    uint8_t two_bit_val = (extracted >> (j * 2)) & 0x3;
-                    decoded_chars[j] = (two_bit_val < 4) ? "ACGT"[two_bit_val] : 'A';
-            }
-            
-                /* Store decoded characters */
-                memcpy(&output[i + char_offset], decoded_chars, 8);
-            }
+            /* Store decoded characters */
+            memcpy(&output[i + char_offset], decoded_chars, 8);
         }
     }
     
@@ -1895,13 +1896,16 @@ void dna2_decode_avx2(const uint8_t* input, char* output, int len)
     output[len] = '\0';
 }
 
-__attribute__((target("avx512f,avx512bw,avx512vbmi,avx512vbmi2,bmi,bmi2")))
-void dna2_decode_avx512(const uint8_t* input, char* output, int len)
+__attribute__((target("avx512f,avx512bw")))
+void dna2_decode_avx512(const uint8_t* input, char* output, int bit_len)
 {
-    /* Process 64 characters at a time with AVX512 VBMI optimizations */
+    /* Convert bit length to character length */
+    int len = bit_len / 2;
+    
+    /* Process 64 characters at a time for AVX512F/BW */
     int simd_len = len & ~63;  /* Round down to multiple of 64 */
     
-    /* Create lookup table for VPERMB (64-byte table) */
+    /* Lookup table for DNA2 decoding using standard AVX512F shuffle */
     const __m512i decode_lut = _mm512_set_epi8(
         'T', 'G', 'C', 'A', 'T', 'G', 'C', 'A', 'T', 'G', 'C', 'A', 'T', 'G', 'C', 'A',
         'T', 'G', 'C', 'A', 'T', 'G', 'C', 'A', 'T', 'G', 'C', 'A', 'T', 'G', 'C', 'A',
@@ -1909,58 +1913,60 @@ void dna2_decode_avx512(const uint8_t* input, char* output, int len)
         'T', 'G', 'C', 'A', 'T', 'G', 'C', 'A', 'T', 'G', 'C', 'A', 'T', 'G', 'C', 'A'
     );
     
-    const __m512i mask_2bits = _mm512_set1_epi8(0x03);
+    const __m512i mask_03 = _mm512_set1_epi8(0x03);
+    const __m512i mask_0c = _mm512_set1_epi8(0x0c);
+    const __m512i mask_30 = _mm512_set1_epi8(0x30);
+    const __m512i mask_c0 = _mm512_set1_epi8(0xc0);
     
+    /* Process 64 characters (16 bytes of input) per iteration */
     for (int i = 0; i < simd_len; i += 64) {
-        /* 64 characters need 128 bits = 16 bytes */
         int byte_offset = (i * 2) / 8;
-        uint8_t temp[32] __attribute__((aligned(32))) = {0};
         
-        /* Load required bytes */
-        int bytes_to_load = 17; /* Extra byte for boundary cases */
-        for (int b = 0; b < bytes_to_load && (byte_offset + b) < (len * 2 + 7) / 8; b++) {
-            temp[b] = input[byte_offset + b];
-        }
+        /* Load 16 bytes containing 64 2-bit characters */
+        __m128i input_data = _mm_loadu_si128((const __m128i*)&input[byte_offset]);
+        __m512i data = _mm512_broadcast_i32x4(input_data);
         
-        /* Process in 16-character chunks for better efficiency */
-        for (int chunk = 0; chunk < 4; chunk++) {
-            __m128i extracted;
-            uint8_t extracted_vals[16];
-            __m512i expanded, masked, decoded;
-            
-            extracted = _mm_setzero_si128();
-            
-            /* Extract 2-bit values for 16 characters */
-            for (int j = 0; j < 16; j++) {
-                int char_idx = chunk * 16 + j;
-                int total_bit_pos = char_idx * 2;
-                int byte_pos = total_bit_pos / 8;
-                int bit_pos = total_bit_pos % 8;
-                uint8_t val = 0;
-                
-                if (byte_pos < 17) {
-                    if (bit_pos <= 6) {
-                        val = (temp[byte_pos] >> (6 - bit_pos)) & 0x3;
-                    } else if (byte_pos + 1 < 17) {
-                        val = ((temp[byte_pos] & 0x1) << 1) | ((temp[byte_pos + 1] >> 7) & 0x1);
-                    }
-                }
-                
-                extracted_vals[j] = val;
-            }
-            extracted = _mm_loadu_si128((__m128i*)extracted_vals);
-            
-            /* Expand to 512-bit for VPERMB */
-            expanded = _mm512_zextsi128_si512(extracted);
-            expanded = _mm512_maskz_permutexvar_epi8((__mmask64)0xFFFF, expanded, expanded);
-            
-            /* Use VPERMB for lookup */
-            masked = _mm512_and_si512(expanded, mask_2bits);
-            decoded = _mm512_permutexvar_epi8(masked, decode_lut);
-            
-            /* Store 16 decoded characters */
-            _mm_storeu_si128((__m128i*)&output[i + chunk * 16], _mm512_castsi512_si128(decoded));
-        }
+        /* Extract 2-bit values using shifts and masks (AVX512F/BW) */
+        __m512i bits_0 = _mm512_and_si512(_mm512_srli_epi32(data, 6), mask_03);  /* bits 7-6 */
+        __m512i bits_1 = _mm512_and_si512(_mm512_srli_epi32(data, 4), mask_03);  /* bits 5-4 */
+        __m512i bits_2 = _mm512_and_si512(_mm512_srli_epi32(data, 2), mask_03);  /* bits 3-2 */
+        __m512i bits_3 = _mm512_and_si512(data, mask_03);                       /* bits 1-0 */
+        
+        /* Interleave and arrange bits using AVX512F permute operations */
+        __m512i pair01 = _mm512_unpacklo_epi8(bits_0, bits_1);
+        __m512i pair23 = _mm512_unpacklo_epi8(bits_2, bits_3);
+        __m512i quad0123 = _mm512_unpacklo_epi16(pair01, pair23);
+        
+        /* Replicate pattern across 512-bit register using permutations */
+        const __m512i byte_expand = _mm512_setr_epi32(
+            0x00010203, 0x00010203, 0x04050607, 0x04050607,
+            0x08090a0b, 0x08090a0b, 0x0c0d0e0f, 0x0c0d0e0f,
+            0x00010203, 0x00010203, 0x04050607, 0x04050607,
+            0x08090a0b, 0x08090a0b, 0x0c0d0e0f, 0x0c0d0e0f
+        );
+        
+        __m512i expanded = _mm512_shuffle_epi8(quad0123, byte_expand);
+        
+        /* Create index pattern for final reordering using set_epi8 */
+        const __m512i reorder_idx = _mm512_set_epi8(
+            51, 55, 59, 63, 50, 54, 58, 62, 49, 53, 57, 61, 48, 52, 56, 60,
+            35, 39, 43, 47, 34, 38, 42, 46, 33, 37, 41, 45, 32, 36, 40, 44,
+            19, 23, 27, 31, 18, 22, 26, 30, 17, 21, 25, 29, 16, 20, 24, 28,
+             3,  7, 11, 15,  2,  6, 10, 14,  1,  5,  9, 13,  0,  4,  8, 12
+        );
+        
+        __m512i values, decoded;
+        
+        values = _mm512_shuffle_epi8(expanded, reorder_idx);
+        
+        /* Mask to ensure valid indices for lookup table */
+        values = _mm512_and_si512(values, mask_03);
+        
+        /* Decode using lookup table with regular shuffle */
+        decoded = _mm512_shuffle_epi8(decode_lut, values);
+        
+        /* Store 64 decoded characters */
+        _mm512_storeu_si512((__m512i*)&output[i], decoded);
     }
     
     /* Handle remaining characters with scalar */
@@ -2304,7 +2310,7 @@ void dna4_decode_scalar(const uint8_t* input, char* output, int len)
 
 #ifdef __x86_64__
 /* AVX2 implementation for DNA4 encoding */
-__attribute__((target("avx2,bmi,bmi2")))
+__attribute__((target("avx2")))
 void dna4_encode_avx2(const char* input, uint8_t* output, int len)
 {
     int byte_len = (len * 4 + 7) / 8;
@@ -2424,7 +2430,7 @@ void dna4_encode_avx2(const char* input, uint8_t* output, int len)
 }
 
 /* AVX2 implementation for DNA4 decoding */
-__attribute__((target("avx2,bmi,bmi2")))
+__attribute__((target("avx2")))
 void dna4_decode_avx2(const uint8_t* input, char* output, int len)
 {
     /* Process 32 characters at a time with AVX2 SIMD optimizations */
@@ -2521,7 +2527,7 @@ void dna4_decode_avx2(const uint8_t* input, char* output, int len)
 }
 
 /* AVX512 implementation for DNA4 encoding */
-__attribute__((target("avx512f,avx512bw,avx512vbmi,avx512vbmi2,bmi,bmi2")))
+__attribute__((target("avx512f,avx512bw")))
 void dna4_encode_avx512(const char* input, uint8_t* output, int len)
 {
     int byte_len = (len * 4 + 7) / 8;
@@ -2600,65 +2606,71 @@ void dna4_encode_avx512(const char* input, uint8_t* output, int len)
 }
 
 /* AVX512 implementation for DNA4 decoding */
-__attribute__((target("avx512f,avx512bw,avx512vbmi,avx512vbmi2,bmi,bmi2")))
-void dna4_decode_avx512(const uint8_t* input, char* output, int len)
+__attribute__((target("avx512f,avx512bw")))
+void dna4_decode_avx512(const uint8_t* input, char* output, int bit_len)
 {
-    /* Process 64 characters at a time with AVX512 VBMI optimizations */
+    /* Convert bit length to character length */
+    int len = bit_len / 4;
+    
+    /* Process 64 characters at a time for AVX512F/BW */
     int simd_len = len & ~63;  /* Round down to multiple of 64 */
     
-    /* Create 64-byte lookup table for VPERMB */
+    /* Lookup table for DNA4 decoding using standard AVX512F shuffle */
     const __m512i decode_lut = _mm512_set_epi8(
-        'N', 'B', 'D', 'K', 'H', 'Y', 'W', 'T',
-        'V', 'S', 'R', 'G', 'M', 'C', 'A', '?',
-        'N', 'B', 'D', 'K', 'H', 'Y', 'W', 'T',
-        'V', 'S', 'R', 'G', 'M', 'C', 'A', '?',
-        'N', 'B', 'D', 'K', 'H', 'Y', 'W', 'T',
-        'V', 'S', 'R', 'G', 'M', 'C', 'A', '?',
-        'N', 'B', 'D', 'K', 'H', 'Y', 'W', 'T',
-        'V', 'S', 'R', 'G', 'M', 'C', 'A', '?'
+        'N', 'B', 'D', 'K', 'H', 'Y', 'W', 'T', 'V', 'S', 'R', 'G', 'M', 'C', 'A', '?',
+        'N', 'B', 'D', 'K', 'H', 'Y', 'W', 'T', 'V', 'S', 'R', 'G', 'M', 'C', 'A', '?',
+        'N', 'B', 'D', 'K', 'H', 'Y', 'W', 'T', 'V', 'S', 'R', 'G', 'M', 'C', 'A', '?',
+        'N', 'B', 'D', 'K', 'H', 'Y', 'W', 'T', 'V', 'S', 'R', 'G', 'M', 'C', 'A', '?'
     );
     
-    const __m512i mask_nibble = _mm512_set1_epi8(0x0F);
+    const __m512i mask_0f = _mm512_set1_epi8(0x0F);
     
+    /* Process 64 characters (32 bytes of input) per iteration */
     for (int i = 0; i < simd_len; i += 64) {
         int byte_offset = (i * 4) / 8;
-        uint8_t temp[33] __attribute__((aligned(64))) = {0}; /* Extra byte for boundary cases */
-        uint8_t nibbles[64] __attribute__((aligned(64)));
-        __m512i nibbles_vec, masked, decoded;
         
-        /* Load required bytes */
-        int bytes_to_load = 32 + 1; /* 64 * 4 bits = 256 bits = 32 bytes + 1 for boundary */
-        for (int b = 0; b < bytes_to_load && (byte_offset + b) < (len * 4 + 7) / 8; b++) {
-            temp[b] = input[byte_offset + b];
-        }
+        /* Load 32 bytes containing 64 4-bit characters */
+        __m256i input_data = _mm256_loadu_si256((const __m256i*)&input[byte_offset]);
+        __m512i data = _mm512_broadcast_i64x4(input_data);
         
-        /* Process in 16-character chunks for extraction */
+        /* Extract high and low nibbles using shifts and masks (AVX512F/BW) */
+        __m512i high_nibbles = _mm512_and_si512(_mm512_srli_epi16(data, 4), mask_0f);
+        __m512i low_nibbles = _mm512_and_si512(data, mask_0f);
         
-        for (int j = 0; j < 64; j++) {
-            int total_bit_pos = j * 4;
-            int byte_pos = total_bit_pos / 8;
-            int bit_pos = total_bit_pos % 8;
-            uint8_t val = 0;
-            
-            if (byte_pos < 33) {
-                if (bit_pos <= 4) {
-                    val = (temp[byte_pos] >> (4 - bit_pos)) & 0x0F;
-                } else if (byte_pos + 1 < 33) {
-                    int remaining = 8 - bit_pos;
-                    val = ((temp[byte_pos] & ((1 << remaining) - 1)) << (4 - remaining)) |
-                          ((temp[byte_pos + 1] >> (4 + remaining)) & 0x0F);
-                }
-            }
-            
-            nibbles[j] = val;
-        }
+        /* Interleave nibbles using standard AVX512F operations */
+        __m512i interleaved_lo = _mm512_unpacklo_epi8(high_nibbles, low_nibbles);
+        __m512i interleaved_hi = _mm512_unpackhi_epi8(high_nibbles, low_nibbles);
         
-        /* Load all nibbles into AVX512 register */
-        nibbles_vec = _mm512_loadu_si512((__m512i*)nibbles);
+        /* Create reordering pattern for proper nibble sequence using set_epi8 */
+        const __m512i reorder_lo = _mm512_set_epi8(
+            49, 51, 53, 55, 57, 59, 61, 63, 48, 50, 52, 54, 56, 58, 60, 62,
+            33, 35, 37, 39, 41, 43, 45, 47, 32, 34, 36, 38, 40, 42, 44, 46,
+            17, 19, 21, 23, 25, 27, 29, 31, 16, 18, 20, 22, 24, 26, 28, 30,
+             1,  3,  5,  7,  9, 11, 13, 15,  0,  2,  4,  6,  8, 10, 12, 14
+        );
         
-        /* Use VPERMB for 64-byte lookup */
-        masked = _mm512_and_si512(nibbles_vec, mask_nibble);
-        decoded = _mm512_permutexvar_epi8(masked, decode_lut);
+        const __m512i reorder_hi = _mm512_set_epi8(
+            48, 50, 52, 54, 56, 58, 60, 62, 49, 51, 53, 55, 57, 59, 61, 63,
+            32, 34, 36, 38, 40, 42, 44, 46, 33, 35, 37, 39, 41, 43, 45, 47,
+            16, 18, 20, 22, 24, 26, 28, 30, 17, 19, 21, 23, 25, 27, 29, 31,
+             0,  2,  4,  6,  8, 10, 12, 14,  1,  3,  5,  7,  9, 11, 13, 15
+        );
+        
+        __m512i reordered_lo, reordered_hi, values, decoded;
+        __mmask64 blend_mask = 0xAAAAAAAAAAAAAAAAULL; /* Alternate pattern */
+        
+        /* Reorder bytes to get proper nibble sequence */
+        reordered_lo = _mm512_shuffle_epi8(interleaved_lo, reorder_lo);
+        reordered_hi = _mm512_shuffle_epi8(interleaved_hi, reorder_hi);
+        
+        /* Combine reordered parts using blend operations */
+        values = _mm512_mask_blend_epi8(blend_mask, reordered_lo, reordered_hi);
+        
+        /* Mask to ensure valid indices for lookup table */
+        values = _mm512_and_si512(values, mask_0f);
+        
+        /* Decode using lookup table with regular shuffle */
+        decoded = _mm512_shuffle_epi8(decode_lut, values);
         
         /* Store 64 decoded characters */
         _mm512_storeu_si512((__m512i*)&output[i], decoded);

@@ -2,6 +2,11 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Language Usage Guidelines
+
+- **Dialogue/Conversation**: Use Japanese (日本語) for all interactions with the user
+- **Source Code**: Use English only, including all comments in source files
+
 ## Implementation Constraints
 
 **IMPORTANT**: The following implementations are PROHIBITED:

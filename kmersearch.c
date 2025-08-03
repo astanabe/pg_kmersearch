@@ -677,7 +677,7 @@ static void sigill_handler(int sig) {
     siglongjmp(jmpbuf, 1);
 }
 
-__attribute__((target("+sve2,+sve,+simd")))
+__attribute__((target("+sve2")))
 static simd_capability_t detect_cpu_capabilities(void)
 {
     struct sigaction sa, old_sa;
