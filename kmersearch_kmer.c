@@ -113,11 +113,16 @@ kmersearch_count_degenerate_combinations(const char *kmer, int k)
 
 /*
  * Simple utility function: Check if DNA4 k-mer will exceed degenerate limit
+ * 
+ * Rules:
+ * - If only 1 MRWSYKVHDB character: expand (return false)
+ * - If 2 or more MRWSYKVHDB characters: don't expand (return true)
+ * - If 1 or more N or ? characters: don't expand (return true)
  */
 bool
 kmersearch_will_exceed_degenerate_limit_dna4_bits(VarBit *seq, int start_pos, int k)
 {
-    int n_count = 0, vhdb_count = 0, mrwsyk_count = 0;
+    int degenerate_count = 0;  /* Count of MRWSYKVHDB (expansion 2 or 3) */
     bits8 *data = VARBITS(seq);
     int i;
     
@@ -142,38 +147,23 @@ kmersearch_will_exceed_degenerate_limit_dna4_bits(VarBit *seq, int start_pos, in
         }
         
         /* Check expansion count using lookup table */
-        {
-            int expansion_count = kmersearch_dna4_to_dna2_table[encoded][0];
+        int expansion_count = kmersearch_dna4_to_dna2_table[encoded][0];
         
-        if (expansion_count == 4)  /* N */
+        /* N or ? (expansion count 4 or 0/invalid) - always exceed limit */
+        if (expansion_count == 4 || expansion_count == 0)
+            return true;
+        
+        /* MRWSYKVHDB (expansion count 2 or 3) */
+        if (expansion_count == 2 || expansion_count == 3)
         {
-            n_count++;
-            if (n_count >= 2)
+            degenerate_count++;
+            /* 2 or more MRWSYKVHDB characters - exceed limit */
+            if (degenerate_count >= 2)
                 return true;
-        }
-        else if (expansion_count == 3)  /* V,H,D,B */
-        {
-            vhdb_count++;
-            if (vhdb_count >= 3)
-                return true;
-            if (n_count >= 1 && vhdb_count >= 1)
-                return true;
-        }
-        else if (expansion_count == 2)  /* M,R,W,S,Y,K */
-        {
-            mrwsyk_count++;
-            if (mrwsyk_count >= 4)
-                return true;
-            if (n_count >= 1 && mrwsyk_count >= 2)
-                return true;
-            if (vhdb_count >= 2 && mrwsyk_count >= 1)
-                return true;
-            if (vhdb_count >= 1 && mrwsyk_count >= 2)
-                return true;
-        }
         }
     }
     
+    /* Only 0 or 1 MRWSYKVHDB character - within limit */
     return false;
 }
 
