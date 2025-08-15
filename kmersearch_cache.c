@@ -447,7 +447,7 @@ calculate_actual_min_score(VarBit **query_keys, int nkeys, int query_total_kmers
  * Modified to create cache key from filtered keys while calculating with original keys
  */
 int
-get_cached_actual_min_score(VarBit **query_keys, int nkeys)
+get_cached_actual_min_score_uintarray(VarBit **query_keys, int nkeys)
 {
     ActualMinScoreCacheEntry *cache_entry;
     uint64 query_hash;
@@ -517,7 +517,7 @@ get_cached_actual_min_score(VarBit **query_keys, int nkeys)
             
             /* Validate VarBit structure before accessing */
             if (query_keys[i] == NULL) {
-                elog(ERROR, "get_cached_actual_min_score: query_keys[%d] is NULL", i);
+                elog(ERROR, "get_cached_actual_min_score_uintarray: query_keys[%d] is NULL", i);
             }
             
             kmer_hash = hash_any_extended((unsigned char *)VARBITS(query_keys[i]), 
@@ -625,9 +625,58 @@ get_cached_actual_min_score_or_error(VarBit **query_keys, int nkeys)
     return cache_entry->actual_min_score;
 }
 
-
-
-
+/*
+ * Get cached actual_min_score from Datum array
+ * For use in kmersearch_consistent where queryKeys are passed as Datum array
+ * This function converts Datum to VarBit internally without any transformation
+ */
+int
+get_cached_actual_min_score_datum(Datum *queryKeys, int nkeys)
+{
+    ActualMinScoreCacheEntry *cache_entry;
+    uint64 query_hash;
+    int i;
+    
+    /* Cache must be initialized */
+    if (actual_min_score_cache_manager == NULL) {
+        ereport(ERROR,
+                (errcode(ERRCODE_INTERNAL_ERROR),
+                 errmsg("actual_min_score cache not initialized"),
+                 errhint("This should not happen. Extract_query should have initialized the cache.")));
+    }
+    
+    /* Calculate hash from queryKeys (already filtered) */
+    query_hash = 0;
+    for (i = 0; i < nkeys; i++) {
+        VarBit *key = DatumGetVarBitP(queryKeys[i]);
+        uint64 kmer_hash;
+        
+        if (key == NULL) {
+            elog(ERROR, "get_cached_actual_min_score_datum: queryKeys[%d] is NULL", i);
+        }
+        
+        kmer_hash = hash_any_extended((unsigned char *)VARBITS(key), 
+                                      VARBITBYTES(key), query_hash);
+        query_hash = kmer_hash;
+    }
+    
+    /* Look up in cache */
+    cache_entry = (ActualMinScoreCacheEntry *) hash_search(actual_min_score_cache_manager->cache_hash,
+                                                          &query_hash, HASH_FIND, NULL);
+    
+    if (cache_entry == NULL) {
+        /* Cache miss should not happen - extract_query should have cached it */
+        ereport(ERROR,
+                (errcode(ERRCODE_INTERNAL_ERROR),
+                 errmsg("actual_min_score not found in cache"),
+                 errdetail("Query hash: %lu, nkeys: %d", query_hash, nkeys),
+                 errhint("This should not happen. Extract_query should have cached this value.")));
+    }
+    
+    actual_min_score_cache_manager->hits++;
+    
+    return cache_entry->actual_min_score;
+}
 
 
 

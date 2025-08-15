@@ -1829,7 +1829,7 @@ kmersearch_dna2_match(PG_FUNCTION_ARGS)
             shared_count = kmersearch_count_matching_kmer_fast(seq_keys, seq_nkeys, query_keys, query_nkeys);
             
             /* Get cached actual min score */
-            actual_min_score = get_cached_actual_min_score(query_keys, query_nkeys);
+            actual_min_score = get_cached_actual_min_score_uintarray(query_keys, query_nkeys);
             
             /* Evaluate match condition */
             match = (shared_count >= actual_min_score);
@@ -1883,7 +1883,7 @@ kmersearch_dna4_match(PG_FUNCTION_ARGS)
             shared_count = kmersearch_count_matching_kmer_fast(seq_keys, seq_nkeys, query_keys, query_nkeys);
             
             /* Get cached actual min score */
-            actual_min_score = get_cached_actual_min_score(query_keys, query_nkeys);
+            actual_min_score = get_cached_actual_min_score_uintarray(query_keys, query_nkeys);
             
             /* Evaluate match condition */
             match = (shared_count >= actual_min_score);

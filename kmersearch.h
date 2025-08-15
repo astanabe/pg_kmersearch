@@ -723,7 +723,8 @@ int calculate_actual_min_score(VarBit **query_keys, int nkeys, int query_total_k
 VarBit **get_cached_query_kmer(const char *query_string, int k_size, int *nkeys);
 
 /* Actual min score cache functions (implemented in kmersearch_cache.c) */  
-int get_cached_actual_min_score(VarBit **query_keys, int nkeys);
+int get_cached_actual_min_score_uintarray(VarBit **query_keys, int nkeys);
+int get_cached_actual_min_score_datum(Datum *queryKeys, int nkeys);
 int get_cached_actual_min_score_or_error(VarBit **query_keys, int nkeys);
 
 /* High-frequency k-mer filtering functions (implemented in kmersearch_gin.c) */

@@ -316,8 +316,8 @@ filter_ngram_key2_and_set_actual_min_score(VarBit **query_keys, int *nkeys,
         return query_keys;
     
     /* Step 1: Calculate actual_min_score with original keys and cache it */
-    /* Note: get_cached_actual_min_score will internally create cache key from filtered keys */
-    actual_min_score = get_cached_actual_min_score(query_keys, *nkeys);
+    /* Note: get_cached_actual_min_score_uintarray will internally create cache key from filtered keys */
+    actual_min_score = get_cached_actual_min_score_uintarray(query_keys, *nkeys);
     
     /* Step 2: Filter out high-frequency k-mers if enabled */
     if (!kmersearch_preclude_highfreq_kmer) {
@@ -424,7 +424,6 @@ kmersearch_consistent(PG_FUNCTION_ARGS)
     int match_count = 0;
     int actual_min_score;
     int i;
-    VarBit **query_key_array;
     
     /* High-frequency k-mer cache checking is not needed during search operations */
     
@@ -437,23 +436,11 @@ kmersearch_consistent(PG_FUNCTION_ARGS)
             match_count++;
     }
     
-    /* Convert queryKeys to VarBit array for actual min score calculation */
-    query_key_array = (VarBit **) palloc(nkeys * sizeof(VarBit *));
-    for (i = 0; i < nkeys; i++)
-    {
-        query_key_array[i] = DatumGetVarBitP(queryKeys[i]);
-        /* Debug: Log query key information */
-        elog(DEBUG2, "kmersearch_gin_consistent: query_key[%d] bit length = %d", 
-             i, VARBITLEN(query_key_array[i]));
-    }
+    /* Debug: Log before calling get_cached_actual_min_score_datum */
+    elog(DEBUG2, "kmersearch_gin_consistent: calling get_cached_actual_min_score_datum with nkeys = %d", nkeys);
     
-    /* Debug: Log before calling get_cached_actual_min_score_or_error */
-    elog(DEBUG2, "kmersearch_gin_consistent: calling get_cached_actual_min_score_or_error with nkeys = %d", nkeys);
-    
-    /* Query keys are already filtered - use error version to ensure cache hit */
-    actual_min_score = get_cached_actual_min_score_or_error(query_key_array, nkeys);
-    
-    pfree(query_key_array);
+    /* Query keys are already filtered - use Datum version directly */
+    actual_min_score = get_cached_actual_min_score_datum(queryKeys, nkeys);
     
     /* Return true if match count meets actual minimum score */
     PG_RETURN_BOOL(match_count >= actual_min_score);
@@ -634,8 +621,8 @@ evaluate_optimized_match_condition(VarBit **query_keys, int nkeys, int shared_co
     
     
     /* Get cached actual min score (with TopMemoryContext caching for performance) */
-    actual_min_score = get_cached_actual_min_score(query_keys, nkeys);
-    elog(LOG, "evaluate_optimized_match_condition: get_cached_actual_min_score returned %d", actual_min_score);
+    actual_min_score = get_cached_actual_min_score_uintarray(query_keys, nkeys);
+    elog(LOG, "evaluate_optimized_match_condition: get_cached_actual_min_score_uintarray returned %d", actual_min_score);
     
     /* Use optimized condition check with cached actual_min_score */
     return (shared_count >= actual_min_score);

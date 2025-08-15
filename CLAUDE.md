@@ -24,6 +24,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - Workaround implementations are forbidden
 - Implementing functions, structures, or variables with the same functionality as existing ones is forbidden
 - When GUC variables exist, use them directly - assigning GUC variables to local variables is forbidden
+- Unnecessary memory copying and data conversions are forbidden - always minimize memory allocations and data copies
+- In GIN consistent functions, any data conversion or transformation is absolutely prohibited - use data as-is
 
 ## Important Development Assumptions
 
