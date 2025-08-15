@@ -771,6 +771,11 @@ size_t kmersearch_get_kmer_uint_size(int k);
 void kmersearch_extract_dna4_kmer_expansions_direct_bits(VarBit *seq, int start_pos, int k, uint64 *output, int *count);
 void *kmersearch_expand_dna4_kmer2_as_uint_to_dna2_direct(VarBit *dna4_seq, int start_pos, int k, int *expansion_count);
 
+/* Uint key extraction functions with occurrence counting */
+void kmersearch_extract_uintkey_from_dna2(VarBit *seq, void **output, int *nkeys);
+void kmersearch_extract_uintkey_from_dna4(VarBit *seq, void **output, int *nkeys);
+void kmersearch_extract_uintkey_from_text(const char *text, void **output, int *nkeys);
+
 /* Utility functions */
 void kmersearch_spi_connect_or_error(void);
 

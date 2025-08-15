@@ -13,6 +13,13 @@
  * Note: Complex memory management functions remain in kmersearch.c for stability
  */
 
+/* Helper function to validate DNA4 characters */
+static inline bool
+kmersearch_is_valid_dna4_char(char c)
+{
+    return kmersearch_dna4_encode_table[(unsigned char)c] != 0 || c == 'A' || c == 'a';
+}
+
 /* DNA4 to DNA2 expansion table */
 /* Each entry contains: [expansion_count, base1, base2, base3, base4] */
 static const uint8 kmersearch_dna4_to_dna2_table[16][5] = {
@@ -3278,4 +3285,348 @@ kmersearch_convert_kmer2_to_uint64(VarBit *kmer2, uint64 *result)
         
         *result = (*result << 2) | nucleotide;
     }
+}
+
+/*
+ * Extract uint keys with occurrence counting from DNA2 sequence (scalar implementation)
+ */
+static void
+kmersearch_extract_uintkey_from_dna2_scalar(VarBit *seq, void **output, int *nkeys)
+{
+    int k = kmersearch_kmer_size;
+    int occur_bitlen = kmersearch_occur_bitlen;
+    int seq_bits = VARBITLEN(seq);
+    int seq_len = seq_bits / 2;
+    int max_kmers = seq_len - k + 1;
+    int kmer_bits = k * 2;
+    int total_bits = kmer_bits + occur_bitlen;
+    size_t elem_size;
+    void *result;
+    int result_count = 0;
+    KmerOccurrence *occurrences;
+    int occurrence_count = 0;
+    int i;
+    
+    /* Validate parameters */
+    if (k < 4 || k > 32) {
+        ereport(ERROR,
+                (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+                 errmsg("Invalid k-mer size: %d", k),
+                 errdetail("k-mer size must be between 4 and 32")));
+    }
+    
+    if (occur_bitlen < 1 || occur_bitlen > 16) {
+        ereport(ERROR,
+                (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+                 errmsg("Invalid occurrence bit length: %d", occur_bitlen),
+                 errdetail("Occurrence bit length must be between 1 and 16")));
+    }
+    
+    if (total_bits > 64) {
+        ereport(ERROR,
+                (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+                 errmsg("Total bit length exceeds 64 bits"),
+                 errdetail("k-mer bits: %d, occurrence bits: %d, total: %d", 
+                          kmer_bits, occur_bitlen, total_bits)));
+    }
+    
+    if (max_kmers <= 0) {
+        *output = NULL;
+        *nkeys = 0;
+        return;
+    }
+    
+    /* Determine element size based on total bits */
+    if (total_bits <= 16) {
+        elem_size = sizeof(uint16);
+    } else if (total_bits <= 32) {
+        elem_size = sizeof(uint32);
+    } else {
+        elem_size = sizeof(uint64);
+    }
+    
+    /* Allocate result array */
+    result = palloc(max_kmers * elem_size);
+    
+    /* Allocate occurrence tracking array */
+    occurrences = (KmerOccurrence *) palloc0(max_kmers * sizeof(KmerOccurrence));
+    
+    /* Extract k-mers and track occurrences */
+    for (i = 0; i <= seq_len - k; i++) {
+        uint64 kmer_value = 0;
+        int j;
+        int current_count;
+        uint64 final_value;
+        
+        /* Extract k-mer bits */
+        for (j = 0; j < k; j++) {
+            int bit_pos = (i + j) * 2;
+            int byte_pos = bit_pos / 8;
+            int bit_offset = bit_pos % 8;
+            bits8 *data = VARBITS(seq);
+            uint8 nucleotide = (data[byte_pos] >> (6 - bit_offset)) & 0x3;
+            kmer_value = (kmer_value << 2) | nucleotide;
+        }
+        
+        /* Find or add occurrence count */
+        current_count = kmersearch_find_or_add_kmer_occurrence(occurrences, &occurrence_count,
+                                                              kmer_value, max_kmers);
+        
+        if (current_count < 0) {
+            continue;  /* Array full */
+        }
+        
+        /* Skip if occurrence exceeds bit limit */
+        if (current_count > (1 << occur_bitlen)) {
+            continue;
+        }
+        
+        /* Combine k-mer and occurrence count */
+        final_value = (kmer_value << occur_bitlen) | ((current_count - 1) & ((1 << occur_bitlen) - 1));
+        
+        /* Store based on element size */
+        if (elem_size == sizeof(uint16)) {
+            ((uint16 *)result)[result_count++] = (uint16)final_value;
+        } else if (elem_size == sizeof(uint32)) {
+            ((uint32 *)result)[result_count++] = (uint32)final_value;
+        } else {
+            ((uint64 *)result)[result_count++] = final_value;
+        }
+    }
+    
+    /* Free occurrence tracking array */
+    pfree(occurrences);
+    
+    /* Reallocate to actual size if needed */
+    if (result_count < max_kmers) {
+        void *new_result = palloc(result_count * elem_size);
+        memcpy(new_result, result, result_count * elem_size);
+        pfree(result);
+        result = new_result;
+    }
+    
+    *output = result;
+    *nkeys = result_count;
+}
+
+/*
+ * Extract uint keys with occurrence counting from DNA2 sequence (dispatch function)
+ */
+void
+kmersearch_extract_uintkey_from_dna2(VarBit *seq, void **output, int *nkeys)
+{
+    int seq_bits = VARBITLEN(seq);
+    
+    /* For now, always use scalar implementation */
+    /* SIMD implementations can be added later based on capability and threshold */
+#ifdef __x86_64__
+    /* Future: Add AVX2/AVX512 dispatch based on simd_capability */
+#elif defined(__aarch64__)
+    /* Future: Add NEON/SVE dispatch based on simd_capability */
+#endif
+    
+    kmersearch_extract_uintkey_from_dna2_scalar(seq, output, nkeys);
+}
+
+/*
+ * Extract uint keys with occurrence counting from DNA4 sequence (scalar implementation)
+ */
+static void
+kmersearch_extract_uintkey_from_dna4_scalar(VarBit *seq, void **output, int *nkeys)
+{
+    int k = kmersearch_kmer_size;
+    int occur_bitlen = kmersearch_occur_bitlen;
+    int seq_bits = VARBITLEN(seq);
+    int seq_len = seq_bits / 4;  /* DNA4 uses 4 bits per character */
+    int max_kmers = seq_len - k + 1;
+    int kmer_bits = k * 2;  /* Output is DNA2 format */
+    int total_bits = kmer_bits + occur_bitlen;
+    size_t elem_size;
+    void *result;
+    int result_count = 0;
+    int result_capacity;
+    KmerOccurrence *occurrences;
+    int occurrence_count = 0;
+    int i;
+    
+    /* Validate parameters */
+    if (k < 4 || k > 32) {
+        ereport(ERROR,
+                (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+                 errmsg("Invalid k-mer size: %d", k),
+                 errdetail("k-mer size must be between 4 and 32")));
+    }
+    
+    if (occur_bitlen < 1 || occur_bitlen > 16) {
+        ereport(ERROR,
+                (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+                 errmsg("Invalid occurrence bit length: %d", occur_bitlen),
+                 errdetail("Occurrence bit length must be between 1 and 16")));
+    }
+    
+    if (total_bits > 64) {
+        ereport(ERROR,
+                (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+                 errmsg("Total bit length exceeds 64 bits"),
+                 errdetail("k-mer bits: %d, occurrence bits: %d, total: %d", 
+                          kmer_bits, occur_bitlen, total_bits)));
+    }
+    
+    if (max_kmers <= 0) {
+        *output = NULL;
+        *nkeys = 0;
+        return;
+    }
+    
+    /* Determine element size based on total bits */
+    if (total_bits <= 16) {
+        elem_size = sizeof(uint16);
+    } else if (total_bits <= 32) {
+        elem_size = sizeof(uint32);
+    } else {
+        elem_size = sizeof(uint64);
+    }
+    
+    /* Allocate result array with extra space for degenerate expansions */
+    result_capacity = max_kmers * 16;  /* Conservative estimate for degenerate bases */
+    result = palloc(result_capacity * elem_size);
+    
+    /* Allocate occurrence tracking array */
+    occurrences = (KmerOccurrence *) palloc0(result_capacity * sizeof(KmerOccurrence));
+    
+    /* Process each k-mer position */
+    for (i = 0; i <= seq_len - k; i++) {
+        VarBit **expanded_kmers;
+        int expansion_count;
+        int j;
+        
+        /* Expand DNA4 k-mer to DNA2 k-mers */
+        expanded_kmers = kmersearch_expand_dna4_kmer2_to_dna2_direct(seq, i, k, &expansion_count);
+        
+        if (!expanded_kmers || expansion_count == 0) {
+            continue;
+        }
+        
+        /* Process each expanded k-mer */
+        for (j = 0; j < expansion_count; j++) {
+            VarBit *dna2_kmer = expanded_kmers[j];
+            uint64 kmer_value = 0;
+            int current_count;
+            uint64 final_value;
+            
+            if (!dna2_kmer) {
+                continue;
+            }
+            
+            /* Convert VarBit to uint64 */
+            kmersearch_convert_kmer2_to_uint64(dna2_kmer, &kmer_value);
+            
+            /* Find or add occurrence count */
+            current_count = kmersearch_find_or_add_kmer_occurrence(occurrences, &occurrence_count,
+                                                                  kmer_value, result_capacity);
+            
+            if (current_count < 0) {
+                pfree(dna2_kmer);
+                continue;  /* Array full */
+            }
+            
+            /* Skip if occurrence exceeds bit limit */
+            if (current_count > (1 << occur_bitlen)) {
+                pfree(dna2_kmer);
+                continue;
+            }
+            
+            /* Combine k-mer and occurrence count */
+            final_value = (kmer_value << occur_bitlen) | ((current_count - 1) & ((1 << occur_bitlen) - 1));
+            
+            /* Store based on element size */
+            if (elem_size == sizeof(uint16)) {
+                ((uint16 *)result)[result_count++] = (uint16)final_value;
+            } else if (elem_size == sizeof(uint32)) {
+                ((uint32 *)result)[result_count++] = (uint32)final_value;
+            } else {
+                ((uint64 *)result)[result_count++] = final_value;
+            }
+            
+            /* Free the expanded k-mer */
+            pfree(dna2_kmer);
+        }
+        
+        /* Free the expansion array */
+        if (expanded_kmers) {
+            pfree(expanded_kmers);
+        }
+    }
+    
+    /* Free occurrence tracking array */
+    pfree(occurrences);
+    
+    /* Reallocate to actual size if needed */
+    if (result_count < result_capacity) {
+        void *new_result = palloc(result_count * elem_size);
+        memcpy(new_result, result, result_count * elem_size);
+        pfree(result);
+        result = new_result;
+    }
+    
+    *output = result;
+    *nkeys = result_count;
+}
+
+/*
+ * Extract uint keys with occurrence counting from DNA4 sequence (dispatch function)
+ */
+void
+kmersearch_extract_uintkey_from_dna4(VarBit *seq, void **output, int *nkeys)
+{
+    int seq_bits = VARBITLEN(seq);
+    
+    /* For now, always use scalar implementation */
+    /* SIMD implementations can be added later based on capability and threshold */
+#ifdef __x86_64__
+    /* Future: Add AVX2/AVX512 dispatch based on simd_capability */
+#elif defined(__aarch64__)
+    /* Future: Add NEON/SVE dispatch based on simd_capability */
+#endif
+    
+    kmersearch_extract_uintkey_from_dna4_scalar(seq, output, nkeys);
+}
+
+/*
+ * Extract uint keys with occurrence counting from text sequence
+ */
+void
+kmersearch_extract_uintkey_from_text(const char *text, void **output, int *nkeys)
+{
+    int text_len = strlen(text);
+    int bit_len = text_len * 4;  /* 4 bits per character for DNA4 */
+    int byte_len = (bit_len + 7) / 8;
+    VarBit *dna4_seq;
+    bits8 *data_ptr;
+    int i;
+    
+    /* Validate input characters */
+    for (i = 0; i < text_len; i++) {
+        if (!kmersearch_is_valid_dna4_char(text[i])) {
+            ereport(ERROR,
+                    (errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
+                     errmsg("Invalid character '%c' for DNA4 sequence", text[i]),
+                     errhint("DNA4 accepts A,C,G,T,U,M,R,W,S,Y,K,V,H,D,B,N characters")));
+        }
+    }
+    
+    /* Allocate DNA4 VarBit */
+    dna4_seq = (VarBit *) palloc0(VARHDRSZ + sizeof(int32) + byte_len);
+    SET_VARSIZE(dna4_seq, VARHDRSZ + sizeof(int32) + byte_len);
+    VARBITLEN(dna4_seq) = bit_len;
+    
+    /* Encode text to DNA4 using SIMD dispatch */
+    data_ptr = VARBITS(dna4_seq);
+    dna4_encode(text, (uint8_t*)data_ptr, text_len);
+    
+    /* Extract uint keys from DNA4 sequence */
+    kmersearch_extract_uintkey_from_dna4(dna4_seq, output, nkeys);
+    
+    /* Free temporary DNA4 sequence */
+    pfree(dna4_seq);
 }
