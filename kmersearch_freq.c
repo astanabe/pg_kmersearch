@@ -1104,14 +1104,14 @@ kmersearch_is_kmer_highfreq(VarBit *kmer_key)
     
     /* Debug: Log input key information */
     kmer_bit_len = VARBITLEN(kmer_key);
-    elog(DEBUG1, "kmersearch_is_kmer_highfreq: input key bit length = %d, kmersearch_occur_bitlen = %d, kmersearch_kmer_size = %d",
+    elog(DEBUG2, "kmersearch_is_kmer_highfreq: input key bit length = %d, kmersearch_occur_bitlen = %d, kmersearch_kmer_size = %d",
          kmer_bit_len, kmersearch_occur_bitlen, kmersearch_kmer_size);
     
     /* Determine if input is ngram_key2 (with occurrence count) or kmer2 (without occurrence count)
      * by checking if the bit length is exactly k-mer size * 2 (kmer2) or larger (ngram_key2) */
     if (kmer_bit_len == kmersearch_kmer_size * 2) {
         /* Input is kmer2 format (without occurrence count) */
-        elog(DEBUG1, "kmersearch_is_kmer_highfreq: input is kmer2 format (no occurrence count)");
+        elog(DEBUG2, "kmersearch_is_kmer_highfreq: input is kmer2 format (no occurrence count)");
         
         /* For kmer2, check that k-mer bit length is at least 8 */
         if (kmer_bit_len < 8) {
@@ -1122,7 +1122,7 @@ kmersearch_is_kmer_highfreq(VarBit *kmer_key)
         }
     } else if (kmer_bit_len == kmersearch_kmer_size * 2 + kmersearch_occur_bitlen) {
         /* Input is ngram_key2 format (with occurrence count) */
-        elog(DEBUG1, "kmersearch_is_kmer_highfreq: input is ngram_key2 format (with occurrence count)");
+        elog(DEBUG2, "kmersearch_is_kmer_highfreq: input is ngram_key2 format (with occurrence count)");
         
         /* For ngram_key2, check that k-mer portion is at least 8 bits */
         if (kmersearch_kmer_size * 2 < 8) {

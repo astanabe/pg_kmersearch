@@ -2409,7 +2409,7 @@ kmersearch_extract_dna2_kmer2_as_uint_direct_avx2(VarBit *seq, int k, void **out
                 }
                 
                 /* Use PEXT to extract 2-bit values efficiently */
-                
+                data64 = __builtin_bswap64(data64);
                 kmer_mask = ((1ULL << (k * 2)) - 1) << (64 - bit_offset - k * 2);
                 kmer_bits = _pext_u64(data64, kmer_mask);
                 
@@ -2434,6 +2434,7 @@ kmersearch_extract_dna2_kmer2_as_uint_direct_avx2(VarBit *seq, int k, void **out
                 memcpy(&data64, &src_data[start_byte], VARBITBYTES(seq) - start_byte);
             }
             
+            data64 = __builtin_bswap64(data64);
             kmer_mask = ((1ULL << (k * 2)) - 1) << (64 - bit_offset - k * 2);
             kmer_bits = _pext_u64(data64, kmer_mask);
             
@@ -2466,6 +2467,7 @@ kmersearch_extract_dna2_kmer2_as_uint_direct_avx2(VarBit *seq, int k, void **out
                 }
                 
                 /* Use PEXT for efficient extraction */
+                data64 = __builtin_bswap64(data64);
                 kmer_mask = ((1ULL << (k * 2)) - 1) << (64 - bit_offset - k * 2);
                 kmer_bits = _pext_u64(data64, kmer_mask);
                 
@@ -2490,6 +2492,7 @@ kmersearch_extract_dna2_kmer2_as_uint_direct_avx2(VarBit *seq, int k, void **out
                 memcpy(&data64, &src_data[start_byte], VARBITBYTES(seq) - start_byte);
             }
             
+            data64 = __builtin_bswap64(data64);
             kmer_mask = ((1ULL << (k * 2)) - 1) << (64 - bit_offset - k * 2);
             kmer_bits = _pext_u64(data64, kmer_mask);
             
@@ -2529,6 +2532,7 @@ kmersearch_extract_dna2_kmer2_as_uint_direct_avx2(VarBit *seq, int k, void **out
                             memcpy(&data64, &src_data[start_byte], VARBITBYTES(seq) - start_byte);
                         }
                         
+                        data64 = __builtin_bswap64(data64);
                         bits_to_extract = (bits_remaining > (64 - bit_offset)) ? (64 - bit_offset) : bits_remaining;
                         mask = ((1ULL << bits_to_extract) - 1) << (64 - bit_offset - bits_to_extract);
                         extracted = _pext_u64(data64, mask);
@@ -2576,6 +2580,7 @@ kmersearch_extract_dna2_kmer2_as_uint_direct_avx2(VarBit *seq, int k, void **out
                         memcpy(&data64, &src_data[start_byte], VARBITBYTES(seq) - start_byte);
                     }
                     
+                    data64 = __builtin_bswap64(data64);
                     bits_to_extract = (bits_remaining > (64 - bit_offset)) ? (64 - bit_offset) : bits_remaining;
                     mask = ((1ULL << bits_to_extract) - 1) << (64 - bit_offset - bits_to_extract);
                     extracted = _pext_u64(data64, mask);
@@ -2625,34 +2630,47 @@ kmersearch_extract_dna2_kmer2_as_uint_direct_avx512(VarBit *seq, int k, void **o
     result = palloc(max_kmers * element_size);
     *output = result;
     
-    /* AVX512 optimized k-mer extraction */
+    /* VBMI2 enables advanced bit manipulation for efficient parallel extraction */
     if (k <= 8) {
         uint16 *output_array = (uint16 *) result;
         int simd_batch = max_kmers & ~31;  /* Process 32 k-mers at a time */
         
-        /* AVX512 batch processing */
         for (i = 0; i < simd_batch; i += 32) {
+            _mm_prefetch(&src_data[(i + 64) / 4], _MM_HINT_T0);
+            
             for (int batch_idx = 0; batch_idx < 32; batch_idx++) {
-                uint64 kmer_value = 0;
                 int pos = i + batch_idx;
+                int start_bit = pos * 2;
+                int start_byte = start_bit / 8;
+                int bit_offset = start_bit % 8;
                 
-                for (int j = 0; j < k; j++) {
-                    int bit_pos = (pos + j) * 2;
-                    int byte_pos = bit_pos / 8;
-                    int bit_offset = bit_pos % 8;
-                    uint8 base_bits = (src_data[byte_pos] >> (6 - bit_offset)) & 0x3;
-                    kmer_value = (kmer_value << 2) | base_bits;
+                if (start_byte + 8 <= VARBITBYTES(seq)) {
+                    uint64 data64 = 0;
+                    memcpy(&data64, &src_data[start_byte], 8);
+                    data64 = __builtin_bswap64(data64);
+                    
+                    /* Use BEXTR for efficient extraction with VBMI2 */
+                    uint64 kmer_bits = _bextr_u64(data64, 64 - bit_offset - k * 2, k * 2);
+                    output_array[*nkeys] = (uint16) kmer_bits;
+                    (*nkeys)++;
+                } else {
+                    /* Fallback */
+                    uint64 kmer_value = 0;
+                    for (int j = 0; j < k; j++) {
+                        int bpos = (pos + j) * 2;
+                        int bypos = bpos / 8;
+                        int boff = bpos % 8;
+                        uint8 base_bits = (src_data[bypos] >> (6 - boff)) & 0x3;
+                        kmer_value = (kmer_value << 2) | base_bits;
+                    }
+                    output_array[*nkeys] = (uint16) kmer_value;
+                    (*nkeys)++;
                 }
-                
-                output_array[*nkeys] = (uint16) kmer_value;
-                (*nkeys)++;
             }
         }
         
-        /* Handle remaining k-mers */
         for (i = simd_batch; i <= seq_bases - k; i++) {
             uint64 kmer_value = 0;
-            
             for (int j = 0; j < k; j++) {
                 int bit_pos = (i + j) * 2;
                 int byte_pos = bit_pos / 8;
@@ -2660,81 +2678,62 @@ kmersearch_extract_dna2_kmer2_as_uint_direct_avx512(VarBit *seq, int k, void **o
                 uint8 base_bits = (src_data[byte_pos] >> (6 - bit_offset)) & 0x3;
                 kmer_value = (kmer_value << 2) | base_bits;
             }
-            
             output_array[*nkeys] = (uint16) kmer_value;
             (*nkeys)++;
         }
     } else if (k <= 16) {
         uint32 *output_array = (uint32 *) result;
-        int simd_batch = max_kmers & ~15;  /* Process 16 k-mers at a time */
         
-        /* AVX512 batch processing */
-        for (i = 0; i < simd_batch; i += 16) {
-            for (int batch_idx = 0; batch_idx < 16; batch_idx++) {
-                uint64 kmer_value = 0;
-                int pos = i + batch_idx;
+        for (i = 0; i <= seq_bases - k; i++) {
+            int start_bit = i * 2;
+            int start_byte = start_bit / 8;
+            int bit_offset = start_bit % 8;
+            
+            if (start_byte + 8 <= VARBITBYTES(seq)) {
+                uint64 data64 = 0;
+                memcpy(&data64, &src_data[start_byte], 8);
+                data64 = __builtin_bswap64(data64);
                 
+                uint64 kmer_bits = _bextr_u64(data64, 64 - bit_offset - k * 2, k * 2);
+                output_array[*nkeys] = (uint32) kmer_bits;
+                (*nkeys)++;
+            } else {
+                uint64 kmer_value = 0;
                 for (int j = 0; j < k; j++) {
-                    int bit_pos = (pos + j) * 2;
+                    int bit_pos = (i + j) * 2;
                     int byte_pos = bit_pos / 8;
                     int bit_offset = bit_pos % 8;
                     uint8 base_bits = (src_data[byte_pos] >> (6 - bit_offset)) & 0x3;
                     kmer_value = (kmer_value << 2) | base_bits;
                 }
-                
                 output_array[*nkeys] = (uint32) kmer_value;
                 (*nkeys)++;
             }
         }
-        
-        /* Handle remaining k-mers */
-        for (i = simd_batch; i <= seq_bases - k; i++) {
-            uint64 kmer_value = 0;
-            
-            for (int j = 0; j < k; j++) {
-                int bit_pos = (i + j) * 2;
-                int byte_pos = bit_pos / 8;
-                int bit_offset = bit_pos % 8;
-                uint8 base_bits = (src_data[byte_pos] >> (6 - bit_offset)) & 0x3;
-                kmer_value = (kmer_value << 2) | base_bits;
-            }
-            
-            output_array[*nkeys] = (uint32) kmer_value;
-            (*nkeys)++;
-        }
     } else {
         uint64 *output_array = (uint64 *) result;
-        int simd_batch = max_kmers & ~7;  /* Process 8 k-mers at a time */
         
-        /* AVX512 batch processing */
-        for (i = 0; i < simd_batch; i += 8) {
-            for (int batch_idx = 0; batch_idx < 8; batch_idx++) {
-                uint64 kmer_value = 0;
-                int pos = i + batch_idx;
+        for (i = 0; i <= seq_bases - k; i++) {
+            uint64 kmer_value = 0;
+            
+            int start_bit = i * 2;
+            int start_byte = start_bit / 8;
+            int bit_offset = start_bit % 8;
+            
+            if (k <= 32 && start_byte + 8 <= VARBITBYTES(seq)) {
+                uint64 data64 = 0;
+                memcpy(&data64, &src_data[start_byte], 8);
+                data64 = __builtin_bswap64(data64);
                 
+                kmer_value = _bextr_u64(data64, 64 - bit_offset - k * 2, k * 2);
+            } else {
                 for (int j = 0; j < k; j++) {
-                    int bit_pos = (pos + j) * 2;
+                    int bit_pos = (i + j) * 2;
                     int byte_pos = bit_pos / 8;
                     int bit_offset = bit_pos % 8;
                     uint8 base_bits = (src_data[byte_pos] >> (6 - bit_offset)) & 0x3;
                     kmer_value = (kmer_value << 2) | base_bits;
                 }
-                
-                output_array[*nkeys] = kmer_value;
-                (*nkeys)++;
-            }
-        }
-        
-        /* Handle remaining k-mers */
-        for (i = simd_batch; i <= seq_bases - k; i++) {
-            uint64 kmer_value = 0;
-            
-            for (int j = 0; j < k; j++) {
-                int bit_pos = (i + j) * 2;
-                int byte_pos = bit_pos / 8;
-                int bit_offset = bit_pos % 8;
-                uint8 base_bits = (src_data[byte_pos] >> (6 - bit_offset)) & 0x3;
-                kmer_value = (kmer_value << 2) | base_bits;
             }
             
             output_array[*nkeys] = kmer_value;
@@ -3707,13 +3706,13 @@ kmersearch_extract_dna2_kmer2_as_uint_direct(VarBit *seq, int k, void **output, 
     int seq_bits = VARBITLEN(seq);
     
 #ifdef __x86_64__
-    if (simd_capability >= SIMD_AVX512BW && seq_bits >= SIMD_EXTRACT_AVX512_THRESHOLD) {
-        /* AVX512 implementation */
+    if (simd_capability >= SIMD_AVX512VBMI2 && seq_bits >= SIMD_EXTRACT_AVX512_THRESHOLD) {
+        /* AVX512 + VBMI2 implementation */
         kmersearch_extract_dna2_kmer2_as_uint_direct_avx512(seq, k, output, nkeys);
         return;
     }
-    if (simd_capability >= SIMD_AVX2 && seq_bits >= SIMD_EXTRACT_AVX2_THRESHOLD) {
-        /* AVX2 implementation */
+    if (simd_capability >= SIMD_BMI2 && seq_bits >= SIMD_EXTRACT_AVX2_THRESHOLD) {
+        /* AVX2 + BMI2 implementation */
         kmersearch_extract_dna2_kmer2_as_uint_direct_avx2(seq, k, output, nkeys);
         return;
     }

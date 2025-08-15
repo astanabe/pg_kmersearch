@@ -217,7 +217,8 @@ CREATE OPERATOR <> (
 -- =% operators for k-mer search
 CREATE FUNCTION kmersearch_dna2_match(DNA2, text) RETURNS boolean
     AS 'MODULE_PATHNAME', 'kmersearch_dna2_match'
-    LANGUAGE C IMMUTABLE STRICT;
+    LANGUAGE C IMMUTABLE STRICT
+    COST 1000;
 
 CREATE OPERATOR =% (
     LEFTARG = DNA2,
@@ -227,7 +228,8 @@ CREATE OPERATOR =% (
 
 CREATE FUNCTION kmersearch_dna4_match(DNA4, text) RETURNS boolean
     AS 'MODULE_PATHNAME', 'kmersearch_dna4_match'
-    LANGUAGE C IMMUTABLE STRICT;
+    LANGUAGE C IMMUTABLE STRICT
+    COST 1000;
 
 CREATE OPERATOR =% (
     LEFTARG = DNA4,

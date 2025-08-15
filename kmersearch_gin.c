@@ -212,6 +212,8 @@ kmersearch_extract_value_dna4(PG_FUNCTION_ARGS)
         /* New optimized flow: extract uint k-mers and filter before VarBit creation */
         kmersearch_extract_dna4_kmer2_as_uint_with_expansion_direct((VarBit *)dna, kmersearch_kmer_size, &kmer_uint_array, &kmer_uint_count);
         
+        elog(DEBUG1, "kmersearch_extract_value_dna4: extracted %d k-mers after expansion", kmer_uint_count);
+        
         if (kmer_uint_count == 0) {
             *nkeys = 0;
             PG_RETURN_POINTER(NULL);
@@ -284,6 +286,7 @@ kmersearch_extract_value_dna4(PG_FUNCTION_ARGS)
     } else {
         /* Original flow: extract ngram_key2 directly without filtering */
         keys = kmersearch_extract_dna4_ngram_key2_with_expansion_direct((VarBit *)dna, kmersearch_kmer_size, nkeys);
+        elog(DEBUG1, "kmersearch_extract_value_dna4: extracted %d ngram keys without filtering", *nkeys);
     }
     
     if (*nkeys == 0)
@@ -440,12 +443,12 @@ kmersearch_consistent(PG_FUNCTION_ARGS)
     {
         query_key_array[i] = DatumGetVarBitP(queryKeys[i]);
         /* Debug: Log query key information */
-        elog(DEBUG1, "kmersearch_gin_consistent: query_key[%d] bit length = %d", 
+        elog(DEBUG2, "kmersearch_gin_consistent: query_key[%d] bit length = %d", 
              i, VARBITLEN(query_key_array[i]));
     }
     
     /* Debug: Log before calling get_cached_actual_min_score_or_error */
-    elog(DEBUG1, "kmersearch_gin_consistent: calling get_cached_actual_min_score_or_error with nkeys = %d", nkeys);
+    elog(DEBUG2, "kmersearch_gin_consistent: calling get_cached_actual_min_score_or_error with nkeys = %d", nkeys);
     
     /* Query keys are already filtered - use error version to ensure cache hit */
     actual_min_score = get_cached_actual_min_score_or_error(query_key_array, nkeys);
