@@ -33,7 +33,7 @@ static void kmersearch_cleanup_analysis_dshash(void);
 /* kmersearch_is_kmer_hash_in_analysis_dshash is now extern and declared in kmersearch.h */
 static void kmersearch_populate_analysis_dshash_from_workers(KmerWorkerState *workers, int num_workers, uint64 threshold_rows);
 static int kmersearch_get_analysis_dshash_count(int k_size, uint64 threshold_rows);
-static void kmersearch_insert_kmer2_as_uint_from_dshash(Oid table_oid, const char *column_name, int k_size, uint64 threshold_rows);
+static void kmersearch_insert_uintkey_from_dshash(Oid table_oid, const char *column_name, int k_size, uint64 threshold_rows);
 
 /* External functions are now declared in kmersearch.h */
 
@@ -914,7 +914,7 @@ kmersearch_perform_highfreq_analysis_parallel(Oid table_oid, const char *column_
         /* Now we can safely execute SQL operations */
         /* Save results - only in main process (though we should always be main process here) */
         kmersearch_spi_connect_or_error();
-        kmersearch_insert_kmer2_as_uint_from_dshash(table_oid, column_name, k_size, threshold_rows);
+        kmersearch_insert_uintkey_from_dshash(table_oid, column_name, k_size, threshold_rows);
         
         /* Insert metadata */
         {
@@ -1200,13 +1200,13 @@ kmersearch_is_kmer_highfreq(VarBit *kmer_key)
     
     /* Priority 1: Check in global cache */
     if (global_highfreq_cache.is_valid && global_highfreq_cache.highfreq_hash) {
-        is_highfreq = kmersearch_lookup_kmer2_as_uint_in_global_cache(kmer_uint, NULL, NULL);
+        is_highfreq = kmersearch_lookup_uintkey_in_global_cache(kmer_uint, NULL, NULL);
         return is_highfreq;
     }
     
     /* Priority 2: Check in parallel cache */
     if (kmersearch_is_parallel_highfreq_cache_loaded()) {
-        is_highfreq = kmersearch_lookup_kmer2_as_uint_in_parallel_cache(kmer_uint, NULL, NULL);
+        is_highfreq = kmersearch_lookup_uintkey_in_parallel_cache(kmer_uint, NULL, NULL);
         return is_highfreq;
     }
     
@@ -1221,19 +1221,19 @@ kmersearch_is_kmer_highfreq(VarBit *kmer_key)
         if (kmersearch_kmer_size <= 8) {
             appendStringInfo(&query,
                 "SELECT 1 FROM kmersearch_highfreq_kmer "
-                "WHERE kmer2_as_uint = %u "
+                "WHERE uintkey = %u "
                 "LIMIT 1",
                 (unsigned int)kmer_uint);
         } else if (kmersearch_kmer_size <= 16) {
             appendStringInfo(&query,
                 "SELECT 1 FROM kmersearch_highfreq_kmer "
-                "WHERE kmer2_as_uint = %u "
+                "WHERE uintkey = %u "
                 "LIMIT 1", 
                 (unsigned int)kmer_uint);
         } else {
             appendStringInfo(&query,
                 "SELECT 1 FROM kmersearch_highfreq_kmer "
-                "WHERE kmer2_as_uint = %lu "
+                "WHERE uintkey = %lu "
                 "LIMIT 1",
                 kmer_uint);
         }
@@ -1282,7 +1282,7 @@ analysis_kmer_hash_compare(const void *a, const void *b, size_t size, void *arg)
 }
 
 /*
- * Identity hash function for uint16 (kmer2_as_uint is already a hash value)
+ * Identity hash function for uint16 (uintkey is already a hash value)
  */
 static uint32
 kmersearch_uint16_identity_hash(const void *key, size_t keysize, void *arg)
@@ -1291,7 +1291,7 @@ kmersearch_uint16_identity_hash(const void *key, size_t keysize, void *arg)
 }
 
 /*
- * Identity hash function for uint32 (kmer2_as_uint is already a hash value)
+ * Identity hash function for uint32 (uintkey is already a hash value)
  */
 static uint32
 kmersearch_uint32_identity_hash(const void *key, size_t keysize, void *arg)
@@ -1680,10 +1680,10 @@ kmersearch_get_analysis_dshash_count(int k_size, uint64 threshold_rows)
 }
 
 /*
- * Insert kmer2_as_uint values directly from dshash into kmersearch_highfreq_kmer table
+ * Insert uintkey values directly from dshash into kmersearch_highfreq_kmer table
  */
 static void
-kmersearch_insert_kmer2_as_uint_from_dshash(Oid table_oid, const char *column_name, int k_size, uint64 threshold_rows)
+kmersearch_insert_uintkey_from_dshash(Oid table_oid, const char *column_name, int k_size, uint64 threshold_rows)
 {
     dshash_seq_status status;
     void *entry;
@@ -1697,7 +1697,7 @@ kmersearch_insert_kmer2_as_uint_from_dshash(Oid table_oid, const char *column_na
     if (IsParallelWorker())
         ereport(ERROR,
                 (errcode(ERRCODE_INVALID_TRANSACTION_STATE),
-                 errmsg("cannot execute kmersearch_insert_kmer2_as_uint_from_dshash() in a parallel worker")));
+                 errmsg("cannot execute kmersearch_insert_uintkey_from_dshash() in a parallel worker")));
     
     if (analysis_highfreq_hash == NULL) {
         ereport(ERROR, (errmsg("Analysis dshash table not initialized")));
@@ -1711,7 +1711,7 @@ kmersearch_insert_kmer2_as_uint_from_dshash(Oid table_oid, const char *column_na
                  errdetail("This should never happen after initial check")));
     }
     
-    ereport(DEBUG1, (errmsg("kmersearch_insert_kmer2_as_uint_from_dshash: Starting direct insertion")));
+    ereport(DEBUG1, (errmsg("kmersearch_insert_uintkey_from_dshash: Starting direct insertion")));
     
     /* Threshold already calculated in the caller - just use it */
     elog(DEBUG1, "Using threshold_rows = %lu for filtering high-frequency k-mers", (unsigned long)threshold_rows);
@@ -1719,35 +1719,35 @@ kmersearch_insert_kmer2_as_uint_from_dshash(Oid table_oid, const char *column_na
     /* Build base insert query */
     initStringInfo(&query);
     appendStringInfo(&query,
-        "INSERT INTO kmersearch_highfreq_kmer (table_oid, column_name, kmer2_as_uint, detection_reason) VALUES ");
+        "INSERT INTO kmersearch_highfreq_kmer (table_oid, column_name, uintkey, detection_reason) VALUES ");
     
     /* Iterate through all entries in the dshash table */
     dshash_seq_init(&status, analysis_highfreq_hash, false);
     
     while ((entry = dshash_seq_next(&status)) != NULL) {
-        uint64 kmer2_as_uint;
+        uint64 uintkey;
         int count;
         
         total_entries++;
         
-        /* Extract kmer and count based on k-mer size */
+        /* Extract uintkey and count based on k-mer size */
         if (k_size <= 8) {
             KmerEntry16 *entry16 = (KmerEntry16 *)entry;
-            kmer2_as_uint = (uint64)entry16->kmer;
+            uintkey = (uint64)entry16->kmer;
             count = entry16->count;
         } else if (k_size <= 16) {
             KmerEntry32 *entry32 = (KmerEntry32 *)entry;
-            kmer2_as_uint = (uint64)entry32->kmer;
+            uintkey = (uint64)entry32->kmer;
             count = entry32->count;
         } else {
             KmerEntry64 *entry64 = (KmerEntry64 *)entry;
-            kmer2_as_uint = entry64->kmer;
+            uintkey = entry64->kmer;
             count = entry64->count;
         }
         
-        /* Debug: log k-mer counts */
+        /* Debug: log uintkey counts */
         if (count > 0) {
-            elog(DEBUG1, "K-mer %lu has count=%d, threshold=%lu", (unsigned long)kmer2_as_uint, count, (unsigned long)threshold_rows);
+            elog(DEBUG1, "Uintkey %lu has count=%d, threshold=%lu", (unsigned long)uintkey, count, (unsigned long)threshold_rows);
         }
         
         /* Only insert if count exceeds threshold */
@@ -1761,7 +1761,7 @@ kmersearch_insert_kmer2_as_uint_from_dshash(Oid table_oid, const char *column_na
             appendStringInfo(&query, "(%u, %s, %ld, 'frequency_analysis')",
                 table_oid, 
                 quote_literal_cstr(column_name),
-                (int64)kmer2_as_uint);
+                (int64)uintkey);
             
             processed_entries++;
             first_entry = false;
@@ -1780,14 +1780,14 @@ kmersearch_insert_kmer2_as_uint_from_dshash(Oid table_oid, const char *column_na
                 
                 ret = SPI_exec(query.data, 0);
                 if (ret != SPI_OK_INSERT) {
-                    ereport(ERROR, (errmsg("Failed to insert batch of kmer2_as_uint values")));
+                    ereport(ERROR, (errmsg("Failed to insert batch of uintkey values")));
                 }
                 
                 /* Reset query for next batch */
                 pfree(query.data);
                 initStringInfo(&query);
                 appendStringInfo(&query,
-                    "INSERT INTO kmersearch_highfreq_kmer (table_oid, column_name, kmer2_as_uint, detection_reason) VALUES ");
+                    "INSERT INTO kmersearch_highfreq_kmer (table_oid, column_name, uintkey, detection_reason) VALUES ");
                 first_entry = true;
             }
         }
@@ -1807,7 +1807,7 @@ kmersearch_insert_kmer2_as_uint_from_dshash(Oid table_oid, const char *column_na
         
         ret = SPI_exec(query.data, 0);
         if (ret != SPI_OK_INSERT) {
-            ereport(ERROR, (errmsg("Failed to insert final batch of kmer2_as_uint values")));
+            ereport(ERROR, (errmsg("Failed to insert final batch of uintkey values")));
         }
     }
     
@@ -1816,7 +1816,7 @@ kmersearch_insert_kmer2_as_uint_from_dshash(Oid table_oid, const char *column_na
     
     ereport(NOTICE, (errmsg("K-mer analysis summary: total_entries=%d, threshold=%lu, high_freq_entries=%d, processed_entries=%d", 
                            total_entries, (unsigned long)threshold_rows, high_freq_entries, processed_entries)));
-    ereport(NOTICE, (errmsg("Direct storage completed: inserted %d kmer2_as_uint values into kmersearch_highfreq_kmer table", processed_entries)));
+    ereport(NOTICE, (errmsg("Direct storage completed: inserted %d uintkey values into kmersearch_highfreq_kmer table", processed_entries)));
 }
 
 /*
@@ -2245,7 +2245,8 @@ kmersearch_extract_kmers_from_block(Oid table_oid, AttrNumber column_attnum, Oid
 
 /*
  * Update k-mer counts in dshash
- * Each unique k-mer within a row is counted only once
+ * Using uintkey format which already includes occurrence counts
+ * The extract_uintkey functions already return unique k-mers, so no duplicate checking needed
  */
 static void
 kmersearch_update_kmer_counts_in_dshash(Datum sequence_datum, int kmer_size, dshash_table *hash, Oid column_type_oid)
@@ -2256,8 +2257,6 @@ kmersearch_update_kmer_counts_in_dshash(Datum sequence_datum, int kmer_size, dsh
     Oid dna2_oid;
     Oid dna4_oid;
     int i;
-    HTAB *local_kmer_set = NULL;
-    HASHCTL hashctl;
     
     /* Extract k-mers based on data type */
     dna2_oid = TypenameGetTypid("dna2");
@@ -2269,8 +2268,8 @@ kmersearch_update_kmer_counts_in_dshash(Datum sequence_datum, int kmer_size, dsh
         /* Get properly detoasted sequence */
         seq = DatumGetVarBitP(sequence_datum);
         
-        /* Direct extraction from DNA2 */
-        kmersearch_extract_dna2_kmer2_as_uint_direct(seq, kmer_size, &kmer_array, &kmer_count);
+        /* Extract uintkey from DNA2 (includes occurrence counts) */
+        kmersearch_extract_uintkey_from_dna2(seq, &kmer_array, &kmer_count);
         
         /* Free detoasted copy if needed */
         if ((void *)seq != DatumGetPointer(sequence_datum))
@@ -2283,8 +2282,8 @@ kmersearch_update_kmer_counts_in_dshash(Datum sequence_datum, int kmer_size, dsh
         /* Get properly detoasted sequence */
         seq = DatumGetVarBitP(sequence_datum);
         
-        /* Direct extraction with expansion from DNA4 */
-        kmersearch_extract_dna4_kmer2_as_uint_with_expansion_direct(seq, kmer_size, &kmer_array, &kmer_count);
+        /* Extract uintkey from DNA4 (includes occurrence counts) */
+        kmersearch_extract_uintkey_from_dna4(seq, &kmer_array, &kmer_count);
         
         /* Free detoasted copy if needed */  
         if ((void *)seq != DatumGetPointer(sequence_datum))
@@ -2302,115 +2301,78 @@ kmersearch_update_kmer_counts_in_dshash(Datum sequence_datum, int kmer_size, dsh
         return; /* No valid k-mers */
     }
     
-    /* Create local hash table to track unique k-mers within this row */
-    memset(&hashctl, 0, sizeof(hashctl));
-    if (kmer_size <= 8) {
-        hashctl.keysize = sizeof(uint16);
-    } else if (kmer_size <= 16) {
-        hashctl.keysize = sizeof(uint32);
-    } else {
-        hashctl.keysize = sizeof(uint64);
-    }
-    hashctl.entrysize = hashctl.keysize;  /* We only need the key, no value */
-    hashctl.hcxt = CurrentMemoryContext;
-    local_kmer_set = hash_create("row k-mer set", 
-                                 (kmer_count < 1000) ? kmer_count : 1000,  /* Initial size - most rows won't have too many unique k-mers */
-                                 &hashctl,
-                                 HASH_ELEM | HASH_CONTEXT);
+    /* No need for local hash table since extract_uintkey functions already return unique k-mers */
     
-    /* Update counts for each unique k-mer in this row */
-    elog(DEBUG2, "Processing row with %d k-mers", kmer_count);
+    /* Update counts for each unique uintkey in this row */
+    elog(DEBUG2, "Processing row with %d unique uintkeys", kmer_count);
     for (i = 0; i < kmer_count; i++)
     {
-        bool local_found;
-        
         /* Process based on k-mer size */
         if (kmer_size <= 8)
         {
-            uint16 *kmer16_array = (uint16 *)kmer_array;
-            uint16 kmer16 = kmer16_array[i];
+            uint16 *uintkey16_array = (uint16 *)kmer_array;
+            uint16 uintkey16 = uintkey16_array[i];
+            KmerEntry16 *entry16;
             
-            /* Check if we've already seen this k-mer in this row */
-            hash_search(local_kmer_set, &kmer16, HASH_ENTER, &local_found);
-            if (!local_found)  /* First time seeing this k-mer in this row */
+            /* uintkey already includes occurrence count, each uintkey is unique */
+            elog(DEBUG2, "Processing uintkey %u", uintkey16);
+            entry16 = (KmerEntry16 *)dshash_find_or_insert(hash, &uintkey16, &found);
+            if (!found)
             {
-                KmerEntry16 *entry16;
-                
-                elog(DEBUG2, "First occurrence of k-mer %u in this row", kmer16);
-                entry16 = (KmerEntry16 *)dshash_find_or_insert(hash, &kmer16, &found);
-                if (!found)
-                {
-                    entry16->kmer = kmer16;
-                    entry16->count = 1;
-                    elog(DEBUG2, "New k-mer %u, count=1", kmer16);
-                }
-                else
-                {
-                    entry16->count++;
-                    elog(DEBUG2, "Existing k-mer %u, count=%d", kmer16, entry16->count);
-                }
-                dshash_release_lock(hash, entry16);
+                entry16->kmer = uintkey16;
+                entry16->count = 1;
+                elog(DEBUG2, "New uintkey %u, count=1", uintkey16);
             }
             else
             {
-                elog(DEBUG2, "Duplicate k-mer %u in this row, skipping", kmer16);
+                entry16->count++;
+                elog(DEBUG2, "Existing uintkey %u, count=%d", uintkey16, entry16->count);
             }
+            dshash_release_lock(hash, entry16);
         }
         else if (kmer_size <= 16)
         {
-            uint32 *kmer32_array = (uint32 *)kmer_array;
-            uint32 kmer32 = kmer32_array[i];
+            uint32 *uintkey32_array = (uint32 *)kmer_array;
+            uint32 uintkey32 = uintkey32_array[i];
+            KmerEntry32 *entry32;
             
-            /* Check if we've already seen this k-mer in this row */
-            hash_search(local_kmer_set, &kmer32, HASH_ENTER, &local_found);
-            if (!local_found)  /* First time seeing this k-mer in this row */
+            /* uintkey already includes occurrence count, each uintkey is unique */
+            entry32 = (KmerEntry32 *)dshash_find_or_insert(hash, &uintkey32, &found);
+            if (!found)
             {
-                KmerEntry32 *entry32;
-                
-                entry32 = (KmerEntry32 *)dshash_find_or_insert(hash, &kmer32, &found);
-                if (!found)
-                {
-                    entry32->kmer = kmer32;
-                    entry32->count = 1;
-                }
-                else
-                {
-                    if (entry32->count < INT_MAX)
-                        entry32->count++;
-                }
-                dshash_release_lock(hash, entry32);
+                entry32->kmer = uintkey32;
+                entry32->count = 1;
             }
+            else
+            {
+                if (entry32->count < INT_MAX)
+                    entry32->count++;
+            }
+            dshash_release_lock(hash, entry32);
         }
         else /* kmer_size <= 32 */
         {
-            uint64 *kmer64_array = (uint64 *)kmer_array;
-            uint64 kmer64 = kmer64_array[i];
+            uint64 *uintkey64_array = (uint64 *)kmer_array;
+            uint64 uintkey64 = uintkey64_array[i];
+            KmerEntry64 *entry64;
             
-            /* Check if we've already seen this k-mer in this row */
-            hash_search(local_kmer_set, &kmer64, HASH_ENTER, &local_found);
-            if (!local_found)  /* First time seeing this k-mer in this row */
+            /* uintkey already includes occurrence count, each uintkey is unique */
+            entry64 = (KmerEntry64 *)dshash_find_or_insert(hash, &uintkey64, &found);
+            if (!found)
             {
-                KmerEntry64 *entry64;
-                
-                entry64 = (KmerEntry64 *)dshash_find_or_insert(hash, &kmer64, &found);
-                if (!found)
-                {
-                    entry64->kmer = kmer64;
-                    entry64->count = 1;
-                }
-                else
-                {
-                    if (entry64->count < INT_MAX)
-                        entry64->count++;
-                }
-                dshash_release_lock(hash, entry64);
+                entry64->kmer = uintkey64;
+                entry64->count = 1;
             }
+            else
+            {
+                if (entry64->count < INT_MAX)
+                    entry64->count++;
+            }
+            dshash_release_lock(hash, entry64);
         }
     }
     
     /* Normal cleanup */
-    if (local_kmer_set)
-        hash_destroy(local_kmer_set);
     if (kmer_array)
         pfree(kmer_array);
 }

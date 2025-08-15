@@ -854,7 +854,7 @@ kmersearch_highfreq_kmer_cache_load_internal(Oid table_oid, const char *column_n
         /* Build count query */
         initStringInfo(&count_query);
         appendStringInfo(&count_query,
-            "SELECT COUNT(DISTINCT hkm.kmer2_as_uint) FROM kmersearch_highfreq_kmer hkm "
+            "SELECT COUNT(DISTINCT hkm.uintkey) FROM kmersearch_highfreq_kmer hkm "
             "WHERE hkm.table_oid = %u "
             "AND hkm.column_name = '%s' "
             "AND EXISTS ("
@@ -988,7 +988,7 @@ kmersearch_highfreq_kmer_cache_load_internal(Oid table_oid, const char *column_n
             /* Build query with LIMIT/OFFSET for batch processing */
             initStringInfo(&query);
             appendStringInfo(&query,
-                "SELECT DISTINCT hkm.kmer2_as_uint FROM kmersearch_highfreq_kmer hkm "
+                "SELECT DISTINCT hkm.uintkey FROM kmersearch_highfreq_kmer hkm "
                 "WHERE hkm.table_oid = %u "
                 "AND hkm.column_name = '%s' "
                 "AND EXISTS ("
@@ -997,7 +997,7 @@ kmersearch_highfreq_kmer_cache_load_internal(Oid table_oid, const char *column_n
                 "    AND hkm_meta.column_name = '%s' "
                 "    AND hkm_meta.kmer_size = %d"
                 ") "
-                "ORDER BY hkm.kmer2_as_uint "
+                "ORDER BY hkm.uintkey "
                 "LIMIT %d OFFSET %d",
                 table_oid, escaped_column_name, table_oid, escaped_column_name, k_value, current_batch_limit, offset);
             
@@ -1979,7 +1979,7 @@ kmersearch_parallel_highfreq_kmer_cache_load_internal(Oid table_oid, const char 
         /* Build count query */
         initStringInfo(&count_query);
         appendStringInfo(&count_query,
-            "SELECT COUNT(DISTINCT hkm.kmer2_as_uint) FROM kmersearch_highfreq_kmer hkm "
+            "SELECT COUNT(DISTINCT hkm.uintkey) FROM kmersearch_highfreq_kmer hkm "
             "WHERE hkm.table_oid = %u "
             "AND hkm.column_name = '%s' "
             "AND EXISTS ("
@@ -2191,7 +2191,7 @@ kmersearch_parallel_highfreq_kmer_cache_load_internal(Oid table_oid, const char 
             /* Build query with LIMIT/OFFSET for batch processing */
             initStringInfo(&query);
             appendStringInfo(&query,
-                "SELECT DISTINCT hkm.kmer2_as_uint FROM kmersearch_highfreq_kmer hkm "
+                "SELECT DISTINCT hkm.uintkey FROM kmersearch_highfreq_kmer hkm "
                 "WHERE hkm.table_oid = %u "
                 "AND hkm.column_name = '%s' "
                 "AND EXISTS ("
@@ -2200,7 +2200,7 @@ kmersearch_parallel_highfreq_kmer_cache_load_internal(Oid table_oid, const char 
                 "    AND hkm_meta.column_name = '%s' "
                 "    AND hkm_meta.kmer_size = %d"
                 ") "
-                "ORDER BY hkm.kmer2_as_uint "
+                "ORDER BY hkm.uintkey "
                 "LIMIT %d OFFSET %d",
                 table_oid, escaped_column_name, table_oid, escaped_column_name, k_value, current_batch_limit, offset);
             
@@ -2612,26 +2612,26 @@ kmersearch_lookup_in_parallel_cache(VarBit *kmer_key)
 }
 
 /*
- * Check if uint k-mer exists in global high-frequency cache
+ * Check if uintkey exists in global high-frequency cache
  */
 bool
-kmersearch_lookup_kmer2_as_uint_in_global_cache(uint64 kmer2_as_uint, const char *table_name, const char *column_name)
+kmersearch_lookup_uintkey_in_global_cache(uint64 uintkey, const char *table_name, const char *column_name)
 {
     bool found;
     
     if (!global_highfreq_cache.is_valid || global_highfreq_cache.highfreq_count == 0)
         return false;
     
-    hash_search(global_highfreq_cache.highfreq_hash, &kmer2_as_uint, HASH_FIND, &found);
+    hash_search(global_highfreq_cache.highfreq_hash, &uintkey, HASH_FIND, &found);
     
     return found;
 }
 
 /*
- * Check if uint k-mer exists in parallel high-frequency cache
+ * Check if uintkey exists in parallel high-frequency cache
  */
 bool
-kmersearch_lookup_kmer2_as_uint_in_parallel_cache(uint64 kmer2_as_uint, const char *table_name, const char *column_name)
+kmersearch_lookup_uintkey_in_parallel_cache(uint64 uintkey, const char *table_name, const char *column_name)
 {
     MemoryContext oldcontext;
     void *entry = NULL;
@@ -2654,13 +2654,13 @@ kmersearch_lookup_kmer2_as_uint_in_parallel_cache(uint64 kmer2_as_uint, const ch
     
     /* Prepare key based on k-mer size */
     if (k_value <= 8) {
-        key16 = (uint16)kmer2_as_uint;
+        key16 = (uint16)uintkey;
         key_ptr = &key16;
     } else if (k_value <= 16) {
-        key32 = (uint32)kmer2_as_uint;
+        key32 = (uint32)uintkey;
         key_ptr = &key32;
     } else {
-        key64 = kmer2_as_uint;
+        key64 = uintkey;
         key_ptr = &key64;
     }
     
@@ -2689,7 +2689,7 @@ kmersearch_lookup_kmer2_as_uint_in_parallel_cache(uint64 kmer2_as_uint, const ch
 }
 
 /*
- * Identity hash function for uint16 (kmer2_as_uint is already a hash value)
+ * Identity hash function for uint16 (uintkey is already a hash value)
  */
 static uint32
 kmersearch_uint16_identity_hash(const void *key, size_t keysize, void *arg)
@@ -2698,7 +2698,7 @@ kmersearch_uint16_identity_hash(const void *key, size_t keysize, void *arg)
 }
 
 /*
- * Identity hash function for uint32 (kmer2_as_uint is already a hash value)
+ * Identity hash function for uint32 (uintkey is already a hash value)
  */
 static uint32
 kmersearch_uint32_identity_hash(const void *key, size_t keysize, void *arg)

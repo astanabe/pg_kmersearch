@@ -132,7 +132,7 @@ kmersearch_extract_value_dna2(PG_FUNCTION_ARGS)
             /* Check cache */
             if (kmersearch_force_use_parallel_highfreq_kmer_cache || IsParallelWorker()) {
                 if (parallel_highfreq_cache && parallel_highfreq_cache->is_initialized) {
-                    is_high_frequency = kmersearch_lookup_kmer2_as_uint_in_parallel_cache(kmer_uint, NULL, NULL);
+                    is_high_frequency = kmersearch_lookup_uintkey_in_parallel_cache(kmer_uint, NULL, NULL);
                 } else {
                     ereport(ERROR,
                             (errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
@@ -141,7 +141,7 @@ kmersearch_extract_value_dna2(PG_FUNCTION_ARGS)
                 }
             } else {
                 if (global_highfreq_cache.is_valid) {
-                    is_high_frequency = kmersearch_lookup_kmer2_as_uint_in_global_cache(kmer_uint, NULL, NULL);
+                    is_high_frequency = kmersearch_lookup_uintkey_in_global_cache(kmer_uint, NULL, NULL);
                 } else {
                     ereport(ERROR,
                             (errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
@@ -240,7 +240,7 @@ kmersearch_extract_value_dna4(PG_FUNCTION_ARGS)
             /* Check cache */
             if (kmersearch_force_use_parallel_highfreq_kmer_cache || IsParallelWorker()) {
                 if (parallel_highfreq_cache && parallel_highfreq_cache->is_initialized) {
-                    is_high_frequency = kmersearch_lookup_kmer2_as_uint_in_parallel_cache(kmer_uint, NULL, NULL);
+                    is_high_frequency = kmersearch_lookup_uintkey_in_parallel_cache(kmer_uint, NULL, NULL);
                 } else {
                     ereport(ERROR,
                             (errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
@@ -249,7 +249,7 @@ kmersearch_extract_value_dna4(PG_FUNCTION_ARGS)
                 }
             } else {
                 if (global_highfreq_cache.is_valid) {
-                    is_high_frequency = kmersearch_lookup_kmer2_as_uint_in_global_cache(kmer_uint, NULL, NULL);
+                    is_high_frequency = kmersearch_lookup_uintkey_in_global_cache(kmer_uint, NULL, NULL);
                 } else {
                     ereport(ERROR,
                             (errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
