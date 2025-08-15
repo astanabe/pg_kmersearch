@@ -219,6 +219,22 @@ static Datum *kmersearch_extract_dna2_kmer2_direct_scalar(VarBit *seq, int k, in
 /* SIMD function declarations are now in kmersearch.h */
 
 /*
+ * GUC hook function declarations
+ */
+static bool kmersearch_kmer_size_check_hook(int *newval, void **extra, GucSource source);
+static bool kmersearch_occur_bitlen_check_hook(int *newval, void **extra, GucSource source);
+static void kmersearch_kmer_size_assign_hook(int newval, void *extra);
+static void kmersearch_occur_bitlen_assign_hook(int newval, void *extra);
+static void kmersearch_max_appearance_rate_assign_hook(double newval, void *extra);
+static void kmersearch_max_appearance_nrow_assign_hook(int newval, void *extra);
+static void kmersearch_min_score_assign_hook(int newval, void *extra);
+static void kmersearch_min_shared_ngram_key_rate_assign_hook(double newval, void *extra);
+static void kmersearch_force_simd_capability_assign_hook(int newval, void *extra);
+/* kmersearch_query_pattern_cache_max_entries_assign_hook is declared in kmersearch.h */
+static void kmersearch_actual_min_score_cache_max_entries_assign_hook(int newval, void *extra);
+static void kmersearch_highfreq_kmer_cache_load_batch_size_assign_hook(int newval, void *extra);
+
+/*
  * GUC assign hook functions for cache invalidation
  */
 
@@ -237,6 +253,28 @@ clear_highfreq_cache_with_warning(void)
                       "You may need to manually execute kmersearch_highfreq_kmer_cache_load() "
                       "to reload the cache if needed.");
     }
+}
+
+/* Check if k-mer size and occurrence bitlen combination is valid */
+static bool
+kmersearch_kmer_size_check_hook(int *newval, void **extra, GucSource source)
+{
+    int total_bits;
+    (void) source;  /* Suppress unused parameter warning */
+    (void) extra;   /* Suppress unused parameter warning */
+    
+    /* Check if total bit length would exceed 64 bits */
+    total_bits = (*newval) * 2 + kmersearch_occur_bitlen;
+    if (total_bits > 64) {
+        ereport(ERROR,
+                (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+                 errmsg("invalid kmersearch.kmer_size value"),
+                 errdetail("Total bit length (kmer_size * 2 + occur_bitlen) = (%d * 2 + %d) = %d exceeds maximum of 64 bits.",
+                          *newval, kmersearch_occur_bitlen, total_bits),
+                 errhint("Reduce kmer_size or occur_bitlen so that (kmer_size * 2 + occur_bitlen) <= 64.")));
+        return false;
+    }
+    return true;
 }
 
 /* K-mer size change affects all caches */
@@ -378,6 +416,28 @@ kmersearch_force_simd_capability_assign_hook(int newval, void *extra)
     }
 }
 
+/* Check if occurrence bitlen and k-mer size combination is valid */
+static bool
+kmersearch_occur_bitlen_check_hook(int *newval, void **extra, GucSource source)
+{
+    int total_bits;
+    (void) source;  /* Suppress unused parameter warning */
+    (void) extra;   /* Suppress unused parameter warning */
+    
+    /* Check if total bit length would exceed 64 bits */
+    total_bits = kmersearch_kmer_size * 2 + (*newval);
+    if (total_bits > 64) {
+        ereport(ERROR,
+                (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+                 errmsg("invalid kmersearch.occur_bitlen value"),
+                 errdetail("Total bit length (kmer_size * 2 + occur_bitlen) = (%d * 2 + %d) = %d exceeds maximum of 64 bits.",
+                          kmersearch_kmer_size, *newval, total_bits),
+                 errhint("Reduce occur_bitlen or kmer_size so that (kmer_size * 2 + occur_bitlen) <= 64.")));
+        return false;
+    }
+    return true;
+}
+
 /* Occurrence bit length change affects rawscore and high-freq caches */
 static void
 kmersearch_occur_bitlen_assign_hook(int newval, void *extra)
@@ -472,7 +532,7 @@ _PG_init(void)
                            16,
                            PGC_USERSET,
                            0,
-                           NULL,
+                           kmersearch_occur_bitlen_check_hook,
                            kmersearch_occur_bitlen_assign_hook,
                            NULL);
     
@@ -485,7 +545,7 @@ _PG_init(void)
                            32,
                            PGC_USERSET,
                            0,
-                           NULL,
+                           kmersearch_kmer_size_check_hook,
                            kmersearch_kmer_size_assign_hook,
                            NULL);
     

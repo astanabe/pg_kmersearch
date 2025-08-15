@@ -273,19 +273,19 @@ typedef struct KmerAnalysisSharedState
 /* K-mer entry structures for different sizes */
 typedef struct KmerEntry16
 {
-    uint16      kmer;                     /* kmer2_as_uint (key) */
+    uint16      kmer;                     /* uintkey (key) */
     int         count;                    /* Number of rows containing this k-mer */
 } KmerEntry16;
 
 typedef struct KmerEntry32
 {
-    uint32      kmer;                     /* kmer2_as_uint (key) */
+    uint32      kmer;                     /* uintkey (key) */
     int         count;                    /* Number of rows containing this k-mer */
 } KmerEntry32;
 
 typedef struct KmerEntry64
 {
-    uint64      kmer;                     /* kmer2_as_uint (key) */
+    uint64      kmer;                     /* uintkey (key) */
     int         count;                    /* Number of rows containing this k-mer */
 } KmerEntry64;
 
@@ -383,7 +383,7 @@ typedef struct HighfreqKmerCache
     HighfreqCacheKey current_cache_key;   /* Current cache key */
     MemoryContext cache_context;          /* Memory context for cache data */
     HTAB       *highfreq_hash;           /* Hash table for fast lookup */
-    uint64     *highfreq_kmers;          /* Array of high-frequency k-mers as kmer2_as_uint */
+    uint64     *highfreq_kmers;          /* Array of high-frequency k-mers as uintkey */
     int         highfreq_count;          /* Number of high-frequency k-mers */
     bool        is_valid;                /* Cache validity flag */
 } HighfreqKmerCache;
@@ -393,26 +393,26 @@ typedef struct HighfreqKmerCache
  */
 typedef struct ParallelHighfreqKmerCacheEntry16
 {
-    uint16      kmer2_as_uint;           /* Direct kmer2 as uint16 (key) for k <= 8 */
+    uint16      uintkey;                 /* Direct uintkey as uint16 (key) for k <= 8 */
     int32       frequency_count;         /* frequency count */
 } ParallelHighfreqKmerCacheEntry16;
 
 typedef struct ParallelHighfreqKmerCacheEntry32
 {
-    uint32      kmer2_as_uint;           /* Direct kmer2 as uint32 (key) for k <= 16 */
+    uint32      uintkey;                 /* Direct uintkey as uint32 (key) for k <= 16 */
     int32       frequency_count;         /* frequency count */
 } ParallelHighfreqKmerCacheEntry32;
 
 typedef struct ParallelHighfreqKmerCacheEntry64
 {
-    uint64      kmer2_as_uint;           /* Direct kmer2 as uint64 (key) for k <= 32 */
+    uint64      uintkey;                 /* Direct uintkey as uint64 (key) for k <= 32 */
     int32       frequency_count;         /* frequency count */
 } ParallelHighfreqKmerCacheEntry64;
 
 /* Generic entry type for function signatures */
 typedef struct ParallelHighfreqKmerCacheEntry
 {
-    uint64      kmer2_as_uint;           /* Direct kmer2 as kmer2_as_uint (key) */
+    uint64      uintkey;                 /* Direct uintkey (key) */
     int32       frequency_count;         /* frequency count */
     HighfreqCacheKey cache_key;          /* cache key for validation */
 } ParallelHighfreqKmerCacheEntry;

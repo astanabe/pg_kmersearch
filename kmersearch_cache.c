@@ -1014,10 +1014,11 @@ kmersearch_highfreq_kmer_cache_load_internal(Oid table_oid, const char *column_n
                     
                     kmer_datum = SPI_getbinval(SPI_tuptable->vals[i], SPI_tuptable->tupdesc, 1, &isnull);
                     if (!isnull) {
-                        /* Convert based on k_value size */
-                        if (k_value <= 8) {
+                        /* Convert based on total bit length (k-mer2 bits + occurrence bits) */
+                        int total_bits = k_value * 2 + kmersearch_occur_bitlen;
+                        if (total_bits <= 16) {
                             batch_kmers[i] = (uint64)DatumGetInt16(kmer_datum);
-                        } else if (k_value <= 16) {
+                        } else if (total_bits <= 32) {
                             batch_kmers[i] = (uint64)DatumGetInt32(kmer_datum);
                         } else {
                             batch_kmers[i] = DatumGetInt64(kmer_datum);
@@ -1051,27 +1052,27 @@ kmersearch_highfreq_kmer_cache_load_internal(Oid table_oid, const char *column_n
         
         /* Insert batch k-mers into hash table */
         for (i = 0; i < batch_count; i++) {
-            uint64 kmer2_as_uint;
+            uint64 uintkey;
             HighfreqKmerHashEntry *entry;
             bool found;
             
             /* All k-mer values are valid, including 0 (which represents "AAAA") */
             
-            /* Use kmer2_as_uint value directly */
-            kmer2_as_uint = batch_kmers[i];
+            /* Use uintkey value directly */
+            uintkey = batch_kmers[i];
             
-            ereport(DEBUG1, (errmsg("kmersearch_highfreq_kmer_cache_load_internal: Inserting k-mer %d/%d from batch %d with kmer2_as_uint %lu", 
-                                   i + 1, batch_count, batch_num, kmer2_as_uint)));
+            ereport(DEBUG1, (errmsg("kmersearch_highfreq_kmer_cache_load_internal: Inserting k-mer %d/%d from batch %d with uintkey %lu", 
+                                   i + 1, batch_count, batch_num, uintkey)));
             
-            /* Insert into hash table using kmer2_as_uint as both key and value */
+            /* Insert into hash table using uintkey as both key and value */
             entry = (HighfreqKmerHashEntry *) hash_search(global_highfreq_cache.highfreq_hash,
-                                                         (void *) &kmer2_as_uint,
+                                                         (void *) &uintkey,
                                                          HASH_ENTER,
                                                          &found);
             
             if (entry && !found) {
                 entry->kmer_key = NULL;  /* No longer storing VarBit */
-                entry->hash_value = kmer2_as_uint;
+                entry->hash_value = uintkey;
                 total_inserted++;
                 ereport(DEBUG1, (errmsg("kmersearch_highfreq_kmer_cache_load_internal: Successfully inserted k-mer %d (total: %d)", 
                                        i + 1, total_inserted)));
@@ -1918,6 +1919,7 @@ kmersearch_parallel_highfreq_kmer_cache_load_internal(Oid table_oid, const char 
     int total_inserted = 0;
     int batch_num = 0;
     int offset = 0;
+    int total_bits;
     VarBit **count_kmers;
     
     if (!column_name || k_value <= 0)
@@ -2100,16 +2102,17 @@ kmersearch_parallel_highfreq_kmer_cache_load_internal(Oid table_oid, const char 
     dsa_pin(parallel_cache_dsa);
     dsa_pin_mapping(parallel_cache_dsa);
     
-    /* Set up dshash parameters based on k-mer size */
+    /* Set up dshash parameters based on total bit length (k-mer2 bits + occurrence bits) */
     memset(&params, 0, sizeof(params));
     params.compare_function = dshash_memcmp;
     params.tranche_id = LWTRANCHE_KMERSEARCH_CACHE;
     
-    if (k_value <= 8) {
+    total_bits = k_value * 2 + kmersearch_occur_bitlen;
+    if (total_bits <= 16) {
         params.key_size = sizeof(uint16);
         params.entry_size = sizeof(ParallelHighfreqKmerCacheEntry16);
         params.hash_function = kmersearch_uint16_identity_hash;
-    } else if (k_value <= 16) {
+    } else if (total_bits <= 32) {
         params.key_size = sizeof(uint32);
         params.entry_size = sizeof(ParallelHighfreqKmerCacheEntry32);
         params.hash_function = kmersearch_uint32_identity_hash;
@@ -2217,10 +2220,11 @@ kmersearch_parallel_highfreq_kmer_cache_load_internal(Oid table_oid, const char 
                     
                     kmer_datum = SPI_getbinval(SPI_tuptable->vals[i], SPI_tuptable->tupdesc, 1, &isnull);
                     if (!isnull) {
-                        /* Convert based on k_value size */
-                        if (k_value <= 8) {
+                        /* Convert based on total bit length (k-mer2 bits + occurrence bits) */
+                        int total_bits = k_value * 2 + kmersearch_occur_bitlen;
+                        if (total_bits <= 16) {
                             batch_kmers[i] = (uint64)DatumGetInt16(kmer_datum);
-                        } else if (k_value <= 16) {
+                        } else if (total_bits <= 32) {
                             batch_kmers[i] = (uint64)DatumGetInt32(kmer_datum);
                         } else {
                             batch_kmers[i] = DatumGetInt64(kmer_datum);
@@ -2261,14 +2265,14 @@ kmersearch_parallel_highfreq_kmer_cache_load_internal(Oid table_oid, const char 
             
             /* All k-mer values are valid, including 0 (which represents "AAAA") */
             
-            /* Use kmer2_as_uint value directly */
+            /* Use uintkey value directly */
             kmer_value = batch_kmers[i];
             
-            /* Prepare key based on k-mer size */
-            if (k_value <= 8) {
+            /* Prepare key based on total bit length (k-mer2 bits + occurrence bits) */
+            if (total_bits <= 16) {
                 key16 = (uint16)kmer_value;
                 key_ptr = &key16;
-            } else if (k_value <= 16) {
+            } else if (total_bits <= 32) {
                 key32 = (uint32)kmer_value;
                 key_ptr = &key32;
             } else {
@@ -2282,22 +2286,22 @@ kmersearch_parallel_highfreq_kmer_cache_load_internal(Oid table_oid, const char 
             /* Insert into dshash table with error handling */
             PG_TRY();
             {
-                if (k_value <= 8) {
+                if (total_bits <= 16) {
                     ParallelHighfreqKmerCacheEntry16 *entry16;
                     entry16 = (ParallelHighfreqKmerCacheEntry16 *) dshash_find_or_insert(parallel_cache_hash, 
                                                                                         key_ptr, &found);
                     if (entry16) {
-                        entry16->kmer2_as_uint = key16;
+                        entry16->uintkey = key16;
                         entry16->frequency_count = 1; /* Mark as high-frequency */
                         dshash_release_lock(parallel_cache_hash, entry16);
                         total_inserted++;
                     }
-                } else if (k_value <= 16) {
+                } else if (total_bits <= 32) {
                     ParallelHighfreqKmerCacheEntry32 *entry32;
                     entry32 = (ParallelHighfreqKmerCacheEntry32 *) dshash_find_or_insert(parallel_cache_hash, 
                                                                                         key_ptr, &found);
                     if (entry32) {
-                        entry32->kmer2_as_uint = key32;
+                        entry32->uintkey = key32;
                         entry32->frequency_count = 1; /* Mark as high-frequency */
                         dshash_release_lock(parallel_cache_hash, entry32);
                         total_inserted++;
@@ -2307,7 +2311,7 @@ kmersearch_parallel_highfreq_kmer_cache_load_internal(Oid table_oid, const char 
                     entry64 = (ParallelHighfreqKmerCacheEntry64 *) dshash_find_or_insert(parallel_cache_hash, 
                                                                                         key_ptr, &found);
                     if (entry64) {
-                        entry64->kmer2_as_uint = key64;
+                        entry64->uintkey = key64;
                         entry64->frequency_count = 1; /* Mark as high-frequency */
                         dshash_release_lock(parallel_cache_hash, entry64);
                         total_inserted++;

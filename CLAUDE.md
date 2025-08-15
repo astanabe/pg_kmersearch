@@ -6,6 +6,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 - **Dialogue/Conversation**: Use Japanese (日本語) for all interactions with the user
 - **Source Code**: Use English only, including all comments in source files
+- **Documentation**: Use English only for:
+  - Source code comments
+  - Git commit messages
+  - CLAUDE.md file
+  - README.md file
+  - Other technical documentation files
+- **Note**: Japanese should NOT be used in any code, documentation, or version control messages
 
 ## Implementation Constraints
 
