@@ -196,7 +196,7 @@ SELECT 'After query execution - query pattern cache:' as test_phase;
 SELECT * FROM kmersearch_query_pattern_cache_stats();
  hits | misses | current_entries | max_entries 
 ------+--------+-----------------+-------------
-   46 |      9 |               3 |       50000
+   43 |      5 |               3 |       50000
 (1 row)
 
 -- Test cache clearing functions

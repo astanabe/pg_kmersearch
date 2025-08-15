@@ -60,7 +60,7 @@ SELECT kmersearch_perform_highfreq_analysis(
 ) AS analysis_result;
  analysis_result 
 -----------------
- (13,9,2,0.2,2)
+ (13,86,2,0.2,2)
 (1 row)
 
 -- Verify analysis results
@@ -75,7 +75,7 @@ FROM kmersearch_analysis_status
 WHERE table_name = 'test_cache_hierarchy' AND column_name = 'test_seq';
  highfreq_kmer_count | max_appearance_rate | max_appearance_nrow 
 ---------------------+---------------------+---------------------
-                   9 |                 0.2 |                   3
+                  86 |                 0.2 |                   3
 (1 row)
 
 -- Test 2.1: Matching GUC settings (should work)

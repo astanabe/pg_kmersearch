@@ -103,13 +103,35 @@ SHOW kmersearch.kmer_size;
  4
 (1 row)
 
-SET kmersearch.kmer_size = 32; -- maximum
+-- Test maximum k-mer size with occur_bitlen=10 (should error: 32*2+10=74 > 64)
+\set ON_ERROR_STOP off
+SET kmersearch.kmer_size = 32; -- should fail with occur_bitlen=10
+ERROR:  invalid kmersearch.kmer_size value
+DETAIL:  Total bit length (kmer_size * 2 + occur_bitlen) = (32 * 2 + 10) = 74 exceeds maximum of 64 bits.
+HINT:  Reduce kmer_size or occur_bitlen so that (kmer_size * 2 + occur_bitlen) <= 64.
+\set ON_ERROR_STOP on
+SHOW kmersearch.kmer_size; -- should still be 4
+ kmersearch.kmer_size 
+----------------------
+ 4
+(1 row)
+
+-- Test maximum k-mer size with occur_bitlen=0 (should succeed: 32*2+0=64)
+SET kmersearch.occur_bitlen = 0;
+SET kmersearch.kmer_size = 32; -- should succeed now
 SHOW kmersearch.kmer_size;
  kmersearch.kmer_size 
 ----------------------
  32
 (1 row)
 
+-- Reset occur_bitlen (should fail because kmer_size is now 32)
+\set ON_ERROR_STOP off
+SET kmersearch.occur_bitlen = 10;
+ERROR:  invalid kmersearch.occur_bitlen value
+DETAIL:  Total bit length (kmer_size * 2 + occur_bitlen) = (32 * 2 + 10) = 74 exceeds maximum of 64 bits.
+HINT:  Reduce occur_bitlen or kmer_size so that (kmer_size * 2 + occur_bitlen) <= 64.
+\set ON_ERROR_STOP on
 SET kmersearch.occur_bitlen = 0;  -- minimum
 SHOW kmersearch.occur_bitlen;
  kmersearch.occur_bitlen 
@@ -117,13 +139,12 @@ SHOW kmersearch.occur_bitlen;
  0
 (1 row)
 
-SET kmersearch.occur_bitlen = 16; -- maximum
-SHOW kmersearch.occur_bitlen;
- kmersearch.occur_bitlen 
--------------------------
- 16
-(1 row)
-
+\set ON_ERROR_STOP off
+SET kmersearch.occur_bitlen = 16; -- maximum (should fail with kmer_size=32)
+ERROR:  invalid kmersearch.occur_bitlen value
+DETAIL:  Total bit length (kmer_size * 2 + occur_bitlen) = (32 * 2 + 16) = 80 exceeds maximum of 64 bits.
+HINT:  Reduce occur_bitlen or kmer_size so that (kmer_size * 2 + occur_bitlen) <= 64.
+\set ON_ERROR_STOP on
 SET kmersearch.min_shared_ngram_key_rate = 0.0;  -- minimum
 SHOW kmersearch.min_shared_ngram_key_rate;
  kmersearch.min_shared_ngram_key_rate 
