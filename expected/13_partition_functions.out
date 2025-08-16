@@ -200,6 +200,147 @@ ORDER BY c.relname;
  test_null_tablespace_1
 (2 rows)
 
+-- Test 16: Test high-frequency k-mer analysis on partitioned table
+-- Create a larger test table
+CREATE TABLE test_highfreq_regular (
+    id serial PRIMARY KEY,
+    sequence dna2 NOT NULL
+);
+CREATE TABLE test_highfreq_partitioned (
+    id serial PRIMARY KEY,
+    sequence dna2 NOT NULL
+);
+-- Insert identical data into both tables
+INSERT INTO test_highfreq_regular (sequence)
+SELECT 
+    CASE (i % 10)
+        WHEN 0 THEN 'ATCGATCGATCGATCGATCGATCGATCGATCG'::dna2  -- High frequency pattern
+        WHEN 1 THEN 'ATCGATCGATCGATCGATCGATCGATCGATCG'::dna2  -- Same high frequency
+        WHEN 2 THEN 'GCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTA'::dna2
+        WHEN 3 THEN 'TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT'::dna2
+        WHEN 4 THEN 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'::dna2
+        WHEN 5 THEN 'CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC'::dna2
+        WHEN 6 THEN 'GGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGG'::dna2
+        WHEN 7 THEN 'ATGCATGCATGCATGCATGCATGCATGCATGC'::dna2
+        WHEN 8 THEN 'CGCGCGCGCGCGCGCGCGCGCGCGCGCGCGCG'::dna2
+        ELSE 'TATATATATATATATATATATATATATATATA'::dna2
+    END
+FROM generate_series(1, 100) i;
+-- Copy same data to partitioned table
+INSERT INTO test_highfreq_partitioned (sequence)
+SELECT sequence FROM test_highfreq_regular ORDER BY id;
+-- Convert the second table to partitioned with 4 partitions
+SELECT kmersearch_partition_table('test_highfreq_partitioned', 4);
+ kmersearch_partition_table 
+----------------------------
+ 
+(1 row)
+
+-- Configure analysis parameters
+SET kmersearch.kmer_size = 8;
+SET kmersearch.max_appearance_rate = 0.15;  -- 15% threshold
+SET kmersearch.max_appearance_nrow = 0;     -- Use only rate-based threshold
+-- Test 17: Perform high-frequency analysis on regular table
+SELECT 
+    total_rows,
+    highfreq_kmers_count,
+    max_appearance_rate_used,
+    max_appearance_nrow_used,
+    parallel_workers_used
+FROM kmersearch_perform_highfreq_analysis('test_highfreq_regular', 'sequence');
+ total_rows | highfreq_kmers_count | max_appearance_rate_used | max_appearance_nrow_used | parallel_workers_used 
+------------+----------------------+--------------------------+--------------------------+-----------------------
+        100 |                   33 |                     0.15 |                       15 |                     2
+(1 row)
+
+-- Test 18: Perform high-frequency analysis on partitioned table
+SELECT 
+    total_rows,
+    highfreq_kmers_count,
+    max_appearance_rate_used,
+    max_appearance_nrow_used,
+    parallel_workers_used
+FROM kmersearch_perform_highfreq_analysis('test_highfreq_partitioned', 'sequence');
+ total_rows | highfreq_kmers_count | max_appearance_rate_used | max_appearance_nrow_used | parallel_workers_used 
+------------+----------------------+--------------------------+--------------------------+-----------------------
+        100 |                   33 |                     0.15 |                       15 |                     2
+(1 row)
+
+-- Test 19: Verify that both analyses produced identical results
+-- Compare high-frequency k-mers from both tables
+SELECT 
+    CASE 
+        WHEN (
+            SELECT COUNT(*) FROM kmersearch_highfreq_kmer 
+            WHERE table_oid = 'test_highfreq_regular'::regclass
+        ) = (
+            SELECT COUNT(*) FROM kmersearch_highfreq_kmer 
+            WHERE table_oid = 'test_highfreq_partitioned'::regclass
+        )
+        THEN 'Same count of high-frequency k-mers'
+        ELSE 'Different count of high-frequency k-mers'
+    END as comparison_result;
+          comparison_result          
+-------------------------------------
+ Same count of high-frequency k-mers
+(1 row)
+
+-- Test 20: Clean up analysis results
+SELECT * FROM kmersearch_undo_highfreq_analysis('test_highfreq_regular', 'sequence');
+ dropped_analyses | dropped_highfreq_kmers | freed_storage_bytes 
+------------------+------------------------+---------------------
+                1 |                     33 |                2112
+(1 row)
+
+SELECT * FROM kmersearch_undo_highfreq_analysis('test_highfreq_partitioned', 'sequence');
+ dropped_analyses | dropped_highfreq_kmers | freed_storage_bytes 
+------------------+------------------------+---------------------
+                1 |                     33 |                2112
+(1 row)
+
+-- Test 21: Test with different k-mer size and parallel workers
+SET kmersearch.kmer_size = 4;
+SET max_parallel_workers_per_gather = 2;
+-- Analyze regular table with 2 parallel workers
+SELECT 
+    total_rows,
+    highfreq_kmers_count,
+    parallel_workers_used
+FROM kmersearch_perform_highfreq_analysis('test_highfreq_regular', 'sequence');
+ total_rows | highfreq_kmers_count | parallel_workers_used 
+------------+----------------------+-----------------------
+        100 |                   29 |                     2
+(1 row)
+
+-- Analyze partitioned table with 2 parallel workers
+SELECT 
+    total_rows,
+    highfreq_kmers_count,
+    parallel_workers_used
+FROM kmersearch_perform_highfreq_analysis('test_highfreq_partitioned', 'sequence');
+ total_rows | highfreq_kmers_count | parallel_workers_used 
+------------+----------------------+-----------------------
+        100 |                   29 |                     2
+(1 row)
+
+-- Clean up analysis results
+SELECT * FROM kmersearch_undo_highfreq_analysis('test_highfreq_regular', 'sequence');
+ dropped_analyses | dropped_highfreq_kmers | freed_storage_bytes 
+------------------+------------------------+---------------------
+                1 |                     29 |                1856
+(1 row)
+
+SELECT * FROM kmersearch_undo_highfreq_analysis('test_highfreq_partitioned', 'sequence');
+ dropped_analyses | dropped_highfreq_kmers | freed_storage_bytes 
+------------------+------------------------+---------------------
+                1 |                     29 |                1856
+(1 row)
+
+-- Reset parameters
+RESET kmersearch.kmer_size;
+RESET kmersearch.max_appearance_rate;
+RESET kmersearch.max_appearance_nrow;
+RESET max_parallel_workers_per_gather;
 -- Cleanup
 DROP TABLE IF EXISTS test_sequences CASCADE;
 DROP TABLE IF EXISTS test_sequences_dna4 CASCADE;
@@ -208,5 +349,7 @@ DROP TABLE IF EXISTS test_no_dna_table CASCADE;
 DROP TABLE IF EXISTS test_multi_dna_table CASCADE;
 DROP TABLE IF EXISTS test_tablespace_table CASCADE;
 DROP TABLE IF EXISTS test_null_tablespace CASCADE;
+DROP TABLE IF EXISTS test_highfreq_regular CASCADE;
+DROP TABLE IF EXISTS test_highfreq_partitioned CASCADE;
 DROP EXTENSION pg_kmersearch CASCADE;
 SET client_min_messages = NOTICE;
