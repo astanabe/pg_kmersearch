@@ -654,11 +654,11 @@ Datum kmersearch_undo_highfreq_analysis(PG_FUNCTION_ARGS);
 bool kmersearch_is_kmer_hash_in_analysis_dshash(uint64 kmer_hash);
 
 /* K-mer utility functions */
-/* Removed kmer2 functions - using uintkey implementation */
+/* K-mer utility functions */
 int kmersearch_count_degenerate_combinations(const char *kmer, int k);
 void kmersearch_set_bit_at(bits8 *data, int bit_pos, int value);
 bool kmersearch_will_exceed_degenerate_limit_dna4_bits(VarBit *seq, int start_pos, int k);
-/* Removed kmer2 creation functions */
+/* K-mer occurrence tracking functions */
 int kmersearch_find_or_add_kmer_occurrence16(KmerOccurrence16 *occurrences, int *count, uint16 kmer_value, int max_count);
 int kmersearch_find_or_add_kmer_occurrence32(KmerOccurrence32 *occurrences, int *count, uint32 kmer_value, int max_count);
 int kmersearch_find_or_add_kmer_occurrence64(KmerOccurrence64 *occurrences, int *count, uint64 kmer_value, int max_count);
@@ -742,7 +742,7 @@ void kmersearch_validate_analysis_parameters(Oid table_oid, const char *column_n
 /* Utility functions for unique temporary table name generation */
 char *kmersearch_generate_unique_temp_table_name(const char *prefix, int additional_id);
 
-/* Removed kmer2_as_uint functions - not true uintkey format */
+/* Direct bit manipulation helper functions */
 
 /* Direct bit manipulation helper functions */
 void kmersearch_extract_dna4_kmer_expansions_direct_bits(VarBit *seq, int start_pos, int k, uint64 *output, int *count);
