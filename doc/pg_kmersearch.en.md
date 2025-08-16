@@ -22,16 +22,16 @@ pg_kmersearch is a PostgreSQL extension that provides custom data types for effi
 - **Storage efficiency**: 4 bits per character
 
 ### K-mer Search Features
-- **K-mer length**: 4-64 bases (specified at index creation)
-- **GIN indexing**: Fast search using n-gram keys
-- **Degenerate code support**: MRWSYKVHDBN expansion for DNA4 type
-- **Occurrence tracking**: Counts k-mer occurrences within rows (default 8-bit)
-- **Scoring search**: Retrieve top matches by similarity, not just exact matches
-- **High-frequency k-mer exclusion**: Automatically excludes overly common k-mers during index creation
-- **Score-based filtering**: Minimum score thresholds with automatic adjustment for excluded k-mers
-- **Score calculation functions**: `kmersearch_rawscore()` and `kmersearch_correctedscore()` for individual sequence scoring (both functions return identical values in current implementation)
-- **High-frequency k-mer management**: `kmersearch_perform_highfreq_analysis()` for high-frequency k-mer analysis and `kmersearch_highfreq_kmer_cache_load()` and `kmersearch_highfreq_kmer_cache_free()` for cache management
-- **Table partitioning**: `kmersearch_partition_table()` for hash partitioning of large sequence databases
+- **K-mer length**: 4-32 bases (configurable via GUC variable)
+- **GIN indexing**: Multiple operator classes with different key storage strategies (int2/int4/int8)
+- **Degenerate code support**: Full IUPAC code expansion for DNA4 type
+- **Occurrence tracking**: Configurable bit length (0-16 bits, default 8-bit)
+- **Scoring search**: Retrieve matches by similarity score
+- **High-frequency k-mer filtering**: Optional exclusion of common k-mers
+- **Score-based filtering**: Minimum score thresholds for search quality control
+- **Score calculation functions**: `kmersearch_rawscore()` and `kmersearch_correctedscore()` for sequence scoring
+- **High-frequency k-mer management**: Analysis and cache management functions
+- **Table partitioning**: Hash partitioning support for large databases
 
 ## Installation
 
@@ -148,7 +148,7 @@ pg_kmersearch provides several configuration variables that can be set using Pos
 
 | Variable | Default | Range | Description |
 |----------|---------|-------|-------------|
-| `kmersearch.kmer_size` | 16 | 4-64 | K-mer length for index creation and search |
+| `kmersearch.kmer_size` | 16 | 4-32 | K-mer length for index creation and search |
 | `kmersearch.occur_bitlen` | 8 | 0-16 | Bits for occurrence count storage |
 | `kmersearch.max_appearance_rate` | 0.5 | 0.0-1.0 | Maximum k-mer appearance rate for indexing |
 | `kmersearch.max_appearance_nrow` | 0 | 0-∞ | Maximum rows containing k-mer (0=unlimited) |
@@ -158,6 +158,7 @@ pg_kmersearch provides several configuration variables that can be set using Pos
 | `kmersearch.actual_min_score_cache_max_entries` | 50000 | 1000-10000000 | Maximum entries for actual min score cache |
 | `kmersearch.preclude_highfreq_kmer` | false | true/false | Enable high-frequency k-mer exclusion during GIN index construction |
 | `kmersearch.force_use_parallel_highfreq_kmer_cache` | false | true/false | Force use of dshash parallel cache for high-frequency k-mer lookups |
+| `kmersearch.force_simd_capability` | -1 | -1-100 | Force SIMD capability level (-1 = auto-detect) |
 | `kmersearch.highfreq_kmer_cache_load_batch_size` | 10000 | 1000-1000000 | Batch size for loading high-frequency k-mers into cache |
 | `kmersearch.highfreq_analysis_batch_size` | 10000 | 1000-1000000 | Batch size for high-frequency k-mer analysis |
 
@@ -170,11 +171,18 @@ The extension includes automatic exclusion of high-frequency k-mers to improve i
 SET kmersearch.max_appearance_rate = 0.5;  -- Default: 50% max appearance rate
 SET kmersearch.max_appearance_nrow = 1000;  -- Default: 0 (disabled)
 
--- Create index with frequency analysis
-CREATE INDEX sequences_kmer_idx ON sequences USING gin (dna_seq);
+-- Create index with appropriate operator class
+-- For DNA2 with k-mer size <= 16:
+CREATE INDEX sequences_kmer_idx ON sequences USING gin (dna_seq kmersearch_dna2_gin_ops_int4);
+
+-- For DNA4 with k-mer size <= 8:
+CREATE INDEX sequences_kmer_idx ON sequences USING gin (dna_seq kmersearch_dna4_gin_ops_int2);
+
+-- For DNA4 with k-mer size <= 16:
+CREATE INDEX sequences_kmer_idx ON sequences USING gin (dna_seq kmersearch_dna4_gin_ops_int4);
 
 -- View excluded k-mers for a table/column
-SELECT ngram_key, detection_reason 
+SELECT uintkey, detection_reason 
 FROM kmersearch_highfreq_kmer 
 WHERE table_oid = 'sequences'::regclass AND column_name = 'dna_seq';
 
@@ -327,7 +335,7 @@ Stores high-frequency k-mers that are excluded from GIN indexes:
 
 ```sql
 -- View excluded k-mers for a specific table/column
-SELECT table_oid, column_name, kmer2_as_uint, detection_reason, created_at
+SELECT table_oid, column_name, uintkey, detection_reason, created_at
 FROM kmersearch_highfreq_kmer 
 WHERE table_oid = 'sequences'::regclass AND column_name = 'dna_seq';
 
@@ -586,8 +594,9 @@ SELECT kmersearch_perform_highfreq_analysis(
 -- 3. Check analysis results
 SELECT * FROM kmersearch_analysis_status WHERE table_name = 'sequences';
 
--- 4. Create GIN index (uses analysis results automatically)
-CREATE INDEX sequences_kmer_idx ON sequences USING gin(dna_seq);
+-- 4. Create GIN index with appropriate operator class
+-- Choose based on k-mer size and data type:
+CREATE INDEX sequences_kmer_idx ON sequences USING gin(dna_seq kmersearch_dna4_gin_ops_int4);
 
 -- 5. Load caches for optimal performance
 SELECT kmersearch_highfreq_kmer_cache_load('sequences', 'dna_seq');

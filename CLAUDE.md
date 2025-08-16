@@ -34,6 +34,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - Never use uncertain phrases like "might be used", "possibly", "may be" without immediate verification
 - Always check actual usage with grep, read, or other tools to provide definitive answers
 - If something cannot be determined with certainty, explicitly state what needs to be checked
+- **Never make descriptions or changes based on speculation or assumptions - always verify before describing or modifying**
 
 ## Important Development Assumptions
 
@@ -129,13 +130,71 @@ SET kmersearch.max_appearance_rate = 0.25;
 
 This is particularly important when testing analysis functions and cache operations that depend on specific GUC variable values.
 
+## Extension Architecture
+
+### Data Types
+- **DNA2**: Standard DNA sequences with 2-bit encoding (A, C, G, T, U)
+- **DNA4**: Full 4-bit encoding (A, C, G, T) with support for IUPAC degenerate bases (M, R, W, S, Y, K, V, H, D, B, N)
+- Both types use compact bit-packed storage with variable-length support
+
+### GUC Variables (Configuration Parameters)
+- `kmersearch.kmer_size` (default: 16): K-mer size for index operations (4-32)
+- `kmersearch.occur_bitlen` (default: 8): Bit length for storing k-mer occurrence information (0-16)
+- `kmersearch.max_appearance_rate` (default: 0.5): Maximum appearance rate for high-frequency k-mer detection (0.0-1.0)
+- `kmersearch.max_appearance_nrow` (default: 0): Maximum number of rows for high-frequency k-mer detection (0 = unlimited)
+- `kmersearch.min_score` (default: 1): Minimum score threshold for search operations
+- `kmersearch.min_shared_ngram_key_rate` (default: 0.9): Minimum shared n-gram key rate for scoring (0.0-1.0)
+- `kmersearch.preclude_highfreq_kmer` (default: false): Enable high-frequency k-mer filtering
+- `kmersearch.force_use_parallel_highfreq_kmer_cache` (default: false): Force parallel cache usage
+- `kmersearch.force_simd_capability` (default: -1): Force specific SIMD capability level (-1 = auto-detect)
+- `kmersearch.query_pattern_cache_max_entries` (default: 50000): Maximum cache entries for query patterns
+- `kmersearch.actual_min_score_cache_max_entries` (default: 50000): Maximum cache entries for minimum scores
+- `kmersearch.highfreq_kmer_cache_load_batch_size` (default: 10000): Batch size for loading high-frequency k-mers
+- `kmersearch.highfreq_analysis_batch_size` (default: 10000): Batch size for high-frequency k-mer analysis
+
+### Core Functions
+- **Search Operators**: `=%` operator for k-mer based sequence search
+- **Scoring Functions**: 
+  - `kmersearch_rawscore()`: Calculate raw matching score
+  - `kmersearch_correctedscore()`: Calculate corrected score with degenerate base adjustments
+- **Length Functions**: `bit_length()`, `nuc_length()`, `char_length()`, `length()`
+- **High-frequency Analysis**:
+  - `kmersearch_perform_highfreq_analysis()`: Analyze and identify high-frequency k-mers
+  - `kmersearch_undo_highfreq_analysis()`: Remove high-frequency k-mer analysis
+- **Cache Management**:
+  - `kmersearch_query_pattern_cache_stats()`: Query pattern cache statistics
+  - `kmersearch_query_pattern_cache_free()`: Clear query pattern cache
+  - `kmersearch_actual_min_score_cache_stats()`: Minimum score cache statistics
+  - `kmersearch_actual_min_score_cache_free()`: Clear minimum score cache
+  - `kmersearch_highfreq_kmer_cache_load()`: Load high-frequency k-mers into cache
+  - `kmersearch_highfreq_kmer_cache_free()`: Free high-frequency k-mer cache
+
+### System Tables
+- `kmersearch_highfreq_kmer`: Stores identified high-frequency k-mers
+- `kmersearch_highfreq_kmer_meta`: Metadata for high-frequency k-mer analysis
+- `kmersearch_gin_index_meta`: GIN index metadata with high-frequency filtering information
+- `kmersearch_index_info`: General index tracking information
+
+### Management Views
+- `kmersearch_cache_summary`: Overview of all cache statistics and hit rates
+- `kmersearch_analysis_status`: Status of high-frequency k-mer analyses
+
+### GIN Index Support
+Multiple operator classes with different key storage strategies:
+- `kmersearch_dna2_gin_ops_int2`: 16-bit integer keys for DNA2
+- `kmersearch_dna2_gin_ops_int4`: 32-bit integer keys for DNA2
+- `kmersearch_dna2_gin_ops_int8`: 64-bit integer keys for DNA2
+- `kmersearch_dna4_gin_ops_int2`: 16-bit integer keys for DNA4
+- `kmersearch_dna4_gin_ops_int4`: 32-bit integer keys for DNA4
+- `kmersearch_dna4_gin_ops_int8`: 64-bit integer keys for DNA4
+
 ## SIMD Implementation
 
 **SIMD (Single Instruction, Multiple Data) Implementation**:
 - Platform-specific optimizations for encoding/decoding operations
-- Runtime SIMD capability detection
+- Runtime SIMD capability detection via `kmersearch_simd_capability()`
 - Function dispatch tables for selecting optimal implementation
-- Supports various instruction sets: SSE, AVX, AVX2, AVX-512
+- Supports various instruction sets: SSE, AVX, AVX2, AVX-512, BMI2
 - Automatic fallback to standard implementation if SIMD not available
 - Optimizes critical path operations like:
   - DNA sequence encoding/decoding

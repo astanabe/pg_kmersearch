@@ -22,16 +22,16 @@ pg_kmersearchは、PostgreSQL用のDNA配列データを効率的に格納・処
 - **ストレージ効率**: 1文字あたり4ビット
 
 ### k-mer検索機能
-- **k-mer長**: 4～32塩基（インデックス作成時に指定）
-- **GINインデックス**: n-gramキーによる高速検索
-- **縮重コード対応**: DNA4型でのMRWSYKVHDBN展開
-- **出現回数追跡**: 同一行内でのk-mer出現回数を考慮（デフォルト8ビット）
-- **スコアリング検索**: 完全一致だけでなく、類似度による上位結果取得
-- **高頻出k-mer除外**: インデックス作成時に過度に頻出するk-merを自動除外
-- **スコアベースフィルタリング**: 除外k-merに応じて自動調整される最小スコア閾値
-- **スコア計算関数**: 個別配列のスコア算出用の`kmersearch_rawscore()`と`kmersearch_correctedscore()`関数（現在の実装では両関数は同一の値を返します）
-- **高頻出k-mer管理**: `kmersearch_perform_highfreq_analysis()`による高頻出k-mer解析と`kmersearch_undo_highfreq_analysis()`による解析データ削除、`kmersearch_highfreq_kmer_cache_load()`および`kmersearch_highfreq_kmer_cache_free()`によるキャッシュ管理
-- **テーブルパーティション化**: `kmersearch_partition_table()`による大規模配列データベースのハッシュパーティション化サポート
+- **k-mer長**: 4～32塩基（GUC変数で設定可能）
+- **GINインデックス**: 異なるキーストレージ戦略を持つ複数のオペレータクラス（int2/int4/int8）
+- **縮重コード対応**: DNA4型での完全なIUPACコード展開
+- **出現回数追跡**: 設定可能なビット長（0-16ビット、デフォルト8ビット）
+- **スコアリング検索**: 類似度スコアによるマッチ取得
+- **高頻出k-merフィルタリング**: 一般的なk-merのオプション除外
+- **スコアベースフィルタリング**: 検索品質制御のための最小スコア閾値
+- **スコア計算関数**: 配列スコアリング用の`kmersearch_rawscore()`と`kmersearch_correctedscore()`
+- **高頻出k-mer管理**: 解析とキャッシュ管理関数
+- **テーブルパーティション化**: 大規模データベース用のハッシュパーティション化サポート
 
 ## インストール
 
@@ -158,6 +158,7 @@ pg_kmersearchは、PostgreSQLの`SET`コマンドで設定可能な複数の設�
 | `kmersearch.actual_min_score_cache_max_entries` | 50000 | 1000-10000000 | actual min scoreキャッシュの最大エントリ数 |
 | `kmersearch.preclude_highfreq_kmer` | false | true/false | GINインデックス構築時の高頻出k-mer除外の有効化 |
 | `kmersearch.force_use_parallel_highfreq_kmer_cache` | false | true/false | 高頻出k-mer検索での並列dshashキャッシュの強制使用 |
+| `kmersearch.force_simd_capability` | -1 | -1-100 | SIMDキャパビリティレベルの強制設定（-1 = 自動検出） |
 | `kmersearch.highfreq_kmer_cache_load_batch_size` | 10000 | 1000-1000000 | 高頻出k-merをキャッシュに読み込む際のバッチサイズ |
 | `kmersearch.highfreq_analysis_batch_size` | 10000 | 1000-1000000 | 高頻出k-mer解析のバッチサイズ |
 
@@ -170,11 +171,18 @@ pg_kmersearchは、PostgreSQLの`SET`コマンドで設定可能な複数の設�
 SET kmersearch.max_appearance_rate = 0.5;  -- デフォルト: 50%の最大出現率
 SET kmersearch.max_appearance_nrow = 1000;  -- デフォルト: 0（無効）
 
--- 頻度解析付きインデックス作成
-CREATE INDEX sequences_kmer_idx ON sequences USING gin (dna_seq);
+-- 適切なオペレータクラスでインデックス作成
+-- DNA2でk-merサイズ <= 16の場合:
+CREATE INDEX sequences_kmer_idx ON sequences USING gin (dna_seq kmersearch_dna2_gin_ops_int4);
+
+-- DNA4でk-merサイズ <= 8の場合:
+CREATE INDEX sequences_kmer_idx ON sequences USING gin (dna_seq kmersearch_dna4_gin_ops_int2);
+
+-- DNA4でk-merサイズ <= 16の場合:
+CREATE INDEX sequences_kmer_idx ON sequences USING gin (dna_seq kmersearch_dna4_gin_ops_int4);
 
 -- テーブル/カラムの除外k-mer確認
-SELECT kmer2_as_uint, detection_reason 
+SELECT uintkey, detection_reason 
 FROM kmersearch_highfreq_kmer 
 WHERE table_oid = 'sequences'::regclass AND column_name = 'dna_seq';
 
@@ -327,7 +335,7 @@ GINインデックスから除外される高頻出k-merを格納：
 
 ```sql
 -- 特定テーブル/カラムの除外k-merを表示
-SELECT table_oid, column_name, kmer2_as_uint, detection_reason, created_at
+SELECT table_oid, column_name, uintkey, detection_reason, created_at
 FROM kmersearch_highfreq_kmer 
 WHERE table_oid = 'sequences'::regclass AND column_name = 'dna_seq';
 
@@ -585,8 +593,9 @@ SELECT kmersearch_perform_highfreq_analysis(
 -- 3. 解析結果を確認
 SELECT * FROM kmersearch_analysis_status WHERE table_name = 'sequences';
 
--- 4. GINインデックスを作成（解析結果を自動使用）
-CREATE INDEX sequences_kmer_idx ON sequences USING gin(dna_seq);
+-- 4. 適切なオペレータクラスでGINインデックスを作成
+-- k-merサイズとデータ型に基づいて選択:
+CREATE INDEX sequences_kmer_idx ON sequences USING gin(dna_seq kmersearch_dna4_gin_ops_int4);
 
 -- 5. 最適なパフォーマンスのためキャッシュを読み込み
 SELECT kmersearch_highfreq_kmer_cache_load('sequences', 'dna_seq');
