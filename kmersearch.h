@@ -616,10 +616,7 @@ void free_actual_min_score_cache_manager(ActualMinScoreCacheManager **manager);
 
 /* High-frequency k-mer cache internal functions */
 bool kmersearch_validate_guc_against_metadata(Oid table_oid, const char *column_name, int k_value);
-HTAB *kmersearch_create_highfreq_hash_from_array(VarBit **kmers, int nkeys);
-uint64 kmersearch_ngram_key_to_hash(VarBit *ngram_key);
 bool kmersearch_is_global_highfreq_cache_loaded(void);
-bool kmersearch_lookup_in_global_cache(VarBit *kmer_key);
 bool kmersearch_lookup_uintkey_in_global_cache(uint64 uintkey, const char *table_name, const char *column_name);
 bool kmersearch_lookup_uintkey_in_parallel_cache(uint64 uintkey, const char *table_name, const char *column_name);
 void kmersearch_highfreq_kmer_cache_init(void);
@@ -639,7 +636,6 @@ bool kmersearch_parallel_cache_lookup(uint64 kmer_hash);
 /* High-frequency k-mer cache functions */
 Datum kmersearch_highfreq_kmer_cache_load(PG_FUNCTION_ARGS);
 Datum kmersearch_highfreq_kmer_cache_free(PG_FUNCTION_ARGS);
-bool kmersearch_is_kmer_highfreq(VarBit *kmer_key);
 
 /* Parallel cache functions */
 Datum kmersearch_parallel_highfreq_kmer_cache_load(PG_FUNCTION_ARGS);
@@ -702,7 +698,6 @@ Oid get_dna2_type_oid(void);
 Oid get_dna4_type_oid(void);
 
 /* Cache management functions (implemented in kmersearch_cache.c) */
-int calculate_actual_min_score(VarBit **query_keys, int nkeys, int query_total_kmers);
 
 /* Query pattern cache functions (implemented in kmersearch_cache.c) */
 void *get_cached_query_uintkey(const char *query_string, int k_size, int *nkeys);
@@ -722,14 +717,12 @@ void kmersearch_query_pattern_cache_max_entries_assign_hook(int newval, void *ex
 
 /* Internal functions that should be declared (implemented in kmersearch_freq.c) */
 bool kmersearch_is_highfreq_filtering_enabled(void);
-int kmersearch_count_highfreq_kmer_in_query(VarBit **query_keys, int nkeys);
 
 /* Cache key validation functions (implemented in kmersearch_cache.c) */
 bool kmersearch_validate_cache_key_match(Oid table_oid, const char *column_name);
 bool kmersearch_validate_parallel_cache_key_match(Oid table_oid, const char *column_name);
 bool kmersearch_validate_guc_against_all_metadata(void);
 bool kmersearch_is_parallel_highfreq_cache_loaded(void);
-bool kmersearch_lookup_in_parallel_cache(VarBit *kmer_key);
 
 /* GIN index support functions (implemented in kmersearch_gin.c) */
 
