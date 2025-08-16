@@ -70,7 +70,6 @@ kmersearch_persist_highfreq_kmers_from_temp(Oid table_oid, const char *column_na
     
     /* Insert highly frequent k-mers into permanent table */
     /* Note: Converting integer values to bit strings for ngram_key */
-    ereport(DEBUG1, (errmsg("Building INSERT query for %s with occur_bitlen=%d", temp_table_name, kmersearch_occur_bitlen)));
     
     if (k_size > 32) {
         /* k > 32 not supported */
@@ -98,8 +97,6 @@ kmersearch_persist_highfreq_kmers_from_temp(Oid table_oid, const char *column_na
         kmersearch_occur_bitlen,
         temp_table_name);
     
-    ereport(DEBUG1, (errmsg("Generated INSERT query: %s", query.data)));
-    
     SPI_connect();
     
     /* Validate source table has data before insertion */
@@ -115,8 +112,6 @@ kmersearch_persist_highfreq_kmers_from_temp(Oid table_oid, const char *column_na
             bool isnull;
             int64 source_count = DatumGetInt64(SPI_getbinval(SPI_tuptable->vals[0], 
                                                              SPI_tuptable->tupdesc, 1, &isnull));
-            ereport(NOTICE, (errmsg("Source table %s contains %ld high-frequency k-mer records", 
-                                    temp_table_name, source_count)));
             
             if (source_count == 0) {
                 ereport(WARNING, (errmsg("No high-frequency k-mers found in source table %s", temp_table_name)));
@@ -126,7 +121,6 @@ kmersearch_persist_highfreq_kmers_from_temp(Oid table_oid, const char *column_na
     }
     
     /* Execute high-frequency k-mer insertion with error checking */
-    ereport(DEBUG1, (errmsg("Executing high-frequency k-mer insertion query")));
     ret = SPI_exec(query.data, 0);
     if (ret != SPI_OK_INSERT && ret != SPI_OK_INSERT_RETURNING) {
         ereport(ERROR, 
@@ -140,7 +134,6 @@ kmersearch_persist_highfreq_kmers_from_temp(Oid table_oid, const char *column_na
     if (SPI_processed == 0) {
         ereport(WARNING, (errmsg("No records were inserted into kmersearch_highfreq_kmer. Check data compatibility and SQL query syntax.")));
     } else {
-        ereport(NOTICE, (errmsg("Successfully inserted %lu high-frequency k-mer records", SPI_processed)));
     }
     
     /* Insert metadata record */
@@ -159,7 +152,6 @@ kmersearch_persist_highfreq_kmers_from_temp(Oid table_oid, const char *column_na
         kmersearch_max_appearance_rate, kmersearch_max_appearance_nrow);
     
     /* Execute metadata insertion with error checking */
-    ereport(DEBUG1, (errmsg("Executing metadata insertion query")));
     ret = SPI_exec(query.data, 0);
     if (ret != SPI_OK_INSERT && ret != SPI_OK_UPDATE && ret != SPI_OK_INSERT_RETURNING) {
         ereport(ERROR, 
@@ -168,7 +160,6 @@ kmersearch_persist_highfreq_kmers_from_temp(Oid table_oid, const char *column_na
                  errdetail("SPI_exec returned %d for metadata INSERT/UPDATE query", ret),
                  errhint("Check table structure and permissions")));
     }
-    ereport(DEBUG1, (errmsg("Successfully inserted/updated %lu metadata records", SPI_processed)));
     
     SPI_finish();
     
@@ -470,9 +461,6 @@ kmersearch_perform_highfreq_analysis(PG_FUNCTION_ARGS)
     kmersearch_validate_analysis_parameters(table_oid, column_name, kmersearch_kmer_size);
     
     /* Log analysis start */
-    ereport(NOTICE, (errmsg("Performing k-mer frequency analysis for k=%d", kmersearch_kmer_size)));
-    ereport(NOTICE, (errmsg("Max appearance rate: %f, Max appearance nrow: %d", 
-                           kmersearch_max_appearance_rate, kmersearch_max_appearance_nrow)));
     
     /* Perform parallel analysis */
     result = kmersearch_perform_highfreq_analysis_parallel(table_oid, column_name, kmersearch_kmer_size, parallel_workers);
@@ -490,8 +478,6 @@ kmersearch_perform_highfreq_analysis(PG_FUNCTION_ARGS)
     }
     
     /* Fill result values */
-    ereport(DEBUG1, (errmsg("kmersearch_perform_highfreq_analysis: Converting result to return values")));
-    ereport(DEBUG1, (errmsg("kmersearch_perform_highfreq_analysis: result.max_appearance_rate_used = %f", result.max_appearance_rate_used)));
     
     values[0] = Int64GetDatum(result.total_rows);
     values[1] = Int32GetDatum(result.highfreq_kmers_count);
@@ -504,7 +490,6 @@ kmersearch_perform_highfreq_analysis(PG_FUNCTION_ARGS)
     }
     
     values[3] = Float4GetDatum((float4)result.max_appearance_rate_used);  /* real type = 4-byte float */
-    ereport(DEBUG1, (errmsg("kmersearch_perform_highfreq_analysis: Float4GetDatum conversion completed")));
     
     values[4] = Int32GetDatum(result.max_appearance_nrow_used);
     
@@ -702,8 +687,6 @@ kmersearch_perform_highfreq_analysis_parallel(Oid table_oid, const char *column_
     uint64 threshold_rows;
     uint64 rate_based_threshold;
     
-    elog(DEBUG1, "kmersearch_perform_highfreq_analysis_parallel: Starting parallel analysis");
-    
     
     PG_TRY();
     {
@@ -786,8 +769,6 @@ kmersearch_perform_highfreq_analysis_parallel(Oid table_oid, const char *column_
         shm_toc_estimate_chunk(&pcxt->estimator, MAXALIGN(sizeof(KmerAnalysisSharedState)));
         shm_toc_estimate_chunk(&pcxt->estimator, MAXALIGN(sizeof(KmerAnalysisHandles)));
         shm_toc_estimate_keys(&pcxt->estimator, 2); /* SHARED_STATE, HANDLES */
-        
-        elog(DEBUG1, "kmersearch_perform_highfreq_analysis_parallel: DSM estimation details:");
         elog(DEBUG1, "  - sizeof(KmerAnalysisSharedState) = %zu, MAXALIGN = %zu", 
              sizeof(KmerAnalysisSharedState), MAXALIGN(sizeof(KmerAnalysisSharedState)));
         elog(DEBUG1, "  - sizeof(dsm_handle) = %zu, MAXALIGN = %zu", 
@@ -796,7 +777,6 @@ kmersearch_perform_highfreq_analysis_parallel(Oid table_oid, const char *column_
              sizeof(dshash_table_handle), MAXALIGN(sizeof(dshash_table_handle)));
         
         /* Initialize DSM */
-        elog(DEBUG1, "kmersearch_perform_highfreq_analysis_parallel: Initializing parallel DSM");
         InitializeParallelDSM(pcxt);
         toc = pcxt->toc;
         
@@ -833,13 +813,9 @@ kmersearch_perform_highfreq_analysis_parallel(Oid table_oid, const char *column_
         handles->hash_handle = analysis_ctx.hash_handle;
         shm_toc_insert(toc, KMERSEARCH_KEY_HANDLES, handles);
         
-        elog(DEBUG1, "kmersearch_perform_highfreq_analysis_parallel: Handles stored in shm_toc");
-        
         /* Launch parallel workers */
         LaunchParallelWorkers(pcxt);
         result.parallel_workers_used = pcxt->nworkers_launched;
-        elog(NOTICE, "kmersearch_perform_highfreq_analysis: Launched %d parallel workers", 
-             pcxt->nworkers_launched);
         
         /* Wait for workers to complete */
         WaitForParallelWorkersToFinish(pcxt);
@@ -1207,8 +1183,6 @@ kmersearch_create_analysis_dshash(int estimated_entries, int kmer_size)
         return false;
     }
     PG_END_TRY();
-    
-    ereport(NOTICE, (errmsg("Analysis dshash table created successfully with estimated capacity for %d entries", estimated_entries)));
     return true;
 }
 
@@ -1290,8 +1264,6 @@ kmersearch_populate_analysis_dshash_from_workers(KmerWorkerState *workers, int n
         ereport(ERROR, (errmsg("Analysis dshash table not initialized")));
     }
     
-    ereport(DEBUG1, (errmsg("kmersearch_populate_analysis_dshash_from_workers: Starting hybrid SQL+dshash merge with threshold %lu", (unsigned long)threshold_rows)));
-    
     /* Generate unique name for temp_kmer_final table */
     temp_kmer_final_name = kmersearch_generate_unique_temp_table_name("temp_kmer_final", -1);
     
@@ -1322,8 +1294,6 @@ kmersearch_populate_analysis_dshash_from_workers(KmerWorkerState *workers, int n
         if (ret == SPI_OK_SELECT && SPI_processed > 0) {
             bool isnull;
             int row_count = DatumGetInt32(SPI_getbinval(SPI_tuptable->vals[0], SPI_tuptable->tupdesc, 1, &isnull));
-            ereport(DEBUG1, (errmsg("Worker %d table %s contains %d k-mer entries", 
-                                   worker_id, workers[worker_id].temp_table_name, row_count)));
         }
         pfree(debug_query.data);
     }
@@ -1359,8 +1329,6 @@ kmersearch_populate_analysis_dshash_from_workers(KmerWorkerState *workers, int n
                  errdetail("SPI_exec returned %d", ret),
                  errhint("Query was: %s", query.data)));
     }
-    
-    ereport(DEBUG1, (errmsg("SQL aggregation completed, %lu high-frequency k-mers found", SPI_processed)));
     pfree(query.data);
     
     /* Step 3: Load aggregated results from temp_kmer_final into dshash */
@@ -1370,8 +1338,6 @@ kmersearch_populate_analysis_dshash_from_workers(KmerWorkerState *workers, int n
     ret = SPI_exec(query.data, 0);
     if (ret == SPI_OK_SELECT) {
         int i;
-        
-        ereport(DEBUG1, (errmsg("Loading %lu k-mers from temp_kmer_final into dshash", SPI_processed)));
         
         /* Insert each high-frequency k-mer into the dshash table */
         for (i = 0; i < SPI_processed; i++) {
@@ -1423,8 +1389,6 @@ kmersearch_populate_analysis_dshash_from_workers(KmerWorkerState *workers, int n
     pfree(query.data);
     
     pfree(temp_kmer_final_name);
-    
-    ereport(NOTICE, (errmsg("Hybrid SQL+dshash approach completed: loaded %d high-frequency k-mer entries into dshash", processed_entries)));
 }
 
 /*
@@ -1499,8 +1463,6 @@ kmersearch_insert_uintkey_from_dshash(Oid table_oid, const char *column_name, in
                  errmsg("analysis_highfreq_hash access detected in parallel worker"),
                  errdetail("This should never happen after initial check")));
     }
-    
-    ereport(DEBUG1, (errmsg("kmersearch_insert_uintkey_from_dshash: Starting direct insertion")));
     
     /* Threshold already calculated in the caller - just use it */
     elog(DEBUG1, "Using threshold_rows = %lu for filtering high-frequency k-mers", (unsigned long)threshold_rows);
@@ -1602,10 +1564,6 @@ kmersearch_insert_uintkey_from_dshash(Oid table_oid, const char *column_name, in
     
     dshash_seq_term(&status);
     pfree(query.data);
-    
-    ereport(NOTICE, (errmsg("K-mer analysis summary: total_entries=%d, threshold=%lu, high_freq_entries=%d, processed_entries=%d", 
-                           total_entries, (unsigned long)threshold_rows, high_freq_entries, processed_entries)));
-    ereport(NOTICE, (errmsg("Direct storage completed: inserted %d uintkey values into kmersearch_highfreq_kmer table", processed_entries)));
 }
 
 /*
@@ -2113,7 +2071,6 @@ kmersearch_analysis_worker(dsm_segment *seg, shm_toc *toc)
     if (!hash) {
         elog(ERROR, "kmersearch_analysis_worker: Failed to attach to dshash");
     }
-    elog(DEBUG1, "kmersearch_analysis_worker: Successfully attached to dshash");
     
     /* Dynamic work acquisition loop */
     while (has_work)
@@ -2425,8 +2382,6 @@ create_analysis_dshash_resources(KmerAnalysisContext *ctx, int estimated_entries
     
     /* IMPORTANT: Do NOT set global pointers here - they should only be set after
      * EnterParallelMode() to prevent parallel workers from inheriting them */
-    
-    elog(DEBUG1, "create_analysis_dshash_resources: Resources created successfully");
 }
 
 /*

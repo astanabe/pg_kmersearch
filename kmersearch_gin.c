@@ -391,9 +391,6 @@ filter_uintkey_and_set_actual_min_score(void *uintkey, int *nkeys,
     
     *nkeys = filtered_count;
     
-    elog(DEBUG1, "filter_uintkey_and_set_actual_min_score: filtered %d high-freq k-mers from %d total", 
-         original_nkeys - filtered_count, original_nkeys);
-    
     return filtered_keys;
 }
 

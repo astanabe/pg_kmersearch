@@ -794,11 +794,8 @@ kmersearch_highfreq_kmer_cache_load_internal(Oid table_oid, const char *column_n
     
     /* Clear existing cache if valid */
     if (global_highfreq_cache.is_valid) {
-        ereport(DEBUG1, (errmsg("kmersearch_highfreq_kmer_cache_load_internal: Existing cache is valid, clearing")));
         kmersearch_highfreq_kmer_cache_free_internal();
-        ereport(DEBUG1, (errmsg("kmersearch_highfreq_kmer_cache_load_internal: Cache clearing completed")));
     } else {
-        ereport(DEBUG1, (errmsg("kmersearch_highfreq_kmer_cache_load_internal: No existing valid cache to clear")));
     }
     
     /* Check cache context state and investigate why it might be NULL */
@@ -812,7 +809,6 @@ kmersearch_highfreq_kmer_cache_load_internal(Oid table_oid, const char *column_n
                  errhint("This may indicate a memory management issue or improper cache cleanup sequence")));
         
         /* Reinitialize the cache with additional logging */
-        ereport(NOTICE, (errmsg("Reinitializing cache context after unexpected deallocation")));
         kmersearch_highfreq_kmer_cache_init();
         
         /* Verify reinitialization was successful */
@@ -822,11 +818,7 @@ kmersearch_highfreq_kmer_cache_load_internal(Oid table_oid, const char *column_n
                      errmsg("Failed to reinitialize cache context"),
                      errhint("Check PostgreSQL memory settings and available memory")));
         }
-        
-        ereport(DEBUG1, (errmsg("Cache reinitialization completed successfully")));
     } else {
-        ereport(DEBUG1, (errmsg("Cache context exists and is valid at %p", 
-                               global_highfreq_cache.cache_context)));
     }
     
     
@@ -895,17 +887,11 @@ kmersearch_highfreq_kmer_cache_load_internal(Oid table_oid, const char *column_n
     }
     
     if (highfreq_count <= 0) {
-        ereport(DEBUG1, (errmsg("kmersearch_highfreq_kmer_cache_load_internal: No high-frequency k-mers found, cache remains invalid")));
         return false;
     }
     
-    ereport(DEBUG1, (errmsg("kmersearch_highfreq_kmer_cache_load_internal: Found %d total high-frequency k-mers, will load in batches of %d", 
-                           highfreq_count, kmersearch_highfreq_kmer_cache_load_batch_size)));
-    
     /* Switch to cache context for cache storage */
     old_context = MemoryContextSwitchTo(global_highfreq_cache.cache_context);
-    
-    ereport(DEBUG1, (errmsg("kmersearch_highfreq_kmer_cache_load_internal: Switched to cache context successfully")));
     
     /* Store in cache - build cache key */
     global_highfreq_cache.current_cache_key.table_oid = table_oid;
@@ -914,8 +900,6 @@ kmersearch_highfreq_kmer_cache_load_internal(Oid table_oid, const char *column_n
     global_highfreq_cache.current_cache_key.occur_bitlen = kmersearch_occur_bitlen;
     global_highfreq_cache.current_cache_key.max_appearance_rate = kmersearch_max_appearance_rate;
     global_highfreq_cache.current_cache_key.max_appearance_nrow = kmersearch_max_appearance_nrow;
-    
-    ereport(DEBUG1, (errmsg("kmersearch_highfreq_kmer_cache_load_internal: Building cache key and initializing hash table")));
     
     /* Initialize hash table in cache context */
     MemSet(&hash_ctl, 0, sizeof(hash_ctl));
@@ -930,15 +914,12 @@ kmersearch_highfreq_kmer_cache_load_internal(Oid table_oid, const char *column_n
                                                       HASH_ELEM | HASH_FUNCTION | HASH_CONTEXT);
     
     if (!global_highfreq_cache.highfreq_hash) {
-        ereport(DEBUG1, (errmsg("kmersearch_highfreq_kmer_cache_load_internal: Hash table creation failed")));
         MemoryContextSwitchTo(old_context);
         MemoryContextDelete(global_highfreq_cache.cache_context);
         global_highfreq_cache.cache_context = NULL;
         global_highfreq_cache.is_valid = false;
         return false;
     }
-    
-    ereport(DEBUG1, (errmsg("kmersearch_highfreq_kmer_cache_load_internal: Hash table created successfully, starting batch population")));
     
     /* Populate hash table with k-mers using batch processing */
     total_inserted = 0;
@@ -957,9 +938,6 @@ kmersearch_highfreq_kmer_cache_load_internal(Oid table_oid, const char *column_n
         } else {
             current_batch_limit = kmersearch_highfreq_kmer_cache_load_batch_size;
         }
-        
-        ereport(DEBUG1, (errmsg("kmersearch_highfreq_kmer_cache_load_internal: Processing batch %d (offset=%d, batch_size=%d)", 
-                               batch_num, offset, current_batch_limit)));
         
         /* Get batch of k-mers from table using LIMIT/OFFSET */
         {
@@ -1051,12 +1029,8 @@ kmersearch_highfreq_kmer_cache_load_internal(Oid table_oid, const char *column_n
         }
         
         if (!batch_kmers || batch_count <= 0) {
-            ereport(DEBUG1, (errmsg("kmersearch_highfreq_kmer_cache_load_internal: No more k-mers in batch %d", batch_num)));
             break;
         }
-        
-        ereport(DEBUG1, (errmsg("kmersearch_highfreq_kmer_cache_load_internal: Inserting %d k-mers from batch %d into hash table", 
-                               batch_count, batch_num)));
         
         /* Insert batch k-mers into hash table */
         for (i = 0; i < batch_count; i++) {
@@ -1069,9 +1043,6 @@ kmersearch_highfreq_kmer_cache_load_internal(Oid table_oid, const char *column_n
             /* Use uintkey value directly */
             uintkey = batch_kmers[i];
             
-            ereport(DEBUG1, (errmsg("kmersearch_highfreq_kmer_cache_load_internal: Inserting k-mer %d/%d from batch %d with uintkey %lu", 
-                                   i + 1, batch_count, batch_num, uintkey)));
-            
             /* Insert into hash table using uintkey as both key and value */
             entry = (HighfreqKmerHashEntry *) hash_search(global_highfreq_cache.highfreq_hash,
                                                          (void *) &uintkey,
@@ -1082,12 +1053,8 @@ kmersearch_highfreq_kmer_cache_load_internal(Oid table_oid, const char *column_n
                 entry->kmer_key = NULL;  /* No longer storing VarBit */
                 entry->hash_value = uintkey;
                 total_inserted++;
-                ereport(DEBUG1, (errmsg("kmersearch_highfreq_kmer_cache_load_internal: Successfully inserted k-mer %d (total: %d)", 
-                                       i + 1, total_inserted)));
             } else if (found) {
-                ereport(DEBUG1, (errmsg("kmersearch_highfreq_kmer_cache_load_internal: K-mer %d already exists in hash table", i + 1)));
             } else {
-                ereport(DEBUG1, (errmsg("kmersearch_highfreq_kmer_cache_load_internal: Failed to insert k-mer %d", i + 1)));
             }
         }
         
@@ -1099,50 +1066,33 @@ kmersearch_highfreq_kmer_cache_load_internal(Oid table_oid, const char *column_n
         }
         MemoryContextSwitchTo(global_highfreq_cache.cache_context);
         
-        ereport(DEBUG1, (errmsg("kmersearch_highfreq_kmer_cache_load_internal: Completed batch %d, total inserted so far: %d", 
-                               batch_num, total_inserted)));
-        
         /* Move to next batch */
         offset += batch_count;
         batch_num++;
         
         /* Break if we got fewer results than requested (end of data) */
         if (batch_count < current_batch_limit) {
-            ereport(DEBUG1, (errmsg("kmersearch_highfreq_kmer_cache_load_internal: Reached end of data (batch_count=%d < batch_size=%d)", 
-                                   batch_count, current_batch_limit)));
             break;
         }
     }
-    
-    ereport(DEBUG1, (errmsg("kmersearch_highfreq_kmer_cache_load_internal: Completed all batches, total inserted: %d/%d", 
-                           total_inserted, highfreq_count)));
     
     /* Set cache metadata */
     global_highfreq_cache.highfreq_kmers = NULL;  /* We don't store the array anymore */
     global_highfreq_cache.highfreq_count = total_inserted;
     
-    ereport(DEBUG1, (errmsg("kmersearch_highfreq_kmer_cache_load_internal: Hash table population %s", 
-                           global_highfreq_cache.highfreq_hash ? "successful" : "failed")));
-    
     
     if (global_highfreq_cache.highfreq_hash) {
         global_highfreq_cache.is_valid = true;
-        ereport(DEBUG1, (errmsg("kmersearch_highfreq_kmer_cache_load_internal: Cache loading successful, cache is now valid")));
     } else {
         /* Hash table creation failed, clean up by deleting the context */
-        ereport(DEBUG1, (errmsg("kmersearch_highfreq_kmer_cache_load_internal: Hash table creation failed, cleaning up cache context")));
         MemoryContextSwitchTo(old_context);
         MemoryContextDelete(global_highfreq_cache.cache_context);
         global_highfreq_cache.cache_context = NULL;
         global_highfreq_cache.is_valid = false;
-        ereport(DEBUG1, (errmsg("kmersearch_highfreq_kmer_cache_load_internal: Cache cleanup completed, returning false")));
         return false;
     }
     
     MemoryContextSwitchTo(old_context);
-    
-    ereport(DEBUG1, (errmsg("kmersearch_highfreq_kmer_cache_load_internal: Function completed successfully, cache is valid=%s", 
-                           global_highfreq_cache.is_valid ? "true" : "false")));
     
     return global_highfreq_cache.is_valid;
 }
@@ -1206,7 +1156,6 @@ kmersearch_validate_cache_key_match(Oid table_oid, const char *column_name)
     bool matches;
     
     if (!global_highfreq_cache.is_valid) {
-        ereport(DEBUG1, (errmsg("kmersearch_validate_cache_key_match: global cache is not valid")));
         return false;
     }
     
@@ -1222,16 +1171,6 @@ kmersearch_validate_cache_key_match(Oid table_oid, const char *column_name)
     matches = (memcmp(&global_highfreq_cache.current_cache_key, &expected_key, sizeof(HighfreqCacheKey)) == 0);
     
     if (!matches) {
-        ereport(DEBUG1, (errmsg("kmersearch_validate_cache_key_match: cache key mismatch - "
-                               "expected table_oid=%u, kmer_size=%d, occur_bitlen=%d, max_appearance_rate=%f, max_appearance_nrow=%d "
-                               "but cache has table_oid=%u, kmer_size=%d, occur_bitlen=%d, max_appearance_rate=%f, max_appearance_nrow=%d",
-                               expected_key.table_oid, expected_key.kmer_size, expected_key.occur_bitlen,
-                               expected_key.max_appearance_rate, expected_key.max_appearance_nrow,
-                               global_highfreq_cache.current_cache_key.table_oid,
-                               global_highfreq_cache.current_cache_key.kmer_size,
-                               global_highfreq_cache.current_cache_key.occur_bitlen,
-                               global_highfreq_cache.current_cache_key.max_appearance_rate,
-                               global_highfreq_cache.current_cache_key.max_appearance_nrow)));
     }
     
     return matches;
@@ -1247,7 +1186,6 @@ kmersearch_validate_parallel_cache_key_match(Oid table_oid, const char *column_n
     bool matches;
     
     if (parallel_highfreq_cache == NULL || !parallel_highfreq_cache->is_initialized) {
-        ereport(DEBUG1, (errmsg("kmersearch_validate_parallel_cache_key_match: parallel cache is not initialized")));
         return false;
     }
     
@@ -1263,16 +1201,6 @@ kmersearch_validate_parallel_cache_key_match(Oid table_oid, const char *column_n
     matches = (memcmp(&parallel_highfreq_cache->cache_key, &expected_key, sizeof(HighfreqCacheKey)) == 0);
     
     if (!matches) {
-        ereport(DEBUG1, (errmsg("kmersearch_validate_parallel_cache_key_match: cache key mismatch - "
-                               "expected table_oid=%u, kmer_size=%d, occur_bitlen=%d, max_appearance_rate=%f, max_appearance_nrow=%d "
-                               "but parallel cache has table_oid=%u, kmer_size=%d, occur_bitlen=%d, max_appearance_rate=%f, max_appearance_nrow=%d",
-                               expected_key.table_oid, expected_key.kmer_size, expected_key.occur_bitlen,
-                               expected_key.max_appearance_rate, expected_key.max_appearance_nrow,
-                               parallel_highfreq_cache->cache_key.table_oid,
-                               parallel_highfreq_cache->cache_key.kmer_size,
-                               parallel_highfreq_cache->cache_key.occur_bitlen,
-                               parallel_highfreq_cache->cache_key.max_appearance_rate,
-                               parallel_highfreq_cache->cache_key.max_appearance_nrow)));
     }
     
     return matches;
@@ -1342,9 +1270,6 @@ kmersearch_highfreq_kmer_cache_free(PG_FUNCTION_ARGS)
     if (global_highfreq_cache.is_valid)
         freed_entries = global_highfreq_cache.highfreq_count;
     
-    ereport(LOG, (errmsg("kmersearch_highfreq_kmer_cache_free: freeing %d entries for table \"%s\" column \"%s\"", 
-                         freed_entries, table_name, column_name)));
-    
     /* Free the cache */
     kmersearch_highfreq_kmer_cache_free_internal();
     
@@ -1403,16 +1328,11 @@ kmersearch_validate_guc_against_metadata(Oid table_oid, const char *column_name,
         int stored_kmer_size, stored_occur_bitlen, stored_max_appearance_nrow;
         float stored_max_appearance_rate;
         
-        ereport(DEBUG1, (errmsg("kmersearch_validate_guc_against_metadata: Found high-frequency k-mer metadata record, extracting values")));
-        
         /* Get and validate kmer_size */
-        ereport(DEBUG1, (errmsg("kmersearch_validate_guc_against_metadata: Getting kmer_size value")));
         kmer_size_datum = SPI_getbinval(SPI_tuptable->vals[0], SPI_tuptable->tupdesc, 1, &isnull);
         if (!isnull)
         {
             stored_kmer_size = DatumGetInt32(kmer_size_datum);
-            ereport(DEBUG1, (errmsg("kmersearch_validate_guc_against_metadata: stored_kmer_size=%d, current=%d",
-                                   stored_kmer_size, k_value)));
             if (stored_kmer_size != k_value)
             {
                 ereport(ERROR,
@@ -1427,13 +1347,10 @@ kmersearch_validate_guc_against_metadata(Oid table_oid, const char *column_name,
         }
         
         /* Get stored metadata values */
-        ereport(DEBUG1, (errmsg("kmersearch_validate_guc_against_metadata: Getting occur_bitlen value")));
         occur_bitlen_datum = SPI_getbinval(SPI_tuptable->vals[0], SPI_tuptable->tupdesc, 2, &isnull);
         if (!isnull)
         {
             stored_occur_bitlen = DatumGetInt32(occur_bitlen_datum);
-            ereport(DEBUG1, (errmsg("kmersearch_validate_guc_against_metadata: stored_occur_bitlen=%d, current=%d",
-                                   stored_occur_bitlen, kmersearch_occur_bitlen)));
             if (stored_occur_bitlen != kmersearch_occur_bitlen)
             {
                 ereport(ERROR,
@@ -1446,14 +1363,10 @@ kmersearch_validate_guc_against_metadata(Oid table_oid, const char *column_name,
                 validation_passed = false;
             }
         }
-        
-        ereport(DEBUG1, (errmsg("kmersearch_validate_guc_against_metadata: Getting max_appearance_rate value")));
         max_appearance_rate_datum = SPI_getbinval(SPI_tuptable->vals[0], SPI_tuptable->tupdesc, 3, &isnull);
         if (!isnull)
         {
             stored_max_appearance_rate = DatumGetFloat4(max_appearance_rate_datum);
-            ereport(DEBUG1, (errmsg("kmersearch_validate_guc_against_metadata: stored_max_appearance_rate=%.4f, current=%.4f",
-                                   stored_max_appearance_rate, kmersearch_max_appearance_rate)));
             if (fabs(stored_max_appearance_rate - kmersearch_max_appearance_rate) > 0.0001)
             {
                 ereport(ERROR,
@@ -1466,14 +1379,10 @@ kmersearch_validate_guc_against_metadata(Oid table_oid, const char *column_name,
                 validation_passed = false;
             }
         }
-        
-        ereport(DEBUG1, (errmsg("kmersearch_validate_guc_against_metadata: Getting max_appearance_nrow value")));
         max_appearance_nrow_datum = SPI_getbinval(SPI_tuptable->vals[0], SPI_tuptable->tupdesc, 4, &isnull);
         if (!isnull)
         {
             stored_max_appearance_nrow = DatumGetInt32(max_appearance_nrow_datum);
-            ereport(DEBUG1, (errmsg("kmersearch_validate_guc_against_metadata: stored_max_appearance_nrow=%d, current=%d",
-                                   stored_max_appearance_nrow, kmersearch_max_appearance_nrow)));
             if (stored_max_appearance_nrow != kmersearch_max_appearance_nrow)
             {
                 ereport(ERROR,
@@ -1486,12 +1395,9 @@ kmersearch_validate_guc_against_metadata(Oid table_oid, const char *column_name,
                 validation_passed = false;
             }
         }
-        
-        ereport(DEBUG1, (errmsg("kmersearch_validate_guc_against_metadata: All metadata values validated successfully")));
     }
     else
     {
-        ereport(DEBUG1, (errmsg("kmersearch_validate_guc_against_metadata: No metadata found or query failed")));
         ereport(ERROR,
                 (errcode(ERRCODE_UNDEFINED_TABLE),
                  errmsg("No metadata found for table_oid=%u, column_name='%s', kmer_size=%d",
@@ -1570,8 +1476,6 @@ kmersearch_parallel_highfreq_kmer_cache_free(PG_FUNCTION_ARGS)
                  errmsg("relation \"%s\" does not exist", table_name)));
     }
     
-    ereport(LOG, (errmsg("kmersearch_parallel_highfreq_kmer_cache_free: Starting function call for table %s, column %s", table_name, column_name)));
-    
     /* Validate cache key matches table/column before freeing */
     if (!kmersearch_validate_parallel_cache_key_match(table_oid, column_name)) {
         ereport(WARNING,
@@ -1584,9 +1488,7 @@ kmersearch_parallel_highfreq_kmer_cache_free(PG_FUNCTION_ARGS)
     /* Get the actual number of entries from the cache */
     if (parallel_highfreq_cache != NULL && parallel_highfreq_cache->is_initialized) {
         freed_entries = parallel_highfreq_cache->num_entries;
-        ereport(LOG, (errmsg("kmersearch_parallel_highfreq_kmer_cache_free: Found %d entries to free", freed_entries)));
     } else {
-        ereport(LOG, (errmsg("kmersearch_parallel_highfreq_kmer_cache_free: parallel_highfreq_cache is NULL or not initialized")));
         freed_entries = 0;
     }
     
@@ -1641,11 +1543,8 @@ kmersearch_parallel_cache_cleanup_internal(void)
 {
     MemoryContext oldcontext;
     
-    ereport(LOG, (errmsg("kmersearch_parallel_cache_cleanup_internal: Starting cleanup")));
-    
     /* Prevent double cleanup - check if already cleaned up */
     if (parallel_cache_hash == NULL && parallel_cache_dsa == NULL && parallel_cache_segment == NULL) {
-        ereport(LOG, (errmsg("kmersearch_parallel_cache_cleanup_internal: Already cleaned up, skipping")));
         return;
     }
     
@@ -1654,30 +1553,22 @@ kmersearch_parallel_cache_cleanup_internal(void)
     
     /* Step 1: Handle dshash table cleanup based on process type */
     if (parallel_cache_hash != NULL) {
-        ereport(LOG, (errmsg("kmersearch_parallel_cache_cleanup_internal: parallel_cache_hash=%p", parallel_cache_hash)));
-        ereport(LOG, (errmsg("kmersearch_parallel_cache_cleanup_internal: parallel_cache_dsa=%p", parallel_cache_dsa)));
-        ereport(LOG, (errmsg("kmersearch_parallel_cache_cleanup_internal: parallel_cache_segment=%p", parallel_cache_segment)));
         
         /* Check if DSA and DSM are still valid before operating on dshash */
         if (parallel_cache_dsa != NULL && parallel_cache_segment != NULL) {
             if (!IsParallelWorker()) {
                 /* Main process: destroy the hash table */
-                ereport(LOG, (errmsg("kmersearch_parallel_cache_cleanup_internal: Main process destroying dshash table")));
                 dshash_destroy(parallel_cache_hash);
             } else {
                 /* Parallel worker: detach from hash table */
-                ereport(LOG, (errmsg("kmersearch_parallel_cache_cleanup_internal: Parallel worker detaching from dshash table")));
                 dshash_detach(parallel_cache_hash);
             }
         } else {
-            ereport(LOG, (errmsg("kmersearch_parallel_cache_cleanup_internal: DSA or DSM already invalid, just detaching")));
             /* DSA/DSM already destroyed, just detach without destroy */
             dshash_detach(parallel_cache_hash);
         }
         parallel_cache_hash = NULL;
-        ereport(LOG, (errmsg("kmersearch_parallel_cache_cleanup_internal: dshash table cleanup completed")));
     } else {
-        ereport(LOG, (errmsg("kmersearch_parallel_cache_cleanup_internal: No dshash table to cleanup")));
     }
     
     /* Switch back to original context before DSA/DSM operations */
@@ -1687,37 +1578,30 @@ kmersearch_parallel_cache_cleanup_internal(void)
     if (parallel_cache_dsa != NULL) {
         if (!IsParallelWorker()) {
             /* Main process: unpin and detach */
-            ereport(LOG, (errmsg("kmersearch_parallel_cache_cleanup_internal: Main process unpinning and detaching DSA area")));
             PG_TRY();
             {
                 /* Unpin DSA area */
                 dsa_unpin(parallel_cache_dsa);
                 /* Detach from DSA area */
                 dsa_detach(parallel_cache_dsa);
-                ereport(LOG, (errmsg("kmersearch_parallel_cache_cleanup_internal: DSA area unpinned and detached successfully")));
             }
             PG_CATCH();
             {
-                ereport(LOG, (errmsg("kmersearch_parallel_cache_cleanup_internal: DSA area cleanup failed, but continuing")));
                 FlushErrorState();
             }
             PG_END_TRY();
         } else {
             /* Parallel worker: detach only */
-            ereport(LOG, (errmsg("kmersearch_parallel_cache_cleanup_internal: Parallel worker detaching from DSA area")));
             dsa_detach(parallel_cache_dsa);
-            ereport(LOG, (errmsg("kmersearch_parallel_cache_cleanup_internal: DSA area detached successfully")));
         }
         parallel_cache_dsa = NULL;
     } else {
-        ereport(LOG, (errmsg("kmersearch_parallel_cache_cleanup_internal: No DSA area to cleanup")));
     }
     
     /* Step 3: Handle DSM segment properly */
     if (parallel_cache_segment != NULL) {
         if (!IsParallelWorker()) {
             /* Main process: unpin and detach */
-            ereport(LOG, (errmsg("kmersearch_parallel_cache_cleanup_internal: Main process unpinning and detaching DSM segment")));
             PG_TRY();
             {
                 /* Get DSM handle before detaching */
@@ -1728,23 +1612,18 @@ kmersearch_parallel_cache_cleanup_internal(void)
                 dsm_detach(parallel_cache_segment);
                 /* Unpin the DSM segment to allow cleanup */
                 dsm_unpin_segment(handle);
-                ereport(LOG, (errmsg("kmersearch_parallel_cache_cleanup_internal: DSM segment detached and unpinned successfully")));
             }
             PG_CATCH();
             {
-                ereport(LOG, (errmsg("kmersearch_parallel_cache_cleanup_internal: DSM segment cleanup failed, but continuing")));
                 FlushErrorState();
             }
             PG_END_TRY();
         } else {
             /* Parallel worker: detach only */
-            ereport(LOG, (errmsg("kmersearch_parallel_cache_cleanup_internal: Parallel worker detaching from DSM segment")));
             dsm_detach(parallel_cache_segment);
-            ereport(LOG, (errmsg("kmersearch_parallel_cache_cleanup_internal: DSM segment detached successfully")));
         }
         parallel_cache_segment = NULL;
     } else {
-        ereport(LOG, (errmsg("kmersearch_parallel_cache_cleanup_internal: No DSM segment to handle")));
     }
     
     /* Reset cache pointer and callback flag */
@@ -1758,11 +1637,8 @@ kmersearch_parallel_cache_cleanup_internal(void)
 static void
 dshash_cache_cleanup_callback(int code, Datum arg)
 {
-    ereport(LOG, (errmsg("dshash_cache_cleanup_callback: Starting cleanup on process exit")));
     
     kmersearch_parallel_cache_cleanup_internal();
-    
-    ereport(LOG, (errmsg("dshash_cache_cleanup_callback: Cleanup completed")));
 }
 
 /*
@@ -1819,12 +1695,9 @@ kmersearch_parallel_highfreq_kmer_cache_load_internal(Oid table_oid, const char 
         if (parallel_highfreq_cache->is_initialized &&
             parallel_highfreq_cache->cache_key.table_oid == table_oid &&
             parallel_highfreq_cache->cache_key.kmer_size == k_value) {
-            ereport(LOG, (errmsg("dshash_cache_load: Cache already loaded for table %u, k=%d", 
-                                table_oid, k_value)));
             return true;
         } else {
             /* Cache exists but is for different table/k_value, clean it up */
-            ereport(LOG, (errmsg("dshash_cache_load: Cache exists but for different table/k_value, cleaning up")));
             kmersearch_parallel_highfreq_kmer_cache_free_internal();
         }
     }
@@ -1895,12 +1768,8 @@ kmersearch_parallel_highfreq_kmer_cache_load_internal(Oid table_oid, const char 
     
     if (total_kmer_count <= 0) {
         /* No high-frequency k-mers found */
-        ereport(LOG, (errmsg("dshash_cache_load: No high-frequency k-mers found")));
         return false;
     }
-    
-    ereport(LOG, (errmsg("dshash_cache_load: Found %d total high-frequency k-mers, will load in batches of %d", 
-                        total_kmer_count, kmersearch_highfreq_kmer_cache_load_batch_size)));
     
     /* Calculate required segment size using total count */
     
@@ -1918,7 +1787,6 @@ kmersearch_parallel_highfreq_kmer_cache_load_internal(Oid table_oid, const char 
     }
     
     /* Create DSM segment */
-    ereport(LOG, (errmsg("dshash_cache_load: Creating DSM segment of size %zu", segment_size)));
     
     parallel_cache_segment = dsm_create(segment_size, 0);
     if (!parallel_cache_segment) {
@@ -1930,8 +1798,6 @@ kmersearch_parallel_highfreq_kmer_cache_load_internal(Oid table_oid, const char 
     /* Pin the DSM segment to prevent automatic cleanup when query ends */
     dsm_pin_segment(parallel_cache_segment);
     dsm_pin_mapping(parallel_cache_segment);
-    
-    ereport(LOG, (errmsg("dshash_cache_load: DSM segment created successfully")));
     
     /* Initialize parallel cache structure in DSM */
     parallel_highfreq_cache = (ParallelHighfreqKmerCache *) dsm_segment_address(parallel_cache_segment);
@@ -2003,7 +1869,6 @@ kmersearch_parallel_highfreq_kmer_cache_load_internal(Oid table_oid, const char 
     }
     
     /* Create dshash table */
-    ereport(LOG, (errmsg("dshash_cache_load: Creating dshash table with %d entries", total_kmer_count)));
     
     parallel_cache_hash = dshash_create(parallel_cache_dsa, &params, NULL);
     if (!parallel_cache_hash) {
@@ -2017,14 +1882,11 @@ kmersearch_parallel_highfreq_kmer_cache_load_internal(Oid table_oid, const char 
                  errmsg("failed to create dshash table for parallel cache")));
     }
     
-    ereport(LOG, (errmsg("dshash_cache_load: dshash table created successfully")));
-    
     /* Store the dshash table handle */
     parallel_highfreq_cache->hash_handle = dshash_get_hash_table_handle(parallel_cache_hash);
     parallel_highfreq_cache->is_initialized = true;
     
     /* Populate the hash table with high-frequency k-mers using batch processing */
-    ereport(LOG, (errmsg("dshash_cache_load: Starting batch population of %d k-mers", total_kmer_count)));
     
     /* Process k-mers in batches to reduce memory usage */
     while (offset < total_kmer_count) {
@@ -2038,9 +1900,6 @@ kmersearch_parallel_highfreq_kmer_cache_load_internal(Oid table_oid, const char 
         } else {
             current_batch_limit = kmersearch_highfreq_kmer_cache_load_batch_size;
         }
-        
-        ereport(LOG, (errmsg("dshash_cache_load: Processing batch %d (offset=%d, batch_size=%d)", 
-                             batch_num, offset, current_batch_limit)));
         
         /* Get batch of k-mers from table using LIMIT/OFFSET */
         {
@@ -2126,12 +1985,8 @@ kmersearch_parallel_highfreq_kmer_cache_load_internal(Oid table_oid, const char 
         }
         
         if (!batch_kmers || batch_count <= 0) {
-            ereport(LOG, (errmsg("dshash_cache_load: No more k-mers in batch %d", batch_num)));
             break;
         }
-        
-        ereport(LOG, (errmsg("dshash_cache_load: Inserting %d k-mers from batch %d into dshash", 
-                             batch_count, batch_num)));
         
         /* Insert batch k-mers into dshash */
         for (i = 0; i < batch_count; i++) {
@@ -2159,9 +2014,6 @@ kmersearch_parallel_highfreq_kmer_cache_load_internal(Oid table_oid, const char 
                 key64 = kmer_value;
                 key_ptr = &key64;
             }
-            
-            ereport(DEBUG1, (errmsg("dshash_cache_load: Inserting k-mer %d/%d from batch %d with value %lu", 
-                                   i + 1, batch_count, batch_num, kmer_value)));
             
             /* Insert into dshash table with error handling */
             PG_TRY();
@@ -2197,8 +2049,6 @@ kmersearch_parallel_highfreq_kmer_cache_load_internal(Oid table_oid, const char 
                         total_inserted++;
                     }
                 }
-                ereport(DEBUG1, (errmsg("dshash_cache_load: Successfully inserted k-mer %d (total: %d)", 
-                                       i + 1, total_inserted)));
             }
             PG_CATCH();
             {
@@ -2216,40 +2066,28 @@ kmersearch_parallel_highfreq_kmer_cache_load_internal(Oid table_oid, const char 
             pfree(batch_kmers);
         }
         
-        ereport(LOG, (errmsg("dshash_cache_load: Completed batch %d, total inserted so far: %d", 
-                             batch_num, total_inserted)));
-        
         /* Move to next batch */
         offset += batch_count;
         batch_num++;
         
         /* Break if we got fewer results than requested (end of data) */
         if (batch_count < current_batch_limit) {
-            ereport(LOG, (errmsg("dshash_cache_load: Reached end of data (batch_count=%d < batch_size=%d)", 
-                                 batch_count, current_batch_limit)));
             break;
         }
     }
     
-    ereport(LOG, (errmsg("dshash_cache_load: Completed all batches, total inserted: %d/%d", 
-                         total_inserted, total_kmer_count)));
-    
     /* Set the actual number of entries that were successfully inserted */
     parallel_highfreq_cache->num_entries = total_inserted;
     parallel_highfreq_cache->is_initialized = true;
-    
-    ereport(LOG, (errmsg("dshash_cache_load: Batch processing completed, no additional cleanup needed")));
     
     /* Switch back to original context */
     MemoryContextSwitchTo(oldcontext);
     
     /* Register exit callback for proper DSM cleanup on process exit */
     if (!parallel_cache_exit_callback_registered) {
-        ereport(LOG, (errmsg("dshash_cache_load: Registering exit callback for DSM cleanup")));
         on_shmem_exit(dshash_cache_cleanup_callback, 0);
         parallel_cache_exit_callback_registered = true;
     } else {
-        ereport(LOG, (errmsg("dshash_cache_load: Exit callback already registered")));
     }
     
     return true;
@@ -2261,12 +2099,9 @@ kmersearch_parallel_highfreq_kmer_cache_load_internal(Oid table_oid, const char 
 void
 kmersearch_parallel_highfreq_kmer_cache_free_internal(void)
 {
-    ereport(LOG, (errmsg("kmersearch_parallel_highfreq_kmer_cache_free_internal: Starting parallel cache free")));
     
     /* Use the unified cleanup function for proper resource destruction */
     kmersearch_parallel_cache_cleanup_internal();
-    
-    ereport(LOG, (errmsg("kmersearch_parallel_highfreq_kmer_cache_free_internal: Parallel cache free completed")));
 }
 
 /*
@@ -2398,14 +2233,11 @@ kmersearch_parallel_cache_attach(dsm_handle handle)
 void
 kmersearch_parallel_cache_cleanup_on_exit(int code, Datum arg)
 {
-    ereport(LOG, (errmsg("parallel_cache_cleanup_on_exit: Starting cleanup, code=%d", code)));
     
     /* Clean up parallel cache resources */
     if (parallel_cache_hash != NULL || parallel_cache_dsa != NULL || parallel_cache_segment != NULL) {
-        ereport(LOG, (errmsg("parallel_cache_cleanup_on_exit: Cleaning up resources")));
         kmersearch_parallel_highfreq_kmer_cache_free_internal();
     } else {
-        ereport(LOG, (errmsg("parallel_cache_cleanup_on_exit: No resources to clean up")));
     }
 }
 

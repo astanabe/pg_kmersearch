@@ -210,7 +210,6 @@ sub create_base_table {
     $sth->finish();
     my $end_time = time();
     
-    printf "DEBUG: create_base_table($table_name, $type) timing breakdown:\n";
     printf "  Drop table: %.3f seconds\n", $after_drop - $start_time;
     printf "  Create table: %.3f seconds\n", $after_create - $after_drop;
     printf "  Prepare statement: %.3f seconds\n", $after_prepare - $after_create;
@@ -351,36 +350,26 @@ sub test_simd_input_scalar_output {
         # Insert with SIMD
         $dbh->do("SET kmersearch.force_simd_capability = $simd->{value}");
         
-        print "DEBUG: Starting ${type} SIMD input test for $simd->{name}...\n" if $type eq 'DNA4' && $simd->{value} == 3;
         
         my $table_name = "simd_test_${type}_simd_input_$simd->{value}";
         $table_name =~ s/DNA/dna/g;
         $table_name =~ s/\./_/g;
         
-        print "DEBUG: About to call create_base_table for $simd->{name}\n" if $type eq 'DNA4' && $simd->{value} == 3;
         create_base_table($table_name, $type);
-        print "DEBUG: Returned from create_base_table for $simd->{name}\n" if $type eq 'DNA4' && $simd->{value} == 3;
         
         my ($test_time, $test_result) = measure_time("${type}_simd_in_scalar_out_$simd->{value}", sub {
             
             # Read with scalar
-            print "DEBUG: Before SET force_simd_capability = 0 for $simd->{name}\n" if $type eq 'DNA4' && $simd->{value} == 3;
             $dbh->do("SET kmersearch.force_simd_capability = 0");
-            print "DEBUG: After SET force_simd_capability = 0 for $simd->{name}\n" if $type eq 'DNA4' && $simd->{value} == 3;
             
-            print "DEBUG: Before prepare SELECT for $simd->{name}\n" if $type eq 'DNA4' && $simd->{value} == 3;
             my $sth = $dbh->prepare("SELECT seq::text FROM $table_name ORDER BY id");
-            print "DEBUG: After prepare, before execute for $simd->{name}\n" if $type eq 'DNA4' && $simd->{value} == 3;
             $sth->execute();
-            print "DEBUG: After execute for $simd->{name}\n" if $type eq 'DNA4' && $simd->{value} == 3;
             
             my @output_sequences;
             while (my ($seq) = $sth->fetchrow_array()) {
                 push @output_sequences, $seq;
             }
-            print "DEBUG: After fetchrow_array loop for $simd->{name}\n" if $type eq 'DNA4' && $simd->{value} == 3;
             $sth->finish();
-            print "DEBUG: After finish for $simd->{name}\n" if $type eq 'DNA4' && $simd->{value} == 3;
             
             # Compare with input
             my $sequences = $type eq 'DNA4' ? \@dna4_sequences : \@dna2_sequences;
@@ -407,7 +396,6 @@ sub test_simd_input_scalar_output {
         
         # Check for background processes after AVX512F
         if ($type eq 'DNA4' && $simd->{value} == 3) {
-            print "DEBUG: Checking for background activity...\n";
             my $activity = $dbh->selectall_arrayref("
                 SELECT pid, state, query 
                 FROM pg_stat_activity 
@@ -415,7 +403,6 @@ sub test_simd_input_scalar_output {
                 AND state != 'idle'
             ");
             if (@$activity) {
-                print "DEBUG: Active background processes:\n";
                 foreach my $row (@$activity) {
                     printf "  PID %d: %s - %s\n", $row->[0], $row->[1], substr($row->[2] || '', 0, 60);
                 }
@@ -897,8 +884,6 @@ sub main {
     print "=" x 70 . "\n\n";
     my $pre_test_time = time();
     
-    printf "DEBUG: Time from generation to SIMD detection: %.3f seconds\n", $post_simd_time - $post_generation_time;
-    printf "DEBUG: Time from SIMD to first test: %.3f seconds\n", $pre_test_time - $post_simd_time;
     print "\n";
     
     # Test execution in the specified order
@@ -906,7 +891,6 @@ sub main {
     my $test1_start = time();
     test_scalar_io('DNA2');
     my $test1_end = time();
-    printf "DEBUG: DNA2 scalar I/O test took %.3f seconds\n", $test1_end - $test1_start;
     test_scalar_io('DNA4');
     
     # 2. DNA2 and DNA4 scalar input / SIMD output tests

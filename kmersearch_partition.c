@@ -248,8 +248,6 @@ calculate_partition_batch_size(Oid table_oid)
     else if (batch_size > 100000)
         batch_size = 100000;
         
-    elog(NOTICE, "Using batch size %d based on maintenance_work_mem=%dMB",
-         batch_size, maintenance_work_mem / 1024);
          
     return batch_size;
 }
@@ -364,7 +362,6 @@ migrate_data_in_batches(const char *table_name, const char *temp_table_name, Oid
 {
     StringInfoData query;
     int ret;
-    uint64 total_rows_processed = 0;
     int batch_size;
     SPITupleTable *tuptable;
     uint64 total_rows = 0;
@@ -478,7 +475,6 @@ migrate_data_in_batches(const char *table_name, const char *temp_table_name, Oid
             AttrNumber attnum;
             
             elog(WARNING, "Could not determine column type for %s, falling back to simple migration", seq_column);
-            elog(NOTICE, "Attempting type resolution through syscache for column %s", seq_column);
             
             /* Try alternative method to get column type */
             attnum = get_attnum(table_oid, seq_column);
@@ -490,8 +486,7 @@ migrate_data_in_batches(const char *table_name, const char *temp_table_name, Oid
             /* If still invalid, use simple migration */
             if (!OidIsValid(column_type))
             {
-                elog(NOTICE, "Using simple migration due to type resolution failure");
-                total_rows_processed = perform_simple_migration(table_name, temp_table_name);
+                perform_simple_migration(table_name, temp_table_name);
                 
                 /* Truncate original table */
                 resetStringInfo(&query);
@@ -505,14 +500,10 @@ migrate_data_in_batches(const char *table_name, const char *temp_table_name, Oid
                 if (seq_column)
                     pfree(seq_column);
                     
-                elog(NOTICE, "Data migration completed: " UINT64_FORMAT " rows migrated",
-                     total_rows_processed);
                 return;
             }
         }
         
-        elog(NOTICE, "Starting batch migration of " UINT64_FORMAT " rows (batch size: %d)",
-             total_rows, batch_size);
         
         while (rows_migrated < total_rows)
         {
@@ -577,18 +568,14 @@ migrate_data_in_batches(const char *table_name, const char *temp_table_name, Oid
             /* Progress reporting */
             if (rows_migrated % (batch_size * 10) == 0)
             {
-                elog(NOTICE, "Migration progress: " UINT64_FORMAT "/" UINT64_FORMAT " rows (%.1f%%)",
-                     rows_migrated, total_rows, (double)rows_migrated * 100.0 / total_rows);
+                /* Progress reporting removed */
             }
         }
-        
-        total_rows_processed = rows_migrated;
     }
     else
     {
         /* Fall back to simple approach for small tables or tables without suitable index */
-        elog(NOTICE, "Using simple migration for table with %lld rows", (long long)total_rows);
-        total_rows_processed = perform_simple_migration(table_name, temp_table_name);
+        perform_simple_migration(table_name, temp_table_name);
     }
     
     /* Now truncate the original table */
@@ -599,9 +586,6 @@ migrate_data_in_batches(const char *table_name, const char *temp_table_name, Oid
     if (ret != SPI_OK_UTILITY)
         elog(ERROR, "TRUNCATE TABLE failed: %s", SPI_result_code_string(ret));
     
-    elog(NOTICE, "Data migration completed: " UINT64_FORMAT " rows migrated",
-         total_rows_processed);
-         
     pfree(query.data);
     if (seq_column)
         pfree(seq_column);
@@ -640,9 +624,6 @@ replace_table_with_partition(const char *table_name, const char *temp_table_name
         
     /* Drop original table with CASCADE to handle sequence dependencies */
     /* Log information about what will be cascaded */
-    elog(NOTICE, "Dropping original table %s with CASCADE to handle dependent objects", table_name);
-    elog(NOTICE, "Any dependent objects (sequences, views, etc.) will be dropped automatically");
-    
     resetStringInfo(&query);
     
     /* First, identify dependent objects for user awareness */
@@ -679,8 +660,7 @@ replace_table_with_partition(const char *table_name, const char *temp_table_name
             
             if (obj_name_str && obj_type_str)
             {
-                elog(NOTICE, "CASCADE will drop %s: %s", 
-                     obj_type_str, obj_name_str);
+                /* Info about cascade drops removed */
             }
             
             if (obj_name_str)
@@ -696,8 +676,6 @@ replace_table_with_partition(const char *table_name, const char *temp_table_name
     ret = SPI_execute(query.data, false, 0);
     if (ret != SPI_OK_UTILITY)
         elog(ERROR, "DROP TABLE failed: %s", SPI_result_code_string(ret));
-        
-    elog(NOTICE, "Original table %s dropped successfully", table_name);
         
     /* Rename partitioned table */
     resetStringInfo(&query);

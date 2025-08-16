@@ -1691,7 +1691,6 @@ kmersearch_expand_dna4_kmer2_to_dna2_direct(VarBit *dna4_seq, int start_pos, int
 #endif
     
     /* Fallback to scalar implementation with diagnostics */
-    elog(DEBUG1, "SIMD fallback: Using scalar implementation for DNA4 k-mer expansion");
     elog(DEBUG2, "SIMD fallback reason: capability=%d, seq_bits=%d, thresholds not met", 
          simd_capability, seq_bits);
     return kmersearch_expand_dna4_kmer2_to_dna2_direct_scalar(dna4_seq, start_pos, k, expansion_count);
