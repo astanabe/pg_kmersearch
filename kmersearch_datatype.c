@@ -12,10 +12,8 @@
 
 #include "kmersearch.h"
 
-/* Forward declaration for comparison function */
 static int dna_compare_simd(const uint8_t* a, const uint8_t* b, int bit_len);
 
-/* PostgreSQL function info declarations for datatype functions */
 PG_FUNCTION_INFO_V1(kmersearch_dna2_in);
 PG_FUNCTION_INFO_V1(kmersearch_dna2_out);
 PG_FUNCTION_INFO_V1(kmersearch_dna2_recv);
@@ -31,7 +29,6 @@ PG_FUNCTION_INFO_V1(kmersearch_dna4_char_length);
 PG_FUNCTION_INFO_V1(kmersearch_dna2_to_bytea);
 PG_FUNCTION_INFO_V1(kmersearch_dna4_to_bytea);
 
-/* BTree comparison functions */
 PG_FUNCTION_INFO_V1(kmersearch_dna2_cmp);
 PG_FUNCTION_INFO_V1(kmersearch_dna4_cmp);
 PG_FUNCTION_INFO_V1(kmersearch_dna2_lt);
@@ -44,7 +41,7 @@ PG_FUNCTION_INFO_V1(kmersearch_dna4_le);
 PG_FUNCTION_INFO_V1(kmersearch_dna4_gt);
 PG_FUNCTION_INFO_V1(kmersearch_dna4_ge);
 PG_FUNCTION_INFO_V1(kmersearch_dna4_ne);
-/* Helper functions */
+
 static bool kmersearch_is_valid_dna2_char(char c)
 {
     return (c == 'A' || c == 'a' || c == 'C' || c == 'c' ||

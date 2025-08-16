@@ -36,10 +36,8 @@
 
 #include "kmersearch.h"
 
-/* Function declarations */
 PG_FUNCTION_INFO_V1(kmersearch_partition_table);
 
-/* Helper function prototypes */
 static void validate_table_for_partitioning(Oid table_oid, char **dna_column_name, Oid *dna_column_type);
 static int calculate_partition_batch_size(Oid table_oid);
 static void create_partition_table(const char *temp_table_name, const char *table_name, 
@@ -710,10 +708,6 @@ replace_table_with_partition(const char *table_name, const char *temp_table_name
         
     pfree(query.data);
 }
-
-
-
-
 
 
 

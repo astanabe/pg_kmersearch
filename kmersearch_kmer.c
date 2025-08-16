@@ -2,26 +2,15 @@
 
 /*
  * kmersearch_kmer.c
- * 
  * Simple k-mer utility functions for the pg_kmersearch extension.
- * 
- * This module contains basic utility functions for:
- * - k-mer bit operations
- * - Simple data conversion
- * - Basic helper functions
- * 
- * Note: Complex memory management functions remain in kmersearch.c for stability
  */
-
-/* Helper function to validate DNA4 characters */
 static inline bool
 kmersearch_is_valid_dna4_char(char c)
 {
     return kmersearch_dna4_encode_table[(unsigned char)c] != 0 || c == 'A' || c == 'a';
 }
 
-/* DNA4 to DNA2 expansion table */
-/* Each entry contains: [expansion_count, base1, base2, base3, base4] */
+/* DNA4 to DNA2 expansion table: [expansion_count, base1, base2, base3, base4] */
 static const uint8 kmersearch_dna4_to_dna2_table[16][5] = {
     {0, 0, 0, 0, 0},     /* 0000 - invalid */
     {1, 0, 0, 0, 0},     /* 0001 - A */
@@ -41,9 +30,8 @@ static const uint8 kmersearch_dna4_to_dna2_table[16][5] = {
     {4, 0, 1, 2, 3}      /* 1111 - N (A,C,G,T) */
 };
 
-/* Direct text character to DNA2 expansion table */
-/* Each entry contains: [expansion_count, base1, base2, base3, base4] */
-/* DNA2 encoding: A=0, C=1, G=2, T=3 */
+/* Direct text character to DNA2 expansion table: [expansion_count, base1, base2, base3, base4]
+ * DNA2 encoding: A=0, C=1, G=2, T=3 */
 static const uint8 kmersearch_text_to_dna2_table[256][5] = {
     /* Initialize all entries to invalid (0 expansions) */
     {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0},
@@ -146,12 +134,10 @@ static const uint8 kmersearch_text_to_dna2_table[256][5] = {
     {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}
 };
 
-/* Forward declarations for static functions */
 static int kmersearch_count_matching_kmer_fast_scalar_simple(VarBit **seq_keys, int seq_nkeys, VarBit **query_keys, int query_nkeys);
 static int kmersearch_count_matching_kmer_fast_scalar_hashtable(VarBit **seq_keys, int seq_nkeys, VarBit **query_keys, int query_nkeys);
 static int kmersearch_count_matching_uintkey_scalar(void *seq_keys, int seq_nkeys, void *query_keys, int query_nkeys, int k_size);
 
-/* SIMD-optimized k-mer matching functions */
 #ifdef __x86_64__
 static int kmersearch_count_matching_kmer_fast_avx2(VarBit **seq_keys, int seq_nkeys, VarBit **query_keys, int query_nkeys);
 static int kmersearch_count_matching_kmer_fast_avx512(VarBit **seq_keys, int seq_nkeys, VarBit **query_keys, int query_nkeys);
@@ -282,21 +268,6 @@ kmersearch_will_exceed_degenerate_limit_dna4_bits(VarBit *seq, int start_pos, in
 }
 
 
-/*
- * Create k-mer key without occurrence count (for frequency analysis)
- */
-/*
- * Create k-mer key from DNA2 bits without occurrence count
- */
-/*
- * Create n-gram key from DNA2 bits with occurrence count
- */
-/*
- * Create n-gram key from DNA4 bits with occurrence count (by converting to DNA2 first)
- */
-/*
- * Create n-gram key from existing DNA2 k-mer with occurrence count
- */
 /*
  * Find or add k-mer occurrence in sorted array for k <= 8
  */
@@ -506,79 +477,9 @@ kmersearch_will_exceed_degenerate_limit(const char *seq, int len)
 }
 
 /*
- * Removed: kmersearch_remove_occurrence_bits() function 
- * This function was eliminated because the correct architecture uses ngram_key2
- * directly without removing occurrence bits for high-frequency k-mer comparisons.
- */
-
-
-
-
-/* Note: kmersearch_extract_dna2_ngram_key2_direct kept in kmersearch.c due to SIMD dependencies */
-
-
-
-
-/*
- * Convert uint-based k-mer to VarBit k-mer format
- */
-/*
- * Create complete ngram_key2 from uint k-mer with occurrence count
- */
-/*
- * Create an ngram_key2 from a kmer2 uint64 value and occurrence count
- * This function is used during frequency analysis to create ngram keys
- * from already extracted k-mers
- */
-/* Forward declarations for SIMD variants */
-/*
- * Scalar version: Extract k-mers directly from DNA2 bit sequence
- */
-#ifdef __x86_64__
-/* AVX2 optimized version of kmersearch_extract_dna2_kmer2_direct */
-__attribute__((target("avx2,bmi,bmi2")))
-/* AVX512 optimized version of kmersearch_extract_dna2_kmer2_direct */
-__attribute__((target("avx512f,avx512bw,avx512vbmi,avx512vbmi2,bmi,bmi2")))
-#endif /* __x86_64__ */
-
-#ifdef __aarch64__
-/* NEON optimized version of kmersearch_extract_dna2_kmer2_direct */
-__attribute__((target("+simd")))
-/* SVE optimized version of kmersearch_extract_dna2_kmer2_direct */
-__attribute__((target("+sve,+simd")))
-/* SVE2 optimized version of kmersearch_extract_dna2_kmer2_direct */
-__attribute__((target("+sve2")))
-#endif /* __aarch64__ */
-
-/* Forward declaration for DNA4 expansion functions */
-/*
- * Scalar version: Extract k-mers directly from DNA4 bit sequence with degenerate expansion
- */
-/*
  * Extract k-mers directly from DNA2 bit sequence (with SIMD dispatch)
  */
-#ifdef __x86_64__
-/* AVX2 optimized version of kmersearch_extract_dna4_kmer2_with_expansion_direct */
-__attribute__((target("avx2,bmi,bmi2")))
-/* AVX512 optimized version of kmersearch_extract_dna4_kmer2_with_expansion_direct */
-__attribute__((target("avx512f,avx512bw,avx512vbmi,avx512vbmi2,bmi,bmi2")))
-#endif /* __x86_64__ */
 
-#ifdef __aarch64__
-/* NEON optimized version of kmersearch_extract_dna4_kmer2_with_expansion_direct */
-__attribute__((target("+simd")))
-/* SVE optimized version of kmersearch_extract_dna4_kmer2_with_expansion_direct */
-__attribute__((target("+sve,+simd")))
-/* SVE2 optimized version of kmersearch_extract_dna4_kmer2_with_expansion_direct */
-__attribute__((target("+sve2")))
-#endif /* __aarch64__ */
-
-/*
- * Extract k-mers directly from DNA4 bit sequence with degenerate expansion (with SIMD dispatch)
- */
-/*
- * SIMD-optimized implementations for k-mer matching
- */
 
 /*
  * Count matching k-mers using simple O(n*m) algorithm
@@ -674,18 +575,6 @@ kmersearch_count_matching_kmer_fast_scalar_hashtable(VarBit **seq_keys, int seq_
     return match_count;
 }
 
-/*
- * Remove occurrence count from ngram_key2 to get k-mer only
- */
-/*
- * Convert VarBit k-mer to uint16 (for k <= 8)
- */
-/*
- * Convert VarBit k-mer to uint32 (for k <= 16)
- */
-/*
- * Convert VarBit k-mer to uint64 (for k <= 32)
- */
 /*
  * Extract uint keys with occurrence counting from DNA2 sequence (scalar implementation)
  */

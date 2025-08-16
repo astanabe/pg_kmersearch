@@ -77,52 +77,7 @@ QueryPatternCacheManager *query_pattern_cache_manager = NULL;
         } \
     } while(0)
 
-/* Forward declarations */
-/* Functions moved to other modules - declarations remain for compatibility */
-
-/* Helper function declarations */
-/* Functions moved to kmersearch_util.c */
-/* Function moved to kmersearch_freq.c */
-/* Moved to kmersearch_freq.c */
-/* Moved to kmersearch_kmer.c */
-
-/* Function moved to kmersearch_cache.c */
-
-/* Analysis dshash functions (defined in kmersearch_freq.c) */
-/* B-2: Other functions */
-/* Removed ngram_key2 functions - using uintkey-based implementations */
-/* Moved to kmersearch_kmer.c */
-/* Function moved to kmersearch_gin.c */
-
-/* Actual min score cache functions */
-/* Function moved to kmersearch_gin.c */
-
-/* New parallel analysis functions */
-/* Moved to kmersearch_freq.c */
-/* Moved to kmersearch_freq.c */
-/* Function moved to kmersearch_freq.c */
-
-/* New memory-efficient k-mer functions */
-/* Function moved to kmersearch_gin.c */
-/* Buffer functions moved to kmersearch_freq.c */
-/* Function moved to kmersearch_freq.c */
-/* Function moved to kmersearch_freq.c */
-/* Function moved to kmersearch_freq.c */
-
-/* Custom GUC variables */
 void _PG_init(void);
-
-/*
- * DNA2 type: 2-bit encoding for ACGT
- * A=00, C=01, G=10, T=11
- * Definition moved to kmersearch.h
- */
-
-/*
- * DNA4 type: 4-bit encoding with degenerate codes
- * Uses standard varbit structure
- * Definition moved to kmersearch.h
- */
 
 /* DNA2 encoding table */
 const uint8 kmersearch_dna2_encode_table[256] = {
@@ -196,25 +151,14 @@ static const uint8 kmersearch_dna4_to_dna2_table[16][5] = {
     {3, 1, 2, 3, 0},     /* 1110 - B (C,G,T) */
     {4, 0, 1, 2, 3}      /* 1111 - N (A,C,G,T) */
 };
-/* K-mer and GIN index functions */
 PG_FUNCTION_INFO_V1(kmersearch_dna2_match);
 PG_FUNCTION_INFO_V1(kmersearch_dna4_match);
 
-/* K-mer frequency analysis functions */
-
-/* Score calculation functions */
 PG_FUNCTION_INFO_V1(kmersearch_correctedscore_dna2);
 PG_FUNCTION_INFO_V1(kmersearch_correctedscore_dna4);
-/* SIMD capability detection functions */
 static simd_capability_t detect_cpu_capabilities(void);
 
-/* SIMD implementation functions */
 
-/* SIMD function declarations are now in kmersearch.h */
-
-/*
- * GUC hook function declarations
- */
 static bool kmersearch_kmer_size_check_hook(int *newval, void **extra, GucSource source);
 static bool kmersearch_occur_bitlen_check_hook(int *newval, void **extra, GucSource source);
 static void kmersearch_kmer_size_assign_hook(int newval, void *extra);
@@ -224,13 +168,7 @@ static void kmersearch_max_appearance_nrow_assign_hook(int newval, void *extra);
 static void kmersearch_min_score_assign_hook(int newval, void *extra);
 static void kmersearch_min_shared_ngram_key_rate_assign_hook(double newval, void *extra);
 static void kmersearch_force_simd_capability_assign_hook(int newval, void *extra);
-/* kmersearch_query_pattern_cache_max_entries_assign_hook is declared in kmersearch.h */
 
-/*
- * GUC assign hook functions for cache invalidation
- */
-
-/* High-frequency cache clear with warning */
 static void 
 clear_highfreq_cache_with_warning(void)
 {
@@ -238,7 +176,6 @@ clear_highfreq_cache_with_warning(void)
     
     kmersearch_highfreq_kmer_cache_free_internal();
     
-    /* Only show warning if cache was actually valid and cleared */
     if (had_valid_cache)
     {
         elog(WARNING, "High-frequency k-mer cache has been cleared. "
@@ -247,7 +184,6 @@ clear_highfreq_cache_with_warning(void)
     }
 }
 
-/* Check if k-mer size and occurrence bitlen combination is valid */
 static bool
 kmersearch_kmer_size_check_hook(int *newval, void **extra, GucSource source)
 {
@@ -338,10 +274,7 @@ kmersearch_min_shared_ngram_key_rate_assign_hook(double newval, void *extra)
     if (actual_min_score_cache_manager)
         free_actual_min_score_cache_manager(&actual_min_score_cache_manager);
 }
-/* Query pattern cache max entries change requires cache recreation */
-/* Function moved to kmersearch_cache.c */
 
-/* Check if forced capability is valid */
 static bool
 kmersearch_force_simd_capability_check_hook(int *newval, void **extra, GucSource source)
 {
@@ -445,7 +378,6 @@ kmersearch_occur_bitlen_assign_hook(int newval, void *extra)
 /*
  * Module initialization
  */
-/* Global flag to prevent duplicate GUC initialization */
 static bool guc_variables_initialized = false;
 
 /*
@@ -2090,28 +2022,6 @@ kmersearch_mempool_get_usage(UintkeyMemoryPool *pool)
     return pool->used;
 }
 
-
-
-/*
- * Extract k-mers only (without occurrence counts) from DNA2 bit sequence
- * This function is used for frequency analysis phase
- */
-
-/*
- * Encode k-mer-only VarBit into compact KmerData (ignoring occurrence count bits)
- */
-
-
-
-
-/*
- * Cache management functions
- */
-/* Cache management functions moved to kmersearch_cache.c */
-
-
-
-
 /*
  * DNA2 =% operator for k-mer search
  */
@@ -2280,7 +2190,6 @@ kmersearch_correctedscore_dna4(PG_FUNCTION_ARGS)
     /* Return corrected score (shared k-mer count) */
     PG_RETURN_INT32(shared_count);
 }
-/* High-frequency k-mer validation and parallel cache functions moved to kmersearch_freq.c */
 
 /*
  * Length functions for DNA2 and DNA4 types
@@ -2429,59 +2338,6 @@ kmersearch_simd_capability(PG_FUNCTION_ARGS)
     PG_RETURN_TEXT_P(cstring_to_text(result_str));
 }
 
-/* Parallel k-mer analysis functions declarations added elsewhere */
-
-/* Function moved to kmersearch_gin.c */
-
-/* Function moved to kmersearch_gin.c */
-
-
-
-/* Function moved to kmersearch_gin.c */
-
-
-
-/* Function moved to kmersearch_freq.c */
-
-/* Function moved to kmersearch_freq.c */
-
-/* Function moved to kmersearch_freq.c */
-
-/* Function moved to kmersearch_freq.c */
-
-/* Function moved to kmersearch_freq.c */
-
-/* Function moved to kmersearch_freq.c */
-
-/* Function moved to kmersearch_freq.c */
-
-/* Function moved to kmersearch_freq.c */
-
-
-/* Function moved to kmersearch_freq.c */
-/*
- * Helper functions implementation
- */
-
-/* Functions moved to kmersearch_util.c */
-
-
-
-/* Function moved to kmersearch_freq.c */
-
-/* Function moved to kmersearch_freq.c */
-
-/* Function moved to kmersearch_freq.c */
-
-/* Function moved to kmersearch_kmer.c */
-
-
-/* Function moved to kmersearch_freq.c */
-
-
-
-
-
 /*
  * Module cleanup function
  */
@@ -2498,101 +2354,3 @@ _PG_fini(void)
     /* Free high-frequency k-mer cache on module unload */
     kmersearch_highfreq_kmer_cache_free_internal();
 }
-
-/*
- * Parallel high-frequency k-mer cache internal functions
- */
-
-
-
-
-
-
-/* Function moved to kmersearch_cache.c */
-
-/*
- * Lookup entry in parallel high-frequency k-mer cache
- */
-
-
-
-
-
-/*
- * SIMD Implementation Functions
- */
-
-/* Scalar implementations (fallback) */
-
-
-
-
-#ifdef __x86_64__
-/* AVX2 implementations */
-
-
-
-/* AVX512 implementations */
-
-
-
-#endif
-
-#ifdef __aarch64__
-/* NEON implementations */
-
-
-
-
-/* SVE implementations */
-
-
-
-#endif
-
-/*
- * AVX2 K-mer Processing Functions
- */
-
-#ifdef __x86_64__
-
-
-/* AVX2 optimized version of kmersearch_count_matching_kmer_fast */
-
-
-
-/* AVX512 optimized version of kmersearch_count_matching_kmer_fast */
-#endif
-
-#ifdef __aarch64__
-
-
-/* NEON optimized version of kmersearch_count_matching_kmer_fast */
-#endif
-
-#ifdef __aarch64__
-
-
-/* SVE optimized version of kmersearch_count_matching_kmer_fast */
-
-#endif
-
-
-
-/*
- * Expand DNA4 k-mer to DNA2 k-mers directly as uint values
- * Based on kmersearch_expand_dna4_kmer2_to_dna2_direct() but returns uint arrays
- */
-/*
- * DNA2 AVX2 implementation - DIRECT BIT MANIPULATION
- */
-#ifdef __x86_64__
-
-/*
- * DNA2 AVX512 implementation - DIRECT BIT MANIPULATION
- */
-#endif
-
-/*
- * DNA2 NEON implementation - DIRECT BIT MANIPULATION
- */

@@ -9,7 +9,6 @@
 
 #include "kmersearch.h"
 
-/* PostgreSQL function info declarations for cache functions */
 PG_FUNCTION_INFO_V1(kmersearch_query_pattern_cache_stats);
 PG_FUNCTION_INFO_V1(kmersearch_query_pattern_cache_free);
 PG_FUNCTION_INFO_V1(kmersearch_actual_min_score_cache_stats);
@@ -21,27 +20,18 @@ PG_FUNCTION_INFO_V1(kmersearch_parallel_highfreq_kmer_cache_load);
 PG_FUNCTION_INFO_V1(kmersearch_parallel_highfreq_kmer_cache_free);
 PG_FUNCTION_INFO_V1(kmersearch_parallel_highfreq_kmer_cache_free_all);
 
-/* Global high-frequency k-mer cache */
 HighfreqKmerCache global_highfreq_cache = {0};
 
-/* Global testing variable for dshash usage (not exposed to users) */
 bool kmersearch_force_use_parallel_highfreq_kmer_cache = false;
 
-/* Global parallel cache state */
 ParallelHighfreqKmerCache *parallel_highfreq_cache = NULL;
 dsm_segment *parallel_cache_segment = NULL;
 dsa_area *parallel_cache_dsa = NULL;
 dshash_table *parallel_cache_hash = NULL;
 
-/*
- * Forward declarations for internal functions
- */
-
-/* Identity hash functions for k-mer values */
 static uint32 kmersearch_uint16_identity_hash(const void *key, size_t keysize, void *arg);
 static uint32 kmersearch_uint32_identity_hash(const void *key, size_t keysize, void *arg);
 
-/* Query pattern cache functions */
 static void init_query_pattern_cache_manager(QueryPatternCacheManager **manager);
 static uint64 generate_query_pattern_cache_key(const char *query_string, int k_size);
 static QueryPatternCacheEntry *lookup_query_pattern_cache_entry(QueryPatternCacheManager *manager, const char *query_string, int k_size);
@@ -50,25 +40,14 @@ static void lru_touch_query_pattern_cache(QueryPatternCacheManager *manager, Que
 static void lru_evict_oldest_query_pattern_cache(QueryPatternCacheManager *manager);
 void free_query_pattern_cache_manager(QueryPatternCacheManager **manager);
 
-/* Actual min score cache functions */
 static void create_actual_min_score_cache_manager(ActualMinScoreCacheManager **manager);
 void free_actual_min_score_cache_manager(ActualMinScoreCacheManager **manager);
 static int calculate_actual_min_score_from_uintkey(void *uintkey, int nkeys, int k_size);
 
-/* High-frequency k-mer cache functions */
 void kmersearch_highfreq_kmer_cache_init(void);
 bool kmersearch_highfreq_kmer_cache_load_internal(Oid table_oid, const char *column_name, int k_value);
 void kmersearch_highfreq_kmer_cache_free_internal(void);
 bool kmersearch_highfreq_kmer_cache_is_valid(Oid table_oid, const char *column_name, int k_value);
-
-
-/* High-level cache functions */
-
-/* External global variables (defined in kmersearch.c) */
-
-/*
- * Query Pattern Cache Functions
- */
 
 /*
  * Initialize query pattern cache manager
@@ -337,10 +316,6 @@ free_query_pattern_cache_manager(QueryPatternCacheManager **manager)
         *manager = NULL;
     }
 }
-
-/*
- * Actual Min Score Cache Functions
- */
 
 /*
  * Create actual min score cache manager
@@ -647,9 +622,6 @@ get_cached_actual_min_score_datum_int8(Datum *queryKeys, int nkeys)
     return cache_entry->actual_min_score;
 }
 
-
-
-
 /*
  * Query pattern cache statistics function
  */
@@ -762,8 +734,6 @@ kmersearch_actual_min_score_cache_free(PG_FUNCTION_ARGS)
     
     PG_RETURN_INT32(freed_entries);
 }
-
-
 
 /*
  * High-frequency k-mer cache management functions implementation
@@ -2438,11 +2408,6 @@ kmersearch_parallel_cache_cleanup_on_exit(int code, Datum arg)
         ereport(LOG, (errmsg("parallel_cache_cleanup_on_exit: No resources to clean up")));
     }
 }
-
-/*
- * Functions moved from kmersearch_freq.c for better modular organization
- */
-
 
 /*
  * Check if parallel_highfreq_cache is loaded

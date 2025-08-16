@@ -14,28 +14,15 @@
 PG_FUNCTION_INFO_V1(kmersearch_perform_highfreq_analysis);
 PG_FUNCTION_INFO_V1(kmersearch_undo_highfreq_analysis);
 
-/*
- * Forward declarations for internal functions
- */
-
-/* Frequency analysis functions */
-/* kmersearch_perform_highfreq_analysis_parallel declared in header */
-
-/* Utility functions */
-
-/* Analysis dshash functions */
 static int analysis_kmer_hash_compare(const void *a, const void *b, size_t size, void *arg);
 static uint32 analysis_kmer_hash_hash(const void *key, size_t size, void *arg);
 static uint32 kmersearch_uint16_identity_hash(const void *key, size_t keysize, void *arg);
 static uint32 kmersearch_uint32_identity_hash(const void *key, size_t keysize, void *arg);
 static bool kmersearch_create_analysis_dshash(int estimated_entries, int kmer_size);
 static void kmersearch_cleanup_analysis_dshash(void);
-/* kmersearch_is_kmer_hash_in_analysis_dshash is now extern and declared in kmersearch.h */
 static void kmersearch_populate_analysis_dshash_from_workers(KmerWorkerState *workers, int num_workers, uint64 threshold_rows);
 static int kmersearch_get_analysis_dshash_count(int k_size, uint64 threshold_rows);
 static void kmersearch_insert_uintkey_from_dshash(Oid table_oid, const char *column_name, int k_size, uint64 threshold_rows);
-
-/* External functions are now declared in kmersearch.h */
 
 /*
  * Create worker temporary table for n-gram keys
@@ -188,9 +175,6 @@ kmersearch_persist_highfreq_kmers_from_temp(Oid table_oid, const char *column_na
     pfree(query.data);
 }
 
-/*
- * Add k-mer to buffer, flush to temp table if full
- */
 /*
  * Buffer management functions for 16-bit uintkeys
  */
@@ -391,8 +375,6 @@ typedef struct AnalysisHighfreqKmerEntry {
 /*
  * K-mer frequency analysis functions
  */
-
-
 /*
  * Main table analysis function with parallel support
  */
@@ -593,13 +575,9 @@ kmersearch_undo_highfreq_analysis(PG_FUNCTION_ARGS)
     PG_RETURN_DATUM(HeapTupleGetDatum(tuple));
     }
 }
-
-
 /*
  * High-frequency k-mer filtering functions
  */
-
-
 /*
  * Check if high-frequency k-mer filtering is enabled for current context
  */
@@ -616,15 +594,6 @@ kmersearch_is_highfreq_filtering_enabled(void)
     
     return true;
 }
-
-
-/*
- * Filter highly frequent k-mers from key array
- */
-
-/*
- * Analysis helper functions
- */
 
 /*
  * Internal drop analysis implementation
@@ -981,14 +950,6 @@ kmersearch_validate_analysis_parameters(Oid table_oid, const char *column_name, 
 }
 
 /*
- * Helper function implementations
- */
-
-/* Functions moved here from kmersearch.c are now implemented below */
-
-
-
-/*
  * Validate GUC settings against all metadata table entries
  */
 bool
@@ -1036,8 +997,6 @@ kmersearch_validate_guc_against_all_metadata(void)
     return valid;
 }
 
-
-
 /*
  * Connect to SPI with error handling
  */
@@ -1074,8 +1033,6 @@ kmersearch_spi_connect_or_error(void)
         break;
     }
 }
-
-
 
 
 
@@ -1889,8 +1846,6 @@ kmersearch_add_hash_to_buffer64(UintkeyBuffer64 *buffer, uint64 uintkey_value, c
     buffer->uintkeys[buffer->count] = uintkey_value;
     buffer->count++;
 }
-
-
 
 /*
  * Worker function to analyze blocks and extract k-mer frequencies

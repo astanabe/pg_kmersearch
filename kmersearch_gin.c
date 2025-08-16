@@ -13,9 +13,6 @@
 #include "executor/spi.h"
 #include "lib/stringinfo.h"
 
-/* PostgreSQL function info declarations for GIN functions */
-
-/* Uintkey-based GIN functions */
 PG_FUNCTION_INFO_V1(kmersearch_extract_value_dna2_int2);
 PG_FUNCTION_INFO_V1(kmersearch_extract_value_dna2_int4);
 PG_FUNCTION_INFO_V1(kmersearch_extract_value_dna2_int8);
@@ -29,9 +26,6 @@ PG_FUNCTION_INFO_V1(kmersearch_consistent_int2);
 PG_FUNCTION_INFO_V1(kmersearch_consistent_int4);
 PG_FUNCTION_INFO_V1(kmersearch_consistent_int8);
 
-/*
- * Forward declarations for static functions
- */
 static void check_operator_class_compatibility(const char *opclass_type);
 
 /*
@@ -112,19 +106,18 @@ kmersearch_get_index_info(Oid index_oid, Oid *table_oid, char **column_name, int
         ereport(ERROR, (errmsg("SPI_execute failed with code %d", ret)));
     if (ret == SPI_OK_SELECT && SPI_processed > 0)
     {
-        Datum table_oid_datum, column_name_datum, k_size_datum;
+        Datum table_oid_datum, k_size_datum;
         bool isnull;
         
         table_oid_datum = SPI_getbinval(SPI_tuptable->vals[0], SPI_tuptable->tupdesc, 1, &isnull);
         if (!isnull && table_oid)
             *table_oid = DatumGetObjectId(table_oid_datum);
         
-        column_name_datum = SPI_getbinval(SPI_tuptable->vals[0], SPI_tuptable->tupdesc, 2, &isnull);
-        (void) column_name_datum;  /* Suppress unused variable warning */
-        if (!isnull && column_name)
+        if (column_name)
         {
             char *col_name = SPI_getvalue(SPI_tuptable->vals[0], SPI_tuptable->tupdesc, 2);
-            *column_name = pstrdup(col_name);
+            if (col_name)
+                *column_name = pstrdup(col_name);
         }
         
         k_size_datum = SPI_getbinval(SPI_tuptable->vals[0], SPI_tuptable->tupdesc, 3, &isnull);
