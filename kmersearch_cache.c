@@ -806,6 +806,7 @@ kmersearch_highfreq_kmer_cache_load_internal(Oid table_oid, const char *column_n
     int total_inserted;
     int batch_num;
     int offset;
+    int total_bits;
     
     if (!column_name || k_value <= 0) {
         return false;
@@ -1048,7 +1049,6 @@ kmersearch_highfreq_kmer_cache_load_internal(Oid table_oid, const char *column_n
                 for (i = 0; i < batch_count; i++) {
                     bool isnull;
                     Datum kmer_datum;
-                    int total_bits;
                     
                     kmer_datum = SPI_getbinval(SPI_tuptable->vals[i], SPI_tuptable->tupdesc, 1, &isnull);
                     if (!isnull) {
@@ -2127,7 +2127,6 @@ kmersearch_parallel_highfreq_kmer_cache_load_internal(Oid table_oid, const char 
                 for (i = 0; i < batch_count; i++) {
                     bool isnull;
                     Datum kmer_datum;
-                    int total_bits;
                     
                     kmer_datum = SPI_getbinval(SPI_tuptable->vals[i], SPI_tuptable->tupdesc, 1, &isnull);
                     if (!isnull) {

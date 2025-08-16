@@ -41,6 +41,111 @@ static const uint8 kmersearch_dna4_to_dna2_table[16][5] = {
     {4, 0, 1, 2, 3}      /* 1111 - N (A,C,G,T) */
 };
 
+/* Direct text character to DNA2 expansion table */
+/* Each entry contains: [expansion_count, base1, base2, base3, base4] */
+/* DNA2 encoding: A=0, C=1, G=2, T=3 */
+static const uint8 kmersearch_text_to_dna2_table[256][5] = {
+    /* Initialize all entries to invalid (0 expansions) */
+    {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0}, /* 64 */
+    /* A=65 */ {1, 0, 0, 0, 0},
+    /* B=66 */ {3, 1, 2, 3, 0},  /* C,G,T */
+    /* C=67 */ {1, 1, 0, 0, 0},
+    /* D=68 */ {3, 0, 2, 3, 0},  /* A,G,T */
+    {0, 0, 0, 0, 0}, /* E=69 */
+    {0, 0, 0, 0, 0}, /* F=70 */
+    /* G=71 */ {1, 2, 0, 0, 0},
+    /* H=72 */ {3, 0, 1, 3, 0},  /* A,C,T */
+    {0, 0, 0, 0, 0}, /* I=73 */
+    {0, 0, 0, 0, 0}, /* J=74 */
+    /* K=75 */ {2, 2, 3, 0, 0},  /* G,T */
+    {0, 0, 0, 0, 0}, /* L=76 */
+    /* M=77 */ {2, 0, 1, 0, 0},  /* A,C */
+    /* N=78 */ {4, 0, 1, 2, 3},  /* A,C,G,T */
+    {0, 0, 0, 0, 0}, /* O=79 */
+    {0, 0, 0, 0, 0}, /* P=80 */
+    {0, 0, 0, 0, 0}, /* Q=81 */
+    /* R=82 */ {2, 0, 2, 0, 0},  /* A,G */
+    /* S=83 */ {2, 1, 2, 0, 0},  /* C,G */
+    /* T=84 */ {1, 3, 0, 0, 0},
+    /* U=85 */ {1, 3, 0, 0, 0},  /* U as T */
+    /* V=86 */ {3, 0, 1, 2, 0},  /* A,C,G */
+    /* W=87 */ {2, 0, 3, 0, 0},  /* A,T */
+    {0, 0, 0, 0, 0}, /* X=88 */
+    /* Y=89 */ {2, 1, 3, 0, 0},  /* C,T */
+    {0, 0, 0, 0, 0}, /* Z=90 */
+    {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0},
+    /* a=97 */ {1, 0, 0, 0, 0},
+    /* b=98 */ {3, 1, 2, 3, 0},  /* C,G,T */
+    /* c=99 */ {1, 1, 0, 0, 0},
+    /* d=100 */ {3, 0, 2, 3, 0},  /* A,G,T */
+    {0, 0, 0, 0, 0}, /* e=101 */
+    {0, 0, 0, 0, 0}, /* f=102 */
+    /* g=103 */ {1, 2, 0, 0, 0},
+    /* h=104 */ {3, 0, 1, 3, 0},  /* A,C,T */
+    {0, 0, 0, 0, 0}, /* i=105 */
+    {0, 0, 0, 0, 0}, /* j=106 */
+    /* k=107 */ {2, 2, 3, 0, 0},  /* G,T */
+    {0, 0, 0, 0, 0}, /* l=108 */
+    /* m=109 */ {2, 0, 1, 0, 0},  /* A,C */
+    /* n=110 */ {4, 0, 1, 2, 3},  /* A,C,G,T */
+    {0, 0, 0, 0, 0}, /* o=111 */
+    {0, 0, 0, 0, 0}, /* p=112 */
+    {0, 0, 0, 0, 0}, /* q=113 */
+    /* r=114 */ {2, 0, 2, 0, 0},  /* A,G */
+    /* s=115 */ {2, 1, 2, 0, 0},  /* C,G */
+    /* t=116 */ {1, 3, 0, 0, 0},
+    /* u=117 */ {1, 3, 0, 0, 0},  /* U as T */
+    /* v=118 */ {3, 0, 1, 2, 0},  /* A,C,G */
+    /* w=119 */ {2, 0, 3, 0, 0},  /* A,T */
+    {0, 0, 0, 0, 0}, /* x=120 */
+    /* y=121 */ {2, 1, 3, 0, 0},  /* C,T */
+    {0, 0, 0, 0, 0}, /* z=122 */
+    /* Rest of the table initialized to {0, 0, 0, 0, 0} */
+    {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}
+};
+
 /* Forward declarations for static functions */
 static int kmersearch_count_matching_kmer_fast_scalar_simple(VarBit **seq_keys, int seq_nkeys, VarBit **query_keys, int query_nkeys);
 static int kmersearch_count_matching_kmer_fast_scalar_hashtable(VarBit **seq_keys, int seq_nkeys, VarBit **query_keys, int query_nkeys);
@@ -598,6 +703,8 @@ kmersearch_extract_uintkey_from_dna2_scalar(VarBit *seq, void **output, int *nke
     void *result;
     int result_count = 0;
     int i;
+    void *occurrences = NULL;
+    int occurrence_count = 0;
     
     /* Validate parameters */
     if (k < 4 || k > 32) {
@@ -640,10 +747,6 @@ kmersearch_extract_uintkey_from_dna2_scalar(VarBit *seq, void **output, int *nke
     
     /* Allocate result array */
     result = palloc(max_kmers * elem_size);
-    
-    /* Allocate occurrence tracking array based on element size */
-    void *occurrences = NULL;
-    int occurrence_count = 0;
     
     if (elem_size == sizeof(uint16)) {
         occurrences = palloc0(max_kmers * sizeof(KmerOccurrence16));
@@ -785,6 +888,8 @@ kmersearch_extract_uintkey_from_dna4_scalar(VarBit *seq, void **output, int *nke
     int result_count = 0;
     int result_capacity;
     int i;
+    void *occurrences = NULL;
+    int occurrence_count = 0;
     
     /* Validate parameters */
     if (k < 4 || k > 32) {
@@ -828,10 +933,6 @@ kmersearch_extract_uintkey_from_dna4_scalar(VarBit *seq, void **output, int *nke
     /* Allocate result array with extra space for degenerate expansions */
     result_capacity = max_kmers * 16;  /* Conservative estimate for degenerate bases */
     result = palloc(result_capacity * elem_size);
-    
-    /* Allocate occurrence tracking array based on element size */
-    void *occurrences = NULL;
-    int occurrence_count = 0;
     
     if (elem_size == sizeof(uint16)) {
         occurrences = palloc0(result_capacity * sizeof(KmerOccurrence16));
@@ -1001,12 +1102,14 @@ kmersearch_count_matching_uintkey_scalar(void *seq_keys, int seq_nkeys, void *qu
     /* Insert all query uintkeys into hash table */
     if (k_size <= 8) {
         uint16 *query = (uint16 *)query_keys;
+        uint16 *seq;
+        
         for (i = 0; i < query_nkeys; i++) {
             hash_search(query_hash, &query[i], HASH_ENTER, &found);
         }
         
         /* Check each sequence uintkey against hash table */
-        uint16 *seq = (uint16 *)seq_keys;
+        seq = (uint16 *)seq_keys;
         for (i = 0; i < seq_nkeys; i++) {
             if (hash_search(query_hash, &seq[i], HASH_FIND, NULL)) {
                 shared_count++;
@@ -1015,11 +1118,13 @@ kmersearch_count_matching_uintkey_scalar(void *seq_keys, int seq_nkeys, void *qu
     }
     else if (k_size <= 16) {
         uint32 *query = (uint32 *)query_keys;
+        uint32 *seq;
+        
         for (i = 0; i < query_nkeys; i++) {
             hash_search(query_hash, &query[i], HASH_ENTER, &found);
         }
         
-        uint32 *seq = (uint32 *)seq_keys;
+        seq = (uint32 *)seq_keys;
         for (i = 0; i < seq_nkeys; i++) {
             if (hash_search(query_hash, &seq[i], HASH_FIND, NULL)) {
                 shared_count++;
@@ -1028,11 +1133,13 @@ kmersearch_count_matching_uintkey_scalar(void *seq_keys, int seq_nkeys, void *qu
     }
     else {
         uint64 *query = (uint64 *)query_keys;
+        uint64 *seq;
+        
         for (i = 0; i < query_nkeys; i++) {
             hash_search(query_hash, &query[i], HASH_ENTER, &found);
         }
         
-        uint64 *seq = (uint64 *)seq_keys;
+        seq = (uint64 *)seq_keys;
         for (i = 0; i < seq_nkeys; i++) {
             if (hash_search(query_hash, &seq[i], HASH_FIND, NULL)) {
                 shared_count++;
@@ -1058,40 +1165,305 @@ kmersearch_count_matching_uintkey(void *seq_keys, int seq_nkeys, void *query_key
 }
 
 /*
- * Extract uint keys with occurrence counting from text sequence
+ * Helper function to check if text will exceed degenerate limit
+ * 
+ * Rules (matching kmersearch_will_exceed_degenerate_limit_dna4_bits):
+ * - If only 1 MRWSYKVHDB character: expand (return false)
+ * - If 2 or more MRWSYKVHDB characters: don't expand (return true)
+ * - If 1 or more N characters: don't expand (return true)
+ * 
+ * This ensures expansion limit of 3 (max expansion from single V/H/D/B)
+ */
+static bool
+kmersearch_text_will_exceed_degenerate_limit(const char *text, int start_pos, int k)
+{
+    int degenerate_count = 0;  /* Count of MRWSYKVHDB characters */
+    int i;
+    
+    for (i = 0; i < k && start_pos + i < strlen(text); i++)
+    {
+        char c = toupper(text[start_pos + i]);
+        
+        /* N - always exceed limit (would expand to 4) */
+        if (c == 'N')
+        {
+            return true;
+        }
+        /* MRWSYKVHDB - allow only 1 */
+        else if (c == 'M' || c == 'R' || c == 'W' || c == 'S' || c == 'Y' || c == 'K' ||
+                 c == 'V' || c == 'H' || c == 'D' || c == 'B')
+        {
+            degenerate_count++;
+            /* 2 or more degenerate characters - exceed limit */
+            if (degenerate_count >= 2)
+                return true;
+        }
+    }
+    
+    /* Only 0 or 1 degenerate character - within limit */
+    return false;
+}
+
+/*
+ * Expand text k-mer directly to uint keys
+ */
+static void
+kmersearch_expand_text_to_uintkey(const char *text, int start_pos, int k, 
+                                  void **output, int *expansion_count, size_t elem_size)
+{
+    uint8 base_expansions[32][4];  /* Max k=32, max 4 expansions per base */
+    int base_counts[32];
+    int total_combinations = 1;
+    void *results;
+    int i, combo;
+    
+    *expansion_count = 0;
+    *output = NULL;
+    
+    /* Check if expansion will exceed limit */
+    if (kmersearch_text_will_exceed_degenerate_limit(text, start_pos, k)) {
+        elog(DEBUG2, "kmersearch_expand_text_to_uintkey: skipping k-mer at position %d due to degenerate base", start_pos);
+        return;
+    }
+    
+    /* Extract expansion info for each base */
+    for (i = 0; i < k; i++)
+    {
+        unsigned char c = text[start_pos + i];
+        const uint8 *expansion = kmersearch_text_to_dna2_table[c];
+        int exp_count = expansion[0];
+        int j;
+        
+        if (exp_count == 0) {
+            /* Invalid character */
+            ereport(ERROR,
+                    (errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
+                     errmsg("Invalid character '%c' for DNA sequence", c),
+                     errhint("DNA accepts A,C,G,T,U,M,R,W,S,Y,K,V,H,D,B,N characters")));
+        }
+        
+        base_counts[i] = exp_count;
+        for (j = 0; j < exp_count; j++)
+        {
+            base_expansions[i][j] = expansion[j + 1];
+        }
+        
+        total_combinations *= exp_count;
+    }
+    
+    /* Allocate result array */
+    results = palloc(total_combinations * elem_size);
+    
+    /* Generate all combinations directly as uint values */
+    for (combo = 0; combo < total_combinations; combo++)
+    {
+        int temp_combo = combo;
+        uint64 kmer_value = 0;
+        
+        /* Generate this combination directly as uint */
+        for (i = 0; i < k; i++)
+        {
+            int base_idx = temp_combo % base_counts[i];
+            uint8 dna2_base = base_expansions[i][base_idx];
+            kmer_value = (kmer_value << 2) | dna2_base;
+            temp_combo /= base_counts[i];
+        }
+        
+        /* Store the result in appropriate size */
+        if (elem_size == sizeof(uint16))
+        {
+            ((uint16 *)results)[combo] = (uint16)kmer_value;
+        }
+        else if (elem_size == sizeof(uint32))
+        {
+            ((uint32 *)results)[combo] = (uint32)kmer_value;
+        }
+        else  /* elem_size == sizeof(uint64) */
+        {
+            ((uint64 *)results)[combo] = kmer_value;
+        }
+    }
+    
+    *output = results;
+    *expansion_count = total_combinations;
+}
+
+/*
+ * Extract uint keys from text string containing DNA sequence
+ * Directly processes text without DNA4 intermediate representation
  */
 void
 kmersearch_extract_uintkey_from_text(const char *text, void **output, int *nkeys)
 {
     int text_len = strlen(text);
-    int bit_len = text_len * 4;  /* 4 bits per character for DNA4 */
-    int byte_len = (bit_len + 7) / 8;
-    VarBit *dna4_seq;
-    bits8 *data_ptr;
+    int k = kmersearch_kmer_size;
+    int occur_bitlen = kmersearch_occur_bitlen;
+    int max_kmers = text_len - k + 1;
+    int kmer_bits = k * 2;  /* DNA2 format: 2 bits per base */
+    int total_bits = kmer_bits + occur_bitlen;
+    size_t elem_size;
+    void *result;
+    int result_count = 0;
+    int result_capacity;
     int i;
+    void *occurrences = NULL;
+    int occurrence_count = 0;
     
-    /* Validate input characters */
+    /* Validate parameters */
+    if (k < 4 || k > 32) {
+        ereport(ERROR,
+                (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+                 errmsg("Invalid k-mer size: %d", k),
+                 errdetail("k-mer size must be between 4 and 32")));
+    }
+    
+    if (occur_bitlen < 1 || occur_bitlen > 16) {
+        ereport(ERROR,
+                (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+                 errmsg("Invalid occurrence bit length: %d", occur_bitlen),
+                 errdetail("Occurrence bit length must be between 1 and 16")));
+    }
+    
+    if (total_bits > 64) {
+        ereport(ERROR,
+                (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+                 errmsg("Total bit length exceeds 64 bits"),
+                 errdetail("k-mer bits: %d, occurrence bits: %d, total: %d", 
+                          kmer_bits, occur_bitlen, total_bits)));
+    }
+    
+    if (max_kmers <= 0) {
+        ereport(ERROR,
+                (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+                 errmsg("Query sequence must be at least %d bases long", k)));
+        *output = NULL;
+        *nkeys = 0;
+        return;
+    }
+    
+    /* Validate all input characters first */
     for (i = 0; i < text_len; i++) {
-        if (!kmersearch_is_valid_dna4_char(text[i])) {
+        unsigned char c = text[i];
+        if (kmersearch_text_to_dna2_table[c][0] == 0) {
             ereport(ERROR,
                     (errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
-                     errmsg("Invalid character '%c' for DNA4 sequence", text[i]),
-                     errhint("DNA4 accepts A,C,G,T,U,M,R,W,S,Y,K,V,H,D,B,N characters")));
+                     errmsg("Invalid character '%c' for DNA sequence", c),
+                     errhint("DNA accepts A,C,G,T,U,M,R,W,S,Y,K,V,H,D,B,N characters")));
         }
     }
     
-    /* Allocate DNA4 VarBit */
-    dna4_seq = (VarBit *) palloc0(VARHDRSZ + sizeof(int32) + byte_len);
-    SET_VARSIZE(dna4_seq, VARHDRSZ + sizeof(int32) + byte_len);
-    VARBITLEN(dna4_seq) = bit_len;
+    /* Determine element size based on total bits */
+    if (total_bits <= 16) {
+        elem_size = sizeof(uint16);
+    } else if (total_bits <= 32) {
+        elem_size = sizeof(uint32);
+    } else {
+        elem_size = sizeof(uint64);
+    }
     
-    /* Encode text to DNA4 using SIMD dispatch */
-    data_ptr = VARBITS(dna4_seq);
-    dna4_encode(text, (uint8_t*)data_ptr, text_len);
+    /* Allocate result array with extra space for degenerate expansions */
+    result_capacity = max_kmers * 16;  /* Conservative estimate for degenerate bases */
+    result = palloc(result_capacity * elem_size);
     
-    /* Extract uint keys from DNA4 sequence */
-    kmersearch_extract_uintkey_from_dna4(dna4_seq, output, nkeys);
+    if (elem_size == sizeof(uint16)) {
+        occurrences = palloc0(result_capacity * sizeof(KmerOccurrence16));
+    } else if (elem_size == sizeof(uint32)) {
+        occurrences = palloc0(result_capacity * sizeof(KmerOccurrence32));
+    } else {
+        occurrences = palloc0(result_capacity * sizeof(KmerOccurrence64));
+    }
     
-    /* Free temporary DNA4 sequence */
-    pfree(dna4_seq);
+    /* Process each k-mer position */
+    for (i = 0; i <= text_len - k; i++) {
+        void *expanded_uintkeys;
+        int expansion_count;
+        int j;
+        
+        /* Expand text k-mer directly to uintkey format */
+        kmersearch_expand_text_to_uintkey(text, i, k, &expanded_uintkeys, &expansion_count, elem_size);
+        
+        if (!expanded_uintkeys || expansion_count == 0) {
+            continue;
+        }
+        
+        /* Process each expanded k-mer */
+        for (j = 0; j < expansion_count; j++) {
+            int current_count;
+            
+            /* Process directly as appropriate uint type */
+            if (elem_size == sizeof(uint16)) {
+                uint16 kmer_value = ((uint16 *)expanded_uintkeys)[j];
+                uint16 final_value;
+                
+                current_count = kmersearch_find_or_add_kmer_occurrence16(
+                    (KmerOccurrence16 *)occurrences, &occurrence_count,
+                    kmer_value, result_capacity);
+                if (current_count < 0) {
+                    continue;
+                }
+                
+                if (current_count > (1 << occur_bitlen)) {
+                    continue;
+                }
+                
+                final_value = (kmer_value << occur_bitlen) | ((current_count - 1) & ((1 << occur_bitlen) - 1));
+                ((uint16 *)result)[result_count++] = final_value;
+                
+            } else if (elem_size == sizeof(uint32)) {
+                uint32 kmer_value = ((uint32 *)expanded_uintkeys)[j];
+                uint32 final_value;
+                
+                current_count = kmersearch_find_or_add_kmer_occurrence32(
+                    (KmerOccurrence32 *)occurrences, &occurrence_count,
+                    kmer_value, result_capacity);
+                if (current_count < 0) {
+                    continue;
+                }
+                
+                if (current_count > (1 << occur_bitlen)) {
+                    continue;
+                }
+                
+                final_value = (kmer_value << occur_bitlen) | ((current_count - 1) & ((1 << occur_bitlen) - 1));
+                ((uint32 *)result)[result_count++] = final_value;
+                
+            } else {
+                uint64 kmer_value = ((uint64 *)expanded_uintkeys)[j];
+                uint64 final_value;
+                
+                current_count = kmersearch_find_or_add_kmer_occurrence64(
+                    (KmerOccurrence64 *)occurrences, &occurrence_count,
+                    kmer_value, result_capacity);
+                if (current_count < 0) {
+                    continue;
+                }
+                
+                if (current_count > (1 << occur_bitlen)) {
+                    continue;
+                }
+                
+                final_value = (kmer_value << occur_bitlen) | ((current_count - 1) & ((1 << occur_bitlen) - 1));
+                ((uint64 *)result)[result_count++] = final_value;
+            }
+        }
+        
+        /* Free the expansion array */
+        if (expanded_uintkeys) {
+            pfree(expanded_uintkeys);
+        }
+    }
+    
+    /* Free occurrence tracking array */
+    pfree(occurrences);
+    
+    /* Reallocate to actual size if needed */
+    if (result_count < result_capacity) {
+        void *new_result = palloc(result_count * elem_size);
+        memcpy(new_result, result, result_count * elem_size);
+        pfree(result);
+        result = new_result;
+    }
+    
+    *output = result;
+    *nkeys = result_count;
 }

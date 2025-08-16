@@ -1146,6 +1146,12 @@ void dna2_encode_avx2(const char* input, uint8_t* output, int len)
         __m256i chars1 = _mm256_loadu_si256((__m256i*)(input + i + 32));
         __m256i chars2 = _mm256_loadu_si256((__m256i*)(input + i + 64));
         __m256i chars3 = _mm256_loadu_si256((__m256i*)(input + i + 96));
+        __m256i codes0, codes1, codes2, codes3;
+        __m256i mask_C0, mask_C1, mask_C2, mask_C3;
+        __m256i mask_G0, mask_G1, mask_G2, mask_G3;
+        __m256i mask_T0, mask_T1, mask_T2, mask_T3;
+        uint8_t temp0[32], temp1[32], temp2[32], temp3[32];
+        int j;
         
         /* Pipeline: Convert to uppercase */
         chars0 = _mm256_and_si256(chars0, upper_mask);
@@ -1154,47 +1160,46 @@ void dna2_encode_avx2(const char* input, uint8_t* output, int len)
         chars3 = _mm256_and_si256(chars3, upper_mask);
         
         /* Pipeline: Generate 2-bit codes */
-        __m256i codes0 = _mm256_setzero_si256();
-        __m256i codes1 = _mm256_setzero_si256();
-        __m256i codes2 = _mm256_setzero_si256();
-        __m256i codes3 = _mm256_setzero_si256();
+        codes0 = _mm256_setzero_si256();
+        codes1 = _mm256_setzero_si256();
+        codes2 = _mm256_setzero_si256();
+        codes3 = _mm256_setzero_si256();
         
         /* Process all 4 registers in parallel using blending */
-        __m256i mask_C0 = _mm256_cmpeq_epi8(chars0, base_C);
-        __m256i mask_C1 = _mm256_cmpeq_epi8(chars1, base_C);
-        __m256i mask_C2 = _mm256_cmpeq_epi8(chars2, base_C);
-        __m256i mask_C3 = _mm256_cmpeq_epi8(chars3, base_C);
+        mask_C0 = _mm256_cmpeq_epi8(chars0, base_C);
+        mask_C1 = _mm256_cmpeq_epi8(chars1, base_C);
+        mask_C2 = _mm256_cmpeq_epi8(chars2, base_C);
+        mask_C3 = _mm256_cmpeq_epi8(chars3, base_C);
         codes0 = _mm256_blendv_epi8(codes0, _mm256_set1_epi8(1), mask_C0);
         codes1 = _mm256_blendv_epi8(codes1, _mm256_set1_epi8(1), mask_C1);
         codes2 = _mm256_blendv_epi8(codes2, _mm256_set1_epi8(1), mask_C2);
         codes3 = _mm256_blendv_epi8(codes3, _mm256_set1_epi8(1), mask_C3);
         
-        __m256i mask_G0 = _mm256_cmpeq_epi8(chars0, base_G);
-        __m256i mask_G1 = _mm256_cmpeq_epi8(chars1, base_G);
-        __m256i mask_G2 = _mm256_cmpeq_epi8(chars2, base_G);
-        __m256i mask_G3 = _mm256_cmpeq_epi8(chars3, base_G);
+        mask_G0 = _mm256_cmpeq_epi8(chars0, base_G);
+        mask_G1 = _mm256_cmpeq_epi8(chars1, base_G);
+        mask_G2 = _mm256_cmpeq_epi8(chars2, base_G);
+        mask_G3 = _mm256_cmpeq_epi8(chars3, base_G);
         codes0 = _mm256_blendv_epi8(codes0, _mm256_set1_epi8(2), mask_G0);
         codes1 = _mm256_blendv_epi8(codes1, _mm256_set1_epi8(2), mask_G1);
         codes2 = _mm256_blendv_epi8(codes2, _mm256_set1_epi8(2), mask_G2);
         codes3 = _mm256_blendv_epi8(codes3, _mm256_set1_epi8(2), mask_G3);
         
-        __m256i mask_T0 = _mm256_or_si256(_mm256_cmpeq_epi8(chars0, base_T), _mm256_cmpeq_epi8(chars0, base_U));
-        __m256i mask_T1 = _mm256_or_si256(_mm256_cmpeq_epi8(chars1, base_T), _mm256_cmpeq_epi8(chars1, base_U));
-        __m256i mask_T2 = _mm256_or_si256(_mm256_cmpeq_epi8(chars2, base_T), _mm256_cmpeq_epi8(chars2, base_U));
-        __m256i mask_T3 = _mm256_or_si256(_mm256_cmpeq_epi8(chars3, base_T), _mm256_cmpeq_epi8(chars3, base_U));
+        mask_T0 = _mm256_or_si256(_mm256_cmpeq_epi8(chars0, base_T), _mm256_cmpeq_epi8(chars0, base_U));
+        mask_T1 = _mm256_or_si256(_mm256_cmpeq_epi8(chars1, base_T), _mm256_cmpeq_epi8(chars1, base_U));
+        mask_T2 = _mm256_or_si256(_mm256_cmpeq_epi8(chars2, base_T), _mm256_cmpeq_epi8(chars2, base_U));
+        mask_T3 = _mm256_or_si256(_mm256_cmpeq_epi8(chars3, base_T), _mm256_cmpeq_epi8(chars3, base_U));
         codes0 = _mm256_blendv_epi8(codes0, _mm256_set1_epi8(3), mask_T0);
         codes1 = _mm256_blendv_epi8(codes1, _mm256_set1_epi8(3), mask_T1);
         codes2 = _mm256_blendv_epi8(codes2, _mm256_set1_epi8(3), mask_T2);
         codes3 = _mm256_blendv_epi8(codes3, _mm256_set1_epi8(3), mask_T3);
 
         /* Pack 2-bit codes into bytes */
-        uint8_t temp0[32], temp1[32], temp2[32], temp3[32];
         _mm256_storeu_si256((__m256i*)temp0, codes0);
         _mm256_storeu_si256((__m256i*)temp1, codes1);
         _mm256_storeu_si256((__m256i*)temp2, codes2);
         _mm256_storeu_si256((__m256i*)temp3, codes3);
         
-        for (int j = 0; j < 8; j++) {
+        for (j = 0; j < 8; j++) {
             output[i/4 + j] = (temp0[j*4] << 6) | (temp0[j*4+1] << 4) | 
                              (temp0[j*4+2] << 2) | temp0[j*4+3];
             output[i/4 + 8 + j] = (temp1[j*4] << 6) | (temp1[j*4+1] << 4) | 
@@ -1209,21 +1214,24 @@ void dna2_encode_avx2(const char* input, uint8_t* output, int len)
     /* Process remaining in 32-byte chunks */
     for (; i + 32 <= (size_t)len; i += 32) {
         __m256i chars = _mm256_loadu_si256((__m256i*)(input + i));
+        __m256i codes, mask_C, mask_G, mask_T;
+        uint8_t temp[32];
+        int j;
+        
         chars = _mm256_and_si256(chars, upper_mask);
         
-        __m256i codes = _mm256_setzero_si256();
-        __m256i mask_C = _mm256_cmpeq_epi8(chars, base_C);
+        codes = _mm256_setzero_si256();
+        mask_C = _mm256_cmpeq_epi8(chars, base_C);
         codes = _mm256_blendv_epi8(codes, _mm256_set1_epi8(1), mask_C);
-        __m256i mask_G = _mm256_cmpeq_epi8(chars, base_G);
+        mask_G = _mm256_cmpeq_epi8(chars, base_G);
         codes = _mm256_blendv_epi8(codes, _mm256_set1_epi8(2), mask_G);
-        __m256i mask_T = _mm256_or_si256(_mm256_cmpeq_epi8(chars, base_T), _mm256_cmpeq_epi8(chars, base_U));
+        mask_T = _mm256_or_si256(_mm256_cmpeq_epi8(chars, base_T), _mm256_cmpeq_epi8(chars, base_U));
         codes = _mm256_blendv_epi8(codes, _mm256_set1_epi8(3), mask_T);
 
         /* Pack with BMI2 instructions for bit manipulation */
-        uint8_t temp[32];
         _mm256_storeu_si256((__m256i*)temp, codes);
         
-        for (int j = 0; j < 8; j++) {
+        for (j = 0; j < 8; j++) {
             output[i/4 + j] = (temp[j*4] << 6) | (temp[j*4+1] << 4) | 
                              (temp[j*4+2] << 2) | temp[j*4+3];
         }
@@ -1260,6 +1268,9 @@ void dna2_encode_avx512(const char* input, uint8_t* output, int len)
         __m512i chars1 = _mm512_loadu_si512((__m512i*)(input + i + 64));
         __m512i chars2 = _mm512_loadu_si512((__m512i*)(input + i + 128));
         __m512i chars3 = _mm512_loadu_si512((__m512i*)(input + i + 192));
+        __m512i codes0, codes1, codes2, codes3;
+        uint8_t temp0[64], temp1[64], temp2[64], temp3[64];
+        int j;
         
         /* Pipeline: Convert to uppercase */
         chars0 = _mm512_and_si512(chars0, upper_mask);
@@ -1268,10 +1279,10 @@ void dna2_encode_avx512(const char* input, uint8_t* output, int len)
         chars3 = _mm512_and_si512(chars3, upper_mask);
         
         /* Pipeline: Generate 2-bit codes */
-        __m512i codes0 = _mm512_setzero_si512();
-        __m512i codes1 = _mm512_setzero_si512();
-        __m512i codes2 = _mm512_setzero_si512();
-        __m512i codes3 = _mm512_setzero_si512();
+        codes0 = _mm512_setzero_si512();
+        codes1 = _mm512_setzero_si512();
+        codes2 = _mm512_setzero_si512();
+        codes3 = _mm512_setzero_si512();
         
         /* Process all 4 registers in parallel */
         codes0 = _mm512_mask_add_epi8(codes0, _mm512_cmpeq_epi8_mask(chars0, base_C), codes0, _mm512_set1_epi8(1));
@@ -1289,14 +1300,13 @@ void dna2_encode_avx512(const char* input, uint8_t* output, int len)
         codes2 = _mm512_mask_add_epi8(codes2, _mm512_cmpeq_epi8_mask(chars2, base_T) | _mm512_cmpeq_epi8_mask(chars2, base_U), codes2, _mm512_set1_epi8(3));
         codes3 = _mm512_mask_add_epi8(codes3, _mm512_cmpeq_epi8_mask(chars3, base_T) | _mm512_cmpeq_epi8_mask(chars3, base_U), codes3, _mm512_set1_epi8(3));
 
+        
         /* Pack using scalar for correctness */
-        uint8_t temp0[64], temp1[64], temp2[64], temp3[64];
         _mm512_storeu_si512((__m512i*)temp0, codes0);
         _mm512_storeu_si512((__m512i*)temp1, codes1);
         _mm512_storeu_si512((__m512i*)temp2, codes2);
         _mm512_storeu_si512((__m512i*)temp3, codes3);
-        
-        for (int j = 0; j < 16; j++) {
+        for (j = 0; j < 16; j++) {
             output[i/4 + j] = (temp0[j*4] << 6) | (temp0[j*4+1] << 4) | 
                              (temp0[j*4+2] << 2) | temp0[j*4+3];
             output[i/4 + 16 + j] = (temp1[j*4] << 6) | (temp1[j*4+1] << 4) | 
@@ -1311,18 +1321,20 @@ void dna2_encode_avx512(const char* input, uint8_t* output, int len)
     /* Process remaining in 64-byte chunks */
     for (; i + 64 <= (size_t)len; i += 64) {
         __m512i chars = _mm512_loadu_si512((__m512i*)(input + i));
+        __m512i codes;
+        uint8_t temp[64];
+        int j;
+        
         chars = _mm512_and_si512(chars, upper_mask);
         
-        __m512i codes = _mm512_setzero_si512();
+        codes = _mm512_setzero_si512();
         codes = _mm512_mask_add_epi8(codes, _mm512_cmpeq_epi8_mask(chars, base_C), codes, _mm512_set1_epi8(1));
         codes = _mm512_mask_add_epi8(codes, _mm512_cmpeq_epi8_mask(chars, base_G), codes, _mm512_set1_epi8(2));
         codes = _mm512_mask_add_epi8(codes, _mm512_cmpeq_epi8_mask(chars, base_T) | _mm512_cmpeq_epi8_mask(chars, base_U), codes, _mm512_set1_epi8(3));
 
         /* Pack with corrected bit positions */
-        uint8_t temp[64];
         _mm512_storeu_si512((__m512i*)temp, codes);
-        
-        for (int j = 0; j < 16; j++) {
+        for (j = 0; j < 16; j++) {
             output[i/4 + j] = (temp[j*4] << 6) | (temp[j*4+1] << 4) | 
                              (temp[j*4+2] << 2) | temp[j*4+3];
         }
@@ -1802,12 +1814,16 @@ void dna2_decode_avx2(const uint8_t* input, char* output, int len)
     /* Process 32 bytes at once (128 nucleotides) */
     for (; i + 32 <= encoded_len; i += 32) {
         __m256i packed = _mm256_loadu_si256((__m256i*)(input + i));
+        __m256i codes0, codes1, codes2, codes3;
+        __m256i chars0, chars1, chars2, chars3;
+        uint8_t temp0[32], temp1[32], temp2[32], temp3[32];
+        int j;
         
         /* Extract 2-bit codes from each byte */
-        __m256i codes0 = _mm256_and_si256(packed, mask_00);
-        __m256i codes1 = _mm256_and_si256(packed, mask_01);
-        __m256i codes2 = _mm256_and_si256(packed, mask_10);
-        __m256i codes3 = _mm256_and_si256(packed, mask_11);
+        codes0 = _mm256_and_si256(packed, mask_00);
+        codes1 = _mm256_and_si256(packed, mask_01);
+        codes2 = _mm256_and_si256(packed, mask_10);
+        codes3 = _mm256_and_si256(packed, mask_11);
         
         /* Shift to position */
         codes0 = _mm256_srli_epi16(codes0, 6);
@@ -1816,20 +1832,19 @@ void dna2_decode_avx2(const uint8_t* input, char* output, int len)
         /* codes3 already in position */
         
         /* Use shuffle to decode */
-        __m256i chars0 = _mm256_shuffle_epi8(decode_lut, codes0);
-        __m256i chars1 = _mm256_shuffle_epi8(decode_lut, codes1);
-        __m256i chars2 = _mm256_shuffle_epi8(decode_lut, codes2);
-        __m256i chars3 = _mm256_shuffle_epi8(decode_lut, codes3);
+        chars0 = _mm256_shuffle_epi8(decode_lut, codes0);
+        chars1 = _mm256_shuffle_epi8(decode_lut, codes1);
+        chars2 = _mm256_shuffle_epi8(decode_lut, codes2);
+        chars3 = _mm256_shuffle_epi8(decode_lut, codes3);
         
         /* Store with interleaving */
-        uint8_t temp0[32], temp1[32], temp2[32], temp3[32];
         _mm256_storeu_si256((__m256i*)temp0, chars0);
         _mm256_storeu_si256((__m256i*)temp1, chars1);
         _mm256_storeu_si256((__m256i*)temp2, chars2);
         _mm256_storeu_si256((__m256i*)temp3, chars3);
         
         /* Interleave and copy to output, checking bounds */
-        for (int j = 0; j < 32 && out_idx < len; j++) {
+        for (j = 0; j < 32 && out_idx < len; j++) {
             if (out_idx < len) output[out_idx++] = temp0[j];
             if (out_idx < len) output[out_idx++] = temp1[j];
             if (out_idx < len) output[out_idx++] = temp2[j];
@@ -1873,12 +1888,16 @@ void dna2_decode_avx512(const uint8_t* input, char* output, int len)
     /* Process 64 bytes at once (256 nucleotides) */
     for (; i + 64 <= encoded_len; i += 64) {
         __m512i packed = _mm512_loadu_si512((__m512i*)(input + i));
+        __m512i codes0, codes1, codes2, codes3;
+        __m512i chars0, chars1, chars2, chars3;
+        uint8_t temp0[64], temp1[64], temp2[64], temp3[64];
+        int j;
         
         /* Extract 2-bit codes from each byte */
-        __m512i codes0 = _mm512_and_si512(packed, mask_00);
-        __m512i codes1 = _mm512_and_si512(packed, mask_01);
-        __m512i codes2 = _mm512_and_si512(packed, mask_10);
-        __m512i codes3 = _mm512_and_si512(packed, mask_11);
+        codes0 = _mm512_and_si512(packed, mask_00);
+        codes1 = _mm512_and_si512(packed, mask_01);
+        codes2 = _mm512_and_si512(packed, mask_10);
+        codes3 = _mm512_and_si512(packed, mask_11);
         
         /* Shift to position */
         codes0 = _mm512_srli_epi16(codes0, 6);
@@ -1887,20 +1906,19 @@ void dna2_decode_avx512(const uint8_t* input, char* output, int len)
         /* codes3 already in position */
         
         /* Use shuffle to decode */
-        __m512i chars0 = _mm512_shuffle_epi8(decode_lut, codes0);
-        __m512i chars1 = _mm512_shuffle_epi8(decode_lut, codes1);
-        __m512i chars2 = _mm512_shuffle_epi8(decode_lut, codes2);
-        __m512i chars3 = _mm512_shuffle_epi8(decode_lut, codes3);
+        chars0 = _mm512_shuffle_epi8(decode_lut, codes0);
+        chars1 = _mm512_shuffle_epi8(decode_lut, codes1);
+        chars2 = _mm512_shuffle_epi8(decode_lut, codes2);
+        chars3 = _mm512_shuffle_epi8(decode_lut, codes3);
         
         /* Store with interleaving */
-        uint8_t temp0[64], temp1[64], temp2[64], temp3[64];
         _mm512_storeu_si512((__m512i*)temp0, chars0);
         _mm512_storeu_si512((__m512i*)temp1, chars1);
         _mm512_storeu_si512((__m512i*)temp2, chars2);
         _mm512_storeu_si512((__m512i*)temp3, chars3);
         
         /* Interleave and copy to output, checking bounds */
-        for (int j = 0; j < 64 && out_idx < len; j++) {
+        for (j = 0; j < 64 && out_idx < len; j++) {
             if (out_idx < len) output[out_idx++] = temp0[j];
             if (out_idx < len) output[out_idx++] = temp1[j];
             if (out_idx < len) output[out_idx++] = temp2[j];
@@ -1946,7 +1964,8 @@ void dna2_decode_neon(const uint8_t* input, char* output, int len)
         uint8x16_t extracted = vdupq_n_u8(0);
         uint8_t extracted_vals[16];
         
-        for (int j = 0; j < 16; j++) {
+        int j;
+        for (j = 0; j < 16; j++) {
             int bit_pos = j * 2;
             int byte_pos = bit_pos / 8;
             int bit_offset = bit_pos % 8;
@@ -2275,16 +2294,20 @@ void dna4_encode_avx2(const char* input, uint8_t* output, int len)
         __m256i chars2 = _mm256_loadu_si256((__m256i*)(input + i + 64));
         __m256i chars3 = _mm256_loadu_si256((__m256i*)(input + i + 96));
         
+        __m256i codes0, codes1, codes2, codes3;
+        uint8_t temp0[32], temp1[32], temp2[32], temp3[32];
+        int j;
+        
         chars0 = _mm256_and_si256(chars0, upper_mask);
         chars1 = _mm256_and_si256(chars1, upper_mask);
         chars2 = _mm256_and_si256(chars2, upper_mask);
         chars3 = _mm256_and_si256(chars3, upper_mask);
         
         /* Generate 4-bit codes using mask operations */
-        __m256i codes0 = _mm256_setzero_si256(); /* Default to 0 (unknown) */
-        __m256i codes1 = _mm256_setzero_si256();
-        __m256i codes2 = _mm256_setzero_si256();
-        __m256i codes3 = _mm256_setzero_si256();
+        codes0 = _mm256_setzero_si256(); /* Default to 0 (unknown) */
+        codes1 = _mm256_setzero_si256();
+        codes2 = _mm256_setzero_si256();
+        codes3 = _mm256_setzero_si256();
         
         /* Process all characters for codes0 (using bit patterns from kmersearch_dna4_encode_table) */
         codes0 = _mm256_blendv_epi8(codes0, _mm256_set1_epi8(0x1), _mm256_cmpeq_epi8(chars0, char_A));  /* A=0001 */
@@ -2355,13 +2378,11 @@ void dna4_encode_avx2(const char* input, uint8_t* output, int len)
         codes3 = _mm256_blendv_epi8(codes3, _mm256_set1_epi8(0xF), _mm256_cmpeq_epi8(chars3, char_N));
         
         /* Pack nibbles */
-        uint8_t temp0[32], temp1[32], temp2[32], temp3[32];
         _mm256_storeu_si256((__m256i*)temp0, codes0);
         _mm256_storeu_si256((__m256i*)temp1, codes1);
         _mm256_storeu_si256((__m256i*)temp2, codes2);
         _mm256_storeu_si256((__m256i*)temp3, codes3);
-        
-        for (int j = 0; j < 16; j++) {
+        for (j = 0; j < 16; j++) {
             output[i/2 + j] = (temp0[j*2] << 4) | temp0[j*2 + 1];
             output[i/2 + 16 + j] = (temp1[j*2] << 4) | temp1[j*2 + 1];
             output[i/2 + 32 + j] = (temp2[j*2] << 4) | temp2[j*2 + 1];
@@ -2372,10 +2393,14 @@ void dna4_encode_avx2(const char* input, uint8_t* output, int len)
     /* Process remaining 32-byte chunks */
     for (; i + 32 <= (size_t)len; i += 32) {
         __m256i chars = _mm256_loadu_si256((__m256i*)(input + i));
+        __m256i codes;
+        uint8_t temp[32];
+        int j;
+        
         chars = _mm256_and_si256(chars, upper_mask);
         
         /* Generate 4-bit codes using mask operations */
-        __m256i codes = _mm256_setzero_si256(); /* Default to 0 (unknown) */
+        codes = _mm256_setzero_si256(); /* Default to 0 (unknown) */
         codes = _mm256_blendv_epi8(codes, _mm256_set1_epi8(0x1), _mm256_cmpeq_epi8(chars, char_A));
         codes = _mm256_blendv_epi8(codes, _mm256_set1_epi8(0x2), _mm256_cmpeq_epi8(chars, char_C));
         codes = _mm256_blendv_epi8(codes, _mm256_set1_epi8(0x4), _mm256_cmpeq_epi8(chars, char_G));
@@ -2393,10 +2418,8 @@ void dna4_encode_avx2(const char* input, uint8_t* output, int len)
         codes = _mm256_blendv_epi8(codes, _mm256_set1_epi8(0xF), _mm256_cmpeq_epi8(chars, char_N));
         
         /* Pack nibbles */
-        uint8_t temp[32];
         _mm256_storeu_si256((__m256i*)temp, codes);
-        
-        for (int j = 0; j < 16; j++) {
+        for (j = 0; j < 16; j++) {
             output[i/2 + j] = (temp[j*2] << 4) | temp[j*2 + 1];
         }
     }
@@ -2449,25 +2472,28 @@ void dna4_decode_avx2(const uint8_t* input, char* output, int len)
     /* Process 32 bytes at once (64 nucleotides) */
     for (; i + 32 <= encoded_len; i += 32) {
         __m256i packed = _mm256_loadu_si256((__m256i*)(input + i));
+        __m256i codes_hi, codes_lo;
+        __m256i chars_hi, chars_lo;
+        uint8_t temp_hi[32], temp_lo[32];
+        int j;
         
         /* Extract high and low nibbles */
-        __m256i codes_hi = _mm256_and_si256(packed, mask_hi);
-        __m256i codes_lo = _mm256_and_si256(packed, mask_lo);
+        codes_hi = _mm256_and_si256(packed, mask_hi);
+        codes_lo = _mm256_and_si256(packed, mask_lo);
         
         /* Shift high nibbles to low position */
         codes_hi = _mm256_srli_epi16(codes_hi, 4);
         
         /* Decode using shuffle */
-        __m256i chars_hi = _mm256_shuffle_epi8(decode_lut, codes_hi);
-        __m256i chars_lo = _mm256_shuffle_epi8(decode_lut, codes_lo);
+        chars_hi = _mm256_shuffle_epi8(decode_lut, codes_hi);
+        chars_lo = _mm256_shuffle_epi8(decode_lut, codes_lo);
         
         /* Store with interleaving */
-        uint8_t temp_hi[32], temp_lo[32];
         _mm256_storeu_si256((__m256i*)temp_hi, chars_hi);
         _mm256_storeu_si256((__m256i*)temp_lo, chars_lo);
         
         /* Interleave and copy to output, checking bounds */
-        for (int j = 0; j < 32 && out_idx < len; j++) {
+        for (j = 0; j < 32 && out_idx < len; j++) {
             if (out_idx < len) output[out_idx++] = temp_hi[j];
             if (out_idx < len) output[out_idx++] = temp_lo[j];
         }
@@ -2520,6 +2546,10 @@ void dna4_encode_avx512(const char* input, uint8_t* output, int len)
         __m512i chars2 = _mm512_loadu_si512((__m512i*)(input + i + 128));
         __m512i chars3 = _mm512_loadu_si512((__m512i*)(input + i + 192));
         
+        __m512i codes0, codes1, codes2, codes3;
+        uint8_t temp0[64], temp1[64], temp2[64], temp3[64];
+        int j;
+        
         /* Convert to uppercase */
         chars0 = _mm512_and_si512(chars0, upper_mask);
         chars1 = _mm512_and_si512(chars1, upper_mask);
@@ -2527,10 +2557,10 @@ void dna4_encode_avx512(const char* input, uint8_t* output, int len)
         chars3 = _mm512_and_si512(chars3, upper_mask);
         
         /* Generate 4-bit codes using mask operations */
-        __m512i codes0 = _mm512_setzero_si512(); /* Default to 0 (unknown) */
-        __m512i codes1 = _mm512_setzero_si512();
-        __m512i codes2 = _mm512_setzero_si512();
-        __m512i codes3 = _mm512_setzero_si512();
+        codes0 = _mm512_setzero_si512(); /* Default to 0 (unknown) */
+        codes1 = _mm512_setzero_si512();
+        codes2 = _mm512_setzero_si512();
+        codes3 = _mm512_setzero_si512();
         
         /* Basic nucleotides */
         codes0 = _mm512_mask_blend_epi8(_mm512_cmpeq_epi8_mask(chars0, base_A), codes0, _mm512_set1_epi8(0x1));
@@ -2610,13 +2640,12 @@ void dna4_encode_avx512(const char* input, uint8_t* output, int len)
         codes3 = _mm512_mask_blend_epi8(_mm512_cmpeq_epi8_mask(chars3, base_N), codes3, _mm512_set1_epi8(0xF));
         
         /* Pack nibbles correctly */
-        uint8_t temp0[64], temp1[64], temp2[64], temp3[64];
         _mm512_storeu_si512((__m512i*)temp0, codes0);
         _mm512_storeu_si512((__m512i*)temp1, codes1);
         _mm512_storeu_si512((__m512i*)temp2, codes2);
         _mm512_storeu_si512((__m512i*)temp3, codes3);
         
-        for (int j = 0; j < 32; j++) {
+        for (j = 0; j < 32; j++) {
             output[i/2 + j] = (temp0[j*2] << 4) | temp0[j*2 + 1];
             output[i/2 + 32 + j] = (temp1[j*2] << 4) | temp1[j*2 + 1];
             output[i/2 + 64 + j] = (temp2[j*2] << 4) | temp2[j*2 + 1];
@@ -2627,10 +2656,14 @@ void dna4_encode_avx512(const char* input, uint8_t* output, int len)
     /* Process remaining 64-byte chunks */
     for (; i + 64 <= (size_t)len; i += 64) {
         __m512i chars = _mm512_loadu_si512((__m512i*)(input + i));
+        __m512i codes;
+        uint8_t temp[64];
+        int j;
+        
         chars = _mm512_and_si512(chars, upper_mask);
         
         /* Generate 4-bit codes using mask operations */
-        __m512i codes = _mm512_setzero_si512(); /* Default to 0 (unknown) */
+        codes = _mm512_setzero_si512(); /* Default to 0 (unknown) */
         
         /* Basic nucleotides */
         codes = _mm512_mask_blend_epi8(_mm512_cmpeq_epi8_mask(chars, base_A), codes, _mm512_set1_epi8(0x1));
@@ -2652,10 +2685,9 @@ void dna4_encode_avx512(const char* input, uint8_t* output, int len)
         codes = _mm512_mask_blend_epi8(_mm512_cmpeq_epi8_mask(chars, base_N), codes, _mm512_set1_epi8(0xF));
         
         /* Pack nibbles correctly */
-        uint8_t temp[64];
         _mm512_storeu_si512((__m512i*)temp, codes);
         
-        for (int j = 0; j < 32; j++) {
+        for (j = 0; j < 32; j++) {
             output[i/2 + j] = (temp[j*2] << 4) | temp[j*2 + 1];
         }
     }
@@ -2710,25 +2742,28 @@ void dna4_decode_avx512(const uint8_t* input, char* output, int len)
     /* Process 64 bytes at once (128 nucleotides) */
     for (; i + 64 <= encoded_len; i += 64) {
         __m512i packed = _mm512_loadu_si512((__m512i*)(input + i));
+        __m512i codes_hi, codes_lo;
+        __m512i chars_hi, chars_lo;
+        uint8_t temp_hi[64], temp_lo[64];
+        int j;
         
         /* Extract high and low nibbles */
-        __m512i codes_hi = _mm512_and_si512(packed, mask_hi);
-        __m512i codes_lo = _mm512_and_si512(packed, mask_lo);
+        codes_hi = _mm512_and_si512(packed, mask_hi);
+        codes_lo = _mm512_and_si512(packed, mask_lo);
         
         /* Shift high nibbles to low position */
         codes_hi = _mm512_srli_epi16(codes_hi, 4);
         
         /* Decode using shuffle */
-        __m512i chars_hi = _mm512_shuffle_epi8(decode_lut, codes_hi);
-        __m512i chars_lo = _mm512_shuffle_epi8(decode_lut, codes_lo);
+        chars_hi = _mm512_shuffle_epi8(decode_lut, codes_hi);
+        chars_lo = _mm512_shuffle_epi8(decode_lut, codes_lo);
         
         /* Store with interleaving */
-        uint8_t temp_hi[64], temp_lo[64];
         _mm512_storeu_si512((__m512i*)temp_hi, chars_hi);
         _mm512_storeu_si512((__m512i*)temp_lo, chars_lo);
         
         /* Interleave and copy to output, checking bounds */
-        for (int j = 0; j < 64 && out_idx < len; j++) {
+        for (j = 0; j < 64 && out_idx < len; j++) {
             if (out_idx < len) output[out_idx++] = temp_hi[j];
             if (out_idx < len) output[out_idx++] = temp_lo[j];
         }
@@ -2867,7 +2902,8 @@ void dna4_decode_neon(const uint8_t* input, char* output, int len)
         /* Extract 4-bit values for 16 characters */
         uint8_t nibbles[16] __attribute__((aligned(16)));
         
-        for (int j = 0; j < 16; j++) {
+        int j;
+        for (j = 0; j < 16; j++) {
             int bit_pos = j * 4;
             int byte_pos = bit_pos / 8;
             int bit_offset = bit_pos % 8;

@@ -2012,17 +2012,19 @@ kmersearch_mempool_alloc(UintkeyMemoryPool *pool, size_t size)
                  pool->used, pool->buffer_size, size);
             return palloc(size);
         }
+        else
+        {
+            /* Expand the pool */
+            size_t new_size = pool->buffer_size * 2;
+            while (pool->used + aligned_size > new_size)
+                new_size *= 2;
         
-        /* Expand the pool */
-        size_t new_size = pool->buffer_size * 2;
-        while (pool->used + aligned_size > new_size)
-            new_size *= 2;
-        
-        pool->buffer = repalloc(pool->buffer, new_size);
-        pool->buffer_size = new_size;
-        
-        elog(DEBUG2, "Expanded memory pool from %zu to %zu bytes",
-             pool->buffer_size / 2, new_size);
+            pool->buffer = repalloc(pool->buffer, new_size);
+            pool->buffer_size = new_size;
+            
+            elog(DEBUG2, "Expanded memory pool from %zu to %zu bytes",
+                 pool->buffer_size / 2, new_size);
+        }
     }
     
     /* Allocate from pool */

@@ -1664,6 +1664,7 @@ kmersearch_calculate_buffer_size(int k_size)
     /* Entry size depends on k-mer size */
     size_t entry_size;
     int total_bits = k_size * 2 + kmersearch_occur_bitlen;
+    int max_entries;
     
     if (total_bits <= 16)
         entry_size = sizeof(uint16);
@@ -1671,7 +1672,8 @@ kmersearch_calculate_buffer_size(int k_size)
         entry_size = sizeof(uint32);
     else
         entry_size = sizeof(uint64);
-    int max_entries = (TARGET_MEMORY_MB * 1024 * 1024) / entry_size;
+    
+    max_entries = (TARGET_MEMORY_MB * 1024 * 1024) / entry_size;
     
     if (max_entries < MIN_BUFFER_SIZE) return MIN_BUFFER_SIZE;
     if (max_entries > MAX_BUFFER_SIZE) return MAX_BUFFER_SIZE;
@@ -1909,12 +1911,13 @@ kmersearch_worker_analyze_blocks(KmerWorkerState *worker, Relation rel,
     VarBit **kmers;
     int nkeys;
     int j;
+    int total_bits;
     
     /* Use passed parameters instead of determining them again */
     tupdesc = RelationGetDescr(rel);
     
     /* Initialize buffer based on k-mer size */
-    int total_bits = k_size * 2 + kmersearch_occur_bitlen;
+    total_bits = k_size * 2 + kmersearch_occur_bitlen;
     if (total_bits <= 16) {
         worker->buffer_type = 0;  /* 16-bit */
         worker->buffer = palloc0(sizeof(UintkeyBuffer16));
@@ -1977,7 +1980,6 @@ kmersearch_worker_analyze_blocks(KmerWorkerState *worker, Relation rel,
         
         /* Extract k-mers from the sequence as uintkey format */
         {
-            void *uintkeys = NULL;
             int ui;
             
             if (is_dna4_type) {

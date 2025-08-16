@@ -477,11 +477,13 @@ migrate_data_in_batches(const char *table_name, const char *temp_table_name, Oid
         /* If we couldn't get column type, fall back to simple migration */
         if (!OidIsValid(column_type))
         {
+            AttrNumber attnum;
+            
             elog(WARNING, "Could not determine column type for %s, falling back to simple migration", seq_column);
             elog(NOTICE, "Attempting type resolution through syscache for column %s", seq_column);
             
             /* Try alternative method to get column type */
-            AttrNumber attnum = get_attnum(table_oid, seq_column);
+            attnum = get_attnum(table_oid, seq_column);
             if (attnum != InvalidAttrNumber)
             {
                 column_type = get_atttype(table_oid, attnum);
@@ -665,7 +667,8 @@ replace_table_with_partition(const char *table_name, const char *temp_table_name
     if (ret == SPI_OK_SELECT && SPI_processed > 0)
     {
         int i;
-        SPITupleTable *tuptable = SPI_tuptable;
+        
+        tuptable = SPI_tuptable;
         
         for (i = 0; i < SPI_processed; i++)
         {
