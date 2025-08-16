@@ -32,7 +32,6 @@ PG_FUNCTION_INFO_V1(kmersearch_consistent_int8);
 /*
  * Forward declarations for static functions
  */
-static bool kmersearch_is_highfreq_kmer_parallel(VarBit *ngram_key);
 static void check_operator_class_compatibility(const char *opclass_type);
 
 /*

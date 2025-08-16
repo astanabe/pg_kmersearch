@@ -390,48 +390,6 @@ free_actual_min_score_cache_manager(ActualMinScoreCacheManager **manager)
 }
 
 /*
- * Calculate actual minimum score considering thresholds
- */
-int
-calculate_actual_min_score(VarBit **query_keys, int nkeys, int query_total_kmers)
-{
-    int base_min_score;
-    int highfreq_count;
-    int actual_min_score;
-    int relative_min = 0;
-    
-    /* Validate input parameters */
-    if (query_keys == NULL) {
-        return kmersearch_min_score;
-    }
-    
-    /* Calculate base minimum score (maximum of absolute and relative) */
-    
-    if (query_total_kmers > 0) {
-        relative_min = (int)ceil(kmersearch_min_shared_ngram_key_rate * query_total_kmers);
-    }
-    
-    base_min_score = (kmersearch_min_score > relative_min) ? kmersearch_min_score : relative_min;
-    
-    /* If high-frequency k-mer filtering is enabled, subtract high-frequency k-mer count */
-    if (kmersearch_is_highfreq_filtering_enabled()) {
-        /* Debug: Log before calling kmersearch_count_highfreq_kmer_in_query */
-        elog(DEBUG1, "calculate_actual_min_score: calling kmersearch_count_highfreq_kmer_in_query with nkeys = %d", nkeys);
-        highfreq_count = kmersearch_count_highfreq_kmer_in_query(query_keys, nkeys);
-        actual_min_score = base_min_score - highfreq_count;
-        
-        /* Ensure non-negative value */
-        if (actual_min_score < 0) {
-            actual_min_score = 0;
-        }
-    } else {
-        actual_min_score = base_min_score;
-    }
-    
-    return actual_min_score;
-}
-
-/*
  * Calculate actual min score from uintkey array
  * Helper function for cache miss case
  */
@@ -1331,23 +1289,6 @@ kmersearch_validate_parallel_cache_key_match(Oid table_oid, const char *column_n
     return matches;
 }
 
-/*
- * Lookup k-mer in global_highfreq_cache
- */
-bool
-kmersearch_lookup_in_global_cache(VarBit *kmer_key)
-{
-    uint64 hash = kmersearch_ngram_key_to_hash(kmer_key);
-    bool found;
-    
-    if (!global_highfreq_cache.is_valid || global_highfreq_cache.highfreq_count == 0)
-        return false;
-    
-    /* Search for the hash in the global high-frequency k-mer cache */
-    hash_search(global_highfreq_cache.highfreq_hash, &hash, HASH_FIND, &found);
-    
-    return found;
-}
 
 /*
  * SQL-accessible high-frequency cache load function
@@ -1576,117 +1517,6 @@ kmersearch_validate_guc_against_metadata(Oid table_oid, const char *column_name,
     
     
     return validation_passed;
-}
-
-HTAB *
-kmersearch_create_highfreq_hash_from_array(VarBit **kmers, int nkeys)
-{
-    HTAB *hash_table;
-    HASHCTL hash_ctl;
-    int i;
-    
-    
-    if (!kmers || nkeys <= 0) {
-        ereport(DEBUG1, (errmsg("kmersearch_create_highfreq_hash_from_array: Invalid parameters, kmers=%p, nkeys=%d",
-                               kmers, nkeys)));
-        return NULL;
-    }
-    
-    ereport(DEBUG1, (errmsg("kmersearch_create_highfreq_hash_from_array: Parameters validated, setting up hash table")));
-    
-    /* Set up hash table using hash value as key */
-    MemSet(&hash_ctl, 0, sizeof(hash_ctl));
-    hash_ctl.keysize = sizeof(uint64);  /* Use hash value as key */
-    hash_ctl.entrysize = sizeof(HighfreqKmerHashEntry);
-    hash_ctl.hash = tag_hash;
-    hash_ctl.hcxt = CurrentMemoryContext;
-    
-    
-    hash_table = hash_create("HighfreqKmerHash",
-                            nkeys,
-                            &hash_ctl,
-                            HASH_ELEM | HASH_FUNCTION | HASH_CONTEXT);
-    
-    if (!hash_table) {
-        return NULL;
-    }
-    
-    
-    /* Add each k-mer to the hash table */
-    for (i = 0; i < nkeys; i++)
-    {
-        HighfreqKmerHashEntry *entry;
-        bool found;
-        uint64 hash_value;
-        unsigned char *bits_ptr;
-        int bytes_len;
-        
-        
-        /* Check if the k-mer pointer itself is valid before any access */
-        
-        if (!kmers[i]) {
-            continue;
-        }
-        
-        
-        
-        /* Validate VarBit data before hash calculation */
-        if (VARSIZE(kmers[i]) < VARHDRSZ) {
-            continue;
-        }
-        
-        
-        /* Check VARBITS pointer */
-        bits_ptr = (unsigned char *) VARBITS(kmers[i]);
-        if (!bits_ptr) {
-            continue;
-        }
-        
-        
-        /* Calculate bytes length manually for ngram_key2 (more reliable than VARBITBYTES) */
-        {
-            int bit_length = VARBITLEN(kmers[i]);
-            bytes_len = (bit_length + 7) / 8;  /* Round up to next byte */
-        }
-        
-        if (bytes_len <= 0 || bytes_len > 1000) {  /* Reasonable upper limit */
-            continue;
-        }
-        
-        
-        /* Calculate hash value for this ngram_key2 (kmer2 + occurrence bits) */
-        hash_value = DatumGetUInt64(hash_any(bits_ptr, bytes_len));
-        
-        
-        entry = (HighfreqKmerHashEntry *) hash_search(hash_table,
-                                                     (void *) &hash_value,
-                                                     HASH_ENTER,
-                                                     &found);
-        
-        
-        if (entry && !found)
-        {
-            entry->kmer_key = kmers[i];
-            entry->hash_value = hash_value;
-        }
-    }
-    
-    
-    return hash_table;
-}
-
-/*
- * Convert a VarBit k-mer key to hash value
- * This is used for high-frequency k-mer cache lookups
- */
-uint64
-kmersearch_ngram_key_to_hash(VarBit *ngram_key)
-{
-    if (!ngram_key)
-        return 0;
-    
-    /* Hash the VarBit content */
-    return DatumGetUInt64(hash_any((unsigned char *) VARBITS(ngram_key), VARBITBYTES(ngram_key)));
 }
 
 /*
@@ -2605,76 +2435,6 @@ kmersearch_is_parallel_highfreq_cache_loaded(void)
     return (parallel_highfreq_cache != NULL && 
             parallel_highfreq_cache->is_initialized &&
             parallel_highfreq_cache->num_entries > 0);
-}
-
-/*
- * Lookup k-mer in parallel_highfreq_cache  
- */
-bool
-kmersearch_lookup_in_parallel_cache(VarBit *kmer_key)
-{
-    MemoryContext oldcontext;
-    uint64 kmer_hash;
-    void *entry = NULL;
-    bool found = false;
-    void *key_ptr;
-    uint16 key16;
-    uint32 key32;
-    uint64 key64;
-    int k_value;
-    
-    /* Basic validation checks */
-    if (!parallel_highfreq_cache || !parallel_highfreq_cache->is_initialized || 
-        parallel_highfreq_cache->num_entries == 0)
-        return false;
-    
-    if (!parallel_cache_hash)
-        return false;
-    
-    /* Get k-mer size from cache */
-    k_value = parallel_highfreq_cache->cache_key.kmer_size;
-    
-    /* Switch to TopMemoryContext for dshash operations */
-    oldcontext = MemoryContextSwitchTo(TopMemoryContext);
-    
-    PG_TRY();
-    {
-        /* Calculate hash using same logic as global cache */
-        kmer_hash = kmersearch_ngram_key_to_hash(kmer_key);
-        
-        /* Prepare key based on k-mer size */
-        if (k_value <= 8) {
-            key16 = (uint16)kmer_hash;
-            key_ptr = &key16;
-        } else if (k_value <= 16) {
-            key32 = (uint32)kmer_hash;
-            key_ptr = &key32;
-        } else {
-            key64 = kmer_hash;
-            key_ptr = &key64;
-        }
-        
-        /* Lookup in dshash table */
-        entry = dshash_find(parallel_cache_hash, key_ptr, false);
-        
-        if (entry != NULL) {
-            found = true;
-            /* Must release lock after dshash_find() */
-            dshash_release_lock(parallel_cache_hash, entry);
-        }
-    }
-    PG_CATCH();
-    {
-        /* Ensure lock is released even in error cases */
-        if (entry)
-            dshash_release_lock(parallel_cache_hash, entry);
-        MemoryContextSwitchTo(oldcontext);
-        PG_RE_THROW();
-    }
-    PG_END_TRY();
-    
-    MemoryContextSwitchTo(oldcontext);
-    return found;
 }
 
 /*

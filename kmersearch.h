@@ -595,8 +595,8 @@ Datum kmersearch_consistent_int4(PG_FUNCTION_ARGS);
 Datum kmersearch_consistent_int8(PG_FUNCTION_ARGS);
 
 /* Search operator functions */
-Datum kmersearch_match_dna2(PG_FUNCTION_ARGS);
-Datum kmersearch_match_dna4(PG_FUNCTION_ARGS);
+Datum kmersearch_dna2_match(PG_FUNCTION_ARGS);
+Datum kmersearch_dna4_match(PG_FUNCTION_ARGS);
 
 /* Scoring functions */
 Datum kmersearch_correctedscore_dna2(PG_FUNCTION_ARGS);

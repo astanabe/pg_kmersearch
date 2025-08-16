@@ -210,9 +210,6 @@ static simd_capability_t detect_cpu_capabilities(void);
 
 /* SIMD implementation functions */
 
-/* Scalar versions */
-static Datum *kmersearch_extract_dna2_kmer2_direct_scalar(VarBit *seq, int k, int *nkeys);
-
 /* SIMD function declarations are now in kmersearch.h */
 
 /*
@@ -228,8 +225,6 @@ static void kmersearch_min_score_assign_hook(int newval, void *extra);
 static void kmersearch_min_shared_ngram_key_rate_assign_hook(double newval, void *extra);
 static void kmersearch_force_simd_capability_assign_hook(int newval, void *extra);
 /* kmersearch_query_pattern_cache_max_entries_assign_hook is declared in kmersearch.h */
-static void kmersearch_actual_min_score_cache_max_entries_assign_hook(int newval, void *extra);
-static void kmersearch_highfreq_kmer_cache_load_batch_size_assign_hook(int newval, void *extra);
 
 /*
  * GUC assign hook functions for cache invalidation
