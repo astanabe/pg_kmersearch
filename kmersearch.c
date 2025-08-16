@@ -1903,6 +1903,58 @@ kmersearch_expand_dna4_to_uintkey(VarBit *dna4_seq, int start_pos, int k,
 }
 
 /*
+ * Zero-copy extraction functions - directly create Datum arrays
+ */
+
+/*
+ * Extract k-mers from DNA2 sequence directly as Datum array
+ */
+Datum *
+kmersearch_extract_datum_from_dna2(VarBit *dna_seq, int *nkeys, size_t key_size)
+{
+    void *uintkey = NULL;
+    Datum *keys = NULL;
+    
+    /* Extract uintkey array */
+    kmersearch_extract_uintkey_from_dna2(dna_seq, &uintkey, nkeys);
+    
+    if (uintkey == NULL || *nkeys == 0)
+        return NULL;
+    
+    /* Convert to Datum array */
+    keys = kmersearch_create_datum_array_from_uintkey(uintkey, *nkeys, key_size);
+    
+    /* Free the intermediate uintkey array */
+    pfree(uintkey);
+    
+    return keys;
+}
+
+/*
+ * Extract k-mers from DNA4 sequence directly as Datum array
+ */
+Datum *
+kmersearch_extract_datum_from_dna4(VarBit *dna_seq, int *nkeys, size_t key_size)
+{
+    void *uintkey = NULL;
+    Datum *keys = NULL;
+    
+    /* Extract uintkey array */
+    kmersearch_extract_uintkey_from_dna4(dna_seq, &uintkey, nkeys);
+    
+    if (uintkey == NULL || *nkeys == 0)
+        return NULL;
+    
+    /* Convert to Datum array */
+    keys = kmersearch_create_datum_array_from_uintkey(uintkey, *nkeys, key_size);
+    
+    /* Free the intermediate uintkey array */
+    pfree(uintkey);
+    
+    return keys;
+}
+
+/*
  * Memory pool management implementation
  */
 

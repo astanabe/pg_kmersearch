@@ -755,6 +755,10 @@ void kmersearch_extract_uintkey_from_text(const char *text, void **output, int *
 /* Datum array creation from uintkey array */
 Datum *kmersearch_create_datum_array_from_uintkey(void *uintkey_array, int nkeys, size_t key_size);
 
+/* Zero-copy extraction functions - directly create Datum arrays */
+Datum *kmersearch_extract_datum_from_dna2(VarBit *dna_seq, int *nkeys, size_t key_size);
+Datum *kmersearch_extract_datum_from_dna4(VarBit *dna_seq, int *nkeys, size_t key_size);
+
 /* Memory pool management structures and functions */
 typedef struct UintkeyMemoryPool {
     void *buffer;          /* Pre-allocated memory buffer */

@@ -150,23 +150,18 @@ kmersearch_extract_value_dna2_int2(PG_FUNCTION_ARGS)
 {
     VarBit *dna = PG_GETARG_VARBIT_P(0);
     int32 *nkeys = (int32 *) PG_GETARG_POINTER(1);
-    void *uintkey = NULL;
     Datum *keys = NULL;
     
     /* Check operator class compatibility */
     check_operator_class_compatibility("int2");
     
-    /* Extract uintkey array directly */
-    kmersearch_extract_uintkey_from_dna2(dna, &uintkey, nkeys);
+    /* Extract and convert to Datum array in one step */
+    keys = kmersearch_extract_datum_from_dna2(dna, nkeys, sizeof(uint16));
     
-    if (uintkey == NULL || *nkeys == 0)
+    if (keys == NULL || *nkeys == 0)
     {
         PG_RETURN_POINTER(NULL);
     }
-    
-    /* Convert to Datum array using optimized function */
-    keys = kmersearch_create_datum_array_from_uintkey(uintkey, *nkeys, sizeof(uint16));
-    pfree(uintkey);
     PG_RETURN_POINTER(keys);
 }
 
@@ -175,23 +170,18 @@ kmersearch_extract_value_dna2_int4(PG_FUNCTION_ARGS)
 {
     VarBit *dna = PG_GETARG_VARBIT_P(0);
     int32 *nkeys = (int32 *) PG_GETARG_POINTER(1);
-    void *uintkey = NULL;
     Datum *keys = NULL;
     
     /* Check operator class compatibility */
     check_operator_class_compatibility("int4");
     
-    /* Extract uintkey array directly */
-    kmersearch_extract_uintkey_from_dna2(dna, &uintkey, nkeys);
+    /* Extract and convert to Datum array in one step */
+    keys = kmersearch_extract_datum_from_dna2(dna, nkeys, sizeof(uint32));
     
-    if (uintkey == NULL || *nkeys == 0)
+    if (keys == NULL || *nkeys == 0)
     {
         PG_RETURN_POINTER(NULL);
     }
-    
-    /* Convert to Datum array using optimized function */
-    keys = kmersearch_create_datum_array_from_uintkey(uintkey, *nkeys, sizeof(uint32));
-    pfree(uintkey);
     PG_RETURN_POINTER(keys);
 }
 
@@ -200,23 +190,18 @@ kmersearch_extract_value_dna2_int8(PG_FUNCTION_ARGS)
 {
     VarBit *dna = PG_GETARG_VARBIT_P(0);
     int32 *nkeys = (int32 *) PG_GETARG_POINTER(1);
-    void *uintkey = NULL;
     Datum *keys = NULL;
     
     /* Check operator class compatibility */
     check_operator_class_compatibility("int8");
     
-    /* Extract uintkey array directly */
-    kmersearch_extract_uintkey_from_dna2(dna, &uintkey, nkeys);
+    /* Extract and convert to Datum array in one step */
+    keys = kmersearch_extract_datum_from_dna2(dna, nkeys, sizeof(uint64));
     
-    if (uintkey == NULL || *nkeys == 0)
+    if (keys == NULL || *nkeys == 0)
     {
         PG_RETURN_POINTER(NULL);
     }
-    
-    /* Convert to Datum array using optimized function */
-    keys = kmersearch_create_datum_array_from_uintkey(uintkey, *nkeys, sizeof(uint64));
-    pfree(uintkey);
     PG_RETURN_POINTER(keys);
 }
 
@@ -228,23 +213,18 @@ kmersearch_extract_value_dna4_int2(PG_FUNCTION_ARGS)
 {
     VarBit *dna = PG_GETARG_VARBIT_P(0);
     int32 *nkeys = (int32 *) PG_GETARG_POINTER(1);
-    void *uintkey = NULL;
     Datum *keys = NULL;
     
     /* Check operator class compatibility */
     check_operator_class_compatibility("int2");
     
-    /* Extract uintkey array directly */
-    kmersearch_extract_uintkey_from_dna4(dna, &uintkey, nkeys);
+    /* Extract and convert to Datum array in one step */
+    keys = kmersearch_extract_datum_from_dna4(dna, nkeys, sizeof(uint16));
     
-    if (uintkey == NULL || *nkeys == 0)
+    if (keys == NULL || *nkeys == 0)
     {
         PG_RETURN_POINTER(NULL);
     }
-    
-    /* Convert to Datum array using optimized function */
-    keys = kmersearch_create_datum_array_from_uintkey(uintkey, *nkeys, sizeof(uint16));
-    pfree(uintkey);
     PG_RETURN_POINTER(keys);
 }
 
@@ -253,23 +233,18 @@ kmersearch_extract_value_dna4_int4(PG_FUNCTION_ARGS)
 {
     VarBit *dna = PG_GETARG_VARBIT_P(0);
     int32 *nkeys = (int32 *) PG_GETARG_POINTER(1);
-    void *uintkey = NULL;
     Datum *keys = NULL;
     
     /* Check operator class compatibility */
     check_operator_class_compatibility("int4");
     
-    /* Extract uintkey array directly */
-    kmersearch_extract_uintkey_from_dna4(dna, &uintkey, nkeys);
+    /* Extract and convert to Datum array in one step */
+    keys = kmersearch_extract_datum_from_dna4(dna, nkeys, sizeof(uint32));
     
-    if (uintkey == NULL || *nkeys == 0)
+    if (keys == NULL || *nkeys == 0)
     {
         PG_RETURN_POINTER(NULL);
     }
-    
-    /* Convert to Datum array using optimized function */
-    keys = kmersearch_create_datum_array_from_uintkey(uintkey, *nkeys, sizeof(uint32));
-    pfree(uintkey);
     PG_RETURN_POINTER(keys);
 }
 
@@ -278,23 +253,18 @@ kmersearch_extract_value_dna4_int8(PG_FUNCTION_ARGS)
 {
     VarBit *dna = PG_GETARG_VARBIT_P(0);
     int32 *nkeys = (int32 *) PG_GETARG_POINTER(1);
-    void *uintkey = NULL;
     Datum *keys = NULL;
     
     /* Check operator class compatibility */
     check_operator_class_compatibility("int8");
     
-    /* Extract uintkey array directly */
-    kmersearch_extract_uintkey_from_dna4(dna, &uintkey, nkeys);
+    /* Extract and convert to Datum array in one step */
+    keys = kmersearch_extract_datum_from_dna4(dna, nkeys, sizeof(uint64));
     
-    if (uintkey == NULL || *nkeys == 0)
+    if (keys == NULL || *nkeys == 0)
     {
         PG_RETURN_POINTER(NULL);
     }
-    
-    /* Convert to Datum array using optimized function */
-    keys = kmersearch_create_datum_array_from_uintkey(uintkey, *nkeys, sizeof(uint64));
-    pfree(uintkey);
     PG_RETURN_POINTER(keys);
 }
 
@@ -514,8 +484,8 @@ kmersearch_extract_query_int2(PG_FUNCTION_ARGS)
     
     text *query_text = DatumGetTextP(query);
     char *query_string = text_to_cstring(query_text);
-    void *uintkey = NULL;
     Datum *keys = NULL;
+    void *uintkey = NULL;
     uint16 *uint16_keys;
     int i;
     
@@ -559,8 +529,8 @@ kmersearch_extract_query_int4(PG_FUNCTION_ARGS)
     
     text *query_text = DatumGetTextP(query);
     char *query_string = text_to_cstring(query_text);
-    void *uintkey = NULL;
     Datum *keys = NULL;
+    void *uintkey = NULL;
     uint32 *uint32_keys;
     int i;
     
@@ -604,8 +574,8 @@ kmersearch_extract_query_int8(PG_FUNCTION_ARGS)
     
     text *query_text = DatumGetTextP(query);
     char *query_string = text_to_cstring(query_text);
-    void *uintkey = NULL;
     Datum *keys = NULL;
+    void *uintkey = NULL;
     uint64 *uint64_keys;
     int i;
     
