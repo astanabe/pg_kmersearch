@@ -748,12 +748,20 @@ kmersearch_extract_uintkey_from_dna2(VarBit *seq, void **output, int *nkeys)
 {
     int seq_bits = VARBITLEN(seq);
     
-    /* For now, always use scalar implementation */
+    /* SIMD capability check and fallback logging */
+    elog(DEBUG2, "DNA2 k-mer extraction: seq_bits=%d, using scalar implementation", seq_bits);
+    
     /* SIMD implementations can be added later based on capability and threshold */
 #ifdef __x86_64__
     /* Future: Add AVX2/AVX512 dispatch based on simd_capability */
+    if (simd_capability >= SIMD_AVX2) {
+        elog(DEBUG2, "AVX2 available but not yet implemented for DNA2 extraction, using scalar");
+    }
 #elif defined(__aarch64__)
     /* Future: Add NEON/SVE dispatch based on simd_capability */
+    if (simd_capability >= SIMD_NEON) {
+        elog(DEBUG2, "NEON available but not yet implemented for DNA2 extraction, using scalar");
+    }
 #endif
     
     kmersearch_extract_uintkey_from_dna2_scalar(seq, output, nkeys);
@@ -989,12 +997,20 @@ kmersearch_extract_uintkey_from_dna4(VarBit *seq, void **output, int *nkeys)
 {
     int seq_bits = VARBITLEN(seq);
     
-    /* For now, always use scalar implementation */
+    /* SIMD capability check and fallback logging */
+    elog(DEBUG2, "DNA4 k-mer extraction: seq_bits=%d, using scalar implementation", seq_bits);
+    
     /* SIMD implementations can be added later based on capability and threshold */
 #ifdef __x86_64__
     /* Future: Add AVX2/AVX512 dispatch based on simd_capability */
+    if (simd_capability >= SIMD_AVX2) {
+        elog(DEBUG2, "AVX2 available but not yet implemented for DNA4 extraction, using scalar");
+    }
 #elif defined(__aarch64__)
     /* Future: Add NEON/SVE dispatch based on simd_capability */
+    if (simd_capability >= SIMD_NEON) {
+        elog(DEBUG2, "NEON available but not yet implemented for DNA4 extraction, using scalar");
+    }
 #endif
     
     kmersearch_extract_uintkey_from_dna4_scalar(seq, output, nkeys);

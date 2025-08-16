@@ -31,7 +31,9 @@ WHERE c.oid = 'test_sequences'::regclass;
 
 -- Test 3: Convert table to partitioned table with 4 partitions
 SET client_min_messages = NOTICE;
+\set VERBOSITY terse
 SELECT kmersearch_partition_table('test_sequences', 4);
+\set VERBOSITY default
 SET client_min_messages = WARNING;
 
 -- Test 4: Verify table is now partitioned
@@ -72,7 +74,9 @@ INSERT INTO test_sequences_dna4 (sequence) VALUES
 
 -- Test 10: Convert DNA4 table to partitioned
 SET client_min_messages = NOTICE;
+\set VERBOSITY terse
 SELECT kmersearch_partition_table('test_sequences_dna4', 2);
+\set VERBOSITY default
 SET client_min_messages = WARNING;
 
 -- Test 11: Error case - table without DNA column
@@ -113,7 +117,9 @@ INSERT INTO test_tablespace_table (sequence) VALUES
 
 -- Convert to partitioned table without specifying tablespace (uses default)
 SET client_min_messages = NOTICE;
+\set VERBOSITY terse
 SELECT kmersearch_partition_table('test_tablespace_table', 2);
+\set VERBOSITY default
 SET client_min_messages = WARNING;
 
 -- Verify partitions were created

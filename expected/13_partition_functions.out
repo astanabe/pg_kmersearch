@@ -30,14 +30,22 @@ WHERE c.oid = 'test_sequences'::regclass;
 
 -- Test 3: Convert table to partitioned table with 4 partitions
 SET client_min_messages = NOTICE;
+\set VERBOSITY terse
 SELECT kmersearch_partition_table('test_sequences', 4);
 NOTICE:  Using batch size 16384 based on maintenance_work_mem=64MB
+NOTICE:  Using simple migration for table with 8 rows
 NOTICE:  Data migration completed: 8 rows migrated
+NOTICE:  Dropping original table test_sequences with CASCADE to handle dependent objects
+NOTICE:  Any dependent objects (sequences, views, etc.) will be dropped automatically
+NOTICE:  CASCADE will drop sequence: test_sequences_id_seq
+NOTICE:  drop cascades to 5 other objects
+NOTICE:  Original table test_sequences dropped successfully
  kmersearch_partition_table 
 ----------------------------
  
 (1 row)
 
+\set VERBOSITY default
 SET client_min_messages = WARNING;
 -- Test 4: Verify table is now partitioned
 SELECT c.relname, c.relkind 
@@ -106,14 +114,22 @@ INSERT INTO test_sequences_dna4 (sequence) VALUES
     ('NNNNNNNNNNNNNNNN');
 -- Test 10: Convert DNA4 table to partitioned
 SET client_min_messages = NOTICE;
+\set VERBOSITY terse
 SELECT kmersearch_partition_table('test_sequences_dna4', 2);
 NOTICE:  Using batch size 16384 based on maintenance_work_mem=64MB
+NOTICE:  Using simple migration for table with 4 rows
 NOTICE:  Data migration completed: 4 rows migrated
+NOTICE:  Dropping original table test_sequences_dna4 with CASCADE to handle dependent objects
+NOTICE:  Any dependent objects (sequences, views, etc.) will be dropped automatically
+NOTICE:  CASCADE will drop sequence: test_sequences_dna4_id_seq
+NOTICE:  drop cascades to 3 other objects
+NOTICE:  Original table test_sequences_dna4 dropped successfully
  kmersearch_partition_table 
 ----------------------------
  
 (1 row)
 
+\set VERBOSITY default
 SET client_min_messages = WARNING;
 -- Test 11: Error case - table without DNA column
 CREATE TABLE test_no_dna_table (
@@ -149,14 +165,22 @@ INSERT INTO test_tablespace_table (sequence) VALUES
     ('GCTAGCTAGCTAGCTA');
 -- Convert to partitioned table without specifying tablespace (uses default)
 SET client_min_messages = NOTICE;
+\set VERBOSITY terse
 SELECT kmersearch_partition_table('test_tablespace_table', 2);
 NOTICE:  Using batch size 16384 based on maintenance_work_mem=64MB
+NOTICE:  Using simple migration for table with 2 rows
 NOTICE:  Data migration completed: 2 rows migrated
+NOTICE:  Dropping original table test_tablespace_table with CASCADE to handle dependent objects
+NOTICE:  Any dependent objects (sequences, views, etc.) will be dropped automatically
+NOTICE:  CASCADE will drop sequence: test_tablespace_table_id_seq
+NOTICE:  drop cascades to 3 other objects
+NOTICE:  Original table test_tablespace_table dropped successfully
  kmersearch_partition_table 
 ----------------------------
  
 (1 row)
 
+\set VERBOSITY default
 SET client_min_messages = WARNING;
 -- Verify partitions were created
 SELECT c.relname as partition_name

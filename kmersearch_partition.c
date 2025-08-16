@@ -329,6 +329,34 @@ create_partition_table(const char *temp_table_name, const char *table_name,
 }
 
 /*
+ * perform_simple_migration
+ *
+ * Helper function to perform simple data migration without batching
+ */
+static uint64
+perform_simple_migration(const char *table_name, const char *temp_table_name)
+{
+    StringInfoData query;
+    int ret;
+    uint64 rows_processed;
+    
+    initStringInfo(&query);
+    
+    appendStringInfo(&query,
+        "INSERT INTO %s SELECT * FROM %s",
+        temp_table_name, table_name);
+        
+    ret = SPI_execute(query.data, false, 0);
+    if (ret != SPI_OK_INSERT)
+        elog(ERROR, "Data migration failed: %s", SPI_result_code_string(ret));
+        
+    rows_processed = SPI_processed;
+    pfree(query.data);
+    
+    return rows_processed;
+}
+
+/*
  * migrate_data_in_batches
  *
  * Migrate data from original table to partitioned table in batches
@@ -450,7 +478,37 @@ migrate_data_in_batches(const char *table_name, const char *temp_table_name, Oid
         if (!OidIsValid(column_type))
         {
             elog(WARNING, "Could not determine column type for %s, falling back to simple migration", seq_column);
-            goto simple_migration;
+            elog(NOTICE, "Attempting type resolution through syscache for column %s", seq_column);
+            
+            /* Try alternative method to get column type */
+            AttrNumber attnum = get_attnum(table_oid, seq_column);
+            if (attnum != InvalidAttrNumber)
+            {
+                column_type = get_atttype(table_oid, attnum);
+            }
+            
+            /* If still invalid, use simple migration */
+            if (!OidIsValid(column_type))
+            {
+                elog(NOTICE, "Using simple migration due to type resolution failure");
+                total_rows_processed = perform_simple_migration(table_name, temp_table_name);
+                
+                /* Truncate original table */
+                resetStringInfo(&query);
+                appendStringInfo(&query, "TRUNCATE TABLE %s", table_name);
+                ret = SPI_execute(query.data, false, 0);
+                if (ret != SPI_OK_UTILITY)
+                    elog(ERROR, "TRUNCATE TABLE failed: %s", SPI_result_code_string(ret));
+                    
+                /* Clean up and return early */
+                pfree(query.data);
+                if (seq_column)
+                    pfree(seq_column);
+                    
+                elog(NOTICE, "Data migration completed: " UINT64_FORMAT " rows migrated",
+                     total_rows_processed);
+                return;
+            }
         }
         
         elog(NOTICE, "Starting batch migration of " UINT64_FORMAT " rows (batch size: %d)",
@@ -528,18 +586,9 @@ migrate_data_in_batches(const char *table_name, const char *temp_table_name, Oid
     }
     else
     {
-simple_migration:
         /* Fall back to simple approach for small tables or tables without suitable index */
-        resetStringInfo(&query);
-        appendStringInfo(&query,
-            "INSERT INTO %s SELECT * FROM %s",
-            temp_table_name, table_name);
-            
-        ret = SPI_execute(query.data, false, 0);
-        if (ret != SPI_OK_INSERT)
-            elog(ERROR, "Data migration failed: %s", SPI_result_code_string(ret));
-            
-        total_rows_processed = SPI_processed;
+        elog(NOTICE, "Using simple migration for table with %lld rows", (long long)total_rows);
+        total_rows_processed = perform_simple_migration(table_name, temp_table_name);
     }
     
     /* Now truncate the original table */
@@ -590,21 +639,64 @@ replace_table_with_partition(const char *table_name, const char *temp_table_name
         elog(ERROR, "Failed to get count result");
         
     /* Drop original table with CASCADE to handle sequence dependencies */
-    /* Temporarily suppress CASCADE notices */
-    ret = SPI_execute("SET LOCAL client_min_messages = WARNING", false, 0);
-    if (ret != SPI_OK_UTILITY)
-        elog(ERROR, "SET LOCAL failed: %s", SPI_result_code_string(ret));
+    /* Log information about what will be cascaded */
+    elog(NOTICE, "Dropping original table %s with CASCADE to handle dependent objects", table_name);
+    elog(NOTICE, "Any dependent objects (sequences, views, etc.) will be dropped automatically");
+    
+    resetStringInfo(&query);
+    
+    /* First, identify dependent objects for user awareness */
+    appendStringInfo(&query,
+        "SELECT DISTINCT "
+        "  dc.relname AS dependent_object, "
+        "  CASE dc.relkind "
+        "    WHEN 'S' THEN 'sequence' "
+        "    WHEN 'v' THEN 'view' "
+        "    WHEN 'm' THEN 'materialized view' "
+        "    ELSE 'other' "
+        "  END AS object_type "
+        "FROM pg_depend d "
+        "JOIN pg_class c ON d.refobjid = c.oid "
+        "JOIN pg_class dc ON d.objid = dc.oid "
+        "WHERE c.relname = %s AND d.deptype != 'i'", 
+        quote_literal_cstr(table_name));
+    
+    ret = SPI_execute(query.data, true, 0);
+    if (ret == SPI_OK_SELECT && SPI_processed > 0)
+    {
+        int i;
+        SPITupleTable *tuptable = SPI_tuptable;
         
+        for (i = 0; i < SPI_processed; i++)
+        {
+            bool name_isnull, type_isnull;
+            char *obj_name_str;
+            char *obj_type_str;
+            
+            obj_name_str = SPI_getvalue(tuptable->vals[i], tuptable->tupdesc, 1);
+            obj_type_str = SPI_getvalue(tuptable->vals[i], tuptable->tupdesc, 2);
+            
+            if (obj_name_str && obj_type_str)
+            {
+                elog(NOTICE, "CASCADE will drop %s: %s", 
+                     obj_type_str, obj_name_str);
+            }
+            
+            if (obj_name_str)
+                pfree(obj_name_str);
+            if (obj_type_str)
+                pfree(obj_type_str);
+        }
+    }
+    
+    /* Now perform the actual DROP with CASCADE */
     resetStringInfo(&query);
     appendStringInfo(&query, "DROP TABLE %s CASCADE", table_name);
     ret = SPI_execute(query.data, false, 0);
     if (ret != SPI_OK_UTILITY)
         elog(ERROR, "DROP TABLE failed: %s", SPI_result_code_string(ret));
         
-    /* Restore client_min_messages */
-    ret = SPI_execute("RESET client_min_messages", false, 0);
-    if (ret != SPI_OK_UTILITY)
-        elog(ERROR, "RESET failed: %s", SPI_result_code_string(ret));
+    elog(NOTICE, "Original table %s dropped successfully", table_name);
         
     /* Rename partitioned table */
     resetStringInfo(&query);

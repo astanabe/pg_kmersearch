@@ -830,13 +830,32 @@ kmersearch_highfreq_kmer_cache_load_internal(Oid table_oid, const char *column_n
         ereport(DEBUG1, (errmsg("kmersearch_highfreq_kmer_cache_load_internal: No existing valid cache to clear")));
     }
     
-    /* Reinitialize cache context if it was freed */
+    /* Check cache context state and investigate why it might be NULL */
     if (global_highfreq_cache.cache_context == NULL) {
-        ereport(DEBUG1, (errmsg("kmersearch_highfreq_kmer_cache_load_internal: Cache context was freed, reinitializing")));
+        /* Log detailed information about why the context might be freed */
+        ereport(WARNING, 
+                (errmsg("Cache context unexpectedly freed"),
+                 errdetail("Cache was %svalid, had %d entries",
+                          global_highfreq_cache.is_valid ? "" : "not ",
+                          global_highfreq_cache.highfreq_count),
+                 errhint("This may indicate a memory management issue or improper cache cleanup sequence")));
+        
+        /* Reinitialize the cache with additional logging */
+        ereport(NOTICE, (errmsg("Reinitializing cache context after unexpected deallocation")));
         kmersearch_highfreq_kmer_cache_init();
-        ereport(DEBUG1, (errmsg("kmersearch_highfreq_kmer_cache_load_internal: Cache reinitialization completed")));
+        
+        /* Verify reinitialization was successful */
+        if (global_highfreq_cache.cache_context == NULL) {
+            ereport(ERROR,
+                    (errcode(ERRCODE_INTERNAL_ERROR),
+                     errmsg("Failed to reinitialize cache context"),
+                     errhint("Check PostgreSQL memory settings and available memory")));
+        }
+        
+        ereport(DEBUG1, (errmsg("Cache reinitialization completed successfully")));
     } else {
-        ereport(DEBUG1, (errmsg("kmersearch_highfreq_kmer_cache_load_internal: Cache context still exists")));
+        ereport(DEBUG1, (errmsg("Cache context exists and is valid at %p", 
+                               global_highfreq_cache.cache_context)));
     }
     
     

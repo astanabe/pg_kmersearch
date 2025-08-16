@@ -184,3 +184,12 @@ git reset --hard HEAD       # Restore entire working directory
 # If no git history, restore from backup
 cp <backup_file> <original_file>
 ```
+
+## Git Operations
+
+**CRITICAL**: Git operations are strictly controlled:
+- **NEVER** execute git commit without explicit user instruction
+- **NEVER** use `git add -A` or `git add .` when temporary files exist in the repository
+- **ALWAYS** wait for explicit user permission before any git operations
+- When preparing to commit, list the specific files to be committed and wait for user approval
+- Be aware of temporary files, build artifacts, and test outputs that should not be committed
