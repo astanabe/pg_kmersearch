@@ -432,242 +432,6 @@ calculate_actual_min_score(VarBit **query_keys, int nkeys, int query_total_kmers
 }
 
 /*
- * Get cached actual min score using TopMemoryContext cache (global)
- * Modified to create cache key from filtered keys while calculating with original keys
- */
-int
-get_cached_actual_min_score_uintarray(VarBit **query_keys, int nkeys)
-{
-    ActualMinScoreCacheEntry *cache_entry;
-    uint64 query_hash;
-    bool found;
-    MemoryContext old_context;
-    int actual_min_score;
-    VarBit **filtered_keys = NULL;
-    int filtered_nkeys = nkeys;
-    int i;
-    
-    /* Validate input parameters */
-    if (query_keys == NULL) {
-        return calculate_actual_min_score(query_keys, nkeys, nkeys);
-    }
-    
-    /* Validate query_keys array elements */
-    for (i = 0; i < nkeys; i++) {
-        if (query_keys[i] == NULL) {
-            return calculate_actual_min_score(query_keys, nkeys, nkeys);
-        }
-    }
-    
-    /* Create cache manager in TopMemoryContext if not exists */
-    if (actual_min_score_cache_manager == NULL)
-    {
-        old_context = MemoryContextSwitchTo(TopMemoryContext);
-        
-        PG_TRY();
-        {
-            create_actual_min_score_cache_manager(&actual_min_score_cache_manager);
-        }
-        PG_CATCH();
-        {
-            MemoryContextSwitchTo(old_context);
-            /* Fallback to direct calculation if cache creation fails */
-            return calculate_actual_min_score(query_keys, nkeys, nkeys);
-        }
-        PG_END_TRY();
-        
-        MemoryContextSwitchTo(old_context);
-    }
-    
-    /* Step 1: Filter high-frequency k-mers for cache key generation */
-    if (kmersearch_preclude_highfreq_kmer && kmersearch_is_highfreq_filtering_enabled()) {
-        filtered_keys = (VarBit **) palloc(nkeys * sizeof(VarBit *));
-        filtered_nkeys = 0;
-        
-        for (i = 0; i < nkeys; i++) {
-            if (!kmersearch_is_kmer_highfreq(query_keys[i])) {
-                filtered_keys[filtered_nkeys++] = query_keys[i];
-            }
-        }
-        
-        /* Calculate hash using filtered keys */
-        query_hash = 0;
-        for (i = 0; i < filtered_nkeys; i++) {
-            uint64 kmer_hash;
-            kmer_hash = hash_any_extended((unsigned char *)VARBITS(filtered_keys[i]), 
-                                          VARBITBYTES(filtered_keys[i]), query_hash);
-            query_hash = kmer_hash;
-        }
-    } else {
-        /* No filtering - use original keys for hash */
-        query_hash = 0;
-        for (i = 0; i < nkeys; i++) {
-            uint64 kmer_hash;
-            
-            /* Validate VarBit structure before accessing */
-            if (query_keys[i] == NULL) {
-                elog(ERROR, "get_cached_actual_min_score_uintarray: query_keys[%d] is NULL", i);
-            }
-            
-            kmer_hash = hash_any_extended((unsigned char *)VARBITS(query_keys[i]), 
-                                          VARBITBYTES(query_keys[i]), query_hash);
-            query_hash = kmer_hash;
-        }
-    }
-    
-    
-    /* Look up in hash table */
-    cache_entry = (ActualMinScoreCacheEntry *) hash_search(actual_min_score_cache_manager->cache_hash,
-                                                          &query_hash, HASH_FIND, &found);
-    
-    
-    if (found) {
-        actual_min_score_cache_manager->hits++;
-        if (filtered_keys) pfree(filtered_keys);
-        return cache_entry->actual_min_score;
-    }
-    
-    /* Not found - calculate and cache */
-    actual_min_score_cache_manager->misses++;
-    /* Note: Calculate with original keys (includes high-frequency k-mers) */
-    actual_min_score = calculate_actual_min_score(query_keys, nkeys, nkeys);
-    
-    /* Add to cache if not at capacity */
-    if (actual_min_score_cache_manager->current_entries < actual_min_score_cache_manager->max_entries)
-    {
-        old_context = MemoryContextSwitchTo(actual_min_score_cache_manager->cache_context);
-        
-        PG_TRY();
-        {
-            cache_entry = (ActualMinScoreCacheEntry *) hash_search(actual_min_score_cache_manager->cache_hash,
-                                                                  &query_hash, HASH_ENTER, &found);
-            
-            if (cache_entry != NULL && !found) {
-                cache_entry->query_hash = query_hash;
-                cache_entry->actual_min_score = actual_min_score;
-                actual_min_score_cache_manager->current_entries++;
-            }
-        }
-        PG_CATCH();
-        {
-            /* Ignore cache storage errors and continue */
-        }
-        PG_END_TRY();
-        
-        MemoryContextSwitchTo(old_context);
-    }
-    
-    if (filtered_keys) pfree(filtered_keys);
-    
-    return actual_min_score;
-}
-
-/*
- * Get cached actual_min_score or error if not found
- * For use in kmersearch_consistent where cache must already be populated
- * Note: query_keys should already be filtered (high-frequency k-mers removed)
- */
-int
-get_cached_actual_min_score_or_error(VarBit **query_keys, int nkeys)
-{
-    ActualMinScoreCacheEntry *cache_entry;
-    uint64 query_hash;
-    int i;
-    
-    /* Cache must be initialized */
-    if (actual_min_score_cache_manager == NULL) {
-        ereport(ERROR,
-                (errcode(ERRCODE_INTERNAL_ERROR),
-                 errmsg("actual_min_score cache not initialized"),
-                 errhint("This should not happen. Extract_query should have initialized the cache.")));
-    }
-    
-    /* Calculate hash from query_keys (already filtered) */
-    query_hash = 0;
-    for (i = 0; i < nkeys; i++) {
-        uint64 kmer_hash;
-        
-        if (query_keys[i] == NULL) {
-            elog(ERROR, "get_cached_actual_min_score_or_error: query_keys[%d] is NULL", i);
-        }
-        
-        kmer_hash = hash_any_extended((unsigned char *)VARBITS(query_keys[i]), 
-                                      VARBITBYTES(query_keys[i]), query_hash);
-        query_hash = kmer_hash;
-    }
-    
-    /* Look up in cache */
-    cache_entry = (ActualMinScoreCacheEntry *) hash_search(actual_min_score_cache_manager->cache_hash,
-                                                          &query_hash, HASH_FIND, NULL);
-    
-    if (cache_entry == NULL) {
-        /* Cache miss should not happen - extract_query should have cached it */
-        ereport(ERROR,
-                (errcode(ERRCODE_INTERNAL_ERROR),
-                 errmsg("actual_min_score not found in cache"),
-                 errdetail("Query hash: %lu, nkeys: %d", query_hash, nkeys),
-                 errhint("This should not happen. Extract_query should have cached this value.")));
-    }
-    
-    actual_min_score_cache_manager->hits++;
-    
-    return cache_entry->actual_min_score;
-}
-
-/*
- * Get cached actual_min_score from Datum array
- * For use in kmersearch_consistent where queryKeys are passed as Datum array
- * This function converts Datum to VarBit internally without any transformation
- */
-int
-get_cached_actual_min_score_datum(Datum *queryKeys, int nkeys)
-{
-    ActualMinScoreCacheEntry *cache_entry;
-    uint64 query_hash;
-    int i;
-    
-    /* Cache must be initialized */
-    if (actual_min_score_cache_manager == NULL) {
-        ereport(ERROR,
-                (errcode(ERRCODE_INTERNAL_ERROR),
-                 errmsg("actual_min_score cache not initialized"),
-                 errhint("This should not happen. Extract_query should have initialized the cache.")));
-    }
-    
-    /* Calculate hash from queryKeys (already filtered) */
-    query_hash = 0;
-    for (i = 0; i < nkeys; i++) {
-        VarBit *key = DatumGetVarBitP(queryKeys[i]);
-        uint64 kmer_hash;
-        
-        if (key == NULL) {
-            elog(ERROR, "get_cached_actual_min_score_datum: queryKeys[%d] is NULL", i);
-        }
-        
-        kmer_hash = hash_any_extended((unsigned char *)VARBITS(key), 
-                                      VARBITBYTES(key), query_hash);
-        query_hash = kmer_hash;
-    }
-    
-    /* Look up in cache */
-    cache_entry = (ActualMinScoreCacheEntry *) hash_search(actual_min_score_cache_manager->cache_hash,
-                                                          &query_hash, HASH_FIND, NULL);
-    
-    if (cache_entry == NULL) {
-        /* Cache miss should not happen - extract_query should have cached it */
-        ereport(ERROR,
-                (errcode(ERRCODE_INTERNAL_ERROR),
-                 errmsg("actual_min_score not found in cache"),
-                 errdetail("Query hash: %lu, nkeys: %d", query_hash, nkeys),
-                 errhint("This should not happen. Extract_query should have cached this value.")));
-    }
-    
-    actual_min_score_cache_manager->hits++;
-    
-    return cache_entry->actual_min_score;
-}
-
-/*
  * Calculate actual min score from uintkey array
  * Helper function for cache miss case
  */
@@ -1307,11 +1071,12 @@ kmersearch_highfreq_kmer_cache_load_internal(Oid table_oid, const char *column_n
                 for (i = 0; i < batch_count; i++) {
                     bool isnull;
                     Datum kmer_datum;
+                    int total_bits;
                     
                     kmer_datum = SPI_getbinval(SPI_tuptable->vals[i], SPI_tuptable->tupdesc, 1, &isnull);
                     if (!isnull) {
                         /* Convert based on total bit length (k-mer2 bits + occurrence bits) */
-                        int total_bits = k_value * 2 + kmersearch_occur_bitlen;
+                        total_bits = k_value * 2 + kmersearch_occur_bitlen;
                         if (total_bits <= 16) {
                             batch_kmers[i] = (uint64)DatumGetInt16(kmer_datum);
                         } else if (total_bits <= 32) {
@@ -2513,11 +2278,12 @@ kmersearch_parallel_highfreq_kmer_cache_load_internal(Oid table_oid, const char 
                 for (i = 0; i < batch_count; i++) {
                     bool isnull;
                     Datum kmer_datum;
+                    int total_bits;
                     
                     kmer_datum = SPI_getbinval(SPI_tuptable->vals[i], SPI_tuptable->tupdesc, 1, &isnull);
                     if (!isnull) {
                         /* Convert based on total bit length (k-mer2 bits + occurrence bits) */
-                        int total_bits = k_value * 2 + kmersearch_occur_bitlen;
+                        total_bits = k_value * 2 + kmersearch_occur_bitlen;
                         if (total_bits <= 16) {
                             batch_kmers[i] = (uint64)DatumGetInt16(kmer_datum);
                         } else if (total_bits <= 32) {
