@@ -503,7 +503,7 @@ extern const char kmersearch_dna4_decode_table[16];
 /* Module initialization */
 void _PG_init(void);
 void _PG_fini(void);
-void check_guc_initialization(void);
+void kmersearch_check_guc_initialization(void);
 
 /* DNA datatype functions (implemented in kmersearch_datatype.c) */
 Datum kmersearch_dna2_in(PG_FUNCTION_ARGS);
@@ -536,48 +536,52 @@ char *kmersearch_dna2_to_string(VarBit *dna);
 char *kmersearch_dna4_to_string(VarBit *dna);
 
 /* Main dispatch functions with threshold-based SIMD selection */
-void dna2_encode(const char* input, uint8_t* output, int len);
-void dna2_decode(const uint8_t* input, char* output, int char_len);
-void dna4_encode(const char* input, uint8_t* output, int len);
-void dna4_decode(const uint8_t* input, char* output, int char_len);
-int dna_compare(const uint8_t* a, const uint8_t* b, int bit_len);
+void kmersearch_dna2_encode(const char* input, uint8_t* output, int len);
+void kmersearch_dna2_decode(const uint8_t* input, char* output, int char_len);
+void kmersearch_dna4_encode(const char* input, uint8_t* output, int len);
+void kmersearch_dna4_decode(const uint8_t* input, char* output, int char_len);
+int kmersearch_dna_compare(const uint8_t* a, const uint8_t* b, int bit_len);
 
 /* DNA encoding/decoding functions */
-void dna2_encode_scalar(const char* input, uint8_t* output, int len);
-void dna2_decode_scalar(const uint8_t* input, char* output, int len);
-void dna4_encode_scalar(const char* input, uint8_t* output, int len);
-void dna4_decode_scalar(const uint8_t* input, char* output, int len);
+void kmersearch_dna2_encode_scalar(const char* input, uint8_t* output, int len);
+void kmersearch_dna2_decode_scalar(const uint8_t* input, char* output, int len);
+void kmersearch_dna4_encode_scalar(const char* input, uint8_t* output, int len);
+void kmersearch_dna4_decode_scalar(const uint8_t* input, char* output, int len);
 #ifdef __x86_64__
-void dna2_encode_avx2(const char* input, uint8_t* output, int len);
-void dna2_encode_avx512(const char* input, uint8_t* output, int len);
-void dna2_decode_avx2(const uint8_t* input, char* output, int len);
-void dna2_decode_avx512(const uint8_t* input, char* output, int len);
-void dna4_encode_avx2(const char* input, uint8_t* output, int len);
-void dna4_decode_avx2(const uint8_t* input, char* output, int len);
-void dna4_encode_avx512(const char* input, uint8_t* output, int len);
-void dna4_decode_avx512(const uint8_t* input, char* output, int len);
+void kmersearch_dna2_encode_avx2(const char* input, uint8_t* output, int len);
+void kmersearch_dna2_encode_avx512(const char* input, uint8_t* output, int len);
+void kmersearch_dna2_decode_avx2(const uint8_t* input, char* output, int len);
+void kmersearch_dna2_decode_avx512(const uint8_t* input, char* output, int len);
+void kmersearch_dna4_encode_avx2(const char* input, uint8_t* output, int len);
+void kmersearch_dna4_decode_avx2(const uint8_t* input, char* output, int len);
+void kmersearch_dna4_encode_avx512(const char* input, uint8_t* output, int len);
+void kmersearch_dna4_decode_avx512(const uint8_t* input, char* output, int len);
 #endif
 #ifdef __aarch64__
-void dna2_encode_neon(const char* input, uint8_t* output, int len);
-void dna2_encode_sve(const char* input, uint8_t* output, int len);
-void dna2_decode_neon(const uint8_t* input, char* output, int len);
-void dna2_decode_sve(const uint8_t* input, char* output, int len);
-void dna2_decode_sve2(const uint8_t* input, char* output, int len);
-void dna4_encode_neon(const char* input, uint8_t* output, int len);
-void dna4_decode_neon(const uint8_t* input, char* output, int len);
-void dna4_encode_sve(const char* input, uint8_t* output, int len);
-void dna4_decode_sve(const uint8_t* input, char* output, int len);
+void kmersearch_dna2_encode_neon(const char* input, uint8_t* output, int len);
+void kmersearch_dna2_encode_sve(const char* input, uint8_t* output, int len);
+void kmersearch_dna2_encode_sve2(const char* input, uint8_t* output, int len);
+void kmersearch_dna2_decode_neon(const uint8_t* input, char* output, int len);
+void kmersearch_dna2_decode_sve(const uint8_t* input, char* output, int len);
+void kmersearch_dna2_decode_sve2(const uint8_t* input, char* output, int len);
+void kmersearch_dna4_encode_neon(const char* input, uint8_t* output, int len);
+void kmersearch_dna4_decode_neon(const uint8_t* input, char* output, int len);
+void kmersearch_dna4_encode_sve(const char* input, uint8_t* output, int len);
+void kmersearch_dna4_encode_sve2(const char* input, uint8_t* output, int len);
+void kmersearch_dna4_decode_sve(const uint8_t* input, char* output, int len);
+void kmersearch_dna4_decode_sve2(const uint8_t* input, char* output, int len);
 #endif
 
 /* DNA comparison functions */
-int dna_compare_scalar(const uint8_t* a, const uint8_t* b, int bit_len);
+int kmersearch_dna_compare_scalar(const uint8_t* a, const uint8_t* b, int bit_len);
 #ifdef __x86_64__
-int dna_compare_avx2(const uint8_t* a, const uint8_t* b, int bit_len);
-int dna_compare_avx512(const uint8_t* a, const uint8_t* b, int bit_len);
+int kmersearch_dna_compare_avx2(const uint8_t* a, const uint8_t* b, int bit_len);
+int kmersearch_dna_compare_avx512(const uint8_t* a, const uint8_t* b, int bit_len);
 #endif
 #ifdef __aarch64__
-int dna_compare_neon(const uint8_t* a, const uint8_t* b, int bit_len);
-int dna_compare_sve(const uint8_t* a, const uint8_t* b, int bit_len);
+int kmersearch_dna_compare_neon(const uint8_t* a, const uint8_t* b, int bit_len);
+int kmersearch_dna_compare_sve(const uint8_t* a, const uint8_t* b, int bit_len);
+int kmersearch_dna_compare_sve2(const uint8_t* a, const uint8_t* b, int bit_len);
 #endif
 
 /* Uintkey-based GIN operator class functions */
@@ -609,8 +613,8 @@ Datum kmersearch_query_pattern_cache_stats(PG_FUNCTION_ARGS);
 Datum kmersearch_query_pattern_cache_free(PG_FUNCTION_ARGS);
 
 /* Cache manager functions (defined in kmersearch_cache.c) */
-void free_query_pattern_cache_manager(QueryPatternCacheManager **manager);
-void free_actual_min_score_cache_manager(ActualMinScoreCacheManager **manager);
+void kmersearch_free_query_pattern_cache_manager(QueryPatternCacheManager **manager);
+void kmersearch_free_actual_min_score_cache_manager(ActualMinScoreCacheManager **manager);
 
 /* High-frequency k-mer cache global variables (defined in kmersearch_cache.c) */
 
@@ -672,7 +676,7 @@ PGDLLEXPORT void kmersearch_analysis_worker(dsm_segment *seg, shm_toc *toc);
 
 /* Frequency analysis persistence function (implemented in kmersearch_freq.c) */
 void kmersearch_persist_highfreq_kmers_from_temp(Oid table_oid, const char *column_name, int k_size, const char *temp_table_name);
-void create_worker_ngram_temp_table(const char *table_name);
+void kmersearch_create_worker_ngram_temp_table(const char *table_name);
 /* Buffer management functions for each size */
 void kmersearch_init_buffer16(UintkeyBuffer16 *buffer, int k_size);
 void kmersearch_init_buffer32(UintkeyBuffer32 *buffer, int k_size);
@@ -694,22 +698,22 @@ bool kmersearch_get_index_info(Oid index_oid, Oid *table_oid, char **column_name
 bool evaluate_optimized_match_condition(VarBit **query_keys, int nkeys, int shared_count, const char *query_string, int query_total_kmers);
 
 /* Type OID helper functions */
-Oid get_dna2_type_oid(void);
-Oid get_dna4_type_oid(void);
+Oid kmersearch_get_dna2_type_oid(void);
+Oid kmersearch_get_dna4_type_oid(void);
 
 /* Cache management functions (implemented in kmersearch_cache.c) */
 
 /* Query pattern cache functions (implemented in kmersearch_cache.c) */
-void *get_cached_query_uintkey(const char *query_string, int k_size, int *nkeys);
+void *kmersearch_get_cached_query_uintkey(const char *query_string, int k_size, int *nkeys);
 
 /* Actual min score cache functions (implemented in kmersearch_cache.c) */  
-int get_cached_actual_min_score_uintkey(void *uintkey, int nkeys, int k_size);
-int get_cached_actual_min_score_datum_int2(Datum *queryKeys, int nkeys);
-int get_cached_actual_min_score_datum_int4(Datum *queryKeys, int nkeys);
-int get_cached_actual_min_score_datum_int8(Datum *queryKeys, int nkeys);
+int kmersearch_get_cached_actual_min_score_uintkey(void *uintkey, int nkeys, int k_size);
+int kmersearch_get_cached_actual_min_score_datum_int2(Datum *queryKeys, int nkeys);
+int kmersearch_get_cached_actual_min_score_datum_int4(Datum *queryKeys, int nkeys);
+int kmersearch_get_cached_actual_min_score_datum_int8(Datum *queryKeys, int nkeys);
 
 /* High-frequency k-mer filtering functions (implemented in kmersearch_gin.c) */
-void *filter_uintkey_and_set_actual_min_score(void *uintkey, int *nkeys, const char *query_string, int k_size);
+void *kmersearch_filter_uintkey_and_set_actual_min_score(void *uintkey, int *nkeys, const char *query_string, int k_size);
 bool kmersearch_is_uintkey_highfreq(uint64 uintkey, int k_size);
 
 /* Cache functions (implemented in kmersearch_cache.c) */

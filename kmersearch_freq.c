@@ -28,7 +28,7 @@ static void kmersearch_insert_uintkey_from_dshash(Oid table_oid, const char *col
  * Create worker temporary table for n-gram keys
  */
 void
-create_worker_ngram_temp_table(const char *table_name)
+kmersearch_create_worker_ngram_temp_table(const char *table_name)
 {
     StringInfoData query;
     int ret;
@@ -391,7 +391,7 @@ kmersearch_perform_highfreq_analysis(PG_FUNCTION_ARGS)
                 (errcode(ERRCODE_INVALID_TRANSACTION_STATE),
                  errmsg("cannot execute kmersearch_perform_highfreq_analysis() in a parallel worker")));
     
-    check_guc_initialization();
+    kmersearch_check_guc_initialization();
     
     /* Parse table identifier (name or OID) */
     table_str = text_to_cstring(table_name_or_oid_text);
@@ -521,7 +521,7 @@ kmersearch_undo_highfreq_analysis(PG_FUNCTION_ARGS)
                 (errcode(ERRCODE_INVALID_TRANSACTION_STATE),
                  errmsg("cannot execute kmersearch_undo_highfreq_analysis() in a parallel worker")));
     
-    check_guc_initialization();
+    kmersearch_check_guc_initialization();
     
     /* Get table OID from table name */
     table_oid = RelnameGetRelid(table_name);

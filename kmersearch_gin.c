@@ -266,7 +266,7 @@ kmersearch_extract_value_dna4_int8(PG_FUNCTION_ARGS)
  * This function filters out high-frequency k-mers and caches the actual_min_score
  */
 void *
-filter_uintkey_and_set_actual_min_score(void *uintkey, int *nkeys, 
+kmersearch_filter_uintkey_and_set_actual_min_score(void *uintkey, int *nkeys, 
                                         const char *query_string, int k_size)
 {
     void *filtered_keys = NULL;
@@ -319,7 +319,7 @@ filter_uintkey_and_set_actual_min_score(void *uintkey, int *nkeys,
     /* If no high-frequency k-mers, return original array */
     if (!has_highfreq)
     {
-        get_cached_actual_min_score_uintkey(uintkey, *nkeys, k_size);
+        kmersearch_get_cached_actual_min_score_uintkey(uintkey, *nkeys, k_size);
         return uintkey;
     }
     
@@ -386,7 +386,7 @@ filter_uintkey_and_set_actual_min_score(void *uintkey, int *nkeys,
     }
     
     /* Cache actual_min_score - this will be retrieved in consistent function */
-    get_cached_actual_min_score_uintkey(filtered_keys ? filtered_keys : uintkey, 
+    kmersearch_get_cached_actual_min_score_uintkey(filtered_keys ? filtered_keys : uintkey, 
                                         filtered_keys ? filtered_count : *nkeys, k_size);
     
     *nkeys = filtered_count;
@@ -480,12 +480,12 @@ kmersearch_extract_query_int2(PG_FUNCTION_ARGS)
     int i;
     
     /* Use cached query pattern extraction */
-    uintkey = get_cached_query_uintkey(query_string, kmersearch_kmer_size, nkeys);
+    uintkey = kmersearch_get_cached_query_uintkey(query_string, kmersearch_kmer_size, nkeys);
     
     /* Filter high-frequency k-mers and cache actual_min_score */
     if (uintkey != NULL && *nkeys > 0)
     {
-        uintkey = filter_uintkey_and_set_actual_min_score(uintkey, nkeys, 
+        uintkey = kmersearch_filter_uintkey_and_set_actual_min_score(uintkey, nkeys, 
                                                            query_string, kmersearch_kmer_size);
     }
     
@@ -525,12 +525,12 @@ kmersearch_extract_query_int4(PG_FUNCTION_ARGS)
     int i;
     
     /* Use cached query pattern extraction */
-    uintkey = get_cached_query_uintkey(query_string, kmersearch_kmer_size, nkeys);
+    uintkey = kmersearch_get_cached_query_uintkey(query_string, kmersearch_kmer_size, nkeys);
     
     /* Filter high-frequency k-mers and cache actual_min_score */
     if (uintkey != NULL && *nkeys > 0)
     {
-        uintkey = filter_uintkey_and_set_actual_min_score(uintkey, nkeys, 
+        uintkey = kmersearch_filter_uintkey_and_set_actual_min_score(uintkey, nkeys, 
                                                            query_string, kmersearch_kmer_size);
     }
     
@@ -570,12 +570,12 @@ kmersearch_extract_query_int8(PG_FUNCTION_ARGS)
     int i;
     
     /* Use cached query pattern extraction */
-    uintkey = get_cached_query_uintkey(query_string, kmersearch_kmer_size, nkeys);
+    uintkey = kmersearch_get_cached_query_uintkey(query_string, kmersearch_kmer_size, nkeys);
     
     /* Filter high-frequency k-mers and cache actual_min_score */
     if (uintkey != NULL && *nkeys > 0)
     {
-        uintkey = filter_uintkey_and_set_actual_min_score(uintkey, nkeys, 
+        uintkey = kmersearch_filter_uintkey_and_set_actual_min_score(uintkey, nkeys, 
                                                            query_string, kmersearch_kmer_size);
     }
     
@@ -625,7 +625,7 @@ kmersearch_consistent_int2(PG_FUNCTION_ARGS)
     }
     
     /* Get cached actual_min_score */
-    actual_min_score = get_cached_actual_min_score_datum_int2(queryKeys, nkeys);
+    actual_min_score = kmersearch_get_cached_actual_min_score_datum_int2(queryKeys, nkeys);
     
     PG_RETURN_BOOL(shared_count >= actual_min_score);
 }
@@ -656,7 +656,7 @@ kmersearch_consistent_int4(PG_FUNCTION_ARGS)
     }
     
     /* Get cached actual_min_score */
-    actual_min_score = get_cached_actual_min_score_datum_int4(queryKeys, nkeys);
+    actual_min_score = kmersearch_get_cached_actual_min_score_datum_int4(queryKeys, nkeys);
     
     PG_RETURN_BOOL(shared_count >= actual_min_score);
 }
@@ -687,7 +687,7 @@ kmersearch_consistent_int8(PG_FUNCTION_ARGS)
     }
     
     /* Get cached actual_min_score */
-    actual_min_score = get_cached_actual_min_score_datum_int8(queryKeys, nkeys);
+    actual_min_score = kmersearch_get_cached_actual_min_score_datum_int8(queryKeys, nkeys);
     
     PG_RETURN_BOOL(shared_count >= actual_min_score);
 }

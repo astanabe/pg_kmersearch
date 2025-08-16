@@ -215,11 +215,11 @@ kmersearch_kmer_size_assign_hook(int newval, void *extra)
     
     /* Clear query pattern cache */
     if (query_pattern_cache_manager)
-        free_query_pattern_cache_manager(&query_pattern_cache_manager);
+        kmersearch_free_query_pattern_cache_manager(&query_pattern_cache_manager);
     
     /* Clear actual min score cache */
     if (actual_min_score_cache_manager)
-        free_actual_min_score_cache_manager(&actual_min_score_cache_manager);
+        kmersearch_free_actual_min_score_cache_manager(&actual_min_score_cache_manager);
     
     /* Clear high-frequency k-mer cache with conditional warning */
     clear_highfreq_cache_with_warning();
@@ -233,7 +233,7 @@ kmersearch_max_appearance_rate_assign_hook(double newval, void *extra)
     (void) extra;   /* Suppress unused parameter warning */
     /* Clear actual min score cache */
     if (actual_min_score_cache_manager)
-        free_actual_min_score_cache_manager(&actual_min_score_cache_manager);
+        kmersearch_free_actual_min_score_cache_manager(&actual_min_score_cache_manager);
     
     /* Clear high-frequency k-mer cache with conditional warning */
     clear_highfreq_cache_with_warning();
@@ -247,7 +247,7 @@ kmersearch_max_appearance_nrow_assign_hook(int newval, void *extra)
     (void) extra;   /* Suppress unused parameter warning */
     /* Clear actual min score cache */
     if (actual_min_score_cache_manager)
-        free_actual_min_score_cache_manager(&actual_min_score_cache_manager);
+        kmersearch_free_actual_min_score_cache_manager(&actual_min_score_cache_manager);
     
     /* Clear high-frequency k-mer cache with conditional warning */
     clear_highfreq_cache_with_warning();
@@ -261,7 +261,7 @@ kmersearch_min_score_assign_hook(int newval, void *extra)
     (void) extra;   /* Suppress unused parameter warning */
     /* Clear actual min score cache */
     if (actual_min_score_cache_manager)
-        free_actual_min_score_cache_manager(&actual_min_score_cache_manager);
+        kmersearch_free_actual_min_score_cache_manager(&actual_min_score_cache_manager);
 }
 
 /* Min shared ngram key rate change affects actual min score cache */
@@ -272,7 +272,7 @@ kmersearch_min_shared_ngram_key_rate_assign_hook(double newval, void *extra)
     (void) extra;   /* Suppress unused parameter warning */
     /* Clear actual min score cache */
     if (actual_min_score_cache_manager)
-        free_actual_min_score_cache_manager(&actual_min_score_cache_manager);
+        kmersearch_free_actual_min_score_cache_manager(&actual_min_score_cache_manager);
 }
 
 static bool
@@ -385,7 +385,7 @@ static bool guc_variables_initialized = false;
  * If not, report an error with instructions for shared_preload_libraries
  */
 void
-check_guc_initialization(void)
+kmersearch_check_guc_initialization(void)
 {
     if (!guc_variables_initialized) {
         ereport(ERROR,
@@ -2039,7 +2039,7 @@ kmersearch_dna2_match(PG_FUNCTION_ARGS)
     bool match = false;
     
     /* Extract uintkeys from query using cache */
-    query_uintkey = get_cached_query_uintkey(pattern_string, kmersearch_kmer_size, &query_nkeys);
+    query_uintkey = kmersearch_get_cached_query_uintkey(pattern_string, kmersearch_kmer_size, &query_nkeys);
     
     if (query_uintkey != NULL && query_nkeys > 0) {
         /* Extract uintkeys from DNA2 sequence */
@@ -2053,7 +2053,7 @@ kmersearch_dna2_match(PG_FUNCTION_ARGS)
         }
         
         /* Get cached actual min score */
-        actual_min_score = get_cached_actual_min_score_uintkey(query_uintkey, query_nkeys, kmersearch_kmer_size);
+        actual_min_score = kmersearch_get_cached_actual_min_score_uintkey(query_uintkey, query_nkeys, kmersearch_kmer_size);
         
         /* Evaluate match condition */
         match = (shared_count >= actual_min_score);
@@ -2083,7 +2083,7 @@ kmersearch_dna4_match(PG_FUNCTION_ARGS)
     bool match = false;
     
     /* Extract uintkeys from query using cache */
-    query_uintkey = get_cached_query_uintkey(pattern_string, kmersearch_kmer_size, &query_nkeys);
+    query_uintkey = kmersearch_get_cached_query_uintkey(pattern_string, kmersearch_kmer_size, &query_nkeys);
     
     if (query_uintkey != NULL && query_nkeys > 0) {
         /* Extract uintkeys from DNA4 sequence (with degenerate expansion) */
@@ -2097,7 +2097,7 @@ kmersearch_dna4_match(PG_FUNCTION_ARGS)
         }
         
         /* Get cached actual min score */
-        actual_min_score = get_cached_actual_min_score_uintkey(query_uintkey, query_nkeys, kmersearch_kmer_size);
+        actual_min_score = kmersearch_get_cached_actual_min_score_uintkey(query_uintkey, query_nkeys, kmersearch_kmer_size);
         
         /* Evaluate match condition */
         match = (shared_count >= actual_min_score);
@@ -2135,7 +2135,7 @@ kmersearch_correctedscore_dna2(PG_FUNCTION_ARGS)
     kmersearch_extract_uintkey_from_dna2(sequence, &seq_uintkey, &seq_nkeys);
     
     /* Extract uintkeys from query using cache */
-    query_uintkey = get_cached_query_uintkey(query_string, kmersearch_kmer_size, &query_nkeys);
+    query_uintkey = kmersearch_get_cached_query_uintkey(query_string, kmersearch_kmer_size, &query_nkeys);
     
     /* Count shared k-mers using optimized function */
     if (seq_uintkey && query_uintkey && seq_nkeys > 0 && query_nkeys > 0) {
@@ -2171,7 +2171,7 @@ kmersearch_correctedscore_dna4(PG_FUNCTION_ARGS)
     kmersearch_extract_uintkey_from_dna4(sequence, &seq_uintkey, &seq_nkeys);
     
     /* Extract uintkeys from query using cache */
-    query_uintkey = get_cached_query_uintkey(query_string, k_size, &query_nkeys);
+    query_uintkey = kmersearch_get_cached_query_uintkey(query_string, k_size, &query_nkeys);
     
     /* Count shared k-mers using optimized function */
     if (seq_uintkey && query_uintkey && seq_nkeys > 0 && query_nkeys > 0) {
@@ -2345,10 +2345,10 @@ _PG_fini(void)
 {
     /* Free query pattern cache manager on module unload (uses TopMemoryContext - needs manual cleanup) */
     /* DNA2/DNA4 cache managers are now local and automatically freed with QueryContext */
-    free_query_pattern_cache_manager(&query_pattern_cache_manager);
+    kmersearch_free_query_pattern_cache_manager(&query_pattern_cache_manager);
     
     /* Free actual min score cache manager on module unload */
-    free_actual_min_score_cache_manager(&actual_min_score_cache_manager);
+    kmersearch_free_actual_min_score_cache_manager(&actual_min_score_cache_manager);
     
     /* Free high-frequency k-mer cache on module unload */
     kmersearch_highfreq_kmer_cache_free_internal();

@@ -11,7 +11,7 @@
  * Get DNA2 type OID
  */
 Oid
-get_dna2_type_oid(void)
+kmersearch_get_dna2_type_oid(void)
 {
     return TypenameGetTypid("dna2");
 }
@@ -20,7 +20,7 @@ get_dna2_type_oid(void)
  * Get DNA4 type OID  
  */
 Oid
-get_dna4_type_oid(void)
+kmersearch_get_dna4_type_oid(void)
 {
     return TypenameGetTypid("dna4");
 }

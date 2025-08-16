@@ -38,10 +38,10 @@ static QueryPatternCacheEntry *lookup_query_pattern_cache_entry(QueryPatternCach
 static void store_query_pattern_cache_entry(QueryPatternCacheManager *manager, uint64 hash_key, const char *query_string, int k_size, void *uintkeys, int kmer_count);
 static void lru_touch_query_pattern_cache(QueryPatternCacheManager *manager, QueryPatternCacheEntry *entry);
 static void lru_evict_oldest_query_pattern_cache(QueryPatternCacheManager *manager);
-void free_query_pattern_cache_manager(QueryPatternCacheManager **manager);
+void kmersearch_free_query_pattern_cache_manager(QueryPatternCacheManager **manager);
 
 static void create_actual_min_score_cache_manager(ActualMinScoreCacheManager **manager);
-void free_actual_min_score_cache_manager(ActualMinScoreCacheManager **manager);
+void kmersearch_free_actual_min_score_cache_manager(ActualMinScoreCacheManager **manager);
 static int calculate_actual_min_score_from_uintkey(void *uintkey, int nkeys, int k_size);
 
 void kmersearch_highfreq_kmer_cache_init(void);
@@ -249,7 +249,7 @@ store_query_pattern_cache_entry(QueryPatternCacheManager *manager, uint64 hash_k
  * Get cached query uintkeys or extract and cache them
  */
 void *
-get_cached_query_uintkey(const char *query_string, int k_size, int *nkeys)
+kmersearch_get_cached_query_uintkey(const char *query_string, int k_size, int *nkeys)
 {
     QueryPatternCacheEntry *cache_entry;
     void *extracted_uintkeys = NULL;
@@ -303,7 +303,7 @@ get_cached_query_uintkey(const char *query_string, int k_size, int *nkeys)
  * Free query pattern cache manager
  */
 void
-free_query_pattern_cache_manager(QueryPatternCacheManager **manager)
+kmersearch_free_query_pattern_cache_manager(QueryPatternCacheManager **manager)
 {
     if (*manager)
     {
@@ -353,7 +353,7 @@ create_actual_min_score_cache_manager(ActualMinScoreCacheManager **manager)
  * Free actual min score cache manager
  */
 void
-free_actual_min_score_cache_manager(ActualMinScoreCacheManager **manager)
+kmersearch_free_actual_min_score_cache_manager(ActualMinScoreCacheManager **manager)
 {
     if (*manager)
     {
@@ -438,7 +438,7 @@ calculate_actual_min_score_from_uintkey(void *uintkey, int nkeys, int k_size)
  * For use with new uintkey-based extraction
  */
 int
-get_cached_actual_min_score_uintkey(void *uintkey, int nkeys, int k_size)
+kmersearch_get_cached_actual_min_score_uintkey(void *uintkey, int nkeys, int k_size)
 {
     ActualMinScoreCacheEntry *cache_entry;
     uint64 query_hash = 0;
@@ -506,7 +506,7 @@ get_cached_actual_min_score_uintkey(void *uintkey, int nkeys, int k_size)
  * Get cached actual_min_score from int2 Datum array
  */
 int
-get_cached_actual_min_score_datum_int2(Datum *queryKeys, int nkeys)
+kmersearch_get_cached_actual_min_score_datum_int2(Datum *queryKeys, int nkeys)
 {
     ActualMinScoreCacheEntry *cache_entry;
     uint64 query_hash = 0;
@@ -546,7 +546,7 @@ get_cached_actual_min_score_datum_int2(Datum *queryKeys, int nkeys)
  * Get cached actual_min_score from int4 Datum array
  */
 int
-get_cached_actual_min_score_datum_int4(Datum *queryKeys, int nkeys)
+kmersearch_get_cached_actual_min_score_datum_int4(Datum *queryKeys, int nkeys)
 {
     ActualMinScoreCacheEntry *cache_entry;
     uint64 query_hash = 0;
@@ -586,7 +586,7 @@ get_cached_actual_min_score_datum_int4(Datum *queryKeys, int nkeys)
  * Get cached actual_min_score from int8 Datum array
  */
 int
-get_cached_actual_min_score_datum_int8(Datum *queryKeys, int nkeys)
+kmersearch_get_cached_actual_min_score_datum_int8(Datum *queryKeys, int nkeys)
 {
     ActualMinScoreCacheEntry *cache_entry;
     uint64 query_hash = 0;
@@ -674,7 +674,7 @@ kmersearch_query_pattern_cache_free(PG_FUNCTION_ARGS)
     
     /* Free query pattern cache manager (uses TopMemoryContext - needs manual cleanup) */
     /* DNA2/DNA4 cache managers are now local and automatically freed with QueryContext */
-    free_query_pattern_cache_manager(&query_pattern_cache_manager);
+    kmersearch_free_query_pattern_cache_manager(&query_pattern_cache_manager);
     
     PG_RETURN_INT32(freed_entries);
 }
@@ -730,7 +730,7 @@ kmersearch_actual_min_score_cache_free(PG_FUNCTION_ARGS)
         freed_entries = actual_min_score_cache_manager->current_entries;
     
     /* Free actual min score cache manager (uses TopMemoryContext - needs manual cleanup) */
-    free_actual_min_score_cache_manager(&actual_min_score_cache_manager);
+    kmersearch_free_actual_min_score_cache_manager(&actual_min_score_cache_manager);
     
     PG_RETURN_INT32(freed_entries);
 }
@@ -1529,7 +1529,7 @@ kmersearch_query_pattern_cache_max_entries_assign_hook(int newval, void *extra)
     
     /* Clear query pattern cache to recreate with new size limit */
     if (query_pattern_cache_manager)
-        free_query_pattern_cache_manager(&query_pattern_cache_manager);
+        kmersearch_free_query_pattern_cache_manager(&query_pattern_cache_manager);
 }
 
 /* Additional global variable for parallel cache exit callback */
