@@ -69,8 +69,9 @@ SELECT id, name, sequence FROM test_dna4_sequences ORDER BY id;
 (3 rows)
 
 -- Create GIN indexes
-CREATE INDEX idx_dna2_gin ON test_dna2_sequences USING gin (sequence);
-CREATE INDEX idx_dna4_gin ON test_dna4_sequences USING gin (sequence);
+-- With k=16 and occur_bitlen=8, total bits = 16*2+8 = 40, so we need int8 operator class
+CREATE INDEX idx_dna2_gin ON test_dna2_sequences USING gin (sequence kmersearch_dna2_gin_ops_int8);
+CREATE INDEX idx_dna4_gin ON test_dna4_sequences USING gin (sequence kmersearch_dna4_gin_ops_int8);
 -- Verify indexes exist
 SELECT indexname, tablename FROM pg_indexes 
 WHERE indexname IN ('idx_dna2_gin', 'idx_dna4_gin')

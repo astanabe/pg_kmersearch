@@ -32,7 +32,8 @@ INSERT INTO test_cache_hierarchy (test_seq) VALUES
     ('AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'::dna2),
     ('AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'::dna2);
 -- Create GIN index (using kmer_size=4)
-CREATE INDEX test_cache_hierarchy_gin_idx ON test_cache_hierarchy USING gin (test_seq);
+-- With k=4 and occur_bitlen=8, total bits = 4*2+8 = 16, so we can use int2 operator class
+CREATE INDEX test_cache_hierarchy_gin_idx ON test_cache_hierarchy USING gin (test_seq kmersearch_dna2_gin_ops_int2);
 -- Test Phase 1: No metadata scenario (should work with table fallback)
 SELECT 'Phase 1: Testing without metadata table...' as test_phase;
                  test_phase                 

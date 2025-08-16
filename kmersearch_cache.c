@@ -45,7 +45,7 @@ static uint32 kmersearch_uint32_identity_hash(const void *key, size_t keysize, v
 static void init_query_pattern_cache_manager(QueryPatternCacheManager **manager);
 static uint64 generate_query_pattern_cache_key(const char *query_string, int k_size);
 static QueryPatternCacheEntry *lookup_query_pattern_cache_entry(QueryPatternCacheManager *manager, const char *query_string, int k_size);
-static void store_query_pattern_cache_entry(QueryPatternCacheManager *manager, uint64 hash_key, const char *query_string, int k_size, VarBit **kmers, int kmer_count);
+static void store_query_pattern_cache_entry(QueryPatternCacheManager *manager, uint64 hash_key, const char *query_string, int k_size, void *uintkeys, int kmer_count);
 static void lru_touch_query_pattern_cache(QueryPatternCacheManager *manager, QueryPatternCacheEntry *entry);
 static void lru_evict_oldest_query_pattern_cache(QueryPatternCacheManager *manager);
 void free_query_pattern_cache_manager(QueryPatternCacheManager **manager);
@@ -53,6 +53,7 @@ void free_query_pattern_cache_manager(QueryPatternCacheManager **manager);
 /* Actual min score cache functions */
 static void create_actual_min_score_cache_manager(ActualMinScoreCacheManager **manager);
 void free_actual_min_score_cache_manager(ActualMinScoreCacheManager **manager);
+static int calculate_actual_min_score_from_uintkey(void *uintkey, int nkeys, int k_size);
 
 /* High-frequency k-mer cache functions */
 void kmersearch_highfreq_kmer_cache_init(void);
@@ -165,7 +166,6 @@ lru_evict_oldest_query_pattern_cache(QueryPatternCacheManager *manager)
 {
     QueryPatternCacheEntry *tail = manager->lru_tail;
     bool found;
-    int i;
     
     if (!tail)
         return;
@@ -183,15 +183,8 @@ lru_evict_oldest_query_pattern_cache(QueryPatternCacheManager *manager)
     /* Free allocated memory */
     if (tail->query_string_copy)
         pfree(tail->query_string_copy);
-    if (tail->extracted_kmers)
-    {
-        for (i = 0; i < tail->kmer_count; i++)
-        {
-            if (tail->extracted_kmers[i])
-                pfree(tail->extracted_kmers[i]);
-        }
-        pfree(tail->extracted_kmers);
-    }
+    if (tail->extracted_uintkey)
+        pfree(tail->extracted_uintkey);
     
     manager->current_entries--;
 }
@@ -224,12 +217,12 @@ lookup_query_pattern_cache_entry(QueryPatternCacheManager *manager, const char *
  */
 static void
 store_query_pattern_cache_entry(QueryPatternCacheManager *manager, uint64 hash_key, 
-                               const char *query_string, int k_size, VarBit **kmers, int kmer_count)
+                               const char *query_string, int k_size, void *uintkeys, int kmer_count)
 {
     QueryPatternCacheEntry *entry;
     MemoryContext old_context;
     bool found;
-    int i;
+    size_t uintkey_size;
     
     /* Evict oldest entries if cache is full */
     while (manager->current_entries >= manager->max_entries)
@@ -246,13 +239,17 @@ store_query_pattern_cache_entry(QueryPatternCacheManager *manager, uint64 hash_k
         entry->kmer_size = k_size;
         entry->kmer_count = kmer_count;
         
-        /* Copy k-mers */
-        entry->extracted_kmers = (VarBit **) palloc(kmer_count * sizeof(VarBit *));
-        for (i = 0; i < kmer_count; i++)
-        {
-            entry->extracted_kmers[i] = (VarBit *) palloc(VARSIZE(kmers[i]));
-            memcpy(entry->extracted_kmers[i], kmers[i], VARSIZE(kmers[i]));
-        }
+        /* Determine size of uintkey array based on k_size */
+        if (k_size <= 8)
+            uintkey_size = kmer_count * sizeof(uint16);
+        else if (k_size <= 16)
+            uintkey_size = kmer_count * sizeof(uint32);
+        else
+            uintkey_size = kmer_count * sizeof(uint64);
+        
+        /* Copy uintkey array */
+        entry->extracted_uintkey = palloc(uintkey_size);
+        memcpy(entry->extracted_uintkey, uintkeys, uintkey_size);
         
         /* Add to LRU chain */
         entry->prev = NULL;
@@ -270,16 +267,14 @@ store_query_pattern_cache_entry(QueryPatternCacheManager *manager, uint64 hash_k
 }
 
 /*
- * Get cached query k-mers or extract and cache them
+ * Get cached query uintkeys or extract and cache them
  */
-VarBit **
-get_cached_query_kmer(const char *query_string, int k_size, int *nkeys)
+void *
+get_cached_query_uintkey(const char *query_string, int k_size, int *nkeys)
 {
     QueryPatternCacheEntry *cache_entry;
-    VarBit **result_kmers = NULL;
-    VarBit **extracted_kmers = NULL;
+    void *extracted_uintkeys = NULL;
     uint64 hash_key;
-    int i;
     MemoryContext old_context;
     
     *nkeys = 0;
@@ -296,37 +291,33 @@ get_cached_query_kmer(const char *query_string, int k_size, int *nkeys)
     cache_entry = lookup_query_pattern_cache_entry(query_pattern_cache_manager, query_string, k_size);
     if (cache_entry != NULL)
     {
-        /* Cache hit - return pointers to cached k-mers directly */
+        /* Cache hit - return pointer to cached uintkeys directly */
         *nkeys = cache_entry->kmer_count;
-        return cache_entry->extracted_kmers;
+        return cache_entry->extracted_uintkey;
     }
     
-    /* Cache miss - extract k-mers and store in cache */
+    /* Cache miss - extract uintkeys and store in cache */
     query_pattern_cache_manager->misses++;
-    extracted_kmers = kmersearch_extract_query_ngram_key2(query_string, k_size, nkeys);
+    kmersearch_extract_uintkey_from_text(query_string, &extracted_uintkeys, nkeys);
     
-    if (extracted_kmers != NULL && *nkeys > 0)
+    if (extracted_uintkeys != NULL && *nkeys > 0)
     {
         /* Store in cache */
         hash_key = generate_query_pattern_cache_key(query_string, k_size);
         store_query_pattern_cache_entry(query_pattern_cache_manager, hash_key, 
-                                       query_string, k_size, extracted_kmers, *nkeys);
+                                       query_string, k_size, extracted_uintkeys, *nkeys);
         
-        /* Find the cache entry we just stored and return its k-mers */
+        /* Find the cache entry we just stored and return its uintkeys */
         cache_entry = lookup_query_pattern_cache_entry(query_pattern_cache_manager, query_string, k_size);
         if (cache_entry != NULL) {
-            /* Free the original extracted k-mers (cache has its own copy) */
-            for (i = 0; i < *nkeys; i++)
-            {
-                pfree(extracted_kmers[i]);
-            }
-            pfree(extracted_kmers);
+            /* Free the original extracted uintkeys (cache has its own copy) */
+            pfree(extracted_uintkeys);
             
-            return cache_entry->extracted_kmers;
+            return cache_entry->extracted_uintkey;
         }
     }
     
-    return extracted_kmers;
+    return extracted_uintkeys;
 }
 
 /*
@@ -675,6 +666,266 @@ get_cached_actual_min_score_datum(Datum *queryKeys, int nkeys)
     
     actual_min_score_cache_manager->hits++;
     
+    return cache_entry->actual_min_score;
+}
+
+/*
+ * Calculate actual min score from uintkey array
+ * Helper function for cache miss case
+ */
+static int
+calculate_actual_min_score_from_uintkey(void *uintkey, int nkeys, int k_size)
+{
+    int base_min_score;
+    int highfreq_count = 0;
+    int actual_min_score;
+    int absolute_min = kmersearch_min_score;
+    int relative_min = 0;
+    int query_total_kmers = nkeys;
+    
+    /* Calculate base minimum score (maximum of absolute and relative) */
+    if (query_total_kmers > 0)
+    {
+        double relative_threshold = kmersearch_min_shared_ngram_key_rate * query_total_kmers;
+        relative_min = (int)ceil(relative_threshold);
+    }
+    
+    base_min_score = (absolute_min > relative_min) ? absolute_min : relative_min;
+    
+    /* If high-frequency k-mer filtering is enabled, subtract high-frequency k-mer count */
+    if (kmersearch_is_highfreq_filtering_enabled())
+    {
+        /* Count high-frequency k-mers */
+        if (k_size <= 8)
+        {
+            uint16 *keys = (uint16 *)uintkey;
+            for (int i = 0; i < nkeys; i++)
+            {
+                if (kmersearch_is_uintkey_highfreq((uint64)keys[i], k_size))
+                    highfreq_count++;
+            }
+        }
+        else if (k_size <= 16)
+        {
+            uint32 *keys = (uint32 *)uintkey;
+            for (int i = 0; i < nkeys; i++)
+            {
+                if (kmersearch_is_uintkey_highfreq((uint64)keys[i], k_size))
+                    highfreq_count++;
+            }
+        }
+        else
+        {
+            uint64 *keys = (uint64 *)uintkey;
+            for (int i = 0; i < nkeys; i++)
+            {
+                if (kmersearch_is_uintkey_highfreq(keys[i], k_size))
+                    highfreq_count++;
+            }
+        }
+        
+        actual_min_score = base_min_score - highfreq_count;
+        
+        /* Ensure minimum value of 1 */
+        if (actual_min_score < 1)
+        {
+            actual_min_score = 1;
+        }
+    }
+    else
+    {
+        actual_min_score = base_min_score;
+    }
+    
+    return actual_min_score;
+}
+
+/*
+ * Get cached actual_min_score from uintkey array
+ * For use with new uintkey-based extraction
+ */
+int
+get_cached_actual_min_score_uintkey(void *uintkey, int nkeys, int k_size)
+{
+    ActualMinScoreCacheEntry *cache_entry;
+    uint64 query_hash = 0;
+    MemoryContext old_context;
+    
+    /* Initialize cache manager if needed */
+    if (actual_min_score_cache_manager == NULL)
+    {
+        old_context = MemoryContextSwitchTo(TopMemoryContext);
+        create_actual_min_score_cache_manager(&actual_min_score_cache_manager);
+        MemoryContextSwitchTo(old_context);
+    }
+    
+    /* Calculate hash based on k_size to determine uintkey type */
+    if (k_size <= 8)
+    {
+        uint16 *keys = (uint16 *)uintkey;
+        for (int i = 0; i < nkeys; i++)
+            query_hash = query_hash * 31 + keys[i];
+    }
+    else if (k_size <= 16)
+    {
+        uint32 *keys = (uint32 *)uintkey;
+        for (int i = 0; i < nkeys; i++)
+            query_hash = query_hash * 31 + keys[i];
+    }
+    else
+    {
+        uint64 *keys = (uint64 *)uintkey;
+        for (int i = 0; i < nkeys; i++)
+            query_hash = query_hash * 31 + keys[i];
+    }
+    
+    /* Look up in cache */
+    cache_entry = (ActualMinScoreCacheEntry *) hash_search(actual_min_score_cache_manager->cache_hash,
+                                                          &query_hash, HASH_FIND, NULL);
+    
+    if (cache_entry == NULL)
+    {
+        /* Cache miss - calculate and store */
+        int actual_min_score = calculate_actual_min_score_from_uintkey(uintkey, nkeys, k_size);
+        bool found;
+        
+        old_context = MemoryContextSwitchTo(actual_min_score_cache_manager->cache_context);
+        cache_entry = (ActualMinScoreCacheEntry *) hash_search(actual_min_score_cache_manager->cache_hash,
+                                                              &query_hash, HASH_ENTER, &found);
+        if (cache_entry != NULL && !found) {
+            cache_entry->query_hash = query_hash;
+            cache_entry->actual_min_score = actual_min_score;
+            actual_min_score_cache_manager->current_entries++;
+        }
+        MemoryContextSwitchTo(old_context);
+        
+        actual_min_score_cache_manager->misses++;
+    }
+    else
+    {
+        actual_min_score_cache_manager->hits++;
+    }
+    
+    return cache_entry->actual_min_score;
+}
+
+/*
+ * Get cached actual_min_score from int2 Datum array
+ */
+int
+get_cached_actual_min_score_datum_int2(Datum *queryKeys, int nkeys)
+{
+    ActualMinScoreCacheEntry *cache_entry;
+    uint64 query_hash = 0;
+    
+    /* Initialize cache manager if needed */
+    if (actual_min_score_cache_manager == NULL)
+    {
+        MemoryContext old_context = MemoryContextSwitchTo(TopMemoryContext);
+        create_actual_min_score_cache_manager(&actual_min_score_cache_manager);
+        MemoryContextSwitchTo(old_context);
+    }
+    
+    /* Calculate hash from int2 values */
+    for (int i = 0; i < nkeys; i++)
+    {
+        int16 key = DatumGetInt16(queryKeys[i]);
+        query_hash = query_hash * 31 + key;
+    }
+    
+    /* Look up in cache */
+    cache_entry = (ActualMinScoreCacheEntry *) hash_search(actual_min_score_cache_manager->cache_hash,
+                                                          &query_hash, HASH_FIND, NULL);
+    
+    if (cache_entry == NULL)
+    {
+        ereport(ERROR,
+                (errcode(ERRCODE_INTERNAL_ERROR),
+                 errmsg("actual_min_score not found in cache for int2"),
+                 errdetail("Query hash: %lu, nkeys: %d", query_hash, nkeys)));
+    }
+    
+    actual_min_score_cache_manager->hits++;
+    return cache_entry->actual_min_score;
+}
+
+/*
+ * Get cached actual_min_score from int4 Datum array
+ */
+int
+get_cached_actual_min_score_datum_int4(Datum *queryKeys, int nkeys)
+{
+    ActualMinScoreCacheEntry *cache_entry;
+    uint64 query_hash = 0;
+    
+    /* Initialize cache manager if needed */
+    if (actual_min_score_cache_manager == NULL)
+    {
+        MemoryContext old_context = MemoryContextSwitchTo(TopMemoryContext);
+        create_actual_min_score_cache_manager(&actual_min_score_cache_manager);
+        MemoryContextSwitchTo(old_context);
+    }
+    
+    /* Calculate hash from int4 values */
+    for (int i = 0; i < nkeys; i++)
+    {
+        int32 key = DatumGetInt32(queryKeys[i]);
+        query_hash = query_hash * 31 + key;
+    }
+    
+    /* Look up in cache */
+    cache_entry = (ActualMinScoreCacheEntry *) hash_search(actual_min_score_cache_manager->cache_hash,
+                                                          &query_hash, HASH_FIND, NULL);
+    
+    if (cache_entry == NULL)
+    {
+        ereport(ERROR,
+                (errcode(ERRCODE_INTERNAL_ERROR),
+                 errmsg("actual_min_score not found in cache for int4"),
+                 errdetail("Query hash: %lu, nkeys: %d", query_hash, nkeys)));
+    }
+    
+    actual_min_score_cache_manager->hits++;
+    return cache_entry->actual_min_score;
+}
+
+/*
+ * Get cached actual_min_score from int8 Datum array
+ */
+int
+get_cached_actual_min_score_datum_int8(Datum *queryKeys, int nkeys)
+{
+    ActualMinScoreCacheEntry *cache_entry;
+    uint64 query_hash = 0;
+    
+    /* Initialize cache manager if needed */
+    if (actual_min_score_cache_manager == NULL)
+    {
+        MemoryContext old_context = MemoryContextSwitchTo(TopMemoryContext);
+        create_actual_min_score_cache_manager(&actual_min_score_cache_manager);
+        MemoryContextSwitchTo(old_context);
+    }
+    
+    /* Calculate hash from int8 values */
+    for (int i = 0; i < nkeys; i++)
+    {
+        int64 key = DatumGetInt64(queryKeys[i]);
+        query_hash = query_hash * 31 + key;
+    }
+    
+    /* Look up in cache */
+    cache_entry = (ActualMinScoreCacheEntry *) hash_search(actual_min_score_cache_manager->cache_hash,
+                                                          &query_hash, HASH_FIND, NULL);
+    
+    if (cache_entry == NULL)
+    {
+        ereport(ERROR,
+                (errcode(ERRCODE_INTERNAL_ERROR),
+                 errmsg("actual_min_score not found in cache for int8"),
+                 errdetail("Query hash: %lu, nkeys: %d", query_hash, nkeys)));
+    }
+    
+    actual_min_score_cache_manager->hits++;
     return cache_entry->actual_min_score;
 }
 

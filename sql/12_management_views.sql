@@ -30,7 +30,8 @@ INSERT INTO test_analysis_dna2 (name, sequence) VALUES
     ('seq3', 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCG');
 
 -- Create GIN index
-CREATE INDEX idx_test_analysis_gin ON test_analysis_dna2 USING gin (sequence);
+-- With k=4 and occur_bitlen=8 (default), total bits = 4*2+8 = 16, so we can use int2 operator class
+CREATE INDEX idx_test_analysis_gin ON test_analysis_dna2 USING gin (sequence kmersearch_dna2_gin_ops_int2);
 
 -- Test kmersearch_perform_highfreq_analysis with complex return type
 SELECT 'Testing kmersearch_perform_highfreq_analysis return type...' as test_phase;

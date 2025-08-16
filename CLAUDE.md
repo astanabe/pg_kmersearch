@@ -27,6 +27,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - Unnecessary memory copying and data conversions are forbidden - always minimize memory allocations and data copies
 - In GIN consistent functions, any data conversion or transformation is absolutely prohibited - use data as-is
 
+## Code Analysis Requirements
+
+**IMPORTANT**: When analyzing code:
+- Statements about "possibilities" must always be verified and confirmed with certainty
+- Never use uncertain phrases like "might be used", "possibly", "may be" without immediate verification
+- Always check actual usage with grep, read, or other tools to provide definitive answers
+- If something cannot be determined with certainty, explicitly state what needs to be checked
+
 ## Important Development Assumptions
 
 **Extension Version Management:**
@@ -152,3 +160,27 @@ Key aspects of SIMD implementation:
 - Continuous optimization of memory allocation patterns
 - Memory alignment considerations for SIMD operations
 - Efficient memory pool management for SIMD contexts
+
+## Error Recovery and Version Control
+
+**CRITICAL**: When errors or incorrect deletions occur:
+- **DO NOT** attempt to fix errors by creating workarounds or patches
+- **DO NOT** try to cover up mistakes with compensatory changes
+- **IMMEDIATELY** restore from backup or git repository to the previous working state
+- **ALWAYS** create backups before making significant deletions or changes
+- Use `git status`, `git diff`, and `git log` to track changes
+- When a function is accidentally deleted, restore it from git history or backup, do not recreate it from scratch
+
+Example recovery workflow:
+```bash
+# Check what was changed
+git status
+git diff
+
+# If accidental deletion occurred, restore from git
+git checkout -- <filename>  # Restore single file
+git reset --hard HEAD       # Restore entire working directory
+
+# If no git history, restore from backup
+cp <backup_file> <original_file>
+```

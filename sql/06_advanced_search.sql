@@ -18,7 +18,8 @@ INSERT INTO test_k6_sequences (name, sequence) VALUES
     ('k6_test1', 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA'),
     ('k6_test2', 'GCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTA');
 
-CREATE INDEX idx_k6_gin ON test_k6_sequences USING gin (sequence);
+-- With k=6 and occur_bitlen=8 (default), total bits = 6*2+8 = 20, so we need int4 operator class
+CREATE INDEX idx_k6_gin ON test_k6_sequences USING gin (sequence kmersearch_dna2_gin_ops_int4);
 
 -- Test search with k=6
 SELECT id, name FROM test_k6_sequences WHERE sequence =% 'ATCGATCG' ORDER BY id;
@@ -41,7 +42,8 @@ INSERT INTO test_k6_sequences_2 (name, sequence) VALUES
     ('k6_test1', 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA'),
     ('k6_test2', 'GCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTA');
 
-CREATE INDEX idx_k6_gin_2 ON test_k6_sequences_2 USING gin (sequence);
+-- With k=6 and occur_bitlen=8 (default), total bits = 6*2+8 = 20, so we need int4 operator class
+CREATE INDEX idx_k6_gin_2 ON test_k6_sequences_2 USING gin (sequence kmersearch_dna2_gin_ops_int4);
 
 -- Test search with k=6
 SELECT id, name FROM test_k6_sequences_2 WHERE sequence =% 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA' ORDER BY id;

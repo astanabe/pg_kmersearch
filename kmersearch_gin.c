@@ -10,18 +10,83 @@
  */
 
 #include "kmersearch.h"
+#include "executor/spi.h"
+#include "lib/stringinfo.h"
 
 /* PostgreSQL function info declarations for GIN functions */
-PG_FUNCTION_INFO_V1(kmersearch_extract_value_dna2);
-PG_FUNCTION_INFO_V1(kmersearch_extract_value_dna4);
-PG_FUNCTION_INFO_V1(kmersearch_extract_query);
-PG_FUNCTION_INFO_V1(kmersearch_consistent);
-PG_FUNCTION_INFO_V1(kmersearch_compare_partial);
+
+/* Uintkey-based GIN functions */
+PG_FUNCTION_INFO_V1(kmersearch_extract_value_dna2_int2);
+PG_FUNCTION_INFO_V1(kmersearch_extract_value_dna2_int4);
+PG_FUNCTION_INFO_V1(kmersearch_extract_value_dna2_int8);
+PG_FUNCTION_INFO_V1(kmersearch_extract_value_dna4_int2);
+PG_FUNCTION_INFO_V1(kmersearch_extract_value_dna4_int4);
+PG_FUNCTION_INFO_V1(kmersearch_extract_value_dna4_int8);
+PG_FUNCTION_INFO_V1(kmersearch_extract_query_int2);
+PG_FUNCTION_INFO_V1(kmersearch_extract_query_int4);
+PG_FUNCTION_INFO_V1(kmersearch_extract_query_int8);
+PG_FUNCTION_INFO_V1(kmersearch_consistent_int2);
+PG_FUNCTION_INFO_V1(kmersearch_consistent_int4);
+PG_FUNCTION_INFO_V1(kmersearch_consistent_int8);
 
 /*
  * Forward declarations for static functions
  */
 static bool kmersearch_is_highfreq_kmer_parallel(VarBit *ngram_key);
+static void check_operator_class_compatibility(const char *opclass_type);
+
+/*
+ * Check operator class compatibility with current GUC settings
+ */
+static void
+check_operator_class_compatibility(const char *opclass_type)
+{
+    int k_size = kmersearch_kmer_size;
+    int occur_bitlen = kmersearch_occur_bitlen;
+    int total_bits = k_size * 2 + occur_bitlen;
+    int storage_bits;
+    const char *optimal_type;
+    
+    /* Determine storage size based on operator class type */
+    if (strcmp(opclass_type, "int2") == 0)
+        storage_bits = 16;
+    else if (strcmp(opclass_type, "int4") == 0)
+        storage_bits = 32;
+    else if (strcmp(opclass_type, "int8") == 0)
+        storage_bits = 64;
+    else
+        return; /* Unknown type, skip check */
+    
+    /* Determine optimal operator class */
+    if (total_bits <= 16)
+        optimal_type = "int2";
+    else if (total_bits <= 32)
+        optimal_type = "int4";
+    else
+        optimal_type = "int8";
+    
+    /* Check if storage is sufficient */
+    if (total_bits > storage_bits)
+    {
+        ereport(ERROR,
+                (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+                 errmsg("operator class kmersearch_*_gin_ops_%s cannot store current configuration", opclass_type),
+                 errdetail("Required bits: %d (kmer_size=%d * 2 + occur_bitlen=%d), Storage capacity: %d bits",
+                          total_bits, k_size, occur_bitlen, storage_bits),
+                 errhint("Use kmersearch_*_gin_ops_%s operator class for this configuration", optimal_type)));
+    }
+    
+    /* Error if not using optimal storage */
+    if (strcmp(opclass_type, optimal_type) != 0)
+    {
+        ereport(ERROR,
+                (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+                 errmsg("operator class kmersearch_*_gin_ops_%s is not optimal for current configuration", opclass_type),
+                 errdetail("Current configuration requires %d bits (kmer_size=%d * 2 + occur_bitlen=%d)",
+                          total_bits, k_size, occur_bitlen),
+                 errhint("Use kmersearch_*_gin_ops_%s operator class for optimal performance and memory usage", optimal_type)));
+    }
+}
 
 /*
  * Get index information from index OID
@@ -81,277 +146,369 @@ kmersearch_get_index_info(Oid index_oid, Oid *table_oid, char **column_name, int
 
 
 /*
- * GIN extract_value function for DNA2
- * Note: Exclusion filtering is applied separately after index creation
- * via kmersearch_analyze_table() and related functions
+ * New uintkey-based GIN extract_value functions for DNA2
  */
 Datum
-kmersearch_extract_value_dna2(PG_FUNCTION_ARGS)
+kmersearch_extract_value_dna2_int2(PG_FUNCTION_ARGS)
 {
-    kmersearch_dna2 *dna = (kmersearch_dna2 *) PG_DETOAST_DATUM(PG_GETARG_DATUM(0));
+    VarBit *dna = PG_GETARG_VARBIT_P(0);
     int32 *nkeys = (int32 *) PG_GETARG_POINTER(1);
-    
-    Datum *keys;
-    void *kmer_uint_array;
-    int kmer_uint_count;
-    KmerOccurrence *occurrences;
-    int max_occurrences;
-    int final_count = 0;
+    void *uintkey = NULL;
+    Datum *keys = NULL;
+    uint16 *uint16_keys;
     int i;
     
-    if (kmersearch_kmer_size < 4 || kmersearch_kmer_size > 32)
-        ereport(ERROR, (errmsg("k-mer length must be between 4 and 32")));
+    /* Check operator class compatibility */
+    check_operator_class_compatibility("int2");
     
-    if (kmersearch_preclude_highfreq_kmer) {
-        /* New optimized flow: extract uint k-mers and filter before VarBit creation */
-        kmersearch_extract_dna2_kmer2_as_uint_direct((VarBit *)dna, kmersearch_kmer_size, &kmer_uint_array, &kmer_uint_count);
-        
-        if (kmer_uint_count == 0) {
-            *nkeys = 0;
-            PG_RETURN_POINTER(NULL);
-        }
-        
-        /* Initialize occurrence tracking */
-        max_occurrences = kmer_uint_count;
-        occurrences = (KmerOccurrence *) palloc(max_occurrences * sizeof(KmerOccurrence));
-        
-        /* Process each uint k-mer */
-        for (i = 0; i < kmer_uint_count; i++) {
-            uint64 kmer_uint;
-            bool is_high_frequency = false;
-            
-            /* Extract k-mer based on size */
-            if (kmersearch_kmer_size <= 8) {
-                kmer_uint = ((uint16 *)kmer_uint_array)[i];
-            } else if (kmersearch_kmer_size <= 16) {
-                kmer_uint = ((uint32 *)kmer_uint_array)[i];
-            } else {
-                kmer_uint = ((uint64 *)kmer_uint_array)[i];
-            }
-            
-            /* Check cache */
-            if (kmersearch_force_use_parallel_highfreq_kmer_cache || IsParallelWorker()) {
-                if (parallel_highfreq_cache && parallel_highfreq_cache->is_initialized) {
-                    is_high_frequency = kmersearch_lookup_uintkey_in_parallel_cache(kmer_uint, NULL, NULL);
-                } else {
-                    ereport(ERROR,
-                            (errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-                             errmsg("parallel high-frequency k-mer cache is not initialized"),
-                             errhint("Use kmersearch_parallel_highfreq_kmers_cache_load() to create the cache first.")));
-                }
-            } else {
-                if (global_highfreq_cache.is_valid) {
-                    is_high_frequency = kmersearch_lookup_uintkey_in_global_cache(kmer_uint, NULL, NULL);
-                } else {
-                    ereport(ERROR,
-                            (errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-                             errmsg("global high-frequency k-mer cache is not initialized"),
-                             errhint("Use kmersearch_highfreq_kmers_cache_load() to create the cache first.")));
-                }
-            }
-            
-            /* Skip high-frequency k-mers */
-            if (is_high_frequency)
-                continue;
-            
-            /* Track occurrence count */
-            kmersearch_find_or_add_kmer_occurrence(occurrences, &final_count, kmer_uint, max_occurrences);
-        }
-        
-        /* Create final ngram_key2 array */
-        if (final_count > 0) {
-            keys = (Datum *) palloc(final_count * sizeof(Datum));
-            for (i = 0; i < final_count; i++) {
-                VarBit *ngram_key = kmersearch_create_ngram_key2_from_kmer2_as_uint(
-                    occurrences[i].kmer_value, kmersearch_kmer_size, occurrences[i].count);
-                keys[i] = PointerGetDatum(ngram_key);
-            }
-        } else {
-            keys = NULL;
-        }
-        
-        /* Cleanup */
-        pfree(kmer_uint_array);
-        pfree(occurrences);
-        
-        *nkeys = final_count;
-    } else {
-        /* Original flow: extract ngram_key2 directly without filtering */
-        keys = kmersearch_extract_dna2_ngram_key2_direct((VarBit *)dna, kmersearch_kmer_size, nkeys);
+    /* Extract uintkey array directly */
+    kmersearch_extract_uintkey_from_dna2(dna, &uintkey, nkeys);
+    
+    if (uintkey == NULL || *nkeys == 0)
+    {
+        PG_RETURN_POINTER(NULL);
     }
     
-    if (*nkeys == 0)
-        PG_RETURN_POINTER(NULL);
+    /* Convert to Datum array */
+    uint16_keys = (uint16 *)uintkey;
+    keys = (Datum *) palloc(*nkeys * sizeof(Datum));
+    for (i = 0; i < *nkeys; i++)
+    {
+        keys[i] = Int16GetDatum(uint16_keys[i]);
+    }
     
+    pfree(uintkey);
+    PG_RETURN_POINTER(keys);
+}
+
+Datum
+kmersearch_extract_value_dna2_int4(PG_FUNCTION_ARGS)
+{
+    VarBit *dna = PG_GETARG_VARBIT_P(0);
+    int32 *nkeys = (int32 *) PG_GETARG_POINTER(1);
+    void *uintkey = NULL;
+    Datum *keys = NULL;
+    uint32 *uint32_keys;
+    int i;
+    
+    /* Check operator class compatibility */
+    check_operator_class_compatibility("int4");
+    
+    /* Extract uintkey array directly */
+    kmersearch_extract_uintkey_from_dna2(dna, &uintkey, nkeys);
+    
+    if (uintkey == NULL || *nkeys == 0)
+    {
+        PG_RETURN_POINTER(NULL);
+    }
+    
+    /* Convert to Datum array */
+    uint32_keys = (uint32 *)uintkey;
+    keys = (Datum *) palloc(*nkeys * sizeof(Datum));
+    for (i = 0; i < *nkeys; i++)
+    {
+        keys[i] = Int32GetDatum(uint32_keys[i]);
+    }
+    
+    pfree(uintkey);
+    PG_RETURN_POINTER(keys);
+}
+
+Datum
+kmersearch_extract_value_dna2_int8(PG_FUNCTION_ARGS)
+{
+    VarBit *dna = PG_GETARG_VARBIT_P(0);
+    int32 *nkeys = (int32 *) PG_GETARG_POINTER(1);
+    void *uintkey = NULL;
+    Datum *keys = NULL;
+    uint64 *uint64_keys;
+    int i;
+    
+    /* Check operator class compatibility */
+    check_operator_class_compatibility("int8");
+    
+    /* Extract uintkey array directly */
+    kmersearch_extract_uintkey_from_dna2(dna, &uintkey, nkeys);
+    
+    if (uintkey == NULL || *nkeys == 0)
+    {
+        PG_RETURN_POINTER(NULL);
+    }
+    
+    /* Convert to Datum array */
+    uint64_keys = (uint64 *)uintkey;
+    keys = (Datum *) palloc(*nkeys * sizeof(Datum));
+    for (i = 0; i < *nkeys; i++)
+    {
+        keys[i] = Int64GetDatum(uint64_keys[i]);
+    }
+    
+    pfree(uintkey);
     PG_RETURN_POINTER(keys);
 }
 
 /*
- * GIN extract_value function for DNA4
- * Note: Exclusion filtering is applied separately after index creation
- * via kmersearch_analyze_table() and related functions
+ * New uintkey-based GIN extract_value functions for DNA4
  */
 Datum
-kmersearch_extract_value_dna4(PG_FUNCTION_ARGS)
+kmersearch_extract_value_dna4_int2(PG_FUNCTION_ARGS)
 {
-    kmersearch_dna4 *dna = (kmersearch_dna4 *) PG_DETOAST_DATUM(PG_GETARG_DATUM(0));
+    VarBit *dna = PG_GETARG_VARBIT_P(0);
     int32 *nkeys = (int32 *) PG_GETARG_POINTER(1);
-    
-    Datum *keys;
-    void *kmer_uint_array;
-    int kmer_uint_count;
-    KmerOccurrence *occurrences;
-    int max_occurrences;
-    int final_count = 0;
+    void *uintkey = NULL;
+    Datum *keys = NULL;
+    uint16 *uint16_keys;
     int i;
     
-    if (kmersearch_kmer_size < 4 || kmersearch_kmer_size > 32)
-        ereport(ERROR, (errmsg("k-mer length must be between 4 and 32")));
+    /* Check operator class compatibility */
+    check_operator_class_compatibility("int2");
     
-    if (kmersearch_preclude_highfreq_kmer) {
-        /* New optimized flow: extract uint k-mers and filter before VarBit creation */
-        kmersearch_extract_dna4_kmer2_as_uint_with_expansion_direct((VarBit *)dna, kmersearch_kmer_size, &kmer_uint_array, &kmer_uint_count);
-        
-        elog(DEBUG1, "kmersearch_extract_value_dna4: extracted %d k-mers after expansion", kmer_uint_count);
-        
-        if (kmer_uint_count == 0) {
-            *nkeys = 0;
-            PG_RETURN_POINTER(NULL);
-        }
-        
-        /* Initialize occurrence tracking */
-        max_occurrences = kmer_uint_count;
-        occurrences = (KmerOccurrence *) palloc(max_occurrences * sizeof(KmerOccurrence));
-        
-        /* Process each expanded uint k-mer */
-        for (i = 0; i < kmer_uint_count; i++) {
-            uint64 kmer_uint;
-            bool is_high_frequency = false;
-            
-            /* Extract k-mer based on size */
-            if (kmersearch_kmer_size <= 8) {
-                kmer_uint = ((uint16 *)kmer_uint_array)[i];
-            } else if (kmersearch_kmer_size <= 16) {
-                kmer_uint = ((uint32 *)kmer_uint_array)[i];
-            } else {
-                kmer_uint = ((uint64 *)kmer_uint_array)[i];
-            }
-            
-            /* Check cache */
-            if (kmersearch_force_use_parallel_highfreq_kmer_cache || IsParallelWorker()) {
-                if (parallel_highfreq_cache && parallel_highfreq_cache->is_initialized) {
-                    is_high_frequency = kmersearch_lookup_uintkey_in_parallel_cache(kmer_uint, NULL, NULL);
-                } else {
-                    ereport(ERROR,
-                            (errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-                             errmsg("parallel high-frequency k-mer cache is not initialized"),
-                             errhint("Use kmersearch_parallel_highfreq_kmers_cache_load() to create the cache first.")));
-                }
-            } else {
-                if (global_highfreq_cache.is_valid) {
-                    is_high_frequency = kmersearch_lookup_uintkey_in_global_cache(kmer_uint, NULL, NULL);
-                } else {
-                    ereport(ERROR,
-                            (errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-                             errmsg("global high-frequency k-mer cache is not initialized"),
-                             errhint("Use kmersearch_highfreq_kmers_cache_load() to create the cache first.")));
-                }
-            }
-            
-            /* Skip high-frequency k-mers */
-            if (is_high_frequency)
-                continue;
-            
-            /* Track occurrence count */
-            kmersearch_find_or_add_kmer_occurrence(occurrences, &final_count, kmer_uint, max_occurrences);
-        }
-        
-        /* Create final ngram_key2 array */
-        if (final_count > 0) {
-            keys = (Datum *) palloc(final_count * sizeof(Datum));
-            for (i = 0; i < final_count; i++) {
-                VarBit *ngram_key = kmersearch_create_ngram_key2_from_kmer2_as_uint(
-                    occurrences[i].kmer_value, kmersearch_kmer_size, occurrences[i].count);
-                keys[i] = PointerGetDatum(ngram_key);
-            }
-        } else {
-            keys = NULL;
-        }
-        
-        /* Cleanup */
-        pfree(kmer_uint_array);
-        pfree(occurrences);
-        
-        *nkeys = final_count;
-    } else {
-        /* Original flow: extract ngram_key2 directly without filtering */
-        keys = kmersearch_extract_dna4_ngram_key2_with_expansion_direct((VarBit *)dna, kmersearch_kmer_size, nkeys);
-        elog(DEBUG1, "kmersearch_extract_value_dna4: extracted %d ngram keys without filtering", *nkeys);
+    /* Extract uintkey array directly */
+    kmersearch_extract_uintkey_from_dna4(dna, &uintkey, nkeys);
+    
+    if (uintkey == NULL || *nkeys == 0)
+    {
+        PG_RETURN_POINTER(NULL);
     }
     
-    if (*nkeys == 0)
-        PG_RETURN_POINTER(NULL);
+    /* Convert to Datum array */
+    uint16_keys = (uint16 *)uintkey;
+    keys = (Datum *) palloc(*nkeys * sizeof(Datum));
+    for (i = 0; i < *nkeys; i++)
+    {
+        keys[i] = Int16GetDatum(uint16_keys[i]);
+    }
     
+    pfree(uintkey);
+    PG_RETURN_POINTER(keys);
+}
+
+Datum
+kmersearch_extract_value_dna4_int4(PG_FUNCTION_ARGS)
+{
+    VarBit *dna = PG_GETARG_VARBIT_P(0);
+    int32 *nkeys = (int32 *) PG_GETARG_POINTER(1);
+    void *uintkey = NULL;
+    Datum *keys = NULL;
+    uint32 *uint32_keys;
+    int i;
+    
+    /* Check operator class compatibility */
+    check_operator_class_compatibility("int4");
+    
+    /* Extract uintkey array directly */
+    kmersearch_extract_uintkey_from_dna4(dna, &uintkey, nkeys);
+    
+    if (uintkey == NULL || *nkeys == 0)
+    {
+        PG_RETURN_POINTER(NULL);
+    }
+    
+    /* Convert to Datum array */
+    uint32_keys = (uint32 *)uintkey;
+    keys = (Datum *) palloc(*nkeys * sizeof(Datum));
+    for (i = 0; i < *nkeys; i++)
+    {
+        keys[i] = Int32GetDatum(uint32_keys[i]);
+    }
+    
+    pfree(uintkey);
+    PG_RETURN_POINTER(keys);
+}
+
+Datum
+kmersearch_extract_value_dna4_int8(PG_FUNCTION_ARGS)
+{
+    VarBit *dna = PG_GETARG_VARBIT_P(0);
+    int32 *nkeys = (int32 *) PG_GETARG_POINTER(1);
+    void *uintkey = NULL;
+    Datum *keys = NULL;
+    uint64 *uint64_keys;
+    int i;
+    
+    /* Check operator class compatibility */
+    check_operator_class_compatibility("int8");
+    
+    /* Extract uintkey array directly */
+    kmersearch_extract_uintkey_from_dna4(dna, &uintkey, nkeys);
+    
+    if (uintkey == NULL || *nkeys == 0)
+    {
+        PG_RETURN_POINTER(NULL);
+    }
+    
+    /* Convert to Datum array */
+    uint64_keys = (uint64 *)uintkey;
+    keys = (Datum *) palloc(*nkeys * sizeof(Datum));
+    for (i = 0; i < *nkeys; i++)
+    {
+        keys[i] = Int64GetDatum(uint64_keys[i]);
+    }
+    
+    pfree(uintkey);
     PG_RETURN_POINTER(keys);
 }
 
 /*
- * Filter high-frequency k-mers from query keys and set actual_min_score
- * 
- * Input: query_keys containing high-frequency k-mers
- * Output: filtered query_keys with high-frequency k-mers removed
- * Side effect: actual_min_score is cached with filtered keys as cache key
+ * Filter uintkey array and set actual_min_score in cache
+ * This function filters out high-frequency k-mers and caches the actual_min_score
  */
-VarBit **
-filter_ngram_key2_and_set_actual_min_score(VarBit **query_keys, int *nkeys, 
-                                           const char *query_string)
+void *
+filter_uintkey_and_set_actual_min_score(void *uintkey, int *nkeys, 
+                                        const char *query_string, int k_size)
 {
-    VarBit **filtered_keys;
-    int filtered_count = 0;
+    void *filtered_keys = NULL;
     int original_nkeys = *nkeys;
-    int actual_min_score;
+    int filtered_count = 0;
     int i;
     
-    if (!query_keys || *nkeys <= 0)
-        return query_keys;
+    if (!kmersearch_preclude_highfreq_kmer || uintkey == NULL || *nkeys == 0)
+        return uintkey;
     
-    /* Step 1: Calculate actual_min_score with original keys and cache it */
-    /* Note: get_cached_actual_min_score_uintarray will internally create cache key from filtered keys */
-    actual_min_score = get_cached_actual_min_score_uintarray(query_keys, *nkeys);
-    
-    /* Step 2: Filter out high-frequency k-mers if enabled */
-    if (!kmersearch_preclude_highfreq_kmer) {
-        /* High-frequency k-mer exclusion disabled - return original keys */
-        return query_keys;
-    }
-    
-    filtered_keys = (VarBit **) palloc(*nkeys * sizeof(VarBit *));
-    
-    for (i = 0; i < *nkeys; i++) {
-        if (!kmersearch_is_kmer_highfreq(query_keys[i])) {
-            filtered_keys[filtered_count++] = query_keys[i];
+    /* Allocate space for filtered keys based on k_size */
+    if (k_size <= 8)
+    {
+        uint16 *original = (uint16 *)uintkey;
+        uint16 *filtered = (uint16 *)palloc(*nkeys * sizeof(uint16));
+        
+        for (i = 0; i < *nkeys; i++)
+        {
+            if (!kmersearch_is_uintkey_highfreq((uint64)original[i], k_size))
+                filtered[filtered_count++] = original[i];
+        }
+        
+        if (filtered_count > 0)
+        {
+            filtered_keys = repalloc(filtered, filtered_count * sizeof(uint16));
+        }
+        else
+        {
+            pfree(filtered);
         }
     }
+    else if (k_size <= 16)
+    {
+        uint32 *original = (uint32 *)uintkey;
+        uint32 *filtered = (uint32 *)palloc(*nkeys * sizeof(uint32));
+        
+        for (i = 0; i < *nkeys; i++)
+        {
+            if (!kmersearch_is_uintkey_highfreq((uint64)original[i], k_size))
+                filtered[filtered_count++] = original[i];
+        }
+        
+        if (filtered_count > 0)
+        {
+            filtered_keys = repalloc(filtered, filtered_count * sizeof(uint32));
+        }
+        else
+        {
+            pfree(filtered);
+        }
+    }
+    else
+    {
+        uint64 *original = (uint64 *)uintkey;
+        uint64 *filtered = (uint64 *)palloc(*nkeys * sizeof(uint64));
+        
+        for (i = 0; i < *nkeys; i++)
+        {
+            if (!kmersearch_is_uintkey_highfreq(original[i], k_size))
+                filtered[filtered_count++] = original[i];
+        }
+        
+        if (filtered_count > 0)
+        {
+            filtered_keys = repalloc(filtered, filtered_count * sizeof(uint64));
+        }
+        else
+        {
+            pfree(filtered);
+        }
+    }
+    
+    /* Cache actual_min_score - this will be retrieved in consistent function */
+    /* Note: The actual_min_score calculation happens inside get_cached_actual_min_score_uintkey */
+    get_cached_actual_min_score_uintkey(filtered_keys ? filtered_keys : uintkey, 
+                                        filtered_keys ? filtered_count : *nkeys, k_size);
     
     *nkeys = filtered_count;
     
-    elog(DEBUG1, "filter_ngram_key2_and_set_actual_min_score: filtered %d high-freq k-mers from %d total, "
-                 "cached actual_min_score=%d", 
-         original_nkeys - filtered_count, original_nkeys, actual_min_score);
-    
-    if (filtered_count == 0) {
-        pfree(filtered_keys);
-        return NULL;
-    }
+    elog(DEBUG1, "filter_uintkey_and_set_actual_min_score: filtered %d high-freq k-mers from %d total", 
+         original_nkeys - filtered_count, original_nkeys);
     
     return filtered_keys;
 }
 
 /*
- * GIN extract_query function
+ * Check if a uintkey is high-frequency
+ */
+bool
+kmersearch_is_uintkey_highfreq(uint64 uintkey, int k_size)
+{
+    /* Extract just the k-mer portion (remove occurrence bits) */
+    uint64 kmer_only;
+    bool is_highfreq = false;
+    int ret;
+    
+    /* For uintkey format, k-mer is in higher bits, occurrence in lower bits */
+    kmer_only = uintkey >> kmersearch_occur_bitlen;
+    
+    /* Priority 1: Check in global cache (highest priority) */
+    if (global_highfreq_cache.is_valid && global_highfreq_cache.highfreq_hash) {
+        return kmersearch_lookup_uintkey_in_global_cache(kmer_only, NULL, NULL);
+    }
+    
+    /* Priority 2: Check in parallel cache */
+    if (kmersearch_is_parallel_highfreq_cache_loaded()) {
+        return kmersearch_lookup_uintkey_in_parallel_cache(kmer_only, NULL, NULL);
+    }
+    
+    /* Priority 3: Check kmersearch_highfreq_kmer table directly */
+    ret = SPI_connect();
+    if (ret == SPI_OK_CONNECT) {
+        StringInfoData query;
+        
+        initStringInfo(&query);
+        
+        /* Build query based on k-mer size */
+        if (k_size <= 8) {
+            appendStringInfo(&query,
+                "SELECT 1 FROM kmersearch_highfreq_kmer "
+                "WHERE uintkey = %u "
+                "LIMIT 1",
+                (unsigned int)kmer_only);
+        } else if (k_size <= 16) {
+            appendStringInfo(&query,
+                "SELECT 1 FROM kmersearch_highfreq_kmer "
+                "WHERE uintkey = %u "
+                "LIMIT 1", 
+                (unsigned int)kmer_only);
+        } else {
+            appendStringInfo(&query,
+                "SELECT 1 FROM kmersearch_highfreq_kmer "
+                "WHERE uintkey = %lu "
+                "LIMIT 1",
+                kmer_only);
+        }
+        
+        ret = SPI_execute(query.data, true, 1);
+        if (ret == SPI_OK_SELECT && SPI_processed > 0) {
+            is_highfreq = true;
+        }
+        
+        pfree(query.data);
+        SPI_finish();
+    }
+    
+    return is_highfreq;
+}
+
+/*
+ * New uintkey-based GIN extract_query functions
  */
 Datum
-kmersearch_extract_query(PG_FUNCTION_ARGS)
+kmersearch_extract_query_int2(PG_FUNCTION_ARGS)
 {
     Datum query = PG_GETARG_DATUM(0);
     int32 *nkeys = (int32 *) PG_GETARG_POINTER(1);
@@ -363,268 +520,221 @@ kmersearch_extract_query(PG_FUNCTION_ARGS)
     
     text *query_text = DatumGetTextP(query);
     char *query_string = text_to_cstring(query_text);
-    int query_len = strlen(query_string);
-    VarBit **varbit_keys;
-    Datum *keys;
+    void *uintkey = NULL;
+    Datum *keys = NULL;
+    uint16 *uint16_keys;
     int i;
     
-    
-    if (query_len < kmersearch_kmer_size)
-        ereport(ERROR, (errmsg("Query sequence must be at least %d bases long", kmersearch_kmer_size)));
-    
-    if (kmersearch_kmer_size < 4 || kmersearch_kmer_size > 32)
-        ereport(ERROR, (errmsg("k-mer length must be between 4 and 32")));
-    
     /* Use cached query pattern extraction */
-    varbit_keys = get_cached_query_kmer(query_string, kmersearch_kmer_size, nkeys);
+    uintkey = get_cached_query_uintkey(query_string, kmersearch_kmer_size, nkeys);
     
     /* Filter high-frequency k-mers and cache actual_min_score */
-    if (varbit_keys != NULL && *nkeys > 0) {
-        varbit_keys = filter_ngram_key2_and_set_actual_min_score(varbit_keys, nkeys, query_string);
+    if (uintkey != NULL && *nkeys > 0)
+    {
+        uintkey = filter_uintkey_and_set_actual_min_score(uintkey, nkeys, 
+                                                           query_string, kmersearch_kmer_size);
     }
     
-    if (varbit_keys == NULL || *nkeys == 0) {
-        keys = NULL;
-    } else {
-        keys = (Datum *) palloc(*nkeys * sizeof(Datum));
-        for (i = 0; i < *nkeys; i++) {
-            keys[i] = PointerGetDatum(varbit_keys[i]);
-        }
-        /* NOTE: varbit_keys may be newly allocated by filter function, don't free it */
-    }
-    
-    *pmatch = NULL;
-    *extra_data = NULL;
-    *nullFlags = NULL;
-    *searchMode = GIN_SEARCH_MODE_DEFAULT;
-    
-    pfree(query_string);
-    
-    if (*nkeys == 0)
+    if (uintkey == NULL || *nkeys == 0)
+    {
         PG_RETURN_POINTER(NULL);
+    }
     
+    /* Convert to Datum array */
+    uint16_keys = (uint16 *)uintkey;
+    keys = (Datum *) palloc(*nkeys * sizeof(Datum));
+    for (i = 0; i < *nkeys; i++)
+    {
+        keys[i] = Int16GetDatum(uint16_keys[i]);
+    }
+    
+    *searchMode = GIN_SEARCH_MODE_DEFAULT;
+    PG_RETURN_POINTER(keys);
+}
+
+Datum
+kmersearch_extract_query_int4(PG_FUNCTION_ARGS)
+{
+    Datum query = PG_GETARG_DATUM(0);
+    int32 *nkeys = (int32 *) PG_GETARG_POINTER(1);
+    StrategyNumber strategy = PG_GETARG_UINT16(2);
+    bool **pmatch = (bool **) PG_GETARG_POINTER(3);
+    Pointer **extra_data = (Pointer **) PG_GETARG_POINTER(4);
+    bool **nullFlags = (bool **) PG_GETARG_POINTER(5);
+    int32 *searchMode = (int32 *) PG_GETARG_POINTER(6);
+    
+    text *query_text = DatumGetTextP(query);
+    char *query_string = text_to_cstring(query_text);
+    void *uintkey = NULL;
+    Datum *keys = NULL;
+    uint32 *uint32_keys;
+    int i;
+    
+    /* Use cached query pattern extraction */
+    uintkey = get_cached_query_uintkey(query_string, kmersearch_kmer_size, nkeys);
+    
+    /* Filter high-frequency k-mers and cache actual_min_score */
+    if (uintkey != NULL && *nkeys > 0)
+    {
+        uintkey = filter_uintkey_and_set_actual_min_score(uintkey, nkeys, 
+                                                           query_string, kmersearch_kmer_size);
+    }
+    
+    if (uintkey == NULL || *nkeys == 0)
+    {
+        PG_RETURN_POINTER(NULL);
+    }
+    
+    /* Convert to Datum array */
+    uint32_keys = (uint32 *)uintkey;
+    keys = (Datum *) palloc(*nkeys * sizeof(Datum));
+    for (i = 0; i < *nkeys; i++)
+    {
+        keys[i] = Int32GetDatum(uint32_keys[i]);
+    }
+    
+    *searchMode = GIN_SEARCH_MODE_DEFAULT;
+    PG_RETURN_POINTER(keys);
+}
+
+Datum
+kmersearch_extract_query_int8(PG_FUNCTION_ARGS)
+{
+    Datum query = PG_GETARG_DATUM(0);
+    int32 *nkeys = (int32 *) PG_GETARG_POINTER(1);
+    StrategyNumber strategy = PG_GETARG_UINT16(2);
+    bool **pmatch = (bool **) PG_GETARG_POINTER(3);
+    Pointer **extra_data = (Pointer **) PG_GETARG_POINTER(4);
+    bool **nullFlags = (bool **) PG_GETARG_POINTER(5);
+    int32 *searchMode = (int32 *) PG_GETARG_POINTER(6);
+    
+    text *query_text = DatumGetTextP(query);
+    char *query_string = text_to_cstring(query_text);
+    void *uintkey = NULL;
+    Datum *keys = NULL;
+    uint64 *uint64_keys;
+    int i;
+    
+    /* Use cached query pattern extraction */
+    uintkey = get_cached_query_uintkey(query_string, kmersearch_kmer_size, nkeys);
+    
+    /* Filter high-frequency k-mers and cache actual_min_score */
+    if (uintkey != NULL && *nkeys > 0)
+    {
+        uintkey = filter_uintkey_and_set_actual_min_score(uintkey, nkeys, 
+                                                           query_string, kmersearch_kmer_size);
+    }
+    
+    if (uintkey == NULL || *nkeys == 0)
+    {
+        PG_RETURN_POINTER(NULL);
+    }
+    
+    /* Convert to Datum array */
+    uint64_keys = (uint64 *)uintkey;
+    keys = (Datum *) palloc(*nkeys * sizeof(Datum));
+    for (i = 0; i < *nkeys; i++)
+    {
+        keys[i] = Int64GetDatum(uint64_keys[i]);
+    }
+    
+    *searchMode = GIN_SEARCH_MODE_DEFAULT;
     PG_RETURN_POINTER(keys);
 }
 
 /*
- * GIN consistent function
+ * New uintkey-based GIN consistent functions
  */
 Datum
-kmersearch_consistent(PG_FUNCTION_ARGS)
+kmersearch_consistent_int2(PG_FUNCTION_ARGS)
 {
     bool *check = (bool *) PG_GETARG_POINTER(0);
     StrategyNumber strategy = PG_GETARG_UINT16(1);
-    Datum query = PG_GETARG_DATUM(2);
+    text *query_text = PG_GETARG_TEXT_P(2);
     int32 nkeys = PG_GETARG_INT32(3);
     Pointer *extra_data = (Pointer *) PG_GETARG_POINTER(4);
     bool *recheck = (bool *) PG_GETARG_POINTER(5);
     Datum *queryKeys = (Datum *) PG_GETARG_POINTER(6);
     bool *nullFlags = (bool *) PG_GETARG_POINTER(7);
     
-    int match_count = 0;
+    int shared_count = 0;
     int actual_min_score;
     int i;
     
-    /* High-frequency k-mer cache checking is not needed during search operations */
+    *recheck = false;
     
-    *recheck = false;  /* No recheck needed - actual_min_score accounts for high-frequency k-mer exclusion */
-    
-    /* Count matching keys */
+    /* Count matches */
     for (i = 0; i < nkeys; i++)
     {
         if (check[i])
-            match_count++;
+            shared_count++;
     }
     
-    /* Debug: Log before calling get_cached_actual_min_score_datum */
-    elog(DEBUG2, "kmersearch_gin_consistent: calling get_cached_actual_min_score_datum with nkeys = %d", nkeys);
+    /* Get cached actual_min_score */
+    actual_min_score = get_cached_actual_min_score_datum_int2(queryKeys, nkeys);
     
-    /* Query keys are already filtered - use Datum version directly */
-    actual_min_score = get_cached_actual_min_score_datum(queryKeys, nkeys);
-    
-    /* Return true if match count meets actual minimum score */
-    PG_RETURN_BOOL(match_count >= actual_min_score);
+    PG_RETURN_BOOL(shared_count >= actual_min_score);
 }
 
-/*
- * GIN compare_partial function - simple byte comparison for varbit
- */
 Datum
-kmersearch_compare_partial(PG_FUNCTION_ARGS)
+kmersearch_consistent_int4(PG_FUNCTION_ARGS)
 {
-    VarBit *a = DatumGetVarBitP(PG_GETARG_DATUM(0));
-    VarBit *b = DatumGetVarBitP(PG_GETARG_DATUM(1));
-    int result;
+    bool *check = (bool *) PG_GETARG_POINTER(0);
+    StrategyNumber strategy = PG_GETARG_UINT16(1);
+    text *query_text = PG_GETARG_TEXT_P(2);
+    int32 nkeys = PG_GETARG_INT32(3);
+    Pointer *extra_data = (Pointer *) PG_GETARG_POINTER(4);
+    bool *recheck = (bool *) PG_GETARG_POINTER(5);
+    Datum *queryKeys = (Datum *) PG_GETARG_POINTER(6);
+    bool *nullFlags = (bool *) PG_GETARG_POINTER(7);
     
-    int32 len_a = VARBITLEN(a);
-    int32 len_b = VARBITLEN(b);
-    
-    if (len_a < len_b)
-        result = -1;
-    else if (len_a > len_b)
-        result = 1;
-    else
-    {
-        result = memcmp(VARBITS(a), VARBITS(b), VARBITBYTES(a));
-    }
-    
-    PG_RETURN_INT32(result);
-}
-
-/*
- * High-frequency k-mer filtering functions implementation
- */
-Datum *
-kmersearch_filter_highfreq_ngram_key2(Datum *original_keys, int *nkeys, HTAB *highfreq_hash, int k)
-{
-    Datum *filtered_keys;
-    int original_count;
-    int filtered_count;
-    int i;
-    
-    if (!original_keys || !nkeys || *nkeys <= 0)
-        return NULL;
-    
-    /* If no high-frequency hash, return original keys unchanged */
-    if (!highfreq_hash)
-        return original_keys;
-    
-    original_count = *nkeys;
-    filtered_keys = (Datum *) palloc(original_count * sizeof(Datum));
-    filtered_count = 0;
-    
-    /* Filter out high-frequency k-mers */
-    for (i = 0; i < original_count; i++)
-    {
-        VarBit *ngram_key;
-        bool found;
-        
-        ngram_key = DatumGetVarBitP(original_keys[i]);
-        if (!ngram_key)
-            continue;
-        
-        /* Use ngram_key2 directly for high-frequency lookup - no occurrence bits removal needed */
-        {
-            /* Calculate hash using complete ngram_key2 (kmer2 + occurrence bits) */
-            int bit_length = VARBITLEN(ngram_key);
-            int byte_count = (bit_length + 7) / 8;  /* Round up to next byte */
-            uint64 hash_value = DatumGetUInt64(hash_any((unsigned char *) VARBITS(ngram_key), byte_count));
-            
-            hash_search(highfreq_hash,
-                       (void *) &hash_value,
-                       HASH_FIND,
-                       &found);
-        }
-        
-        if (!found)
-        {
-            /* Not a high-frequency k-mer, keep it */
-            filtered_keys[filtered_count++] = original_keys[i];
-        }
-        
-        /* No need to free ngram_key since it's managed by caller */
-    }
-    
-    /* Update the count */
-    *nkeys = filtered_count;
-    
-    /* If no keys left, return NULL */
-    if (filtered_count == 0)
-    {
-        pfree(filtered_keys);
-        return NULL;
-    }
-    
-    /* Resize the array if significantly smaller */
-    if (filtered_count < original_count / 2)
-    {
-        filtered_keys = (Datum *) repalloc(filtered_keys, filtered_count * sizeof(Datum));
-    }
-    
-    return filtered_keys;
-}
-
-/*
- * Filter high-frequency k-mers from keys using parallel cache
- */
-Datum *
-kmersearch_filter_highfreq_ngram_key2_parallel(Datum *original_keys, int *nkeys, int k)
-{
-    Datum *filtered_keys;
-    int filtered_count = 0;
-    int i;
-    
-    if (!original_keys || *nkeys <= 0)
-        return original_keys;
-    
-    /* Allocate space for filtered keys */
-    filtered_keys = (Datum *) palloc(*nkeys * sizeof(Datum));
-    
-    /* Filter out high-frequency k-mers using direct ngram_key2 comparison */
-    for (i = 0; i < *nkeys; i++) {
-        VarBit *ngram_key = (VarBit *) DatumGetPointer(original_keys[i]);
-        
-        /* Use ngram_key2 directly for high-frequency check - no occurrence bits removal needed */
-        if (!kmersearch_is_highfreq_kmer_parallel(ngram_key)) {
-            /* Keep this k-mer */
-            filtered_keys[filtered_count++] = original_keys[i];
-        } else {
-            /* Free the filtered k-mer */
-            pfree(ngram_key);
-        }
-        
-        /* No need to clean up temporary key since we use ngram_key directly */
-    }
-    
-    /* Free original keys array */
-    pfree(original_keys);
-    
-    /* Update the key count */
-    *nkeys = filtered_count;
-    
-    /* Return filtered keys (or NULL if no keys remain) */
-    if (filtered_count == 0) {
-        pfree(filtered_keys);
-        return NULL;
-    }
-    
-    return filtered_keys;
-}
-
-/*
- * Check if k-mer is highly frequent using parallel cache
- */
-static bool
-kmersearch_is_highfreq_kmer_parallel(VarBit *ngram_key)
-{
-    uint64 ngram_hash;
-    
-    /* If parallel cache is not available, return false */
-    if (parallel_cache_hash == NULL)
-        return false;
-    
-    /* Calculate hash for the ngram_key2 (kmer2 + occurrence bits) */
-    ngram_hash = hash_any((unsigned char *) VARDATA(ngram_key), 
-                         VARSIZE(ngram_key) - VARHDRSZ);
-    
-    /* Look up in parallel cache using complete ngram_key2 */
-    return kmersearch_parallel_cache_lookup(ngram_hash);
-}
-
-/*
- * Evaluate optimized match condition
- */
-bool
-evaluate_optimized_match_condition(VarBit **query_keys, int nkeys, int shared_count, const char *query_string, int query_total_kmers)
-{
+    int shared_count = 0;
     int actual_min_score;
+    int i;
     
+    *recheck = false;
     
-    /* Get cached actual min score (with TopMemoryContext caching for performance) */
-    actual_min_score = get_cached_actual_min_score_uintarray(query_keys, nkeys);
-    elog(LOG, "evaluate_optimized_match_condition: get_cached_actual_min_score_uintarray returned %d", actual_min_score);
+    /* Count matches */
+    for (i = 0; i < nkeys; i++)
+    {
+        if (check[i])
+            shared_count++;
+    }
     
-    /* Use optimized condition check with cached actual_min_score */
-    return (shared_count >= actual_min_score);
+    /* Get cached actual_min_score */
+    actual_min_score = get_cached_actual_min_score_datum_int4(queryKeys, nkeys);
+    
+    PG_RETURN_BOOL(shared_count >= actual_min_score);
+}
+
+Datum
+kmersearch_consistent_int8(PG_FUNCTION_ARGS)
+{
+    bool *check = (bool *) PG_GETARG_POINTER(0);
+    StrategyNumber strategy = PG_GETARG_UINT16(1);
+    text *query_text = PG_GETARG_TEXT_P(2);
+    int32 nkeys = PG_GETARG_INT32(3);
+    Pointer *extra_data = (Pointer *) PG_GETARG_POINTER(4);
+    bool *recheck = (bool *) PG_GETARG_POINTER(5);
+    Datum *queryKeys = (Datum *) PG_GETARG_POINTER(6);
+    bool *nullFlags = (bool *) PG_GETARG_POINTER(7);
+    
+    int shared_count = 0;
+    int actual_min_score;
+    int i;
+    
+    *recheck = false;
+    
+    /* Count matches */
+    for (i = 0; i < nkeys; i++)
+    {
+        if (check[i])
+            shared_count++;
+    }
+    
+    /* Get cached actual_min_score */
+    actual_min_score = get_cached_actual_min_score_datum_int8(queryKeys, nkeys);
+    
+    PG_RETURN_BOOL(shared_count >= actual_min_score);
 }
 

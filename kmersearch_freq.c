@@ -191,37 +191,64 @@ kmersearch_persist_highfreq_kmers_from_temp(Oid table_oid, const char *column_na
 /*
  * Add k-mer to buffer, flush to temp table if full
  */
+/*
+ * Buffer management functions for 16-bit uintkeys
+ */
 void
-kmersearch_add_to_buffer(KmerBuffer *buffer, KmerData kmer_data, const char *temp_table_name)
+kmersearch_add_to_buffer16(UintkeyBuffer16 *buffer, uint16 uintkey, const char *temp_table_name)
 {
-    CompactKmerFreq *entry;
-    
     /* Check if buffer is full */
     if (buffer->count >= buffer->capacity) {
-        kmersearch_flush_buffer_to_table(buffer, temp_table_name);
+        kmersearch_flush_buffer16_to_table(buffer, temp_table_name);
     }
     
-    /* Add new entry */
-    entry = &buffer->entries[buffer->count];
-    entry->kmer_data = kmer_data;
-    entry->frequency_count = 1;
-    entry->is_highfreq = false;
+    /* Add new uintkey */
+    buffer->uintkeys[buffer->count] = uintkey;
     buffer->count++;
 }
 
 /*
- * Flush buffer contents to temporary table
+ * Buffer management functions for 32-bit uintkeys
  */
 void
-kmersearch_flush_buffer_to_table(KmerBuffer *buffer, const char *temp_table_name)
+kmersearch_add_to_buffer32(UintkeyBuffer32 *buffer, uint32 uintkey, const char *temp_table_name)
+{
+    /* Check if buffer is full */
+    if (buffer->count >= buffer->capacity) {
+        kmersearch_flush_buffer32_to_table(buffer, temp_table_name);
+    }
+    
+    /* Add new uintkey */
+    buffer->uintkeys[buffer->count] = uintkey;
+    buffer->count++;
+}
+
+/*
+ * Buffer management functions for 64-bit uintkeys
+ */
+void
+kmersearch_add_to_buffer64(UintkeyBuffer64 *buffer, uint64 uintkey, const char *temp_table_name)
+{
+    /* Check if buffer is full */
+    if (buffer->count >= buffer->capacity) {
+        kmersearch_flush_buffer64_to_table(buffer, temp_table_name);
+    }
+    
+    /* Add new uintkey */
+    buffer->uintkeys[buffer->count] = uintkey;
+    buffer->count++;
+}
+
+/*
+ * Flush 16-bit buffer contents to temporary table
+ */
+void
+kmersearch_flush_buffer16_to_table(UintkeyBuffer16 *buffer, const char *temp_table_name)
 {
     StringInfoData query;
     int i;
     
     if (buffer->count == 0) return;
-    
-    /* Aggregate entries with same kmer_data before insertion */
-    kmersearch_aggregate_buffer_entries(buffer);
     
     initStringInfo(&query);
     
@@ -231,25 +258,9 @@ kmersearch_flush_buffer_to_table(KmerBuffer *buffer, const char *temp_table_name
     for (i = 0; i < buffer->count; i++) {
         if (i > 0) appendStringInfoString(&query, ", ");
         
-        if (buffer->kmer_size <= 8) {
-            appendStringInfo(&query, "(%u, %d)", 
-                           buffer->entries[i].kmer_data.k8_data,
-                           buffer->entries[i].frequency_count);
-        } else if (buffer->kmer_size <= 16) {
-            appendStringInfo(&query, "(%u, %d)", 
-                           buffer->entries[i].kmer_data.k16_data,
-                           buffer->entries[i].frequency_count);
-        } else if (buffer->kmer_size <= 32) {
-            appendStringInfo(&query, "(%lu, %d)", 
-                           buffer->entries[i].kmer_data.k32_data,
-                           buffer->entries[i].frequency_count);
-        } else {
-            /* k > 32 not supported */
-            ereport(ERROR,
-                    (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-                     errmsg("k-mer length must be between 4 and 32"),
-                     errdetail("Provided k-mer length: %d", buffer->kmer_size)));
-        }
+        /* Each uintkey has frequency_count of 1 (one row occurrence) */
+        appendStringInfo(&query, "(%lu, 1)", 
+                        (unsigned long)buffer->uintkeys[i]);
     }
     
     /* Handle conflict resolution */
@@ -267,57 +278,79 @@ kmersearch_flush_buffer_to_table(KmerBuffer *buffer, const char *temp_table_name
 }
 
 /*
- * Aggregate duplicate k-mer entries in buffer
+ * Flush 32-bit buffer contents to temporary table
  */
 void
-kmersearch_aggregate_buffer_entries(KmerBuffer *buffer)
+kmersearch_flush_buffer32_to_table(UintkeyBuffer32 *buffer, const char *temp_table_name)
 {
+    StringInfoData query;
+    int i;
+    
+    if (buffer->count == 0) return;
+    
+    initStringInfo(&query);
+    
+    /* Build bulk INSERT statement */
+    appendStringInfo(&query, "INSERT INTO %s (kmer_data, frequency_count) VALUES ", temp_table_name);
+    
+    for (i = 0; i < buffer->count; i++) {
+        if (i > 0) appendStringInfoString(&query, ", ");
+        
+        /* Each uintkey has frequency_count of 1 (one row occurrence) */
+        appendStringInfo(&query, "(%u, 1)", buffer->uintkeys[i]);
+    }
+    
+    /* Handle conflict resolution */
+    appendStringInfo(&query, " ON CONFLICT (kmer_data) DO UPDATE SET frequency_count = %s.frequency_count + EXCLUDED.frequency_count", temp_table_name);
+    
+    /* Execute the query */
+    SPI_connect();
+    SPI_exec(query.data, 0);
+    SPI_finish();
+    
+    /* Reset buffer */
+    buffer->count = 0;
+    
+    pfree(query.data);
+}
+
+/*
+ * Flush 64-bit buffer contents to temporary table
+ */
+void
+kmersearch_flush_buffer64_to_table(UintkeyBuffer64 *buffer, const char *temp_table_name)
+{
+    StringInfoData query;
     int i, j;
     int write_pos = 0;
     bool merged;
     
-    if (buffer->count <= 1) return;
+    if (buffer->count == 0) return;
+    
+    initStringInfo(&query);
+    
+    /* Build bulk INSERT statement */
+    appendStringInfo(&query, "INSERT INTO %s (kmer_data, frequency_count) VALUES ", temp_table_name);
     
     for (i = 0; i < buffer->count; i++) {
-        merged = false;
+        if (i > 0) appendStringInfoString(&query, ", ");
         
-        /* Check if this entry can be merged with any previous entry */
-        for (j = 0; j < write_pos; j++) {
-            bool same_kmer = false;
-            
-            if (buffer->kmer_size <= 8) {
-                same_kmer = (buffer->entries[i].kmer_data.k8_data == buffer->entries[j].kmer_data.k8_data);
-            } else if (buffer->kmer_size <= 16) {
-                same_kmer = (buffer->entries[i].kmer_data.k16_data == buffer->entries[j].kmer_data.k16_data);
-            } else if (buffer->kmer_size <= 32) {
-                same_kmer = (buffer->entries[i].kmer_data.k32_data == buffer->entries[j].kmer_data.k32_data);
-            } else {
-                /* k > 32 not supported */
-                ereport(ERROR,
-                        (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-                         errmsg("k-mer length must be between 4 and 32"),
-                         errdetail("Provided k-mer length: %d", buffer->kmer_size)));
-            }
-            
-            if (same_kmer) {
-                /* Merge frequency counts */
-                buffer->entries[j].frequency_count += buffer->entries[i].frequency_count;
-                merged = true;
-                break;
-            }
-        }
-        
-        /* If not merged, add to write position */
-        if (!merged) {
-            if (write_pos != i) {
-                buffer->entries[write_pos] = buffer->entries[i];
-            }
-            write_pos++;
-        }
+        /* Each uintkey has frequency_count of 1 (one row occurrence) */
+        appendStringInfo(&query, "(%lu, 1)", (unsigned long)buffer->uintkeys[i]);
     }
     
-    /* Update count to reflect aggregated entries */
-    buffer->count = write_pos;
+    /* Handle conflict resolution */
+    appendStringInfo(&query, " ON CONFLICT (kmer_data) DO UPDATE SET frequency_count = %s.frequency_count + EXCLUDED.frequency_count", temp_table_name);
+    
+    /* Execute the query */
+    SPI_connect();
+    SPI_exec(query.data, 0);
+    SPI_finish();
+    
+    /* Reset buffer */
+    buffer->count = 0;
+    
+    pfree(query.data);
 }
 
 /* Analysis context for managing dshash resources */
@@ -1186,16 +1219,22 @@ kmersearch_is_kmer_highfreq(VarBit *kmer_key)
     }
     
     /* kmer_key is kmer2 (without occurrence count), convert directly to uint */
-    if (kmersearch_kmer_size <= 8) {
-        uint16 value = 0;
-        kmersearch_convert_kmer2_to_uint16(kmer_key, &value);
-        kmer_uint = value;
-    } else if (kmersearch_kmer_size <= 16) {
-        uint32 value = 0;
-        kmersearch_convert_kmer2_to_uint32(kmer_key, &value);
-        kmer_uint = value;
-    } else {
-        kmersearch_convert_kmer2_to_uint64(kmer_key, &kmer_uint);
+    {
+        bits8 *data = VARBITS(kmer_key);
+        int nbits = VARBITLEN(kmer_key);
+        int nbytes = (nbits + 7) / 8;
+        int i;
+        
+        kmer_uint = 0;
+        for (i = 0; i < nbytes && i < 8; i++) {
+            kmer_uint = (kmer_uint << 8) | data[i];
+        }
+        
+        /* Adjust for partial last byte */
+        if (nbits % 8 != 0) {
+            int shift = 8 - (nbits % 8);
+            kmer_uint >>= shift;
+        }
     }
     
     /* Priority 1: Check in global cache */
@@ -1829,7 +1868,16 @@ kmersearch_calculate_buffer_size(int k_size)
     const int MIN_BUFFER_SIZE = 1000;
     const int MAX_BUFFER_SIZE = 100000;
     
-    size_t entry_size = sizeof(CompactKmerFreq);
+    /* Entry size depends on k-mer size */
+    size_t entry_size;
+    int total_bits = k_size * 2 + kmersearch_occur_bitlen;
+    
+    if (total_bits <= 16)
+        entry_size = sizeof(uint16);
+    else if (total_bits <= 32)
+        entry_size = sizeof(uint32);
+    else
+        entry_size = sizeof(uint64);
     int max_entries = (TARGET_MEMORY_MB * 1024 * 1024) / entry_size;
     
     if (max_entries < MIN_BUFFER_SIZE) return MIN_BUFFER_SIZE;
@@ -1840,24 +1888,50 @@ kmersearch_calculate_buffer_size(int k_size)
 /*
  * Initialize k-mer buffer
  */
-static void
-kmersearch_init_buffer(KmerBuffer *buffer, int k_size)
+/*
+ * Initialize 16-bit buffer
+ */
+void
+kmersearch_init_buffer16(UintkeyBuffer16 *buffer, int k_size)
 {
     buffer->capacity = kmersearch_calculate_buffer_size(k_size);
-    buffer->entries = (CompactKmerFreq *) palloc0(buffer->capacity * sizeof(CompactKmerFreq));
+    buffer->uintkeys = (uint16 *) palloc0(buffer->capacity * sizeof(uint16));
     buffer->count = 0;
     buffer->kmer_size = k_size;
 }
 
 /*
- * Flush hash buffer to temporary table (simplified for Phase 1)
+ * Initialize 32-bit buffer
+ */
+void
+kmersearch_init_buffer32(UintkeyBuffer32 *buffer, int k_size)
+{
+    buffer->capacity = kmersearch_calculate_buffer_size(k_size);
+    buffer->uintkeys = (uint32 *) palloc0(buffer->capacity * sizeof(uint32));
+    buffer->count = 0;
+    buffer->kmer_size = k_size;
+}
+
+/*
+ * Initialize 64-bit buffer
+ */
+void
+kmersearch_init_buffer64(UintkeyBuffer64 *buffer, int k_size)
+{
+    buffer->capacity = kmersearch_calculate_buffer_size(k_size);
+    buffer->uintkeys = (uint64 *) palloc0(buffer->capacity * sizeof(uint64));
+    buffer->count = 0;
+    buffer->kmer_size = k_size;
+}
+
+/*
+ * Flush 16-bit hash buffer to temporary table
  */
 static void
-kmersearch_flush_hash_buffer_to_table(KmerBuffer *buffer, const char *temp_table_name)
+kmersearch_flush_hash_buffer16_to_table(UintkeyBuffer16 *buffer, const char *temp_table_name)
 {
     StringInfoData query;
     int i;
-    CompactKmerFreq *entry;
     int ret;
     
     if (buffer->count == 0) return;
@@ -1868,14 +1942,10 @@ kmersearch_flush_hash_buffer_to_table(KmerBuffer *buffer, const char *temp_table
     appendStringInfo(&query, "INSERT INTO %s (kmer_data, frequency_count) VALUES ", temp_table_name);
     
     for (i = 0; i < buffer->count; i++) {
-        entry = &buffer->entries[i];
-        
         if (i > 0) appendStringInfoString(&query, ", ");
         
-        /* Use k32_data field to access the stored hash value */
-        appendStringInfo(&query, "(%lu, %d)",
-                        (unsigned long)entry->kmer_data.k32_data,  /* Hash stored as k32_data */
-                        entry->frequency_count);
+        /* Each uintkey has frequency_count of 1 (one row occurrence) */
+        appendStringInfo(&query, "(%u, 1)", buffer->uintkeys[i]);
     }
     
     appendStringInfoString(&query, " ON CONFLICT (kmer_data) DO UPDATE SET frequency_count = ");
@@ -1896,29 +1966,191 @@ kmersearch_flush_hash_buffer_to_table(KmerBuffer *buffer, const char *temp_table
 }
 
 /*
- * Add hash value to buffer for Phase 1 processing
+ * Flush 32-bit hash buffer to temporary table
  */
 static void
-kmersearch_add_hash_to_buffer(KmerBuffer *buffer, uint64_t kmer_hash, const char *temp_table_name)
+kmersearch_flush_hash_buffer32_to_table(UintkeyBuffer32 *buffer, const char *temp_table_name)
 {
-    CompactKmerFreq *entry;
+    StringInfoData query;
     int i;
+    int ret;
     
-    /* No buffer-level deduplication - each row contribution should be counted */
-    /* Row-level deduplication is already handled in the calling function */
+    if (buffer->count == 0) return;
     
+    initStringInfo(&query);
+    
+    /* Build INSERT statement with multiple VALUES */
+    appendStringInfo(&query, "INSERT INTO %s (kmer_data, frequency_count) VALUES ", temp_table_name);
+    
+    for (i = 0; i < buffer->count; i++) {
+        if (i > 0) appendStringInfoString(&query, ", ");
+        
+        /* Each uintkey has frequency_count of 1 (one row occurrence) */
+        appendStringInfo(&query, "(%u, 1)", buffer->uintkeys[i]);
+    }
+    
+    appendStringInfoString(&query, " ON CONFLICT (kmer_data) DO UPDATE SET frequency_count = ");
+    appendStringInfo(&query, "%s.frequency_count + EXCLUDED.frequency_count", temp_table_name);
+    
+    /* Execute the INSERT */
+    ret = SPI_exec(query.data, 0);
+    if (ret != SPI_OK_INSERT) {
+        ereport(ERROR,
+                (errcode(ERRCODE_INTERNAL_ERROR),
+                 errmsg("failed to insert k-mer data into temporary table %s", temp_table_name)));
+    }
+    
+    pfree(query.data);
+    
+    /* Reset buffer */
+    buffer->count = 0;
+}
+
+/*
+ * Flush 64-bit hash buffer to temporary table
+ */
+static void
+kmersearch_flush_hash_buffer64_to_table(UintkeyBuffer64 *buffer, const char *temp_table_name)
+{
+    StringInfoData query;
+    int i;
+    int ret;
+    
+    if (buffer->count == 0) return;
+    
+    initStringInfo(&query);
+    
+    /* Build INSERT statement with multiple VALUES */
+    appendStringInfo(&query, "INSERT INTO %s (kmer_data, frequency_count) VALUES ", temp_table_name);
+    
+    for (i = 0; i < buffer->count; i++) {
+        if (i > 0) appendStringInfoString(&query, ", ");
+        
+        /* Each uintkey has frequency_count of 1 (one row occurrence) */
+        appendStringInfo(&query, "(%lu, 1)", (unsigned long)buffer->uintkeys[i]);
+    }
+    
+    appendStringInfoString(&query, " ON CONFLICT (kmer_data) DO UPDATE SET frequency_count = ");
+    appendStringInfo(&query, "%s.frequency_count + EXCLUDED.frequency_count", temp_table_name);
+    
+    /* Execute the INSERT */
+    ret = SPI_exec(query.data, 0);
+    if (ret != SPI_OK_INSERT) {
+        ereport(ERROR,
+                (errcode(ERRCODE_INTERNAL_ERROR),
+                 errmsg("failed to insert k-mer data into temporary table %s", temp_table_name)));
+    }
+    
+    pfree(query.data);
+    
+    /* Reset buffer */
+    buffer->count = 0;
+}
+
+/*
+ * Add 16-bit hash value to buffer
+ */
+static void
+kmersearch_add_hash_to_buffer16(UintkeyBuffer16 *buffer, uint16 uintkey_value, const char *temp_table_name)
+{
+    /* Check if buffer is full */
+    if (buffer->count >= buffer->capacity) {
+        kmersearch_flush_hash_buffer16_to_table(buffer, temp_table_name);
+    }
+    
+    /* Add new uintkey */
+    buffer->uintkeys[buffer->count] = uintkey_value;
+    buffer->count++;
+}
+
+/*
+ * Add 32-bit hash value to buffer
+ */
+static void
+kmersearch_add_hash_to_buffer32(UintkeyBuffer32 *buffer, uint32 uintkey_value, const char *temp_table_name)
+{
+    /* Check if buffer is full */
+    if (buffer->count >= buffer->capacity) {
+        kmersearch_flush_hash_buffer32_to_table(buffer, temp_table_name);
+    }
+    
+    /* Add new uintkey */
+    buffer->uintkeys[buffer->count] = uintkey_value;
+    buffer->count++;
+}
+
+/*
+ * Add 64-bit hash value to buffer
+ */
+static void
+kmersearch_add_hash_to_buffer64(UintkeyBuffer64 *buffer, uint64 uintkey_value, const char *temp_table_name)
+{
+    /* Check if buffer is full */
+    if (buffer->count >= buffer->capacity) {
+        kmersearch_flush_hash_buffer64_to_table(buffer, temp_table_name);
+    }
+    
+    /* Add new uintkey */
+    buffer->uintkeys[buffer->count] = uintkey_value;
+    buffer->count++;
+}
+
+/*
+ * Flush uintkey buffer to temporary table (simplified for Phase 1)
+ * TODO: This function is no longer needed with typed buffers and should be removed
+ */
+static void
+kmersearch_flush_hash_buffer_to_table(UintkeyBuffer *buffer, const char *temp_table_name)
+{
+    StringInfoData query;
+    int i;
+    int ret;
+    
+    if (buffer->count == 0) return;
+    
+    initStringInfo(&query);
+    
+    /* Build INSERT statement with multiple VALUES */
+    appendStringInfo(&query, "INSERT INTO %s (kmer_data, frequency_count) VALUES ", temp_table_name);
+    
+    for (i = 0; i < buffer->count; i++) {
+        if (i > 0) appendStringInfoString(&query, ", ");
+        
+        /* Each uintkey has frequency_count of 1 (one row occurrence) */
+        appendStringInfo(&query, "(%lu, 1)", (unsigned long)buffer->uintkeys[i]);
+    }
+    
+    appendStringInfoString(&query, " ON CONFLICT (kmer_data) DO UPDATE SET frequency_count = ");
+    appendStringInfo(&query, "%s.frequency_count + EXCLUDED.frequency_count", temp_table_name);
+    
+    /* Execute the INSERT */
+    ret = SPI_exec(query.data, 0);
+    if (ret != SPI_OK_INSERT) {
+        ereport(ERROR,
+                (errcode(ERRCODE_INTERNAL_ERROR),
+                 errmsg("failed to insert k-mer data into temporary table %s", temp_table_name)));
+    }
+    
+    pfree(query.data);
+    
+    /* Reset buffer */
+    buffer->count = 0;
+}
+
+/*
+ * Add uintkey value to buffer for Phase 1 processing
+ * TODO: This function is no longer needed with typed buffers and should be removed
+ */
+static void
+kmersearch_add_hash_to_buffer(UintkeyBuffer *buffer, uint64_t uintkey_value, const char *temp_table_name)
+{
     /* Check if buffer is full */
     if (buffer->count >= buffer->capacity) {
         kmersearch_flush_hash_buffer_to_table(buffer, temp_table_name);
-        
-        /* After flush, continue to add the new entry */
     }
     
-    /* Add new entry using k32_data field to store uint64_t hash */
-    entry = &buffer->entries[buffer->count];
-    entry->kmer_data.k32_data = kmer_hash;  /* Store hash in k32_data field */
-    entry->frequency_count = 1;
-    entry->is_highfreq = false;
+    /* Add new uintkey */
+    buffer->uintkeys[buffer->count] = uintkey_value;
     buffer->count++;
 }
 
@@ -1946,8 +2178,21 @@ kmersearch_worker_analyze_blocks(KmerWorkerState *worker, Relation rel,
     /* Use passed parameters instead of determining them again */
     tupdesc = RelationGetDescr(rel);
     
-    /* Initialize buffer */
-    kmersearch_init_buffer(&worker->buffer, k_size);
+    /* Initialize buffer based on k-mer size */
+    int total_bits = k_size * 2 + kmersearch_occur_bitlen;
+    if (total_bits <= 16) {
+        worker->buffer_type = 0;  /* 16-bit */
+        worker->buffer = palloc0(sizeof(UintkeyBuffer16));
+        kmersearch_init_buffer16((UintkeyBuffer16 *)worker->buffer, k_size);
+    } else if (total_bits <= 32) {
+        worker->buffer_type = 1;  /* 32-bit */
+        worker->buffer = palloc0(sizeof(UintkeyBuffer32));
+        kmersearch_init_buffer32((UintkeyBuffer32 *)worker->buffer, k_size);
+    } else {
+        worker->buffer_type = 2;  /* 64-bit */
+        worker->buffer = palloc0(sizeof(UintkeyBuffer64));
+        kmersearch_init_buffer64((UintkeyBuffer64 *)worker->buffer, k_size);
+    }
     
     /* Create temporary table for this worker with unique name */
     worker->temp_table_name = kmersearch_generate_unique_temp_table_name("temp_kmer_worker", worker->worker_id);
@@ -1995,11 +2240,45 @@ kmersearch_worker_analyze_blocks(KmerWorkerState *worker, Relation rel,
         /* Convert DNA data to VarBit representation */
         sequence = DatumGetVarBitP(value);
         
-        /* Extract k-mers from the sequence using SIMD-optimized function based on DNA type */
-        if (is_dna4_type) {
-            kmer_datums = kmersearch_extract_dna4_kmer2_with_expansion_direct(sequence, k_size, &nkeys);
-        } else {
-            kmer_datums = kmersearch_extract_dna2_kmer2_direct(sequence, k_size, &nkeys);
+        /* Extract k-mers from the sequence as uintkey format */
+        {
+            void *uintkeys = NULL;
+            int ui;
+            
+            if (is_dna4_type) {
+                kmersearch_extract_uintkey_from_dna4(sequence, &uintkeys, &nkeys);
+            } else {
+                kmersearch_extract_uintkey_from_dna2(sequence, &uintkeys, &nkeys);
+            }
+            
+            /* Convert uintkeys to Datum array for compatibility */
+            if (uintkeys && nkeys > 0) {
+                kmer_datums = (Datum *) palloc(nkeys * sizeof(Datum));
+                
+                /* Use full uintkey (including occurrence count) */
+                if (k_size <= 8) {
+                    uint16 *uint_array = (uint16 *)uintkeys;
+                    for (ui = 0; ui < nkeys; ui++) {
+                        kmer_datums[ui] = UInt16GetDatum(uint_array[ui]);
+                    }
+                } else if (k_size <= 16) {
+                    uint32 *uint_array = (uint32 *)uintkeys;
+                    for (ui = 0; ui < nkeys; ui++) {
+                        kmer_datums[ui] = UInt32GetDatum(uint_array[ui]);
+                    }
+                } else {
+                    uint64 *uint_array = (uint64 *)uintkeys;
+                    for (ui = 0; ui < nkeys; ui++) {
+                        kmer_datums[ui] = UInt64GetDatum(uint_array[ui]);
+                    }
+                }
+                
+                if (uintkeys) {
+                    pfree(uintkeys);
+                }
+            } else {
+                kmer_datums = NULL;
+            }
         }
         
         if (kmer_datums == NULL || nkeys == 0) {
@@ -2020,26 +2299,34 @@ kmersearch_worker_analyze_blocks(KmerWorkerState *worker, Relation rel,
             row_kmer_set = hash_create("row_kmer_set", nkeys, &hash_ctl, 
                                        HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
             
-            /* Process each k-mer in this row - convert to hash and deduplicate */
+            /* Process each uintkey in this row - deduplicate within row */
             for (j = 0; j < nkeys; j++) {
-                uint64_t kmer_hash;
-                VarBit *kmer;
+                uint64_t uintkey_value;
                 bool found;
                 
-                /* Convert Datum to VarBit */
-                kmer = DatumGetVarBitP(kmer_datums[j]);
-                if (kmer == NULL) {
-                    continue;
+                /* Get full uintkey value from Datum */
+                if (k_size <= 8) {
+                    uintkey_value = DatumGetUInt16(kmer_datums[j]);
+                } else if (k_size <= 16) {
+                    uintkey_value = DatumGetUInt32(kmer_datums[j]);
+                } else {
+                    uintkey_value = DatumGetUInt64(kmer_datums[j]);
                 }
                 
-                /* Convert k-mer to consistent hash value */
-                kmer_hash = kmersearch_get_kmer_hash(kmer, 0, k_size);
-                
                 /* Only add to buffer if not already seen in this row */
-                hash_search(row_kmer_set, (void *) &kmer_hash, HASH_ENTER, &found);
+                hash_search(row_kmer_set, (void *) &uintkey_value, HASH_ENTER, &found);
                 if (!found) {
                     /* Add to buffer (will flush to temp table if full) */
-                    kmersearch_add_hash_to_buffer(&worker->buffer, kmer_hash, worker->temp_table_name);
+                    if (worker->buffer_type == 0) {
+                        kmersearch_add_hash_to_buffer16((UintkeyBuffer16 *)worker->buffer, 
+                                                       (uint16)uintkey_value, worker->temp_table_name);
+                    } else if (worker->buffer_type == 1) {
+                        kmersearch_add_hash_to_buffer32((UintkeyBuffer32 *)worker->buffer, 
+                                                       (uint32)uintkey_value, worker->temp_table_name);
+                    } else {
+                        kmersearch_add_hash_to_buffer64((UintkeyBuffer64 *)worker->buffer, 
+                                                       uintkey_value, worker->temp_table_name);
+                    }
                 }
             }
             
@@ -2058,11 +2345,26 @@ kmersearch_worker_analyze_blocks(KmerWorkerState *worker, Relation rel,
     }
     
     /* Flush any remaining buffer contents */
-    kmersearch_flush_hash_buffer_to_table(&worker->buffer, worker->temp_table_name);
+    if (worker->buffer_type == 0) {
+        kmersearch_flush_hash_buffer16_to_table((UintkeyBuffer16 *)worker->buffer, worker->temp_table_name);
+        if (((UintkeyBuffer16 *)worker->buffer)->uintkeys) {
+            pfree(((UintkeyBuffer16 *)worker->buffer)->uintkeys);
+        }
+    } else if (worker->buffer_type == 1) {
+        kmersearch_flush_hash_buffer32_to_table((UintkeyBuffer32 *)worker->buffer, worker->temp_table_name);
+        if (((UintkeyBuffer32 *)worker->buffer)->uintkeys) {
+            pfree(((UintkeyBuffer32 *)worker->buffer)->uintkeys);
+        }
+    } else {
+        kmersearch_flush_hash_buffer64_to_table((UintkeyBuffer64 *)worker->buffer, worker->temp_table_name);
+        if (((UintkeyBuffer64 *)worker->buffer)->uintkeys) {
+            pfree(((UintkeyBuffer64 *)worker->buffer)->uintkeys);
+        }
+    }
     
-    /* Cleanup buffer */
-    if (worker->buffer.entries) {
-        pfree(worker->buffer.entries);
+    /* Cleanup buffer structure itself */
+    if (worker->buffer) {
+        pfree(worker->buffer);
     }
 }
 

@@ -179,8 +179,12 @@ SET kmersearch.kmer_size = 3;   -- below minimum
 ERROR:  3 is outside the valid range for parameter "kmersearch.kmer_size" (4 .. 32)
 SET kmersearch.kmer_size = 33;  -- above maximum
 ERROR:  33 is outside the valid range for parameter "kmersearch.kmer_size" (4 .. 32)
+SET kmersearch.occur_bitlen = -1; -- below minimum  
+ERROR:  -1 is outside the valid range for parameter "kmersearch.occur_bitlen" (0 .. 16)
 SET kmersearch.occur_bitlen = 17; -- above maximum
 ERROR:  17 is outside the valid range for parameter "kmersearch.occur_bitlen" (0 .. 16)
+SET kmersearch.max_appearance_rate = -0.1; -- below minimum
+ERROR:  -0.1 is outside the valid range for parameter "kmersearch.max_appearance_rate" (0 .. 1)
 SET kmersearch.max_appearance_rate = 1.1; -- above maximum
 ERROR:  1.1 is outside the valid range for parameter "kmersearch.max_appearance_rate" (0 .. 1)
 SET kmersearch.min_shared_ngram_key_rate = -0.1;  -- below minimum
@@ -196,6 +200,92 @@ ERROR:  999 is outside the valid range for parameter "kmersearch.actual_min_scor
 SET kmersearch.actual_min_score_cache_max_entries = 10000001;  -- above maximum
 ERROR:  10000001 is outside the valid range for parameter "kmersearch.actual_min_score_cache_max_entries" (1000 .. 10000000)
 \set ON_ERROR_STOP on
+-- Test that valid values still work after errors
+SHOW kmersearch.kmer_size; -- should still be 32
+ kmersearch.kmer_size 
+----------------------
+ 32
+(1 row)
+
+SHOW kmersearch.occur_bitlen; -- should still be 0
+ kmersearch.occur_bitlen 
+-------------------------
+ 0
+(1 row)
+
+-- Test combinations of kmer_size and occur_bitlen
+SET kmersearch.kmer_size = 4;
+SET kmersearch.occur_bitlen = 8;
+SHOW kmersearch.kmer_size;
+ kmersearch.kmer_size 
+----------------------
+ 4
+(1 row)
+
+SHOW kmersearch.occur_bitlen;
+ kmersearch.occur_bitlen 
+-------------------------
+ 8
+(1 row)
+
+-- Total: 4*2+8=16 bits (valid)
+SET kmersearch.kmer_size = 8;
+SET kmersearch.occur_bitlen = 8;  
+SHOW kmersearch.kmer_size;
+ kmersearch.kmer_size 
+----------------------
+ 8
+(1 row)
+
+SHOW kmersearch.occur_bitlen;
+ kmersearch.occur_bitlen 
+-------------------------
+ 8
+(1 row)
+
+-- Total: 8*2+8=24 bits (valid)
+SET kmersearch.kmer_size = 16;
+SET kmersearch.occur_bitlen = 8;
+SHOW kmersearch.kmer_size;
+ kmersearch.kmer_size 
+----------------------
+ 16
+(1 row)
+
+SHOW kmersearch.occur_bitlen;
+ kmersearch.occur_bitlen 
+-------------------------
+ 8
+(1 row)
+
+-- Total: 16*2+8=40 bits (valid)
+SET kmersearch.kmer_size = 27;
+SET kmersearch.occur_bitlen = 10;
+SHOW kmersearch.kmer_size;
+ kmersearch.kmer_size 
+----------------------
+ 27
+(1 row)
+
+SHOW kmersearch.occur_bitlen;
+ kmersearch.occur_bitlen 
+-------------------------
+ 10
+(1 row)
+
+-- Total: 27*2+10=64 bits (valid, maximum)
+\set ON_ERROR_STOP off
+SET kmersearch.kmer_size = 28; -- 28*2+10=66 > 64 (should fail)
+ERROR:  invalid kmersearch.kmer_size value
+DETAIL:  Total bit length (kmer_size * 2 + occur_bitlen) = (28 * 2 + 10) = 66 exceeds maximum of 64 bits.
+HINT:  Reduce kmer_size or occur_bitlen so that (kmer_size * 2 + occur_bitlen) <= 64.
+\set ON_ERROR_STOP on
+SHOW kmersearch.kmer_size; -- should still be 27
+ kmersearch.kmer_size 
+----------------------
+ 27
+(1 row)
+
 -- Reset to defaults for other tests (ensure consistency across tests)
 SET kmersearch.kmer_size = 16;
 SHOW kmersearch.kmer_size;

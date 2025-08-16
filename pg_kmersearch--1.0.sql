@@ -237,52 +237,126 @@ CREATE OPERATOR =% (
     FUNCTION = kmersearch_dna4_match
 );
 
--- GIN operator class support functions
-CREATE FUNCTION kmersearch_extract_value_dna2(DNA2, internal)
+
+-- New uintkey-based GIN functions for DNA2
+CREATE FUNCTION kmersearch_extract_value_dna2_int2(DNA2, internal)
     RETURNS internal
-    AS 'MODULE_PATHNAME', 'kmersearch_extract_value_dna2'
+    AS 'MODULE_PATHNAME', 'kmersearch_extract_value_dna2_int2'
     LANGUAGE C IMMUTABLE STRICT;
 
-CREATE FUNCTION kmersearch_extract_value_dna4(DNA4, internal)
+CREATE FUNCTION kmersearch_extract_value_dna2_int4(DNA2, internal)
     RETURNS internal
-    AS 'MODULE_PATHNAME', 'kmersearch_extract_value_dna4'
+    AS 'MODULE_PATHNAME', 'kmersearch_extract_value_dna2_int4'
     LANGUAGE C IMMUTABLE STRICT;
 
-CREATE FUNCTION kmersearch_extract_query(text, internal, int2, internal, internal)
+CREATE FUNCTION kmersearch_extract_value_dna2_int8(DNA2, internal)
     RETURNS internal
-    AS 'MODULE_PATHNAME', 'kmersearch_extract_query'
+    AS 'MODULE_PATHNAME', 'kmersearch_extract_value_dna2_int8'
     LANGUAGE C IMMUTABLE STRICT;
 
-CREATE FUNCTION kmersearch_consistent(internal, int2, text, int4, internal, internal)
+-- New uintkey-based GIN functions for DNA4
+CREATE FUNCTION kmersearch_extract_value_dna4_int2(DNA4, internal)
+    RETURNS internal
+    AS 'MODULE_PATHNAME', 'kmersearch_extract_value_dna4_int2'
+    LANGUAGE C IMMUTABLE STRICT;
+
+CREATE FUNCTION kmersearch_extract_value_dna4_int4(DNA4, internal)
+    RETURNS internal
+    AS 'MODULE_PATHNAME', 'kmersearch_extract_value_dna4_int4'
+    LANGUAGE C IMMUTABLE STRICT;
+
+CREATE FUNCTION kmersearch_extract_value_dna4_int8(DNA4, internal)
+    RETURNS internal
+    AS 'MODULE_PATHNAME', 'kmersearch_extract_value_dna4_int8'
+    LANGUAGE C IMMUTABLE STRICT;
+
+-- New uintkey-based extract_query functions
+CREATE FUNCTION kmersearch_extract_query_int2(text, internal, int2, internal, internal)
+    RETURNS internal
+    AS 'MODULE_PATHNAME', 'kmersearch_extract_query_int2'
+    LANGUAGE C IMMUTABLE STRICT;
+
+CREATE FUNCTION kmersearch_extract_query_int4(text, internal, int2, internal, internal)
+    RETURNS internal
+    AS 'MODULE_PATHNAME', 'kmersearch_extract_query_int4'
+    LANGUAGE C IMMUTABLE STRICT;
+
+CREATE FUNCTION kmersearch_extract_query_int8(text, internal, int2, internal, internal)
+    RETURNS internal
+    AS 'MODULE_PATHNAME', 'kmersearch_extract_query_int8'
+    LANGUAGE C IMMUTABLE STRICT;
+
+-- New uintkey-based consistent functions
+CREATE FUNCTION kmersearch_consistent_int2(internal, int2, text, int4, internal, internal)
     RETURNS boolean
-    AS 'MODULE_PATHNAME', 'kmersearch_consistent'
+    AS 'MODULE_PATHNAME', 'kmersearch_consistent_int2'
     LANGUAGE C IMMUTABLE STRICT;
 
-CREATE FUNCTION kmersearch_compare_partial(varbit, varbit)
-    RETURNS integer
-    AS 'MODULE_PATHNAME', 'kmersearch_compare_partial'
+CREATE FUNCTION kmersearch_consistent_int4(internal, int2, text, int4, internal, internal)
+    RETURNS boolean
+    AS 'MODULE_PATHNAME', 'kmersearch_consistent_int4'
     LANGUAGE C IMMUTABLE STRICT;
 
--- GIN operator classes for DNA2 and DNA4
-CREATE OPERATOR CLASS kmersearch_dna2_gin_ops
-    DEFAULT FOR TYPE DNA2 USING gin AS
+CREATE FUNCTION kmersearch_consistent_int8(internal, int2, text, int4, internal, internal)
+    RETURNS boolean
+    AS 'MODULE_PATHNAME', 'kmersearch_consistent_int8'
+    LANGUAGE C IMMUTABLE STRICT;
+
+-- New uintkey-based GIN operator classes for DNA2
+CREATE OPERATOR CLASS kmersearch_dna2_gin_ops_int2
+    FOR TYPE DNA2 USING gin AS
         OPERATOR 1 =% (DNA2, text),
-        FUNCTION 1 varbitcmp(varbit, varbit),
-        FUNCTION 2 kmersearch_extract_value_dna2(DNA2, internal),
-        FUNCTION 3 kmersearch_extract_query(text, internal, int2, internal, internal),
-        FUNCTION 4 kmersearch_consistent(internal, int2, text, int4, internal, internal),
-        FUNCTION 5 kmersearch_compare_partial(varbit, varbit),
-        STORAGE varbit;
+        FUNCTION 1 btint2cmp(int2, int2),
+        FUNCTION 2 kmersearch_extract_value_dna2_int2(DNA2, internal),
+        FUNCTION 3 kmersearch_extract_query_int2(text, internal, int2, internal, internal),
+        FUNCTION 4 kmersearch_consistent_int2(internal, int2, text, int4, internal, internal),
+        STORAGE int2;
 
-CREATE OPERATOR CLASS kmersearch_dna4_gin_ops
-    DEFAULT FOR TYPE DNA4 USING gin AS
+CREATE OPERATOR CLASS kmersearch_dna2_gin_ops_int4
+    FOR TYPE DNA2 USING gin AS
+        OPERATOR 1 =% (DNA2, text),
+        FUNCTION 1 btint4cmp(int4, int4),
+        FUNCTION 2 kmersearch_extract_value_dna2_int4(DNA2, internal),
+        FUNCTION 3 kmersearch_extract_query_int4(text, internal, int2, internal, internal),
+        FUNCTION 4 kmersearch_consistent_int4(internal, int2, text, int4, internal, internal),
+        STORAGE int4;
+
+CREATE OPERATOR CLASS kmersearch_dna2_gin_ops_int8
+    FOR TYPE DNA2 USING gin AS
+        OPERATOR 1 =% (DNA2, text),
+        FUNCTION 1 btint8cmp(int8, int8),
+        FUNCTION 2 kmersearch_extract_value_dna2_int8(DNA2, internal),
+        FUNCTION 3 kmersearch_extract_query_int8(text, internal, int2, internal, internal),
+        FUNCTION 4 kmersearch_consistent_int8(internal, int2, text, int4, internal, internal),
+        STORAGE int8;
+
+-- New uintkey-based GIN operator classes for DNA4
+CREATE OPERATOR CLASS kmersearch_dna4_gin_ops_int2
+    FOR TYPE DNA4 USING gin AS
         OPERATOR 1 =% (DNA4, text),
-        FUNCTION 1 varbitcmp(varbit, varbit),
-        FUNCTION 2 kmersearch_extract_value_dna4(DNA4, internal),
-        FUNCTION 3 kmersearch_extract_query(text, internal, int2, internal, internal),
-        FUNCTION 4 kmersearch_consistent(internal, int2, text, int4, internal, internal),
-        FUNCTION 5 kmersearch_compare_partial(varbit, varbit),
-        STORAGE varbit;
+        FUNCTION 1 btint2cmp(int2, int2),
+        FUNCTION 2 kmersearch_extract_value_dna4_int2(DNA4, internal),
+        FUNCTION 3 kmersearch_extract_query_int2(text, internal, int2, internal, internal),
+        FUNCTION 4 kmersearch_consistent_int2(internal, int2, text, int4, internal, internal),
+        STORAGE int2;
+
+CREATE OPERATOR CLASS kmersearch_dna4_gin_ops_int4
+    FOR TYPE DNA4 USING gin AS
+        OPERATOR 1 =% (DNA4, text),
+        FUNCTION 1 btint4cmp(int4, int4),
+        FUNCTION 2 kmersearch_extract_value_dna4_int4(DNA4, internal),
+        FUNCTION 3 kmersearch_extract_query_int4(text, internal, int2, internal, internal),
+        FUNCTION 4 kmersearch_consistent_int4(internal, int2, text, int4, internal, internal),
+        STORAGE int4;
+
+CREATE OPERATOR CLASS kmersearch_dna4_gin_ops_int8
+    FOR TYPE DNA4 USING gin AS
+        OPERATOR 1 =% (DNA4, text),
+        FUNCTION 1 btint8cmp(int8, int8),
+        FUNCTION 2 kmersearch_extract_value_dna4_int8(DNA4, internal),
+        FUNCTION 3 kmersearch_extract_query_int8(text, internal, int2, internal, internal),
+        FUNCTION 4 kmersearch_consistent_int8(internal, int2, text, int4, internal, internal),
+        STORAGE int8;
 
 -- BTree operator classes for DNA2 and DNA4
 CREATE OPERATOR CLASS kmersearch_dna2_btree_ops

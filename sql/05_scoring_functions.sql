@@ -75,6 +75,28 @@ SELECT kmersearch_rawscore('ATCGATCG'::DNA4, 'GCTAGCTA') AS no_match_score;
 SELECT kmersearch_rawscore('ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA'::DNA2, 'ATCGATCG') AS partial_match;
 SELECT kmersearch_rawscore('ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA'::DNA4, 'ATCGATCG') AS partial_match;
 
+-- Test DNA4 with degenerate bases in detail
+-- N matches any base (A, C, G, T)
+SELECT kmersearch_rawscore('ATCGATCG'::DNA4, 'NNNGATCG') AS degenerate_n_score;
+SELECT kmersearch_rawscore('ATCGATCG'::DNA4, 'ATCGNNNN') AS degenerate_n_score2;
+SELECT kmersearch_rawscore('NNNNNNNN'::DNA4, 'ATCGATCG') AS all_n_sequence;
+
+-- Test specific degenerate bases
+SELECT kmersearch_rawscore('ATCGATCG'::DNA4, 'WTCGATCG') AS degenerate_w_score;  -- W = A or T
+SELECT kmersearch_rawscore('ATCGATCG'::DNA4, 'RTCGATCG') AS degenerate_r_score;  -- R = A or G
+SELECT kmersearch_rawscore('ATCGATCG'::DNA4, 'YTCGATCG') AS degenerate_y_score;  -- Y = C or T
+SELECT kmersearch_rawscore('ATCGATCG'::DNA4, 'STCGATCG') AS degenerate_s_score;  -- S = C or G
+SELECT kmersearch_rawscore('ATCGATCG'::DNA4, 'MTCGATCG') AS degenerate_m_score;  -- M = A or C
+SELECT kmersearch_rawscore('ATCGATCG'::DNA4, 'KTCGATCG') AS degenerate_k_score;  -- K = G or T
+
+-- Test seq3 from test data which has NN in the middle
+-- seq3: 'ATCGATCGNNATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATC'
+-- This should verify the new DNA4 degenerate base handling
+SELECT id, name, 
+       kmersearch_rawscore(sequence, 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA') AS score,
+       kmersearch_rawscore(sequence, 'ATCGATCGNNATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATC') AS score_with_nn
+FROM test_dna4_sequences WHERE id = 3;
+
 -- Clean up test tables
 DROP TABLE IF EXISTS test_dna2_sequences CASCADE;
 DROP TABLE IF EXISTS test_dna4_sequences CASCADE;

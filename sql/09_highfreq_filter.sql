@@ -58,7 +58,8 @@ SELECT kmersearch_highfreq_kmer_cache_load('test_dna_highfreq', 'seq');
 
 -- 3. CREATE INDEX (high-frequency ngram_key2 are excluded from GIN index)
 SELECT '3. GIN index creation:' as step;
-CREATE INDEX idx_test_dna_highfreq_seq ON test_dna_highfreq USING gin (seq);
+-- With k=4 and occur_bitlen=4, total bits = 4*2+4 = 12, so we can use int2 operator class
+CREATE INDEX idx_test_dna_highfreq_seq ON test_dna_highfreq USING gin (seq kmersearch_dna2_gin_ops_int2);
 
 -- Index creation verification
 SELECT '   Index creation verification:' as info;

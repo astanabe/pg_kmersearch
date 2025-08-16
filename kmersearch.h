@@ -221,8 +221,27 @@ typedef struct ActualMinScoreCacheManager
 } ActualMinScoreCacheManager;
 
 /*
- * K-mer occurrence tracking
+ * K-mer occurrence tracking - optimized for different k-mer sizes
  */
+typedef struct KmerOccurrence16
+{
+    uint16      kmer_value;         /* K-mer value for k <= 8 */
+    int         count;              /* Occurrence count */
+} KmerOccurrence16;
+
+typedef struct KmerOccurrence32
+{
+    uint32      kmer_value;         /* K-mer value for k <= 16 */
+    int         count;              /* Occurrence count */
+} KmerOccurrence32;
+
+typedef struct KmerOccurrence64
+{
+    uint64      kmer_value;         /* K-mer value for k <= 32 */
+    int         count;              /* Occurrence count */
+} KmerOccurrence64;
+
+/* Legacy typedef for backward compatibility - will be removed */
 typedef struct KmerOccurrence
 {
     uint64_t    kmer_value;         /* K-mer as single 64-bit value */
@@ -301,7 +320,7 @@ typedef struct QueryPatternCacheEntry
     uint64      hash_key;                  /* Hash key for this entry */
     char        *query_string_copy;        /* Copy of query string */
     int         kmer_size;                 /* K-mer size for this pattern */
-    VarBit      **extracted_kmers;         /* Cached extracted k-mers */
+    void        *extracted_uintkey;        /* Cached extracted uintkeys (uint16/uint32/uint64 array) */
     int         kmer_count;                /* Number of extracted k-mers */
     struct QueryPatternCacheEntry *next;   /* For LRU chain */
     struct QueryPatternCacheEntry *prev;   /* For LRU chain */
@@ -325,33 +344,42 @@ typedef struct QueryPatternCacheManager
 /*
  * K-mer data union for different k-values
  */
-typedef union KmerData
-{
-    uint16      k8_data;                 /* k <= 8: 16 bits */
-    uint32      k16_data;                /* k <= 16: 32 bits */  
-    uint64      k32_data;                /* k <= 32: 64 bits */
-} KmerData;
-
 /*
- * Compact k-mer frequency entry
+ * Uintkey buffers for batch processing during high-frequency analysis
+ * Three separate structures for optimal memory usage based on k-mer size
  */
-typedef struct CompactKmerFreq
-{
-    KmerData    kmer_data;               /* Raw k-mer data */
-    int         frequency_count;          /* Frequency count */
-    bool        is_highfreq;              /* Whether this k-mer is highly frequent */
-} CompactKmerFreq;
 
-/*
- * K-mer buffer for batch processing
- */
-typedef struct KmerBuffer
+/* TODO: UintkeyBuffer is obsolete and should be removed along with old functions */
+typedef struct UintkeyBuffer
 {
-    CompactKmerFreq *entries;            /* Buffer entries */
+    uint64         *uintkeys;            /* Array of uintkey values */
     int             count;               /* Current count */
     int             capacity;            /* Buffer capacity */
     int             kmer_size;           /* K-mer size */
-} KmerBuffer;
+} UintkeyBuffer;
+typedef struct UintkeyBuffer16
+{
+    uint16         *uintkeys;            /* Array of uint16 uintkey values */
+    int             count;               /* Current count */
+    int             capacity;            /* Buffer capacity */
+    int             kmer_size;           /* K-mer size */
+} UintkeyBuffer16;
+
+typedef struct UintkeyBuffer32
+{
+    uint32         *uintkeys;            /* Array of uint32 uintkey values */
+    int             count;               /* Current count */
+    int             capacity;            /* Buffer capacity */
+    int             kmer_size;           /* K-mer size */
+} UintkeyBuffer32;
+
+typedef struct UintkeyBuffer64
+{
+    uint64         *uintkeys;            /* Array of uint64 uintkey values */
+    int             count;               /* Current count */
+    int             capacity;            /* Buffer capacity */
+    int             kmer_size;           /* K-mer size */
+} UintkeyBuffer64;
 
 /*
  * High-frequency k-mer hash entry
@@ -438,7 +466,9 @@ typedef struct KmerWorkerState
     int         worker_id;                /* Worker identifier */
     BlockNumber start_block;              /* Starting block number */
     BlockNumber end_block;                /* Ending block number */
-    KmerBuffer  buffer;                   /* Local k-mer buffer */
+    /* Buffer pointer - points to one of the buffer types based on k-mer size */
+    void           *buffer;              /* Points to UintkeyBuffer16/32/64 */
+    int             buffer_type;         /* 0=16bit, 1=32bit, 2=64bit */
     int         local_highfreq_count;     /* Local count of highly frequent k-mers */
     int64       rows_processed;           /* Number of rows processed */
     char       *temp_table_name;          /* Temporary table name for this worker */
@@ -588,15 +618,19 @@ int dna_compare_neon(const uint8_t* a, const uint8_t* b, int bit_len);
 int dna_compare_sve(const uint8_t* a, const uint8_t* b, int bit_len);
 #endif
 
-/* GIN operator class functions */
-Datum kmersearch_extract_value_dna2(PG_FUNCTION_ARGS);
-Datum kmersearch_extract_value_dna4(PG_FUNCTION_ARGS);
-Datum kmersearch_extract_query_dna2(PG_FUNCTION_ARGS);
-Datum kmersearch_extract_query_dna4(PG_FUNCTION_ARGS);
-Datum kmersearch_consistent_dna2(PG_FUNCTION_ARGS);
-Datum kmersearch_consistent_dna4(PG_FUNCTION_ARGS);
-Datum kmersearch_compare_partial_dna2(PG_FUNCTION_ARGS);
-Datum kmersearch_compare_partial_dna4(PG_FUNCTION_ARGS);
+/* Uintkey-based GIN operator class functions */
+Datum kmersearch_extract_value_dna2_int2(PG_FUNCTION_ARGS);
+Datum kmersearch_extract_value_dna2_int4(PG_FUNCTION_ARGS);
+Datum kmersearch_extract_value_dna2_int8(PG_FUNCTION_ARGS);
+Datum kmersearch_extract_value_dna4_int2(PG_FUNCTION_ARGS);
+Datum kmersearch_extract_value_dna4_int4(PG_FUNCTION_ARGS);
+Datum kmersearch_extract_value_dna4_int8(PG_FUNCTION_ARGS);
+Datum kmersearch_extract_query_int2(PG_FUNCTION_ARGS);
+Datum kmersearch_extract_query_int4(PG_FUNCTION_ARGS);
+Datum kmersearch_extract_query_int8(PG_FUNCTION_ARGS);
+Datum kmersearch_consistent_int2(PG_FUNCTION_ARGS);
+Datum kmersearch_consistent_int4(PG_FUNCTION_ARGS);
+Datum kmersearch_consistent_int8(PG_FUNCTION_ARGS);
 
 /* Search operator functions */
 Datum kmersearch_match_dna2(PG_FUNCTION_ARGS);
@@ -639,8 +673,6 @@ void kmersearch_parallel_cache_cleanup_on_exit(int code, Datum arg);
 bool kmersearch_parallel_cache_lookup(uint64 kmer_hash);
 
 /* High-frequency k-mer filtering functions */
-Datum *kmersearch_filter_highfreq_ngram_key2(Datum *original_keys, int *nkeys, HTAB *highfreq_hash, int k);
-Datum *kmersearch_filter_highfreq_ngram_key2_parallel(Datum *original_keys, int *nkeys, int k);
 
 /* High-frequency k-mer cache functions */
 Datum kmersearch_highfreq_kmer_cache_load(PG_FUNCTION_ARGS);
@@ -661,32 +693,19 @@ bool kmersearch_is_kmer_hash_in_analysis_dshash(uint64 kmer_hash);
 
 /* K-mer utility functions */
 void kmersearch_expand_degenerate_sequence(const char *kmer, int k, char **expanded, int *expand_count);
-VarBit *kmersearch_kmer2_as_uint_to_kmer2(uint64 kmer2_as_uint, int kmer_size);
-VarBit *kmersearch_create_ngram_key2_from_kmer2_as_uint(uint64 kmer2_as_uint, int kmer_size, int occurrence);
-VarBit *kmersearch_remove_occurrence_from_ngram_key2(VarBit *ngram_key2);
-void kmersearch_convert_kmer2_to_uint16(VarBit *kmer2, uint16 *result);
-void kmersearch_convert_kmer2_to_uint32(VarBit *kmer2, uint32 *result);
-void kmersearch_convert_kmer2_to_uint64(VarBit *kmer2, uint64 *result);
-Datum *kmersearch_extract_dna2_kmer2_direct(VarBit *dna, int k, int *nkeys);
-Datum *kmersearch_extract_dna4_kmer2_with_expansion_direct(VarBit *dna, int k, int *nkeys);
-Datum *kmersearch_extract_dna2_ngram_key2_direct(VarBit *dna, int k, int *nkeys);
-Datum *kmersearch_extract_dna4_ngram_key2_with_expansion_direct(VarBit *dna, int k, int *nkeys);
+/* Removed kmer2/ngram_key2 functions - using uintkey implementation */
 int kmersearch_count_degenerate_combinations(const char *kmer, int k);
 void kmersearch_set_bit_at(bits8 *data, int bit_pos, int value);
 bool kmersearch_will_exceed_degenerate_limit_dna4_bits(VarBit *seq, int start_pos, int k);
-VarBit *kmersearch_create_kmer2_key_only(const char *kmer, int k);
-VarBit *kmersearch_create_kmer2_key_from_dna2_bits(VarBit *seq, int start_pos, int k);
-VarBit *kmersearch_create_ngram_key2_from_dna2_bits(VarBit *seq, int start_pos, int k, int occurrence_count);
-VarBit *kmersearch_create_ngram_key2_from_dna4_bits(VarBit *seq, int start_pos, int k, int occurrence_count);
-VarBit *kmersearch_create_ngram_key2_with_occurrence_from_dna2(VarBit *dna2_kmer, int k, int occurrence);
-VarBit *create_ngram_key2_from_kmer2_and_count(uint64_t kmer2_value, int k_size, int occurrence_count);
-VarBit **kmersearch_expand_dna4_kmer2_to_dna2_direct(VarBit *dna4_seq, int start_pos, int k, int *expansion_count);
+/* Removed kmer2 creation functions */
 uint64_t kmersearch_get_kmer_hash(VarBit *seq, int start_pos, int k);
 int kmersearch_find_or_add_kmer_occurrence(KmerOccurrence *occurrences, int *count, uint64_t kmer_value, int max_count);
+int kmersearch_find_or_add_kmer_occurrence16(KmerOccurrence16 *occurrences, int *count, uint16 kmer_value, int max_count);
+int kmersearch_find_or_add_kmer_occurrence32(KmerOccurrence32 *occurrences, int *count, uint32 kmer_value, int max_count);
+int kmersearch_find_or_add_kmer_occurrence64(KmerOccurrence64 *occurrences, int *count, uint64 kmer_value, int max_count);
 VarBit **kmersearch_extract_kmer_from_varbit(VarBit *seq, int k, int *nkeys);
-VarBit **kmersearch_extract_kmer_from_query(const char *query, int k, int *nkeys);
-VarBit **kmersearch_extract_query_ngram_key2(const char *query, int k, int *nkeys);
 int kmersearch_count_matching_kmer_fast(VarBit **seq_keys, int seq_nkeys, VarBit **query_keys, int query_nkeys);
+int kmersearch_count_matching_uintkey(void *seq_keys, int seq_nkeys, void *query_keys, int query_nkeys, int k_size);
 uint8 kmersearch_get_bit_at(bits8 *data, int bit_pos);
 bool kmersearch_will_exceed_degenerate_limit(const char *seq, int len);
 
@@ -701,9 +720,18 @@ PGDLLEXPORT void kmersearch_analysis_worker(dsm_segment *seg, shm_toc *toc);
 /* Frequency analysis persistence function (implemented in kmersearch_freq.c) */
 void kmersearch_persist_highfreq_kmers_from_temp(Oid table_oid, const char *column_name, int k_size, const char *temp_table_name);
 void create_worker_ngram_temp_table(const char *table_name);
-void kmersearch_aggregate_buffer_entries(KmerBuffer *buffer);
-void kmersearch_flush_buffer_to_table(KmerBuffer *buffer, const char *temp_table_name);
-void kmersearch_add_to_buffer(KmerBuffer *buffer, KmerData kmer_data, const char *temp_table_name);
+/* Buffer management functions for each size */
+void kmersearch_init_buffer16(UintkeyBuffer16 *buffer, int k_size);
+void kmersearch_init_buffer32(UintkeyBuffer32 *buffer, int k_size);
+void kmersearch_init_buffer64(UintkeyBuffer64 *buffer, int k_size);
+
+void kmersearch_add_to_buffer16(UintkeyBuffer16 *buffer, uint16 uintkey, const char *temp_table_name);
+void kmersearch_add_to_buffer32(UintkeyBuffer32 *buffer, uint32 uintkey, const char *temp_table_name);
+void kmersearch_add_to_buffer64(UintkeyBuffer64 *buffer, uint64 uintkey, const char *temp_table_name);
+
+void kmersearch_flush_buffer16_to_table(UintkeyBuffer16 *buffer, const char *temp_table_name);
+void kmersearch_flush_buffer32_to_table(UintkeyBuffer32 *buffer, const char *temp_table_name);
+void kmersearch_flush_buffer64_to_table(UintkeyBuffer64 *buffer, const char *temp_table_name);
 
 /* Cache validity check function (implemented in kmersearch_cache.c) */
 bool kmersearch_parallel_highfreq_kmer_cache_is_valid(Oid table_oid, const char *column_name, int k_value);
@@ -720,15 +748,17 @@ Oid get_dna4_type_oid(void);
 int calculate_actual_min_score(VarBit **query_keys, int nkeys, int query_total_kmers);
 
 /* Query pattern cache functions (implemented in kmersearch_cache.c) */
-VarBit **get_cached_query_kmer(const char *query_string, int k_size, int *nkeys);
+void *get_cached_query_uintkey(const char *query_string, int k_size, int *nkeys);
 
 /* Actual min score cache functions (implemented in kmersearch_cache.c) */  
-int get_cached_actual_min_score_uintarray(VarBit **query_keys, int nkeys);
-int get_cached_actual_min_score_datum(Datum *queryKeys, int nkeys);
-int get_cached_actual_min_score_or_error(VarBit **query_keys, int nkeys);
+int get_cached_actual_min_score_uintkey(void *uintkey, int nkeys, int k_size);
+int get_cached_actual_min_score_datum_int2(Datum *queryKeys, int nkeys);
+int get_cached_actual_min_score_datum_int4(Datum *queryKeys, int nkeys);
+int get_cached_actual_min_score_datum_int8(Datum *queryKeys, int nkeys);
 
 /* High-frequency k-mer filtering functions (implemented in kmersearch_gin.c) */
-VarBit **filter_ngram_key2_and_set_actual_min_score(VarBit **query_keys, int *nkeys, const char *query_string);
+void *filter_uintkey_and_set_actual_min_score(void *uintkey, int *nkeys, const char *query_string, int k_size);
+bool kmersearch_is_uintkey_highfreq(uint64 uintkey, int k_size);
 
 /* Cache functions (implemented in kmersearch_cache.c) */
 void kmersearch_query_pattern_cache_max_entries_assign_hook(int newval, void *extra);
@@ -745,11 +775,6 @@ bool kmersearch_is_parallel_highfreq_cache_loaded(void);
 bool kmersearch_lookup_in_parallel_cache(VarBit *kmer_key);
 
 /* GIN index support functions (implemented in kmersearch_gin.c) */
-Datum kmersearch_extract_value_dna2(PG_FUNCTION_ARGS);
-Datum kmersearch_extract_value_dna4(PG_FUNCTION_ARGS);
-Datum kmersearch_extract_query(PG_FUNCTION_ARGS);
-Datum kmersearch_consistent(PG_FUNCTION_ARGS);
-Datum kmersearch_compare_partial(PG_FUNCTION_ARGS);
 
 /* Frequency analysis functions (implemented in kmersearch_freq.c) */
 Datum kmersearch_perform_highfreq_analysis(PG_FUNCTION_ARGS);
@@ -763,14 +788,12 @@ void kmersearch_validate_analysis_parameters(Oid table_oid, const char *column_n
 /* Utility functions for unique temporary table name generation */
 char *kmersearch_generate_unique_temp_table_name(const char *prefix, int additional_id);
 
-/* Native uint k-mer extraction functions */
-void kmersearch_extract_dna2_kmer2_as_uint_direct(VarBit *seq, int k, void **output, int *nkeys);
-void kmersearch_extract_dna4_kmer2_as_uint_with_expansion_direct(VarBit *seq, int k, void **output, int *nkeys);
+/* Removed kmer2_as_uint functions - not true uintkey format */
 
 /* Direct bit manipulation helper functions */
 size_t kmersearch_get_kmer_uint_size(int k);
 void kmersearch_extract_dna4_kmer_expansions_direct_bits(VarBit *seq, int start_pos, int k, uint64 *output, int *count);
-void *kmersearch_expand_dna4_kmer2_as_uint_to_dna2_direct(VarBit *dna4_seq, int start_pos, int k, int *expansion_count);
+VarBit **kmersearch_expand_dna4_kmer2_to_dna2_direct(VarBit *dna4_seq, int start_pos, int k, int *expansion_count);
 
 /* Uint key extraction functions with occurrence counting */
 void kmersearch_extract_uintkey_from_dna2(VarBit *seq, void **output, int *nkeys);

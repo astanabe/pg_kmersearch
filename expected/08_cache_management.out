@@ -44,8 +44,9 @@ INSERT INTO test_cache_dna4 (name, sequence) VALUES
     ('cache_seq4', 'GCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTA'),
     ('cache_seq5', 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA');
 -- Create GIN indexes for testing
-CREATE INDEX test_cache_dna2_gin_idx ON test_cache_dna2 USING gin (sequence);
-CREATE INDEX test_cache_dna4_gin_idx ON test_cache_dna4 USING gin (sequence);
+-- With k=4 and occur_bitlen=8 (default), total bits = 4*2+8 = 16, so we can use int2 operator class
+CREATE INDEX test_cache_dna2_gin_idx ON test_cache_dna2 USING gin (sequence kmersearch_dna2_gin_ops_int2);
+CREATE INDEX test_cache_dna4_gin_idx ON test_cache_dna4 USING gin (sequence kmersearch_dna4_gin_ops_int2);
 -- Test GUC configuration for cache settings
 SHOW kmersearch.actual_min_score_cache_max_entries;
  kmersearch.actual_min_score_cache_max_entries 
@@ -184,9 +185,10 @@ SELECT 'After query execution - actual min score cache:' as test_phase;
 SELECT * FROM kmersearch_actual_min_score_cache_stats();
  hits | misses | current_entries | max_entries 
 ------+--------+-----------------+-------------
-   39 |      3 |               3 |       50000
+   32 |      3 |               3 |       50000
 (1 row)
 
+-- Verify that current_entries > 0 (cache is storing entries)
 SELECT 'After query execution - query pattern cache:' as test_phase;
                   test_phase                  
 ----------------------------------------------
@@ -196,9 +198,43 @@ SELECT 'After query execution - query pattern cache:' as test_phase;
 SELECT * FROM kmersearch_query_pattern_cache_stats();
  hits | misses | current_entries | max_entries 
 ------+--------+-----------------+-------------
-   43 |      5 |               3 |       50000
+   46 |      5 |               3 |       50000
 (1 row)
 
+-- Verify that current_entries > 0 (cache is storing entries)
+-- Test cache hit behavior
+SELECT 'Testing cache hits...' as test_phase;
+      test_phase       
+-----------------------
+ Testing cache hits...
+(1 row)
+
+-- Execute same queries again to test cache hits
+SELECT COUNT(*) FROM test_cache_dna2 WHERE sequence =% 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA';
+ count 
+-------
+     1
+(1 row)
+
+SELECT COUNT(*) FROM test_cache_dna2 WHERE sequence =% 'TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT';
+ count 
+-------
+     2
+(1 row)
+
+SELECT 'After cache hit tests:' as test_phase;
+       test_phase       
+------------------------
+ After cache hit tests:
+(1 row)
+
+SELECT * FROM kmersearch_actual_min_score_cache_stats();
+ hits | misses | current_entries | max_entries 
+------+--------+-----------------+-------------
+   40 |      5 |               5 |       50000
+(1 row)
+
+-- hits should be higher now
 -- Test cache clearing functions
 SELECT 'Testing cache clear functions...' as test_phase;
             test_phase            
@@ -209,13 +245,13 @@ SELECT 'Testing cache clear functions...' as test_phase;
 SELECT 'Clearing actual min score cache:' as action, kmersearch_actual_min_score_cache_free() as freed_entries;
               action              | freed_entries 
 ----------------------------------+---------------
- Clearing actual min score cache: |             3
+ Clearing actual min score cache: |             5
 (1 row)
 
 SELECT 'Clearing query pattern cache:' as action, kmersearch_query_pattern_cache_free() as freed_entries;
             action             | freed_entries 
 -------------------------------+---------------
- Clearing query pattern cache: |             3
+ Clearing query pattern cache: |             5
 (1 row)
 
 -- Verify caches are cleared
@@ -275,7 +311,7 @@ SELECT 'With changed settings - actual min score cache:' as test_phase;
 SELECT * FROM kmersearch_actual_min_score_cache_stats();
  hits | misses | current_entries | max_entries 
 ------+--------+-----------------+-------------
-   11 |      1 |               1 |       50000
+    9 |      1 |               1 |       50000
 (1 row)
 
 -- Reset to defaults
@@ -295,6 +331,12 @@ SELECT kmersearch_actual_min_score_cache_free();
  kmersearch_actual_min_score_cache_free 
 ----------------------------------------
                                       0
+(1 row)
+
+SELECT kmersearch_query_pattern_cache_free();
+ kmersearch_query_pattern_cache_free 
+-------------------------------------
+                                   1
 (1 row)
 
 -- Execute multiple different queries to test eviction
@@ -322,6 +364,30 @@ SELECT COUNT(*) FROM test_cache_dna2 WHERE sequence =% 'GGGGGGGG';
      0
 (1 row)
 
+SELECT COUNT(*) FROM test_cache_dna2 WHERE sequence =% 'AAAATTTT';
+ count 
+-------
+     3
+(1 row)
+
+SELECT COUNT(*) FROM test_cache_dna2 WHERE sequence =% 'TTTTCCCC';
+ count 
+-------
+     2
+(1 row)
+
+SELECT COUNT(*) FROM test_cache_dna2 WHERE sequence =% 'CCCCGGGG';
+ count 
+-------
+     0
+(1 row)
+
+SELECT COUNT(*) FROM test_cache_dna2 WHERE sequence =% 'GGGGAAAA';
+ count 
+-------
+     1
+(1 row)
+
 -- Check final cache state
 SELECT 'Final cache state:' as test_phase;
      test_phase     
@@ -332,7 +398,45 @@ SELECT 'Final cache state:' as test_phase;
 SELECT * FROM kmersearch_actual_min_score_cache_stats();
  hits | misses | current_entries | max_entries 
 ------+--------+-----------------+-------------
-   20 |      4 |               4 |        1000
+   32 |      8 |               8 |        1000
+(1 row)
+
+-- current_entries should be <= max_entries
+-- Test with DNA4 sequences containing degenerate bases
+SELECT 'Testing DNA4 cache with degenerate bases...' as test_phase;
+                 test_phase                  
+---------------------------------------------
+ Testing DNA4 cache with degenerate bases...
+(1 row)
+
+SELECT COUNT(*) FROM test_cache_dna4 WHERE sequence =% 'NNNNNNNN';
+ count 
+-------
+     0
+(1 row)
+
+SELECT COUNT(*) FROM test_cache_dna4 WHERE sequence =% 'ATCGATCN';
+ count 
+-------
+     2
+(1 row)
+
+SELECT COUNT(*) FROM test_cache_dna4 WHERE sequence =% 'NATCGATC';
+ count 
+-------
+     2
+(1 row)
+
+SELECT 'DNA4 cache statistics:' as test_phase;
+       test_phase       
+------------------------
+ DNA4 cache statistics:
+(1 row)
+
+SELECT * FROM kmersearch_actual_min_score_cache_stats();
+ hits | misses | current_entries | max_entries 
+------+--------+-----------------+-------------
+   41 |      9 |               9 |        1000
 (1 row)
 
 -- Clean up
