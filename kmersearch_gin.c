@@ -152,8 +152,6 @@ kmersearch_extract_value_dna2_int2(PG_FUNCTION_ARGS)
     int32 *nkeys = (int32 *) PG_GETARG_POINTER(1);
     void *uintkey = NULL;
     Datum *keys = NULL;
-    uint16 *uint16_keys;
-    int i;
     
     /* Check operator class compatibility */
     check_operator_class_compatibility("int2");
@@ -166,14 +164,8 @@ kmersearch_extract_value_dna2_int2(PG_FUNCTION_ARGS)
         PG_RETURN_POINTER(NULL);
     }
     
-    /* Convert to Datum array */
-    uint16_keys = (uint16 *)uintkey;
-    keys = (Datum *) palloc(*nkeys * sizeof(Datum));
-    for (i = 0; i < *nkeys; i++)
-    {
-        keys[i] = Int16GetDatum(uint16_keys[i]);
-    }
-    
+    /* Convert to Datum array using optimized function */
+    keys = kmersearch_create_datum_array_from_uintkey(uintkey, *nkeys, sizeof(uint16));
     pfree(uintkey);
     PG_RETURN_POINTER(keys);
 }
@@ -185,8 +177,6 @@ kmersearch_extract_value_dna2_int4(PG_FUNCTION_ARGS)
     int32 *nkeys = (int32 *) PG_GETARG_POINTER(1);
     void *uintkey = NULL;
     Datum *keys = NULL;
-    uint32 *uint32_keys;
-    int i;
     
     /* Check operator class compatibility */
     check_operator_class_compatibility("int4");
@@ -199,14 +189,8 @@ kmersearch_extract_value_dna2_int4(PG_FUNCTION_ARGS)
         PG_RETURN_POINTER(NULL);
     }
     
-    /* Convert to Datum array */
-    uint32_keys = (uint32 *)uintkey;
-    keys = (Datum *) palloc(*nkeys * sizeof(Datum));
-    for (i = 0; i < *nkeys; i++)
-    {
-        keys[i] = Int32GetDatum(uint32_keys[i]);
-    }
-    
+    /* Convert to Datum array using optimized function */
+    keys = kmersearch_create_datum_array_from_uintkey(uintkey, *nkeys, sizeof(uint32));
     pfree(uintkey);
     PG_RETURN_POINTER(keys);
 }
@@ -218,8 +202,6 @@ kmersearch_extract_value_dna2_int8(PG_FUNCTION_ARGS)
     int32 *nkeys = (int32 *) PG_GETARG_POINTER(1);
     void *uintkey = NULL;
     Datum *keys = NULL;
-    uint64 *uint64_keys;
-    int i;
     
     /* Check operator class compatibility */
     check_operator_class_compatibility("int8");
@@ -232,14 +214,8 @@ kmersearch_extract_value_dna2_int8(PG_FUNCTION_ARGS)
         PG_RETURN_POINTER(NULL);
     }
     
-    /* Convert to Datum array */
-    uint64_keys = (uint64 *)uintkey;
-    keys = (Datum *) palloc(*nkeys * sizeof(Datum));
-    for (i = 0; i < *nkeys; i++)
-    {
-        keys[i] = Int64GetDatum(uint64_keys[i]);
-    }
-    
+    /* Convert to Datum array using optimized function */
+    keys = kmersearch_create_datum_array_from_uintkey(uintkey, *nkeys, sizeof(uint64));
     pfree(uintkey);
     PG_RETURN_POINTER(keys);
 }
@@ -254,8 +230,6 @@ kmersearch_extract_value_dna4_int2(PG_FUNCTION_ARGS)
     int32 *nkeys = (int32 *) PG_GETARG_POINTER(1);
     void *uintkey = NULL;
     Datum *keys = NULL;
-    uint16 *uint16_keys;
-    int i;
     
     /* Check operator class compatibility */
     check_operator_class_compatibility("int2");
@@ -268,14 +242,8 @@ kmersearch_extract_value_dna4_int2(PG_FUNCTION_ARGS)
         PG_RETURN_POINTER(NULL);
     }
     
-    /* Convert to Datum array */
-    uint16_keys = (uint16 *)uintkey;
-    keys = (Datum *) palloc(*nkeys * sizeof(Datum));
-    for (i = 0; i < *nkeys; i++)
-    {
-        keys[i] = Int16GetDatum(uint16_keys[i]);
-    }
-    
+    /* Convert to Datum array using optimized function */
+    keys = kmersearch_create_datum_array_from_uintkey(uintkey, *nkeys, sizeof(uint16));
     pfree(uintkey);
     PG_RETURN_POINTER(keys);
 }
@@ -287,8 +255,6 @@ kmersearch_extract_value_dna4_int4(PG_FUNCTION_ARGS)
     int32 *nkeys = (int32 *) PG_GETARG_POINTER(1);
     void *uintkey = NULL;
     Datum *keys = NULL;
-    uint32 *uint32_keys;
-    int i;
     
     /* Check operator class compatibility */
     check_operator_class_compatibility("int4");
@@ -301,14 +267,8 @@ kmersearch_extract_value_dna4_int4(PG_FUNCTION_ARGS)
         PG_RETURN_POINTER(NULL);
     }
     
-    /* Convert to Datum array */
-    uint32_keys = (uint32 *)uintkey;
-    keys = (Datum *) palloc(*nkeys * sizeof(Datum));
-    for (i = 0; i < *nkeys; i++)
-    {
-        keys[i] = Int32GetDatum(uint32_keys[i]);
-    }
-    
+    /* Convert to Datum array using optimized function */
+    keys = kmersearch_create_datum_array_from_uintkey(uintkey, *nkeys, sizeof(uint32));
     pfree(uintkey);
     PG_RETURN_POINTER(keys);
 }
@@ -320,8 +280,6 @@ kmersearch_extract_value_dna4_int8(PG_FUNCTION_ARGS)
     int32 *nkeys = (int32 *) PG_GETARG_POINTER(1);
     void *uintkey = NULL;
     Datum *keys = NULL;
-    uint64 *uint64_keys;
-    int i;
     
     /* Check operator class compatibility */
     check_operator_class_compatibility("int8");
@@ -334,14 +292,8 @@ kmersearch_extract_value_dna4_int8(PG_FUNCTION_ARGS)
         PG_RETURN_POINTER(NULL);
     }
     
-    /* Convert to Datum array */
-    uint64_keys = (uint64 *)uintkey;
-    keys = (Datum *) palloc(*nkeys * sizeof(Datum));
-    for (i = 0; i < *nkeys; i++)
-    {
-        keys[i] = Int64GetDatum(uint64_keys[i]);
-    }
-    
+    /* Convert to Datum array using optimized function */
+    keys = kmersearch_create_datum_array_from_uintkey(uintkey, *nkeys, sizeof(uint64));
     pfree(uintkey);
     PG_RETURN_POINTER(keys);
 }

@@ -744,10 +744,16 @@ char *kmersearch_generate_unique_temp_table_name(const char *prefix, int additio
 void kmersearch_extract_dna4_kmer_expansions_direct_bits(VarBit *seq, int start_pos, int k, uint64 *output, int *count);
 VarBit **kmersearch_expand_dna4_kmer2_to_dna2_direct(VarBit *dna4_seq, int start_pos, int k, int *expansion_count);
 
+/* Direct DNA4 to uintkey expansion without VarBit intermediate */
+void kmersearch_expand_dna4_to_uintkey(VarBit *dna4_seq, int start_pos, int k, void **output, int *expansion_count, size_t elem_size);
+
 /* Uint key extraction functions with occurrence counting */
 void kmersearch_extract_uintkey_from_dna2(VarBit *seq, void **output, int *nkeys);
 void kmersearch_extract_uintkey_from_dna4(VarBit *seq, void **output, int *nkeys);
 void kmersearch_extract_uintkey_from_text(const char *text, void **output, int *nkeys);
+
+/* Datum array creation from uintkey array */
+Datum *kmersearch_create_datum_array_from_uintkey(void *uintkey_array, int nkeys, size_t key_size);
 
 /* Utility functions */
 void kmersearch_spi_connect_or_error(void);

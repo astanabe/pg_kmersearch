@@ -1765,6 +1765,143 @@ kmersearch_expand_dna4_kmer2_to_dna2_direct(VarBit *dna4_seq, int start_pos, int
     return kmersearch_expand_dna4_kmer2_to_dna2_direct_scalar(dna4_seq, start_pos, k, expansion_count);
 }
 
+/*
+ * Datum array creation from uintkey array
+ */
+Datum *
+kmersearch_create_datum_array_from_uintkey(void *uintkey_array, int nkeys, size_t key_size)
+{
+    Datum *keys;
+    int i;
+    
+    if (uintkey_array == NULL || nkeys == 0)
+        return NULL;
+    
+    keys = (Datum *) palloc(nkeys * sizeof(Datum));
+    
+    if (key_size == sizeof(uint16))
+    {
+        uint16 *uint16_keys = (uint16 *)uintkey_array;
+        for (i = 0; i < nkeys; i++)
+            keys[i] = Int16GetDatum(uint16_keys[i]);
+    }
+    else if (key_size == sizeof(uint32))
+    {
+        uint32 *uint32_keys = (uint32 *)uintkey_array;
+        for (i = 0; i < nkeys; i++)
+            keys[i] = Int32GetDatum(uint32_keys[i]);
+    }
+    else if (key_size == sizeof(uint64))
+    {
+        uint64 *uint64_keys = (uint64 *)uintkey_array;
+        for (i = 0; i < nkeys; i++)
+            keys[i] = Int64GetDatum(uint64_keys[i]);
+    }
+    else
+    {
+        pfree(keys);
+        elog(ERROR, "Invalid key size: %zu", key_size);
+    }
+    
+    return keys;
+}
+
+/*
+ * Direct DNA4 to uintkey expansion without VarBit intermediate
+ * Eliminates VarBit allocation and conversion overhead
+ */
+void
+kmersearch_expand_dna4_to_uintkey(VarBit *dna4_seq, int start_pos, int k, 
+                                  void **output, int *expansion_count, size_t elem_size)
+{
+    bits8 *data = VARBITS(dna4_seq);
+    uint8 base_expansions[32][4];  /* Max k=32, max 4 expansions per base */
+    int base_counts[32];
+    int total_combinations = 1;
+    void *results;
+    int i, combo;
+    
+    *expansion_count = 0;
+    *output = NULL;
+    
+    /* Check if expansion will exceed limit */
+    if (kmersearch_will_exceed_degenerate_limit_dna4_bits(dna4_seq, start_pos, k)) {
+        elog(DEBUG2, "kmersearch_expand_dna4_to_uintkey: skipping k-mer at position %d due to degenerate base", start_pos);
+        return;
+    }
+    
+    /* Extract expansion info for each base */
+    for (i = 0; i < k; i++)
+    {
+        int bit_pos = (start_pos + i) * 4;
+        int byte_pos = bit_pos / 8;
+        int bit_offset = bit_pos % 8;
+        uint8 encoded;
+        int exp_count;
+        int j;
+        
+        /* Extract 4 bits */
+        if (bit_offset <= 4)
+        {
+            encoded = (data[byte_pos] >> (4 - bit_offset)) & 0xF;
+        }
+        else
+        {
+            encoded = ((data[byte_pos] << (bit_offset - 4)) & 0xF);
+            if (byte_pos + 1 < VARBITBYTES(dna4_seq))
+                encoded |= (data[byte_pos + 1] >> (12 - bit_offset));
+            encoded &= 0xF;
+        }
+        
+        /* Get expansion from table */
+        exp_count = kmersearch_dna4_to_dna2_table[encoded][0];
+        base_counts[i] = exp_count;
+        
+        for (j = 0; j < exp_count; j++)
+        {
+            base_expansions[i][j] = kmersearch_dna4_to_dna2_table[encoded][j + 1];
+        }
+        
+        total_combinations *= exp_count;
+    }
+    
+    /* Allocate result array */
+    results = palloc(total_combinations * elem_size);
+    
+    /* Generate all combinations directly as uint values */
+    for (combo = 0; combo < total_combinations; combo++)
+    {
+        int temp_combo = combo;
+        uint64 kmer_value = 0;
+        
+        /* Generate this combination directly as uint */
+        for (i = 0; i < k; i++)
+        {
+            int base_idx = temp_combo % base_counts[i];
+            uint8 dna2_base = base_expansions[i][base_idx];
+            kmer_value = (kmer_value << 2) | dna2_base;
+            temp_combo /= base_counts[i];
+        }
+        
+        /* Store the result in appropriate size */
+        if (elem_size == sizeof(uint16))
+        {
+            ((uint16 *)results)[combo] = (uint16)kmer_value;
+        }
+        else if (elem_size == sizeof(uint32))
+        {
+            ((uint32 *)results)[combo] = (uint32)kmer_value;
+        }
+        else  /* elem_size == sizeof(uint64) */
+        {
+            ((uint64 *)results)[combo] = kmer_value;
+        }
+    }
+    
+    *output = results;
+    *expansion_count = total_combinations;
+}
+
 
 
 /*

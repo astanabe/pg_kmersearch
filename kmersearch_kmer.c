@@ -843,54 +843,34 @@ kmersearch_extract_uintkey_from_dna4_scalar(VarBit *seq, void **output, int *nke
     
     /* Process each k-mer position */
     for (i = 0; i <= seq_len - k; i++) {
-        VarBit **expanded_kmers;
+        void *expanded_uintkeys;
         int expansion_count;
         int j;
         
-        /* Expand DNA4 k-mer to DNA2 k-mers */
-        expanded_kmers = kmersearch_expand_dna4_kmer2_to_dna2_direct(seq, i, k, &expansion_count);
+        /* Expand DNA4 k-mer directly to uintkey format */
+        kmersearch_expand_dna4_to_uintkey(seq, i, k, &expanded_uintkeys, &expansion_count, elem_size);
         
-        if (!expanded_kmers || expansion_count == 0) {
+        if (!expanded_uintkeys || expansion_count == 0) {
             continue;
         }
         
         /* Process each expanded k-mer */
         for (j = 0; j < expansion_count; j++) {
-            VarBit *dna2_kmer = expanded_kmers[j];
             int current_count;
             
-            if (!dna2_kmer) {
-                continue;
-            }
-            
-            /* Convert VarBit to appropriate uint type and store */
+            /* Process directly as appropriate uint type */
             if (elem_size == sizeof(uint16)) {
-                uint16 kmer_value = 0;
+                uint16 kmer_value = ((uint16 *)expanded_uintkeys)[j];
                 uint16 final_value;
-                bits8 *data = VARBITS(dna2_kmer);
-                int nbits = VARBITLEN(dna2_kmer);
-                int nbytes = (nbits + 7) / 8;
-                int bi;
-                
-                for (bi = 0; bi < nbytes && bi < 2; bi++) {
-                    kmer_value = (kmer_value << 8) | data[bi];
-                }
-                
-                if (nbits % 8 != 0) {
-                    int shift = 8 - (nbits % 8);
-                    kmer_value >>= shift;
-                }
                 
                 current_count = kmersearch_find_or_add_kmer_occurrence16(
                     (KmerOccurrence16 *)occurrences, &occurrence_count,
                     kmer_value, result_capacity);
                 if (current_count < 0) {
-                    pfree(dna2_kmer);
                     continue;
                 }
                 
                 if (current_count > (1 << occur_bitlen)) {
-                    pfree(dna2_kmer);
                     continue;
                 }
                 
@@ -898,32 +878,17 @@ kmersearch_extract_uintkey_from_dna4_scalar(VarBit *seq, void **output, int *nke
                 ((uint16 *)result)[result_count++] = final_value;
                 
             } else if (elem_size == sizeof(uint32)) {
-                uint32 kmer_value = 0;
+                uint32 kmer_value = ((uint32 *)expanded_uintkeys)[j];
                 uint32 final_value;
-                bits8 *data = VARBITS(dna2_kmer);
-                int nbits = VARBITLEN(dna2_kmer);
-                int nbytes = (nbits + 7) / 8;
-                int bi;
-                
-                for (bi = 0; bi < nbytes && bi < 4; bi++) {
-                    kmer_value = (kmer_value << 8) | data[bi];
-                }
-                
-                if (nbits % 8 != 0) {
-                    int shift = 8 - (nbits % 8);
-                    kmer_value >>= shift;
-                }
                 
                 current_count = kmersearch_find_or_add_kmer_occurrence32(
                     (KmerOccurrence32 *)occurrences, &occurrence_count,
                     kmer_value, result_capacity);
                 if (current_count < 0) {
-                    pfree(dna2_kmer);
                     continue;
                 }
                 
                 if (current_count > (1 << occur_bitlen)) {
-                    pfree(dna2_kmer);
                     continue;
                 }
                 
@@ -931,46 +896,28 @@ kmersearch_extract_uintkey_from_dna4_scalar(VarBit *seq, void **output, int *nke
                 ((uint32 *)result)[result_count++] = final_value;
                 
             } else {
-                uint64 kmer_value = 0;
+                uint64 kmer_value = ((uint64 *)expanded_uintkeys)[j];
                 uint64 final_value;
-                bits8 *data = VARBITS(dna2_kmer);
-                int nbits = VARBITLEN(dna2_kmer);
-                int nbytes = (nbits + 7) / 8;
-                int bi;
-                
-                for (bi = 0; bi < nbytes && bi < 8; bi++) {
-                    kmer_value = (kmer_value << 8) | data[bi];
-                }
-                
-                if (nbits % 8 != 0) {
-                    int shift = 8 - (nbits % 8);
-                    kmer_value >>= shift;
-                }
                 
                 current_count = kmersearch_find_or_add_kmer_occurrence64(
                     (KmerOccurrence64 *)occurrences, &occurrence_count,
                     kmer_value, result_capacity);
                 if (current_count < 0) {
-                    pfree(dna2_kmer);
                     continue;
                 }
                 
                 if (current_count > (1 << occur_bitlen)) {
-                    pfree(dna2_kmer);
                     continue;
                 }
                 
                 final_value = (kmer_value << occur_bitlen) | ((current_count - 1) & ((1 << occur_bitlen) - 1));
                 ((uint64 *)result)[result_count++] = final_value;
             }
-            
-            /* Free the expanded k-mer */
-            pfree(dna2_kmer);
         }
         
         /* Free the expansion array */
-        if (expanded_kmers) {
-            pfree(expanded_kmers);
+        if (expanded_uintkeys) {
+            pfree(expanded_uintkeys);
         }
     }
     
