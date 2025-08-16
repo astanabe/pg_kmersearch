@@ -310,11 +310,57 @@ filter_uintkey_and_set_actual_min_score(void *uintkey, int *nkeys,
     int original_nkeys = *nkeys;
     int filtered_count = 0;
     int i;
+    bool has_highfreq = false;
     
     if (!kmersearch_preclude_highfreq_kmer || uintkey == NULL || *nkeys == 0)
         return uintkey;
     
-    /* Allocate space for filtered keys based on k_size */
+    /* First pass: check if there are any high-frequency k-mers */
+    if (k_size <= 8)
+    {
+        uint16 *keys = (uint16 *)uintkey;
+        for (i = 0; i < *nkeys; i++)
+        {
+            if (kmersearch_is_uintkey_highfreq((uint64)keys[i], k_size))
+            {
+                has_highfreq = true;
+                break;
+            }
+        }
+    }
+    else if (k_size <= 16)
+    {
+        uint32 *keys = (uint32 *)uintkey;
+        for (i = 0; i < *nkeys; i++)
+        {
+            if (kmersearch_is_uintkey_highfreq((uint64)keys[i], k_size))
+            {
+                has_highfreq = true;
+                break;
+            }
+        }
+    }
+    else
+    {
+        uint64 *keys = (uint64 *)uintkey;
+        for (i = 0; i < *nkeys; i++)
+        {
+            if (kmersearch_is_uintkey_highfreq(keys[i], k_size))
+            {
+                has_highfreq = true;
+                break;
+            }
+        }
+    }
+    
+    /* If no high-frequency k-mers, return original array */
+    if (!has_highfreq)
+    {
+        get_cached_actual_min_score_uintkey(uintkey, *nkeys, k_size);
+        return uintkey;
+    }
+    
+    /* Allocate new array for filtered keys */
     if (k_size <= 8)
     {
         uint16 *original = (uint16 *)uintkey;
@@ -377,7 +423,6 @@ filter_uintkey_and_set_actual_min_score(void *uintkey, int *nkeys,
     }
     
     /* Cache actual_min_score - this will be retrieved in consistent function */
-    /* Note: The actual_min_score calculation happens inside get_cached_actual_min_score_uintkey */
     get_cached_actual_min_score_uintkey(filtered_keys ? filtered_keys : uintkey, 
                                         filtered_keys ? filtered_count : *nkeys, k_size);
     

@@ -755,6 +755,22 @@ void kmersearch_extract_uintkey_from_text(const char *text, void **output, int *
 /* Datum array creation from uintkey array */
 Datum *kmersearch_create_datum_array_from_uintkey(void *uintkey_array, int nkeys, size_t key_size);
 
+/* Memory pool management structures and functions */
+typedef struct UintkeyMemoryPool {
+    void *buffer;          /* Pre-allocated memory buffer */
+    size_t buffer_size;    /* Total size of the buffer */
+    size_t used;          /* Currently used bytes */
+    size_t high_water;    /* High water mark for usage tracking */
+    int alloc_count;      /* Number of allocations */
+    struct UintkeyMemoryPool *next;  /* For chaining pools if needed */
+} UintkeyMemoryPool;
+
+UintkeyMemoryPool *kmersearch_mempool_create(size_t initial_size);
+void *kmersearch_mempool_alloc(UintkeyMemoryPool *pool, size_t size);
+void kmersearch_mempool_reset(UintkeyMemoryPool *pool);
+void kmersearch_mempool_destroy(UintkeyMemoryPool *pool);
+size_t kmersearch_mempool_get_usage(UintkeyMemoryPool *pool);
+
 /* Utility functions */
 void kmersearch_spi_connect_or_error(void);
 

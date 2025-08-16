@@ -1986,27 +1986,11 @@ kmersearch_worker_analyze_blocks(KmerWorkerState *worker, Relation rel,
                 kmersearch_extract_uintkey_from_dna2(sequence, &uintkeys, &nkeys);
             }
             
-            /* Convert uintkeys to Datum array for compatibility */
+            /* Convert uintkeys to Datum array using optimized helper */
             if (uintkeys && nkeys > 0) {
-                kmer_datums = (Datum *) palloc(nkeys * sizeof(Datum));
-                
-                /* Use full uintkey (including occurrence count) */
-                if (k_size <= 8) {
-                    uint16 *uint_array = (uint16 *)uintkeys;
-                    for (ui = 0; ui < nkeys; ui++) {
-                        kmer_datums[ui] = UInt16GetDatum(uint_array[ui]);
-                    }
-                } else if (k_size <= 16) {
-                    uint32 *uint_array = (uint32 *)uintkeys;
-                    for (ui = 0; ui < nkeys; ui++) {
-                        kmer_datums[ui] = UInt32GetDatum(uint_array[ui]);
-                    }
-                } else {
-                    uint64 *uint_array = (uint64 *)uintkeys;
-                    for (ui = 0; ui < nkeys; ui++) {
-                        kmer_datums[ui] = UInt64GetDatum(uint_array[ui]);
-                    }
-                }
+                size_t key_size = (k_size <= 8) ? sizeof(uint16) : 
+                                 (k_size <= 16) ? sizeof(uint32) : sizeof(uint64);
+                kmer_datums = kmersearch_create_datum_array_from_uintkey(uintkeys, nkeys, key_size);
                 
                 if (uintkeys) {
                     pfree(uintkeys);

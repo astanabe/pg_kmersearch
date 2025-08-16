@@ -1902,6 +1902,140 @@ kmersearch_expand_dna4_to_uintkey(VarBit *dna4_seq, int start_pos, int k,
     *expansion_count = total_combinations;
 }
 
+/*
+ * Memory pool management implementation
+ */
+
+/*
+ * Create a new memory pool with specified initial size
+ */
+UintkeyMemoryPool *
+kmersearch_mempool_create(size_t initial_size)
+{
+    UintkeyMemoryPool *pool;
+    
+    /* Ensure minimum size */
+    if (initial_size < 1024)
+        initial_size = 1024;
+    
+    /* Allocate pool structure */
+    pool = (UintkeyMemoryPool *) palloc(sizeof(UintkeyMemoryPool));
+    
+    /* Allocate buffer */
+    pool->buffer = palloc(initial_size);
+    pool->buffer_size = initial_size;
+    pool->used = 0;
+    pool->high_water = 0;
+    pool->alloc_count = 0;
+    pool->next = NULL;
+    
+    elog(DEBUG2, "Created memory pool with %zu bytes", initial_size);
+    
+    return pool;
+}
+
+/*
+ * Allocate memory from the pool
+ */
+void *
+kmersearch_mempool_alloc(UintkeyMemoryPool *pool, size_t size)
+{
+    void *result;
+    size_t aligned_size;
+    
+    if (pool == NULL || size == 0)
+        return NULL;
+    
+    /* Align size to 8-byte boundary for better performance */
+    aligned_size = (size + 7) & ~7;
+    
+    /* Check if we have enough space */
+    if (pool->used + aligned_size > pool->buffer_size)
+    {
+        /* If this is the first allocation that doesn't fit, try to expand */
+        if (pool->alloc_count == 0 || pool->used + aligned_size > pool->buffer_size * 2)
+        {
+            /* Can't fit even with expansion, fallback to regular palloc */
+            elog(DEBUG2, "Memory pool exhausted (%zu/%zu), falling back to palloc for %zu bytes",
+                 pool->used, pool->buffer_size, size);
+            return palloc(size);
+        }
+        
+        /* Expand the pool */
+        size_t new_size = pool->buffer_size * 2;
+        while (pool->used + aligned_size > new_size)
+            new_size *= 2;
+        
+        pool->buffer = repalloc(pool->buffer, new_size);
+        pool->buffer_size = new_size;
+        
+        elog(DEBUG2, "Expanded memory pool from %zu to %zu bytes",
+             pool->buffer_size / 2, new_size);
+    }
+    
+    /* Allocate from pool */
+    result = (char *)pool->buffer + pool->used;
+    pool->used += aligned_size;
+    pool->alloc_count++;
+    
+    /* Update high water mark */
+    if (pool->used > pool->high_water)
+        pool->high_water = pool->used;
+    
+    return result;
+}
+
+/*
+ * Reset the pool for reuse
+ */
+void
+kmersearch_mempool_reset(UintkeyMemoryPool *pool)
+{
+    if (pool == NULL)
+        return;
+    
+    elog(DEBUG2, "Resetting memory pool (used=%zu, high_water=%zu, allocs=%d)",
+         pool->used, pool->high_water, pool->alloc_count);
+    
+    pool->used = 0;
+    pool->alloc_count = 0;
+    /* Keep high_water for statistics */
+}
+
+/*
+ * Destroy the pool and free all resources
+ */
+void
+kmersearch_mempool_destroy(UintkeyMemoryPool *pool)
+{
+    if (pool == NULL)
+        return;
+    
+    elog(DEBUG2, "Destroying memory pool (size=%zu, high_water=%zu, total_allocs=%d)",
+         pool->buffer_size, pool->high_water, pool->alloc_count);
+    
+    if (pool->buffer)
+        pfree(pool->buffer);
+    
+    /* Recursively destroy chained pools if any */
+    if (pool->next)
+        kmersearch_mempool_destroy(pool->next);
+    
+    pfree(pool);
+}
+
+/*
+ * Get current usage statistics
+ */
+size_t
+kmersearch_mempool_get_usage(UintkeyMemoryPool *pool)
+{
+    if (pool == NULL)
+        return 0;
+    
+    return pool->used;
+}
+
 
 
 /*
