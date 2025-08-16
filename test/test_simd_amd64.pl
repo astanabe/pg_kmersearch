@@ -431,13 +431,15 @@ sub test_kmer_frequency_analysis {
     print "$type Test 4: K-mer frequency analysis\n";
     print "=" x 70 . "\n\n";
     
+    # Set common GUC variables once before the loop to avoid unnecessary cache clearing
+    $dbh->do("SET kmersearch.kmer_size = $kmer_size");
+    $dbh->do("SET kmersearch.max_appearance_rate = $max_appearance_rate");
+    
     my %freq_results;
     foreach my $simd (@simd_capabilities) {
         print "Testing $type frequency analysis with force_simd_capability = $simd->{value} ($simd->{name})\n";
         
         $dbh->do("SET kmersearch.force_simd_capability = $simd->{value}");
-        $dbh->do("SET kmersearch.kmer_size = $kmer_size");
-        $dbh->do("SET kmersearch.max_appearance_rate = $max_appearance_rate");
         $dbh->do("SET kmersearch.preclude_highfreq_kmer = true");
         
         my $table_name = "simd_test_${type}_freq_$simd->{value}";
@@ -456,10 +458,10 @@ sub test_kmer_frequency_analysis {
             
             # Get high-frequency k-mers for comparison
             $sth = $dbh->prepare("
-                SELECT kmer2_as_uint::text, detection_reason 
+                SELECT uintkey::text, detection_reason 
                 FROM kmersearch_highfreq_kmer 
                 WHERE table_oid = ?::regclass::oid 
-                ORDER BY kmer2_as_uint
+                ORDER BY uintkey
                 LIMIT 20
             ");
             $sth->execute($table_name);
@@ -477,8 +479,12 @@ sub test_kmer_frequency_analysis {
                 WHERE table_oid = ?::regclass::oid
             ", undef, $table_name);
             
-            # Clean up
-            $dbh->do("SELECT kmersearch_undo_highfreq_analysis('$table_name', 'seq')");
+            # Clean up - now returns a composite type
+            eval {
+                my $sth = $dbh->prepare("SELECT * FROM kmersearch_undo_highfreq_analysis(?, ?)");
+                $sth->execute($table_name, 'seq');
+                $sth->finish();
+            };
             $dbh->do("DROP TABLE $table_name");
             
             return {
@@ -492,8 +498,13 @@ sub test_kmer_frequency_analysis {
         
         $freq_results{$simd->{value}} = $freq_result;
         $timing_results{"${type}_freq"}{$simd->{value}} = $freq_time;
-        printf "  Time: %.3fs, High-freq k-mers: %d, Workers: %d\n\n", 
-               $freq_time, $freq_result->{highfreq_kmers_count}, $freq_result->{parallel_workers};
+        
+        if (defined $freq_result) {
+            printf "  Time: %.3fs, High-freq k-mers: %d, Workers: %d\n\n", 
+                   $freq_time, $freq_result->{highfreq_kmers_count}, $freq_result->{parallel_workers};
+        } else {
+            printf "  Time: %.3fs, ERROR: Test failed\n\n", $freq_time;
+        }
     }
     
     # Compare results
@@ -501,18 +512,23 @@ sub test_kmer_frequency_analysis {
     my $base_freq = $freq_results{0};
     my $freq_consistent = 1;
     
-    foreach my $simd (@simd_capabilities[1..$#simd_capabilities]) {
-        my $freq = $freq_results{$simd->{value}};
-        
-        if ($freq->{highfreq_kmers_count} != $base_freq->{highfreq_kmers_count}) {
-            printf "  WARNING: Different high-freq k-mer count for %s: %d vs %d\n",
-                   $simd->{name}, $freq->{highfreq_kmers_count}, $base_freq->{highfreq_kmers_count};
-            $freq_consistent = 0;
+    if ($base_freq) {
+        foreach my $simd (@simd_capabilities[1..$#simd_capabilities]) {
+            my $freq = $freq_results{$simd->{value}};
+            next if !$freq;  # Skip if test failed
+            
+            if ($freq->{highfreq_kmers_count} != $base_freq->{highfreq_kmers_count}) {
+                printf "  WARNING: Different high-freq k-mer count for %s: %d vs %d\n",
+                       $simd->{name}, $freq->{highfreq_kmers_count}, $base_freq->{highfreq_kmers_count};
+                $freq_consistent = 0;
+            }
         }
-    }
-    
-    if ($freq_consistent) {
-        print "  ✓ $type High-frequency k-mer analysis results are consistent across all SIMD capabilities\n";
+        
+        if ($freq_consistent) {
+            print "  ✓ $type High-frequency k-mer analysis results are consistent across all SIMD capabilities\n";
+        }
+    } else {
+        print "  ⚠ $type High-frequency k-mer analysis failed for baseline test\n";
     }
     print "\n";
 }
@@ -528,12 +544,14 @@ sub test_gin_index_construction {
     my %gin_results;
     my %gin_tables;
     
+    # Set common GUC variables once before the loop to avoid unnecessary cache clearing
+    $dbh->do("SET kmersearch.kmer_size = $kmer_size");
+    $dbh->do("SET kmersearch.max_appearance_rate = $max_appearance_rate");
+    
     foreach my $simd (@simd_capabilities) {
         print "Testing $type GIN index with force_simd_capability = $simd->{value} ($simd->{name})\n";
         
         $dbh->do("SET kmersearch.force_simd_capability = $simd->{value}");
-        $dbh->do("SET kmersearch.kmer_size = $kmer_size");
-        $dbh->do("SET kmersearch.max_appearance_rate = $max_appearance_rate");
         $dbh->do("SET kmersearch.preclude_highfreq_kmer = true");
         
         my $table_name = "simd_test_${type}_gin_$simd->{value}";
@@ -544,18 +562,20 @@ sub test_gin_index_construction {
         
         my ($gin_time, $gin_result) = measure_time("${type}_gin_$simd->{value}", sub {
             
-            # Perform frequency analysis
-            my ($analysis_rows) = $dbh->selectrow_array(
-                "SELECT total_rows FROM kmersearch_perform_highfreq_analysis(?, ?)", 
-                undef, $table_name, 'seq'
-            );
+            # Perform frequency analysis - returns composite type
+            my $sth = $dbh->prepare("SELECT * FROM kmersearch_perform_highfreq_analysis(?, ?)");
+            $sth->execute($table_name, 'seq');
+            my $analysis = $sth->fetchrow_hashref();
+            $sth->finish();
+            my $analysis_rows = $analysis->{total_rows};
             
             # Load high-frequency k-mer cache after analysis
             my $cache_loaded = 0;
             eval {
-                # First, check if there are any high-frequency k-mers
+                # First, check if there are any high-frequency k-mers for this specific table
                 my ($highfreq_count) = $dbh->selectrow_array(
-                    "SELECT COUNT(*) FROM kmersearch_highfreq_kmer"
+                    "SELECT COUNT(*) FROM kmersearch_highfreq_kmer WHERE table_oid = ?::regclass::oid",
+                    undef, $table_name
                 );
                 
                 if ($highfreq_count > 0) {
@@ -570,10 +590,12 @@ sub test_gin_index_construction {
                                 undef, $table_name, 'seq');
                     };
                     $cache_loaded = 1 if defined $result;
+                    print "  Loaded high-frequency k-mer cache with $highfreq_count k-mers\n";
                 } else {
                     # If no high-frequency k-mers, disable filtering
                     $dbh->do("SET kmersearch.preclude_highfreq_kmer = false");
                     $cache_loaded = 1;  # Mark as "loaded" to proceed
+                    print "  No high-frequency k-mers detected, filtering disabled\n";
                 }
             };
             if ($@) {
@@ -603,7 +625,28 @@ sub test_gin_index_construction {
                 );
                 
                 if ($table_exists) {
-                    $dbh->do("CREATE INDEX $index_name ON $table_name USING gin(seq kmersearch_${datatype}_gin_ops)");
+                    # Select operator class based on total bits needed
+                    # Total bits = kmer_size * 2 + occur_bitlen
+                    # Get current occur_bitlen setting
+                    my ($occur_bitlen) = $dbh->selectrow_array("SHOW kmersearch.occur_bitlen");
+                    $occur_bitlen = 8 unless defined $occur_bitlen;  # Default is 8
+                    
+                    my $total_bits = $kmer_size * 2 + $occur_bitlen;
+                    
+                    # Select appropriate operator class:
+                    # int2: up to 16 bits
+                    # int4: up to 32 bits  
+                    # int8: up to 64 bits
+                    my $ops_suffix;
+                    if ($total_bits <= 16) {
+                        $ops_suffix = "int2";
+                    } elsif ($total_bits <= 32) {
+                        $ops_suffix = "int4";
+                    } else {
+                        $ops_suffix = "int8";
+                    }
+                    my $ops_class = "kmersearch_${datatype}_gin_ops_${ops_suffix}";
+                    $dbh->do("CREATE INDEX $index_name ON $table_name USING gin(seq $ops_class)");
                     $gin_created = 1;
                 } else {
                     die "Table $table_name does not exist";
@@ -704,6 +747,10 @@ sub test_gin_index_search {
     my $gin_tables = $test_results{"${type}_gin_tables"};
     my %search_results;
     
+    # Set common GUC variables once before the loop to avoid unnecessary cache clearing
+    $dbh->do("SET kmersearch.kmer_size = $kmer_size");
+    $dbh->do("SET kmersearch.max_appearance_rate = $max_appearance_rate");
+    
     foreach my $simd (@simd_capabilities) {
         my $table_name = $gin_tables->{$simd->{value}};
         if (!$table_name) {
@@ -714,8 +761,6 @@ sub test_gin_index_search {
         print "Testing $type GIN search with force_simd_capability = $simd->{value} ($simd->{name})\n";
         
         $dbh->do("SET kmersearch.force_simd_capability = $simd->{value}");
-        $dbh->do("SET kmersearch.kmer_size = $kmer_size");
-        $dbh->do("SET kmersearch.max_appearance_rate = $max_appearance_rate");
         
         # Check if there are any high-frequency k-mers for this table
         my ($highfreq_count) = $dbh->selectrow_array(

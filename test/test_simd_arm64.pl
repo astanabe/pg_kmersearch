@@ -806,8 +806,12 @@ foreach my $simd (@simd_capabilities) {
             WHERE table_oid = ?::regclass::oid
         ", undef, $table_name);
         
-        # Clean up
-        $dbh->do("SELECT kmersearch_undo_highfreq_analysis('$table_name', 'seq')");
+        # Clean up - now returns a composite type
+        eval {
+            my $sth = $dbh->prepare("SELECT * FROM kmersearch_undo_highfreq_analysis(?, ?)");
+            $sth->execute($table_name, 'seq');
+            $sth->finish();
+        };
         $dbh->do("DROP TABLE $table_name");
         
         return {
@@ -874,8 +878,12 @@ foreach my $simd (@simd_capabilities) {
             WHERE table_oid = ?::regclass::oid
         ", undef, $table_name);
         
-        # Clean up
-        $dbh->do("SELECT kmersearch_undo_highfreq_analysis('$table_name', 'seq')");
+        # Clean up - now returns a composite type
+        eval {
+            my $sth = $dbh->prepare("SELECT * FROM kmersearch_undo_highfreq_analysis(?, ?)");
+            $sth->execute($table_name, 'seq');
+            $sth->finish();
+        };
         $dbh->do("DROP TABLE $table_name");
         
         return {
@@ -915,11 +923,12 @@ foreach my $simd (@simd_capabilities) {
         
         create_base_table($table_name);
         
-        # Perform frequency analysis
-        my ($analysis_rows) = $dbh->selectrow_array(
-            "SELECT total_rows FROM kmersearch_perform_highfreq_analysis(?, ?)", 
-            undef, $table_name, 'seq'
-        );
+        # Perform frequency analysis - returns composite type
+        my $sth = $dbh->prepare("SELECT * FROM kmersearch_perform_highfreq_analysis(?, ?)");
+        $sth->execute($table_name, 'seq');
+        my $analysis = $sth->fetchrow_hashref();
+        $sth->finish();
+        my $analysis_rows = $analysis->{total_rows};
         
         # Create GIN index
         my $index_name = $table_name . "_idx";
@@ -984,11 +993,12 @@ foreach my $simd (@simd_capabilities) {
         
         create_base_table($table_name, 'DNA4');
         
-        # Perform frequency analysis
-        my ($analysis_rows) = $dbh->selectrow_array(
-            "SELECT total_rows FROM kmersearch_perform_highfreq_analysis(?, ?)", 
-            undef, $table_name, 'seq'
-        );
+        # Perform frequency analysis - returns composite type
+        my $sth = $dbh->prepare("SELECT * FROM kmersearch_perform_highfreq_analysis(?, ?)");
+        $sth->execute($table_name, 'seq');
+        my $analysis = $sth->fetchrow_hashref();
+        $sth->finish();
+        my $analysis_rows = $analysis->{total_rows};
         
         # Create GIN index
         my $index_name = $table_name . "_idx";
@@ -1757,8 +1767,12 @@ foreach my $simd (@simd_capabilities) {
             WHERE table_oid = ?::regclass::oid
         ", undef, $table_name);
         
-        # Clean up
-        $dbh->do("SELECT kmersearch_undo_highfreq_analysis('$table_name', 'seq')");
+        # Clean up - now returns a composite type
+        eval {
+            my $sth = $dbh->prepare("SELECT * FROM kmersearch_undo_highfreq_analysis(?, ?)");
+            $sth->execute($table_name, 'seq');
+            $sth->finish();
+        };
         $dbh->do("DROP TABLE $table_name");
         
         return {
@@ -1787,11 +1801,12 @@ foreach my $simd (@simd_capabilities) {
         $dbh->do("SET kmersearch.max_appearance_rate = $max_appearance_rate");
         $dbh->do("SET kmersearch.preclude_highfreq_kmer = true");
         
-        # Perform frequency analysis
-        my ($analysis_rows) = $dbh->selectrow_array(
-            "SELECT total_rows FROM kmersearch_perform_highfreq_analysis(?, ?)", 
-            undef, $table_name, 'seq'
-        );
+        # Perform frequency analysis - returns composite type
+        my $sth = $dbh->prepare("SELECT * FROM kmersearch_perform_highfreq_analysis(?, ?)");
+        $sth->execute($table_name, 'seq');
+        my $analysis = $sth->fetchrow_hashref();
+        $sth->finish();
+        my $analysis_rows = $analysis->{total_rows};
         
         # Create GIN index
         my $index_name = $table_name . "_idx";
