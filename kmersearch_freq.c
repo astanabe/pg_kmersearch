@@ -1901,7 +1901,7 @@ kmersearch_worker_analyze_blocks(KmerWorkerState *worker, Relation rel,
     HeapTuple tuple;
     TupleDesc tupdesc;
     int i;
-    Datum *kmer_datums;
+    void *uintkeys = NULL;
     BlockNumber current_block;
     bool isnull;
     Datum value;
@@ -1986,21 +1986,10 @@ kmersearch_worker_analyze_blocks(KmerWorkerState *worker, Relation rel,
                 kmersearch_extract_uintkey_from_dna2(sequence, &uintkeys, &nkeys);
             }
             
-            /* Convert uintkeys to Datum array using optimized helper */
-            if (uintkeys && nkeys > 0) {
-                size_t key_size = (k_size <= 8) ? sizeof(uint16) : 
-                                 (k_size <= 16) ? sizeof(uint32) : sizeof(uint64);
-                kmer_datums = kmersearch_create_datum_array_from_uintkey(uintkeys, nkeys, key_size);
-                
-                if (uintkeys) {
-                    pfree(uintkeys);
-                }
-            } else {
-                kmer_datums = NULL;
-            }
+            /* No need to convert to Datum array - use uintkeys directly */
         }
         
-        if (kmer_datums == NULL || nkeys == 0) {
+        if (uintkeys == NULL || nkeys == 0) {
             continue;
         }
         
@@ -2023,13 +2012,13 @@ kmersearch_worker_analyze_blocks(KmerWorkerState *worker, Relation rel,
                 uint64_t uintkey_value;
                 bool found;
                 
-                /* Get full uintkey value from Datum */
+                /* Get uintkey value directly from array */
                 if (k_size <= 8) {
-                    uintkey_value = DatumGetUInt16(kmer_datums[j]);
+                    uintkey_value = ((uint16 *)uintkeys)[j];
                 } else if (k_size <= 16) {
-                    uintkey_value = DatumGetUInt32(kmer_datums[j]);
+                    uintkey_value = ((uint32 *)uintkeys)[j];
                 } else {
-                    uintkey_value = DatumGetUInt64(kmer_datums[j]);
+                    uintkey_value = ((uint64 *)uintkeys)[j];
                 }
                 
                 /* Only add to buffer if not already seen in this row */
@@ -2053,9 +2042,9 @@ kmersearch_worker_analyze_blocks(KmerWorkerState *worker, Relation rel,
             hash_destroy(row_kmer_set);
         }
         
-        /* Cleanup k-mer array */
-        if (kmer_datums) {
-            pfree(kmer_datums);
+        /* Cleanup uintkey array */
+        if (uintkeys) {
+            pfree(uintkeys);
         }
         }
         
