@@ -2257,19 +2257,6 @@ _PG_fini(void)
 
 #endif
 
-/*
- * Get appropriate uint size for k-mer length
- */
-size_t
-kmersearch_get_kmer_uint_size(int k)
-{
-    if (k <= 8) return sizeof(uint16);
-    if (k <= 16) return sizeof(uint32);
-    if (k <= 32) return sizeof(uint64);
-    ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-                   errmsg("k-mer length must be between 4 and 32")));
-}
-
 
 
 /*

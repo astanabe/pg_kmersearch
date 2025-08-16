@@ -176,29 +176,6 @@ typedef enum {
 /* Removed SIMD dispatch table - now using direct threshold-based dispatch */
 
 /*
- * K-mer frequency entry for analysis
- */
-typedef struct KmerFreqEntry
-{
-    VarBit      *kmer_key;      /* K-mer binary key (without occurrence count) */
-    int         row_count;      /* Number of rows where this k-mer appears */
-    bool        highfreq;       /* Whether this k-mer is highly frequent */
-} KmerFreqEntry;
-
-/*
- * K-mer match result structure
- */
-typedef struct KmerMatchResult
-{
-    int         shared_count;       /* Number of shared k-mers (rawscore) */
-    int         seq_nkeys;          /* Number of k-mers in sequence */
-    int         query_nkeys;        /* Number of k-mers in query */
-    double      sharing_rate;       /* Calculated sharing rate */
-    bool        match_result;       /* Boolean match result for =% operator */
-    bool        valid;              /* Whether the result is valid */
-} KmerMatchResult;
-
-/*
  * Actual min score cache entry
  */
 typedef struct ActualMinScoreCacheEntry
@@ -240,13 +217,6 @@ typedef struct KmerOccurrence64
     uint64      kmer_value;         /* K-mer value for k <= 32 */
     int         count;              /* Occurrence count */
 } KmerOccurrence64;
-
-/* Legacy typedef for backward compatibility - will be removed */
-typedef struct KmerOccurrence
-{
-    uint64_t    kmer_value;         /* K-mer as single 64-bit value */
-    int         count;              /* Occurrence count */
-} KmerOccurrence;
 
 /*
  * K-mer analysis result
@@ -349,14 +319,6 @@ typedef struct QueryPatternCacheManager
  * Three separate structures for optimal memory usage based on k-mer size
  */
 
-/* TODO: UintkeyBuffer is obsolete and should be removed along with old functions */
-typedef struct UintkeyBuffer
-{
-    uint64         *uintkeys;            /* Array of uintkey values */
-    int             count;               /* Current count */
-    int             capacity;            /* Buffer capacity */
-    int             kmer_size;           /* K-mer size */
-} UintkeyBuffer;
 typedef struct UintkeyBuffer16
 {
     uint16         *uintkeys;            /* Array of uint16 uintkey values */
@@ -692,19 +654,14 @@ Datum kmersearch_undo_highfreq_analysis(PG_FUNCTION_ARGS);
 bool kmersearch_is_kmer_hash_in_analysis_dshash(uint64 kmer_hash);
 
 /* K-mer utility functions */
-void kmersearch_expand_degenerate_sequence(const char *kmer, int k, char **expanded, int *expand_count);
 /* Removed kmer2/ngram_key2 functions - using uintkey implementation */
 int kmersearch_count_degenerate_combinations(const char *kmer, int k);
 void kmersearch_set_bit_at(bits8 *data, int bit_pos, int value);
 bool kmersearch_will_exceed_degenerate_limit_dna4_bits(VarBit *seq, int start_pos, int k);
 /* Removed kmer2 creation functions */
-uint64_t kmersearch_get_kmer_hash(VarBit *seq, int start_pos, int k);
-int kmersearch_find_or_add_kmer_occurrence(KmerOccurrence *occurrences, int *count, uint64_t kmer_value, int max_count);
 int kmersearch_find_or_add_kmer_occurrence16(KmerOccurrence16 *occurrences, int *count, uint16 kmer_value, int max_count);
 int kmersearch_find_or_add_kmer_occurrence32(KmerOccurrence32 *occurrences, int *count, uint32 kmer_value, int max_count);
 int kmersearch_find_or_add_kmer_occurrence64(KmerOccurrence64 *occurrences, int *count, uint64 kmer_value, int max_count);
-VarBit **kmersearch_extract_kmer_from_varbit(VarBit *seq, int k, int *nkeys);
-int kmersearch_count_matching_kmer_fast(VarBit **seq_keys, int seq_nkeys, VarBit **query_keys, int query_nkeys);
 int kmersearch_count_matching_uintkey(void *seq_keys, int seq_nkeys, void *query_keys, int query_nkeys, int k_size);
 uint8 kmersearch_get_bit_at(bits8 *data, int bit_pos);
 bool kmersearch_will_exceed_degenerate_limit(const char *seq, int len);
@@ -791,7 +748,6 @@ char *kmersearch_generate_unique_temp_table_name(const char *prefix, int additio
 /* Removed kmer2_as_uint functions - not true uintkey format */
 
 /* Direct bit manipulation helper functions */
-size_t kmersearch_get_kmer_uint_size(int k);
 void kmersearch_extract_dna4_kmer_expansions_direct_bits(VarBit *seq, int start_pos, int k, uint64 *output, int *count);
 VarBit **kmersearch_expand_dna4_kmer2_to_dna2_direct(VarBit *dna4_seq, int start_pos, int k, int *expansion_count);
 

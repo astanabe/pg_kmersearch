@@ -2095,64 +2095,6 @@ kmersearch_add_hash_to_buffer64(UintkeyBuffer64 *buffer, uint64 uintkey_value, c
     buffer->count++;
 }
 
-/*
- * Flush uintkey buffer to temporary table (simplified for Phase 1)
- * TODO: This function is no longer needed with typed buffers and should be removed
- */
-static void
-kmersearch_flush_hash_buffer_to_table(UintkeyBuffer *buffer, const char *temp_table_name)
-{
-    StringInfoData query;
-    int i;
-    int ret;
-    
-    if (buffer->count == 0) return;
-    
-    initStringInfo(&query);
-    
-    /* Build INSERT statement with multiple VALUES */
-    appendStringInfo(&query, "INSERT INTO %s (kmer_data, frequency_count) VALUES ", temp_table_name);
-    
-    for (i = 0; i < buffer->count; i++) {
-        if (i > 0) appendStringInfoString(&query, ", ");
-        
-        /* Each uintkey has frequency_count of 1 (one row occurrence) */
-        appendStringInfo(&query, "(%lu, 1)", (unsigned long)buffer->uintkeys[i]);
-    }
-    
-    appendStringInfoString(&query, " ON CONFLICT (kmer_data) DO UPDATE SET frequency_count = ");
-    appendStringInfo(&query, "%s.frequency_count + EXCLUDED.frequency_count", temp_table_name);
-    
-    /* Execute the INSERT */
-    ret = SPI_exec(query.data, 0);
-    if (ret != SPI_OK_INSERT) {
-        ereport(ERROR,
-                (errcode(ERRCODE_INTERNAL_ERROR),
-                 errmsg("failed to insert k-mer data into temporary table %s", temp_table_name)));
-    }
-    
-    pfree(query.data);
-    
-    /* Reset buffer */
-    buffer->count = 0;
-}
-
-/*
- * Add uintkey value to buffer for Phase 1 processing
- * TODO: This function is no longer needed with typed buffers and should be removed
- */
-static void
-kmersearch_add_hash_to_buffer(UintkeyBuffer *buffer, uint64_t uintkey_value, const char *temp_table_name)
-{
-    /* Check if buffer is full */
-    if (buffer->count >= buffer->capacity) {
-        kmersearch_flush_hash_buffer_to_table(buffer, temp_table_name);
-    }
-    
-    /* Add new uintkey */
-    buffer->uintkeys[buffer->count] = uintkey_value;
-    buffer->count++;
-}
 
 
 /*

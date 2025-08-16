@@ -398,7 +398,6 @@ calculate_actual_min_score(VarBit **query_keys, int nkeys, int query_total_kmers
     int base_min_score;
     int highfreq_count;
     int actual_min_score;
-    int absolute_min = kmersearch_min_score;
     int relative_min = 0;
     
     /* Validate input parameters */
@@ -409,11 +408,10 @@ calculate_actual_min_score(VarBit **query_keys, int nkeys, int query_total_kmers
     /* Calculate base minimum score (maximum of absolute and relative) */
     
     if (query_total_kmers > 0) {
-        double relative_threshold = kmersearch_min_shared_ngram_key_rate * query_total_kmers;
-        relative_min = (int)ceil(relative_threshold);
+        relative_min = (int)ceil(kmersearch_min_shared_ngram_key_rate * query_total_kmers);
     }
     
-    base_min_score = (absolute_min > relative_min) ? absolute_min : relative_min;
+    base_min_score = (kmersearch_min_score > relative_min) ? kmersearch_min_score : relative_min;
     
     /* If high-frequency k-mer filtering is enabled, subtract high-frequency k-mer count */
     if (kmersearch_is_highfreq_filtering_enabled()) {
@@ -679,18 +677,16 @@ calculate_actual_min_score_from_uintkey(void *uintkey, int nkeys, int k_size)
     int base_min_score;
     int highfreq_count = 0;
     int actual_min_score;
-    int absolute_min = kmersearch_min_score;
     int relative_min = 0;
     int query_total_kmers = nkeys;
     
     /* Calculate base minimum score (maximum of absolute and relative) */
     if (query_total_kmers > 0)
     {
-        double relative_threshold = kmersearch_min_shared_ngram_key_rate * query_total_kmers;
-        relative_min = (int)ceil(relative_threshold);
+        relative_min = (int)ceil(kmersearch_min_shared_ngram_key_rate * query_total_kmers);
     }
     
-    base_min_score = (absolute_min > relative_min) ? absolute_min : relative_min;
+    base_min_score = (kmersearch_min_score > relative_min) ? kmersearch_min_score : relative_min;
     
     /* If high-frequency k-mer filtering is enabled, subtract high-frequency k-mer count */
     if (kmersearch_is_highfreq_filtering_enabled())
