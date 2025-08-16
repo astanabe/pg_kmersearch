@@ -283,33 +283,33 @@ typedef struct KmerEntry64
 #define KMERSEARCH_KEY_HANDLES       2  /* Combined DSM and hash handles */
 
 /*
- * Query pattern cache entry
+ * Query-kmer cache entry
  */
-typedef struct QueryPatternCacheEntry
+typedef struct QueryKmerCacheEntry
 {
     uint64      hash_key;                  /* Hash key for this entry */
     char        *query_string_copy;        /* Copy of query string */
-    int         kmer_size;                 /* K-mer size for this pattern */
+    int         kmer_size;                 /* K-mer size for this query */
     void        *extracted_uintkey;        /* Cached extracted uintkeys (uint16/uint32/uint64 array) */
     int         kmer_count;                /* Number of extracted k-mers */
-    struct QueryPatternCacheEntry *next;   /* For LRU chain */
-    struct QueryPatternCacheEntry *prev;   /* For LRU chain */
-} QueryPatternCacheEntry;
+    struct QueryKmerCacheEntry *next;   /* For LRU chain */
+    struct QueryKmerCacheEntry *prev;   /* For LRU chain */
+} QueryKmerCacheEntry;
 
 /*
- * Query pattern cache manager
+ * Query-kmer cache manager
  */
-typedef struct QueryPatternCacheManager
+typedef struct QueryKmerCacheManager
 {
     HTAB        *hash_table;               /* PostgreSQL hash table */
-    MemoryContext query_pattern_cache_context; /* Memory context for query pattern cache */
+    MemoryContext query_kmer_cache_context; /* Memory context for query-kmer cache */
     int         max_entries;               /* Maximum number of entries */
     int         current_entries;           /* Current number of entries */
     uint64      hits;                      /* Cache hit count */
     uint64      misses;                    /* Cache miss count */
-    QueryPatternCacheEntry *lru_head;      /* LRU chain head (most recent) */
-    QueryPatternCacheEntry *lru_tail;      /* LRU chain tail (least recent) */
-} QueryPatternCacheManager;
+    QueryKmerCacheEntry *lru_head;      /* LRU chain head (most recent) */
+    QueryKmerCacheEntry *lru_tail;      /* LRU chain tail (least recent) */
+} QueryKmerCacheManager;
 
 /*
  * K-mer data union for different k-values
@@ -460,18 +460,18 @@ extern int kmersearch_kmer_size;
 extern double kmersearch_max_appearance_rate;
 extern int kmersearch_max_appearance_nrow;
 extern int kmersearch_min_score;
-extern double kmersearch_min_shared_ngram_key_rate;
+extern double kmersearch_min_shared_kmer_rate;
 extern bool kmersearch_preclude_highfreq_kmer;
 
 /* Cache configuration variables */
-extern int kmersearch_query_pattern_cache_max_entries;
+extern int kmersearch_query_kmer_cache_max_entries;
 extern int kmersearch_actual_min_score_cache_max_entries;
 extern int kmersearch_highfreq_kmer_cache_load_batch_size;
 extern int kmersearch_highfreq_analysis_batch_size;
 
 /* Global cache managers */
 extern ActualMinScoreCacheManager *actual_min_score_cache_manager;
-extern QueryPatternCacheManager *query_pattern_cache_manager;
+extern QueryKmerCacheManager *query_kmer_cache_manager;
 
 /* Global high-frequency k-mer cache */
 extern HighfreqKmerCache global_highfreq_cache;
@@ -603,17 +603,17 @@ Datum kmersearch_dna2_match(PG_FUNCTION_ARGS);
 Datum kmersearch_dna4_match(PG_FUNCTION_ARGS);
 
 /* Scoring functions */
-Datum kmersearch_correctedscore_dna2(PG_FUNCTION_ARGS);
-Datum kmersearch_correctedscore_dna4(PG_FUNCTION_ARGS);
+Datum kmersearch_matchscore_dna2(PG_FUNCTION_ARGS);
+Datum kmersearch_matchscore_dna4(PG_FUNCTION_ARGS);
 
 /* Cache management functions */
 Datum kmersearch_actual_min_score_cache_stats(PG_FUNCTION_ARGS);
 Datum kmersearch_actual_min_score_cache_free(PG_FUNCTION_ARGS);
-Datum kmersearch_query_pattern_cache_stats(PG_FUNCTION_ARGS);
-Datum kmersearch_query_pattern_cache_free(PG_FUNCTION_ARGS);
+Datum kmersearch_query_kmer_cache_stats(PG_FUNCTION_ARGS);
+Datum kmersearch_query_kmer_cache_free(PG_FUNCTION_ARGS);
 
 /* Cache manager functions (defined in kmersearch_cache.c) */
-void kmersearch_free_query_pattern_cache_manager(QueryPatternCacheManager **manager);
+void kmersearch_free_query_kmer_cache_manager(QueryKmerCacheManager **manager);
 void kmersearch_free_actual_min_score_cache_manager(ActualMinScoreCacheManager **manager);
 
 /* High-frequency k-mer cache global variables (defined in kmersearch_cache.c) */
@@ -654,7 +654,7 @@ Datum kmersearch_undo_highfreq_analysis(PG_FUNCTION_ARGS);
 bool kmersearch_is_kmer_hash_in_analysis_dshash(uint64 kmer_hash);
 
 /* K-mer utility functions */
-/* Removed kmer2/ngram_key2 functions - using uintkey implementation */
+/* Removed kmer2 functions - using uintkey implementation */
 int kmersearch_count_degenerate_combinations(const char *kmer, int k);
 void kmersearch_set_bit_at(bits8 *data, int bit_pos, int value);
 bool kmersearch_will_exceed_degenerate_limit_dna4_bits(VarBit *seq, int start_pos, int k);
@@ -676,7 +676,7 @@ PGDLLEXPORT void kmersearch_analysis_worker(dsm_segment *seg, shm_toc *toc);
 
 /* Frequency analysis persistence function (implemented in kmersearch_freq.c) */
 void kmersearch_persist_highfreq_kmers_from_temp(Oid table_oid, const char *column_name, int k_size, const char *temp_table_name);
-void kmersearch_create_worker_ngram_temp_table(const char *table_name);
+void kmersearch_create_worker_kmer_temp_table(const char *table_name);
 /* Buffer management functions for each size */
 void kmersearch_init_buffer16(UintkeyBuffer16 *buffer, int k_size);
 void kmersearch_init_buffer32(UintkeyBuffer32 *buffer, int k_size);
@@ -703,7 +703,7 @@ Oid kmersearch_get_dna4_type_oid(void);
 
 /* Cache management functions (implemented in kmersearch_cache.c) */
 
-/* Query pattern cache functions (implemented in kmersearch_cache.c) */
+/* Query-kmer cache functions (implemented in kmersearch_cache.c) */
 void *kmersearch_get_cached_query_uintkey(const char *query_string, int k_size, int *nkeys);
 
 /* Actual min score cache functions (implemented in kmersearch_cache.c) */  
@@ -717,7 +717,7 @@ void *kmersearch_filter_uintkey_and_set_actual_min_score(void *uintkey, int *nke
 bool kmersearch_is_uintkey_highfreq(uint64 uintkey, int k_size);
 
 /* Cache functions (implemented in kmersearch_cache.c) */
-void kmersearch_query_pattern_cache_max_entries_assign_hook(int newval, void *extra);
+void kmersearch_query_kmer_cache_max_entries_assign_hook(int newval, void *extra);
 
 /* Internal functions that should be declared (implemented in kmersearch_freq.c) */
 bool kmersearch_is_highfreq_filtering_enabled(void);

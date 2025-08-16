@@ -2,7 +2,7 @@ SET client_min_messages = WARNING;
 CREATE EXTENSION IF NOT EXISTS pg_kmersearch;
 -- High-frequency k-mer exclusion functionality parallel cache test
 -- kmersearch.kmer_size=4, kmersearch.occur_bitlen=4, kmersearch.max_appearance_rate=0.25,
--- kmersearch.max_appearance_nrow=0, kmersearch.min_score=1, kmersearch.min_shared_ngram_key_rate=0.9,
+-- kmersearch.max_appearance_nrow=0, kmersearch.min_score=1, kmersearch.min_shared_kmer_rate=0.9,
 -- kmersearch.preclude_highfreq_kmer=true, kmersearch.force_use_parallel_highfreq_kmer_cache=true
 -- Apply specified GUC settings
 SET kmersearch.kmer_size = 4;
@@ -10,7 +10,7 @@ SET kmersearch.occur_bitlen = 4;
 SET kmersearch.max_appearance_rate = 0.25;
 SET kmersearch.max_appearance_nrow = 0;
 SET kmersearch.min_score = 1;
-SET kmersearch.min_shared_ngram_key_rate = 0.9;
+SET kmersearch.min_shared_kmer_rate = 0.9;
 SET kmersearch.preclude_highfreq_kmer = true;
 SET kmersearch.force_use_parallel_highfreq_kmer_cache = true;
 -- Configuration verification
@@ -123,13 +123,13 @@ SELECT '4. GIN index-based search:' as step;
  4. GIN index-based search:
 (1 row)
 
-SELECT id, seq, kmersearch_rawscore_dna2(seq, 'AAAACTGT') as rawscore
+SELECT id, seq, kmersearch_matchscore(seq, 'AAAACTGT') as matchscore
 FROM test_dna_highfreq 
 WHERE seq =% 'AAAACTGT'
-ORDER BY rawscore DESC, id;
- id |     seq      | rawscore 
-----+--------------+----------
-  1 | AAAACTGTACGT |        5
+ORDER BY matchscore DESC, id;
+ id |     seq      | matchscore 
+----+--------------+------------
+  1 | AAAACTGTACGT |          5
 (1 row)
 
 -- 5. Execute kmersearch_parallel_highfreq_kmer_cache_free()
@@ -152,13 +152,13 @@ SELECT '6. GIN index search after cache release:' as step;
  6. GIN index search after cache release:
 (1 row)
 
-SELECT id, seq, kmersearch_rawscore_dna2(seq, 'AAAACTGT') as rawscore
+SELECT id, seq, kmersearch_matchscore(seq, 'AAAACTGT') as matchscore
 FROM test_dna_highfreq 
 WHERE seq =% 'AAAACTGT'
-ORDER BY rawscore DESC, id;
- id |     seq      | rawscore 
-----+--------------+----------
-  1 | AAAACTGTACGT |        5
+ORDER BY matchscore DESC, id;
+ id |     seq      | matchscore 
+----+--------------+------------
+  1 | AAAACTGTACGT |          5
 (1 row)
 
 -- Additional test: High-frequency k-mer exclusion effect verification

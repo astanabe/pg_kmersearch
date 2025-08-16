@@ -3,7 +3,7 @@ CREATE EXTENSION IF NOT EXISTS pg_kmersearch;
 
 -- High-frequency k-mer exclusion functionality comprehensive test
 -- kmersearch.kmer_size=4, kmersearch.occur_bitlen=4, kmersearch.max_appearance_rate=0.25,
--- kmersearch.max_appearance_nrow=0, kmersearch.min_score=1, kmersearch.min_shared_ngram_key_rate=0.9,
+-- kmersearch.max_appearance_nrow=0, kmersearch.min_score=1, kmersearch.min_shared_kmer_rate=0.9,
 -- kmersearch.preclude_highfreq_kmer=true, kmersearch.force_use_parallel_highfreq_kmer_cache=false
 
 -- Apply specified GUC settings
@@ -12,7 +12,7 @@ SET kmersearch.occur_bitlen = 4;
 SET kmersearch.max_appearance_rate = 0.25;
 SET kmersearch.max_appearance_nrow = 0;
 SET kmersearch.min_score = 1;
-SET kmersearch.min_shared_ngram_key_rate = 0.9;
+SET kmersearch.min_shared_kmer_rate = 0.9;
 SET kmersearch.preclude_highfreq_kmer = true;
 SET kmersearch.force_use_parallel_highfreq_kmer_cache = false;
 
@@ -69,10 +69,10 @@ WHERE tablename = 'test_dna_highfreq' AND indexname = 'idx_test_dna_highfreq_seq
 
 -- 4. GIN index-based search
 SELECT '4. GIN index-based search:' as step;
-SELECT id, seq, kmersearch_rawscore_dna2(seq, 'AAAACTGT') as rawscore
+SELECT id, seq, kmersearch_matchscore(seq, 'AAAACTGT') as matchscore
 FROM test_dna_highfreq 
 WHERE seq =% 'AAAACTGT'
-ORDER BY rawscore DESC, id;
+ORDER BY matchscore DESC, id;
 
 -- 5. Execute kmersearch_highfreq_kmer_cache_free()
 SELECT '5. High-frequency k-mer cache release:' as step;
@@ -80,10 +80,10 @@ SELECT kmersearch_highfreq_kmer_cache_free('test_dna_highfreq', 'seq');
 
 -- 6. GIN index-based search after cache release
 SELECT '6. GIN index search after cache release:' as step;
-SELECT id, seq, kmersearch_rawscore_dna2(seq, 'AAAACTGT') as rawscore
+SELECT id, seq, kmersearch_matchscore(seq, 'AAAACTGT') as matchscore
 FROM test_dna_highfreq 
 WHERE seq =% 'AAAACTGT'
-ORDER BY rawscore DESC, id;
+ORDER BY matchscore DESC, id;
 
 -- Additional test: High-frequency k-mer exclusion effect verification
 SELECT '7. High-frequency k-mer exclusion effect verification:' as step;

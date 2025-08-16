@@ -479,7 +479,7 @@ kmersearch_extract_query_int2(PG_FUNCTION_ARGS)
     uint16 *uint16_keys;
     int i;
     
-    /* Use cached query pattern extraction */
+    /* Use cached query-kmer extraction */
     uintkey = kmersearch_get_cached_query_uintkey(query_string, kmersearch_kmer_size, nkeys);
     
     /* Filter high-frequency k-mers and cache actual_min_score */
@@ -524,7 +524,7 @@ kmersearch_extract_query_int4(PG_FUNCTION_ARGS)
     uint32 *uint32_keys;
     int i;
     
-    /* Use cached query pattern extraction */
+    /* Use cached query-kmer extraction */
     uintkey = kmersearch_get_cached_query_uintkey(query_string, kmersearch_kmer_size, nkeys);
     
     /* Filter high-frequency k-mers and cache actual_min_score */
@@ -569,7 +569,7 @@ kmersearch_extract_query_int8(PG_FUNCTION_ARGS)
     uint64 *uint64_keys;
     int i;
     
-    /* Use cached query pattern extraction */
+    /* Use cached query-kmer extraction */
     uintkey = kmersearch_get_cached_query_uintkey(query_string, kmersearch_kmer_size, nkeys);
     
     /* Filter high-frequency k-mers and cache actual_min_score */

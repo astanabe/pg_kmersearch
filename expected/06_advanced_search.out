@@ -24,12 +24,12 @@ SELECT id, name FROM test_k6_sequences WHERE sequence =% 'ATCGATCG' ORDER BY id;
 
 -- Test scoring with k=6
 SELECT id, name,
-       kmersearch_rawscore(sequence, 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA') AS rawscore
+       kmersearch_matchscore(sequence, 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA') AS matchscore
 FROM test_k6_sequences ORDER BY id;
- id |   name   | rawscore 
-----+----------+----------
-  1 | k6_test1 |       56
-  2 | k6_test2 |        0
+ id |   name   | matchscore 
+----+----------+------------
+  1 | k6_test1 |         56
+  2 | k6_test2 |          0
 (2 rows)
 
 -- Test with k=6
@@ -53,7 +53,7 @@ SELECT id, name FROM test_k6_sequences_2 WHERE sequence =% 'ATCGATCGATCGATCGATCG
 
 -- Test complete search workflow with ORDER BY score
 SELECT id, name, 
-       kmersearch_rawscore(sequence, 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA') AS score
+       kmersearch_matchscore(sequence, 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA') AS score
 FROM test_k6_sequences_2 
 WHERE sequence =% 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA'
 ORDER BY score DESC, id;

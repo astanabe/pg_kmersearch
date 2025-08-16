@@ -29,10 +29,10 @@ SHOW kmersearch.max_appearance_nrow;
  0
 (1 row)
 
-SET kmersearch.min_shared_ngram_key_rate = 0.2;  -- Allow matches with 20% shared k-mers
-SHOW kmersearch.min_shared_ngram_key_rate;
- kmersearch.min_shared_ngram_key_rate 
---------------------------------------
+SET kmersearch.min_shared_kmer_rate = 0.2;  -- Allow matches with 20% shared k-mers
+SHOW kmersearch.min_shared_kmer_rate;
+ kmersearch.min_shared_kmer_rate 
+---------------------------------
  0.2
 (1 row)
 
@@ -183,16 +183,7 @@ SELECT id, name FROM test_dna4_sequences WHERE sequence =% 'ATCGNN' ORDER BY id;
 (2 rows)
 
 -- Test scoring functions with different patterns
-SELECT id, name, kmersearch_rawscore(sequence, 'ATCGATCG') as score 
-FROM test_dna2_sequences ORDER BY score DESC, id;
- id | name | score 
-----+------+-------
-  1 | seq1 |     5
-  3 | seq3 |     5
-  2 | seq2 |     0
-(3 rows)
-
-SELECT id, name, kmersearch_correctedscore(sequence, 'ATCGATCG') as score
+SELECT id, name, kmersearch_matchscore(sequence, 'ATCGATCG') as score 
 FROM test_dna2_sequences ORDER BY score DESC, id;
  id | name | score 
 ----+------+-------

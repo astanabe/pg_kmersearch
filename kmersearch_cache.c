@@ -2,15 +2,15 @@
  * kmersearch_cache.c - Cache management functions for pg_kmersearch
  *
  * This module contains all cache-related functionality including:
- * - Query pattern cache for storing parsed k-mer patterns
+ * - Query-kmer cache for storing parsed k-mer patterns
  * - Actual min score cache for threshold calculations
  * - Cache manager creation, lookup, eviction, and cleanup functions
  */
 
 #include "kmersearch.h"
 
-PG_FUNCTION_INFO_V1(kmersearch_query_pattern_cache_stats);
-PG_FUNCTION_INFO_V1(kmersearch_query_pattern_cache_free);
+PG_FUNCTION_INFO_V1(kmersearch_query_kmer_cache_stats);
+PG_FUNCTION_INFO_V1(kmersearch_query_kmer_cache_free);
 PG_FUNCTION_INFO_V1(kmersearch_actual_min_score_cache_stats);
 PG_FUNCTION_INFO_V1(kmersearch_actual_min_score_cache_free);
 PG_FUNCTION_INFO_V1(kmersearch_highfreq_kmer_cache_load);
@@ -32,13 +32,13 @@ dshash_table *parallel_cache_hash = NULL;
 static uint32 kmersearch_uint16_identity_hash(const void *key, size_t keysize, void *arg);
 static uint32 kmersearch_uint32_identity_hash(const void *key, size_t keysize, void *arg);
 
-static void init_query_pattern_cache_manager(QueryPatternCacheManager **manager);
-static uint64 generate_query_pattern_cache_key(const char *query_string, int k_size);
-static QueryPatternCacheEntry *lookup_query_pattern_cache_entry(QueryPatternCacheManager *manager, const char *query_string, int k_size);
-static void store_query_pattern_cache_entry(QueryPatternCacheManager *manager, uint64 hash_key, const char *query_string, int k_size, void *uintkeys, int kmer_count);
-static void lru_touch_query_pattern_cache(QueryPatternCacheManager *manager, QueryPatternCacheEntry *entry);
-static void lru_evict_oldest_query_pattern_cache(QueryPatternCacheManager *manager);
-void kmersearch_free_query_pattern_cache_manager(QueryPatternCacheManager **manager);
+static void init_query_kmer_cache_manager(QueryKmerCacheManager **manager);
+static uint64 generate_query_kmer_cache_key(const char *query_string, int k_size);
+static QueryKmerCacheEntry *lookup_query_kmer_cache_entry(QueryKmerCacheManager *manager, const char *query_string, int k_size);
+static void store_query_kmer_cache_entry(QueryKmerCacheManager *manager, uint64 hash_key, const char *query_string, int k_size, void *uintkeys, int kmer_count);
+static void lru_touch_query_kmer_cache(QueryKmerCacheManager *manager, QueryKmerCacheEntry *entry);
+static void lru_evict_oldest_query_kmer_cache(QueryKmerCacheManager *manager);
+void kmersearch_free_query_kmer_cache_manager(QueryKmerCacheManager **manager);
 
 static void create_actual_min_score_cache_manager(ActualMinScoreCacheManager **manager);
 void kmersearch_free_actual_min_score_cache_manager(ActualMinScoreCacheManager **manager);
@@ -50,10 +50,10 @@ void kmersearch_highfreq_kmer_cache_free_internal(void);
 bool kmersearch_highfreq_kmer_cache_is_valid(Oid table_oid, const char *column_name, int k_value);
 
 /*
- * Initialize query pattern cache manager
+ * Initialize query-kmer cache manager
  */
 static void
-init_query_pattern_cache_manager(QueryPatternCacheManager **manager)
+init_query_kmer_cache_manager(QueryKmerCacheManager **manager)
 {
     if (*manager == NULL)
     {
@@ -61,15 +61,15 @@ init_query_pattern_cache_manager(QueryPatternCacheManager **manager)
         HASHCTL hash_ctl;
         
         /* Allocate manager in TopMemoryContext */
-        *manager = (QueryPatternCacheManager *) palloc0(sizeof(QueryPatternCacheManager));
+        *manager = (QueryKmerCacheManager *) palloc0(sizeof(QueryKmerCacheManager));
         
-        /* Create query pattern cache context under TopMemoryContext */
-        (*manager)->query_pattern_cache_context = AllocSetContextCreate(TopMemoryContext,
-                                                                        "QueryPatternCache",
+        /* Create query-kmer cache context under TopMemoryContext */
+        (*manager)->query_kmer_cache_context = AllocSetContextCreate(TopMemoryContext,
+                                                                        "QueryKmerCache",
                                                                         ALLOCSET_DEFAULT_SIZES);
         
-        /* Initialize query pattern cache parameters */
-        (*manager)->max_entries = kmersearch_query_pattern_cache_max_entries;
+        /* Initialize query-kmer cache parameters */
+        (*manager)->max_entries = kmersearch_query_kmer_cache_max_entries;
         (*manager)->current_entries = 0;
         (*manager)->hits = 0;
         (*manager)->misses = 0;
@@ -79,10 +79,10 @@ init_query_pattern_cache_manager(QueryPatternCacheManager **manager)
         /* Create hash table */
         MemSet(&hash_ctl, 0, sizeof(hash_ctl));
         hash_ctl.keysize = sizeof(uint64);
-        hash_ctl.entrysize = sizeof(QueryPatternCacheEntry);
-        hash_ctl.hcxt = (*manager)->query_pattern_cache_context;
+        hash_ctl.entrysize = sizeof(QueryKmerCacheEntry);
+        hash_ctl.hcxt = (*manager)->query_kmer_cache_context;
         
-        (*manager)->hash_table = hash_create("QueryPatternCache", 256, &hash_ctl,
+        (*manager)->hash_table = hash_create("QueryKmerCache", 256, &hash_ctl,
                                            HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
         
         MemoryContextSwitchTo(old_context);
@@ -90,10 +90,10 @@ init_query_pattern_cache_manager(QueryPatternCacheManager **manager)
 }
 
 /*
- * Generate cache key for query pattern
+ * Generate cache key for query-kmer
  */
 static uint64
-generate_query_pattern_cache_key(const char *query_string, int k_size)
+generate_query_kmer_cache_key(const char *query_string, int k_size)
 {
     uint64 query_hash, k_hash;
     
@@ -111,7 +111,7 @@ generate_query_pattern_cache_key(const char *query_string, int k_size)
  * Move entry to head of LRU chain (most recently used)
  */
 static void
-lru_touch_query_pattern_cache(QueryPatternCacheManager *manager, QueryPatternCacheEntry *entry)
+lru_touch_query_kmer_cache(QueryKmerCacheManager *manager, QueryKmerCacheEntry *entry)
 {
     if (entry == manager->lru_head)
         return;  /* Already at head */
@@ -138,12 +138,12 @@ lru_touch_query_pattern_cache(QueryPatternCacheManager *manager, QueryPatternCac
 }
 
 /*
- * Evict oldest entry from query pattern cache
+ * Evict oldest entry from query-kmer cache
  */
 static void
-lru_evict_oldest_query_pattern_cache(QueryPatternCacheManager *manager)
+lru_evict_oldest_query_kmer_cache(QueryKmerCacheManager *manager)
 {
-    QueryPatternCacheEntry *tail = manager->lru_tail;
+    QueryKmerCacheEntry *tail = manager->lru_tail;
     bool found;
     
     if (!tail)
@@ -169,21 +169,21 @@ lru_evict_oldest_query_pattern_cache(QueryPatternCacheManager *manager)
 }
 
 /*
- * Look up query pattern cache entry
+ * Look up query-kmer cache entry
  */
-static QueryPatternCacheEntry *
-lookup_query_pattern_cache_entry(QueryPatternCacheManager *manager, const char *query_string, int k_size)
+static QueryKmerCacheEntry *
+lookup_query_kmer_cache_entry(QueryKmerCacheManager *manager, const char *query_string, int k_size)
 {
-    uint64 hash_key = generate_query_pattern_cache_key(query_string, k_size);
-    QueryPatternCacheEntry *entry;
+    uint64 hash_key = generate_query_kmer_cache_key(query_string, k_size);
+    QueryKmerCacheEntry *entry;
     bool found;
     
-    entry = (QueryPatternCacheEntry *) hash_search(manager->hash_table, &hash_key, HASH_FIND, &found);
+    entry = (QueryKmerCacheEntry *) hash_search(manager->hash_table, &hash_key, HASH_FIND, &found);
     
     if (found && entry && strcmp(entry->query_string_copy, query_string) == 0 && entry->kmer_size == k_size)
     {
         /* Cache hit - move to head of LRU */
-        lru_touch_query_pattern_cache(manager, entry);
+        lru_touch_query_kmer_cache(manager, entry);
         manager->hits++;
         return entry;
     }
@@ -192,25 +192,25 @@ lookup_query_pattern_cache_entry(QueryPatternCacheManager *manager, const char *
 }
 
 /*
- * Store entry in query pattern cache
+ * Store entry in query-kmer cache
  */
 static void
-store_query_pattern_cache_entry(QueryPatternCacheManager *manager, uint64 hash_key, 
+store_query_kmer_cache_entry(QueryKmerCacheManager *manager, uint64 hash_key, 
                                const char *query_string, int k_size, void *uintkeys, int kmer_count)
 {
-    QueryPatternCacheEntry *entry;
+    QueryKmerCacheEntry *entry;
     MemoryContext old_context;
     bool found;
     size_t uintkey_size;
     
     /* Evict oldest entries if cache is full */
     while (manager->current_entries >= manager->max_entries)
-        lru_evict_oldest_query_pattern_cache(manager);
+        lru_evict_oldest_query_kmer_cache(manager);
     
-    old_context = MemoryContextSwitchTo(manager->query_pattern_cache_context);
+    old_context = MemoryContextSwitchTo(manager->query_kmer_cache_context);
     
     /* Create new entry */
-    entry = (QueryPatternCacheEntry *) hash_search(manager->hash_table, &hash_key, HASH_ENTER, &found);
+    entry = (QueryKmerCacheEntry *) hash_search(manager->hash_table, &hash_key, HASH_ENTER, &found);
     if (!found)
     {
         entry->hash_key = hash_key;
@@ -251,23 +251,23 @@ store_query_pattern_cache_entry(QueryPatternCacheManager *manager, uint64 hash_k
 void *
 kmersearch_get_cached_query_uintkey(const char *query_string, int k_size, int *nkeys)
 {
-    QueryPatternCacheEntry *cache_entry;
+    QueryKmerCacheEntry *cache_entry;
     void *extracted_uintkeys = NULL;
     uint64 hash_key;
     MemoryContext old_context;
     
     *nkeys = 0;
     
-    /* Initialize query pattern cache manager if not already done */
-    if (query_pattern_cache_manager == NULL)
+    /* Initialize query-kmer cache manager if not already done */
+    if (query_kmer_cache_manager == NULL)
     {
         old_context = MemoryContextSwitchTo(TopMemoryContext);
-        init_query_pattern_cache_manager(&query_pattern_cache_manager);
+        init_query_kmer_cache_manager(&query_kmer_cache_manager);
         MemoryContextSwitchTo(old_context);
     }
     
     /* Try to find in cache first */
-    cache_entry = lookup_query_pattern_cache_entry(query_pattern_cache_manager, query_string, k_size);
+    cache_entry = lookup_query_kmer_cache_entry(query_kmer_cache_manager, query_string, k_size);
     if (cache_entry != NULL)
     {
         /* Cache hit - return pointer to cached uintkeys directly */
@@ -276,18 +276,18 @@ kmersearch_get_cached_query_uintkey(const char *query_string, int k_size, int *n
     }
     
     /* Cache miss - extract uintkeys and store in cache */
-    query_pattern_cache_manager->misses++;
+    query_kmer_cache_manager->misses++;
     kmersearch_extract_uintkey_from_text(query_string, &extracted_uintkeys, nkeys);
     
     if (extracted_uintkeys != NULL && *nkeys > 0)
     {
         /* Store in cache */
-        hash_key = generate_query_pattern_cache_key(query_string, k_size);
-        store_query_pattern_cache_entry(query_pattern_cache_manager, hash_key, 
+        hash_key = generate_query_kmer_cache_key(query_string, k_size);
+        store_query_kmer_cache_entry(query_kmer_cache_manager, hash_key, 
                                        query_string, k_size, extracted_uintkeys, *nkeys);
         
         /* Find the cache entry we just stored and return its uintkeys */
-        cache_entry = lookup_query_pattern_cache_entry(query_pattern_cache_manager, query_string, k_size);
+        cache_entry = lookup_query_kmer_cache_entry(query_kmer_cache_manager, query_string, k_size);
         if (cache_entry != NULL) {
             /* Free the original extracted uintkeys (cache has its own copy) */
             pfree(extracted_uintkeys);
@@ -300,16 +300,16 @@ kmersearch_get_cached_query_uintkey(const char *query_string, int k_size, int *n
 }
 
 /*
- * Free query pattern cache manager
+ * Free query-kmer cache manager
  */
 void
-kmersearch_free_query_pattern_cache_manager(QueryPatternCacheManager **manager)
+kmersearch_free_query_kmer_cache_manager(QueryKmerCacheManager **manager)
 {
     if (*manager)
     {
-        /* Delete the query pattern cache context, which will free all allocated memory */
-        if ((*manager)->query_pattern_cache_context)
-            MemoryContextDelete((*manager)->query_pattern_cache_context);
+        /* Delete the query-kmer cache context, which will free all allocated memory */
+        if ((*manager)->query_kmer_cache_context)
+            MemoryContextDelete((*manager)->query_kmer_cache_context);
         
         /* Free the manager itself (allocated in TopMemoryContext) */
         pfree(*manager);
@@ -380,7 +380,7 @@ calculate_actual_min_score_from_uintkey(void *uintkey, int nkeys, int k_size)
     /* Calculate base minimum score (maximum of absolute and relative) */
     if (query_total_kmers > 0)
     {
-        relative_min = (int)ceil(kmersearch_min_shared_ngram_key_rate * query_total_kmers);
+        relative_min = (int)ceil(kmersearch_min_shared_kmer_rate * query_total_kmers);
     }
     
     base_min_score = (kmersearch_min_score > relative_min) ? kmersearch_min_score : relative_min;
@@ -623,10 +623,10 @@ kmersearch_get_cached_actual_min_score_datum_int8(Datum *queryKeys, int nkeys)
 }
 
 /*
- * Query pattern cache statistics function
+ * Query-kmer cache statistics function
  */
 Datum
-kmersearch_query_pattern_cache_stats(PG_FUNCTION_ARGS)
+kmersearch_query_kmer_cache_stats(PG_FUNCTION_ARGS)
 {
     TupleDesc tupdesc;
     Datum values[4];
@@ -639,13 +639,13 @@ kmersearch_query_pattern_cache_stats(PG_FUNCTION_ARGS)
                 (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
                  errmsg("function returning record called in context that cannot accept a set")));
     
-    /* Query pattern cache statistics */
-    if (query_pattern_cache_manager)
+    /* Query-kmer cache statistics */
+    if (query_kmer_cache_manager)
     {
-        values[0] = Int64GetDatum(query_pattern_cache_manager->hits);
-        values[1] = Int64GetDatum(query_pattern_cache_manager->misses);
-        values[2] = Int32GetDatum(query_pattern_cache_manager->current_entries);
-        values[3] = Int32GetDatum(query_pattern_cache_manager->max_entries);
+        values[0] = Int64GetDatum(query_kmer_cache_manager->hits);
+        values[1] = Int64GetDatum(query_kmer_cache_manager->misses);
+        values[2] = Int32GetDatum(query_kmer_cache_manager->current_entries);
+        values[3] = Int32GetDatum(query_kmer_cache_manager->max_entries);
     }
     else
     {
@@ -661,20 +661,20 @@ kmersearch_query_pattern_cache_stats(PG_FUNCTION_ARGS)
 }
 
 /*
- * Query pattern cache free function
+ * Query-kmer cache free function
  */
 Datum
-kmersearch_query_pattern_cache_free(PG_FUNCTION_ARGS)
+kmersearch_query_kmer_cache_free(PG_FUNCTION_ARGS)
 {
     int freed_entries = 0;
     
     /* Count entries before freeing */
-    if (query_pattern_cache_manager)
-        freed_entries += query_pattern_cache_manager->current_entries;
+    if (query_kmer_cache_manager)
+        freed_entries += query_kmer_cache_manager->current_entries;
     
-    /* Free query pattern cache manager (uses TopMemoryContext - needs manual cleanup) */
+    /* Free query-kmer cache manager (uses TopMemoryContext - needs manual cleanup) */
     /* DNA2/DNA4 cache managers are now local and automatically freed with QueryContext */
-    kmersearch_free_query_pattern_cache_manager(&query_pattern_cache_manager);
+    kmersearch_free_query_kmer_cache_manager(&query_kmer_cache_manager);
     
     PG_RETURN_INT32(freed_entries);
 }
@@ -1519,17 +1519,17 @@ kmersearch_parallel_highfreq_kmer_cache_free_all(PG_FUNCTION_ARGS)
 }
 
 /*
- * GUC hook function for query pattern cache max entries changes
+ * GUC hook function for query-kmer cache max entries changes
  */
 void
-kmersearch_query_pattern_cache_max_entries_assign_hook(int newval, void *extra)
+kmersearch_query_kmer_cache_max_entries_assign_hook(int newval, void *extra)
 {
     (void) newval;  /* Suppress unused parameter warning */
     (void) extra;   /* Suppress unused parameter warning */
     
-    /* Clear query pattern cache to recreate with new size limit */
-    if (query_pattern_cache_manager)
-        kmersearch_free_query_pattern_cache_manager(&query_pattern_cache_manager);
+    /* Clear query-kmer cache to recreate with new size limit */
+    if (query_kmer_cache_manager)
+        kmersearch_free_query_kmer_cache_manager(&query_kmer_cache_manager);
 }
 
 /* Additional global variable for parallel cache exit callback */

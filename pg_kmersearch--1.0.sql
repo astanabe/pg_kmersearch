@@ -460,47 +460,26 @@ CREATE TABLE kmersearch_index_info (
 
 
 -- Score calculation functions
-CREATE FUNCTION kmersearch_rawscore_dna2(DNA2, text) 
+-- Type-specific matchscore functions
+CREATE FUNCTION kmersearch_matchscore_dna2(DNA2, text) 
     RETURNS integer
-    AS 'MODULE_PATHNAME', 'kmersearch_correctedscore_dna2'
+    AS 'MODULE_PATHNAME', 'kmersearch_matchscore_dna2'
     LANGUAGE C IMMUTABLE STRICT;
 
-CREATE FUNCTION kmersearch_rawscore_dna4(DNA4, text) 
+CREATE FUNCTION kmersearch_matchscore_dna4(DNA4, text) 
     RETURNS integer
-    AS 'MODULE_PATHNAME', 'kmersearch_correctedscore_dna4'
+    AS 'MODULE_PATHNAME', 'kmersearch_matchscore_dna4'
     LANGUAGE C IMMUTABLE STRICT;
 
--- Type-specific correctedscore functions
-CREATE FUNCTION kmersearch_correctedscore_dna2(DNA2, text) 
+-- Overloaded matchscore functions for convenience
+CREATE FUNCTION kmersearch_matchscore(DNA2, text) 
     RETURNS integer
-    AS 'MODULE_PATHNAME', 'kmersearch_correctedscore_dna2'
+    AS 'MODULE_PATHNAME', 'kmersearch_matchscore_dna2'
     LANGUAGE C IMMUTABLE STRICT;
 
-CREATE FUNCTION kmersearch_correctedscore_dna4(DNA4, text) 
+CREATE FUNCTION kmersearch_matchscore(DNA4, text) 
     RETURNS integer
-    AS 'MODULE_PATHNAME', 'kmersearch_correctedscore_dna4'
-    LANGUAGE C IMMUTABLE STRICT;
-
--- Overloaded correctedscore functions for backwards compatibility pattern
-CREATE FUNCTION kmersearch_correctedscore(DNA2, text) 
-    RETURNS integer
-    AS 'MODULE_PATHNAME', 'kmersearch_correctedscore_dna2'
-    LANGUAGE C IMMUTABLE STRICT;
-
-CREATE FUNCTION kmersearch_correctedscore(DNA4, text) 
-    RETURNS integer
-    AS 'MODULE_PATHNAME', 'kmersearch_correctedscore_dna4'
-    LANGUAGE C IMMUTABLE STRICT;
-
--- Overloaded rawscore functions for backwards compatibility
-CREATE FUNCTION kmersearch_rawscore(DNA2, text) 
-    RETURNS integer
-    AS 'MODULE_PATHNAME', 'kmersearch_correctedscore_dna2'
-    LANGUAGE C IMMUTABLE STRICT;
-
-CREATE FUNCTION kmersearch_rawscore(DNA4, text) 
-    RETURNS integer
-    AS 'MODULE_PATHNAME', 'kmersearch_correctedscore_dna4'
+    AS 'MODULE_PATHNAME', 'kmersearch_matchscore_dna4'
     LANGUAGE C IMMUTABLE STRICT;
 
 -- Length functions for DNA2 and DNA4 types
@@ -591,21 +570,21 @@ CREATE FUNCTION kmersearch_undo_highfreq_analysis(table_name text, column_name t
     LANGUAGE C VOLATILE STRICT;
 
 
--- Query pattern cache statistics function
-CREATE FUNCTION kmersearch_query_pattern_cache_stats()
+-- Query-kmer cache statistics function
+CREATE FUNCTION kmersearch_query_kmer_cache_stats()
     RETURNS TABLE (
         hits bigint,
         misses bigint,
         current_entries integer,
         max_entries integer
     )
-    AS 'MODULE_PATHNAME', 'kmersearch_query_pattern_cache_stats'
+    AS 'MODULE_PATHNAME', 'kmersearch_query_kmer_cache_stats'
     LANGUAGE C STABLE;
 
--- Query pattern cache management function
-CREATE FUNCTION kmersearch_query_pattern_cache_free()
+-- Query-kmer cache management function
+CREATE FUNCTION kmersearch_query_kmer_cache_free()
     RETURNS integer
-    AS 'MODULE_PATHNAME', 'kmersearch_query_pattern_cache_free'
+    AS 'MODULE_PATHNAME', 'kmersearch_query_kmer_cache_free'
     LANGUAGE C VOLATILE;
 
 -- Actual min score cache statistics function
@@ -674,14 +653,14 @@ CREATE INDEX kmersearch_index_info_idx
 -- Management views for easier administration
 CREATE VIEW kmersearch_cache_summary AS
 SELECT 
-    'query_pattern' as cache_type,
+    'query-kmer' as cache_type,
     current_entries as total_entries,
     hits as total_hits,
     misses as total_misses,
     CASE WHEN (hits + misses) > 0 
          THEN hits::float / (hits + misses)::float 
          ELSE 0 END as hit_rate
-FROM kmersearch_query_pattern_cache_stats()
+FROM kmersearch_query_kmer_cache_stats()
 UNION ALL
 SELECT 
     'actual_min_score' as cache_type,

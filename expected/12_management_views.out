@@ -20,7 +20,7 @@ SELECT 'Testing kmersearch_cache_summary view...' as test_phase;
 SELECT * FROM kmersearch_cache_summary;
     cache_type    | total_entries | total_hits | total_misses | hit_rate 
 ------------------+---------------+------------+--------------+----------
- query_pattern    |             0 |          0 |            0 |        0
+ query-kmer       |             0 |          0 |            0 |        0
  actual_min_score |             0 |          0 |            0 |        0
 (2 rows)
 
@@ -168,7 +168,7 @@ ORDER BY cache_type;
     cache_type    | has_entries | has_hits | has_misses | hit_rate_valid 
 ------------------+-------------+----------+------------+----------------
  actual_min_score | t           | t        | t          | t
- query_pattern    | t           | t        | t          | t
+ query-kmer       | t           | t        | t          | t
 (2 rows)
 
 -- Clean up

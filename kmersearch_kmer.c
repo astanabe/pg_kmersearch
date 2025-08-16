@@ -411,8 +411,8 @@ kmersearch_find_or_add_kmer_occurrence64(KmerOccurrence64 *occurrences, int *cou
 
 
 /*
- * Extract k-mers from query string as ngram_key2 format (with occurrence counts)
- * This function generates ngram_key2 compatible with sequence extraction using SIMD optimizations
+ * Extract k-mers from query string as uintkey format (with occurrence counts)
+ * This function generates uintkey compatible with sequence extraction using SIMD optimizations
  */
 /*
  * Helper function to get bit at position from bit array

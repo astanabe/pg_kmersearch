@@ -25,15 +25,33 @@ static int kmersearch_get_analysis_dshash_count(int k_size, uint64 threshold_row
 static void kmersearch_insert_uintkey_from_dshash(Oid table_oid, const char *column_name, int k_size, uint64 threshold_rows);
 
 /*
- * Create worker temporary table for n-gram keys
+ * Create worker temporary table for k-mer uintkeys
  */
 void
-kmersearch_create_worker_ngram_temp_table(const char *table_name)
+kmersearch_create_worker_kmer_temp_table(const char *table_name)
 {
     StringInfoData query;
     int ret;
+    int total_bits;
+    const char *kmer_type;
+    const char *freq_type;
     
     initStringInfo(&query);
+    
+    /* Calculate total bits needed */
+    total_bits = kmersearch_kmer_size * 2 + kmersearch_occur_bitlen;
+    
+    /* Determine appropriate data types based on total bits */
+    if (total_bits <= 16) {
+        kmer_type = "smallint";  /* int2 */
+        freq_type = "smallint";
+    } else if (total_bits <= 32) {
+        kmer_type = "integer";   /* int4 */
+        freq_type = "integer";
+    } else {
+        kmer_type = "bigint";    /* int8 */
+        freq_type = "integer";   /* frequency count can still be int4 */
+    }
     
     /* First try to drop table if it exists to avoid conflicts */
     appendStringInfo(&query, "DROP TABLE IF EXISTS %s", table_name);
@@ -42,12 +60,13 @@ kmersearch_create_worker_ngram_temp_table(const char *table_name)
     if (ret < 0)
         ereport(ERROR, (errmsg("Failed to drop existing temp table %s", table_name)));
     
-    /* Create the temp table */
+    /* Create the temp table with optimized data types */
     resetStringInfo(&query);
     appendStringInfo(&query,
         "CREATE TEMP TABLE %s ("
-        "ngram_key varbit NOT NULL"
-        ")", table_name);
+        "kmer_data %s, "
+        "frequency_count %s"
+        ")", table_name, kmer_type, freq_type);
     
     ret = SPI_exec(query.data, 0);
     if (ret < 0)
@@ -69,7 +88,7 @@ kmersearch_persist_highfreq_kmers_from_temp(Oid table_oid, const char *column_na
     initStringInfo(&query);
     
     /* Insert highly frequent k-mers into permanent table */
-    /* Note: Converting integer values to bit strings for ngram_key */
+    /* Note: Combining kmer_data and frequency_count into single uintkey */
     
     if (k_size > 32) {
         /* k > 32 not supported */
@@ -79,21 +98,16 @@ kmersearch_persist_highfreq_kmers_from_temp(Oid table_oid, const char *column_na
                  errdetail("Provided k-mer length: %d", k_size)));
     }
     
-    /* For k <= 32, use single column approach */
+    /* Combine kmer_data and frequency_count into single bigint uintkey */
+    /* Cast to bigint to ensure compatibility with target table */
     appendStringInfo(&query,
-        "INSERT INTO kmersearch_highfreq_kmer (table_oid, column_name, ngram_key, detection_reason) "
+        "INSERT INTO kmersearch_highfreq_kmer (table_oid, column_name, uintkey, detection_reason) "
         "SELECT %u, '%s', "
-        "  CASE "
-        "    WHEN %d <= 8 THEN (kmer_data::integer)::bit(32) || (frequency_count::integer)::bit(%d) "
-        "    WHEN %d <= 16 THEN (kmer_data::bigint)::bit(64) || (frequency_count::integer)::bit(%d) "
-        "    ELSE (kmer_data::bigint)::bit(64) || (frequency_count::integer)::bit(%d) "
-        "  END AS ngram_key, "
+        "  (kmer_data::bigint << %d) | frequency_count::bigint AS uintkey, "
         "  'high_frequency' "
         "FROM %s "
         "WHERE kmer_data IS NOT NULL AND frequency_count > 0",
         table_oid, column_name, 
-        k_size, kmersearch_occur_bitlen,
-        k_size, kmersearch_occur_bitlen,
         kmersearch_occur_bitlen,
         temp_table_name);
     

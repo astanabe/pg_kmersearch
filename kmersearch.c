@@ -38,11 +38,11 @@ int kmersearch_kmer_size = 16;  /* Default k-mer size */
 double kmersearch_max_appearance_rate = 0.5;  /* Default max appearance rate */
 int kmersearch_max_appearance_nrow = 0;  /* Default max appearance nrow (0 = undefined) */
 int kmersearch_min_score = 1;  /* Default minimum score for GIN search */
-double kmersearch_min_shared_ngram_key_rate = 0.9;  /* Default minimum shared n-gram key rate for =% operator */
+double kmersearch_min_shared_kmer_rate = 0.5;  /* Default minimum shared k-mer rate for =% operator */
 bool kmersearch_preclude_highfreq_kmer = false;  /* Default to not exclude high-frequency k-mers */
 
 /* Cache configuration variables */
-int kmersearch_query_pattern_cache_max_entries = 50000;  /* Default max query pattern cache entries */
+int kmersearch_query_kmer_cache_max_entries = 50000;  /* Default max query-kmer cache entries */
 int kmersearch_actual_min_score_cache_max_entries = 50000;  /* Default max actual min score cache entries */
 int kmersearch_highfreq_kmer_cache_load_batch_size = 10000;  /* Default batch size for loading high-frequency k-mers */
 int kmersearch_highfreq_analysis_batch_size = 10000;  /* Default batch size for high-frequency k-mer analysis */
@@ -50,8 +50,8 @@ int kmersearch_highfreq_analysis_batch_size = 10000;  /* Default batch size for 
 /* Global cache managers */
 ActualMinScoreCacheManager *actual_min_score_cache_manager = NULL;
 
-/* Global query pattern cache manager for cross-query sharing */
-QueryPatternCacheManager *query_pattern_cache_manager = NULL;
+/* Global query-kmer cache manager for cross-query sharing */
+QueryKmerCacheManager *query_kmer_cache_manager = NULL;
 
 
 /* Macro for safe memory cleanup */
@@ -154,8 +154,8 @@ static const uint8 kmersearch_dna4_to_dna2_table[16][5] = {
 PG_FUNCTION_INFO_V1(kmersearch_dna2_match);
 PG_FUNCTION_INFO_V1(kmersearch_dna4_match);
 
-PG_FUNCTION_INFO_V1(kmersearch_correctedscore_dna2);
-PG_FUNCTION_INFO_V1(kmersearch_correctedscore_dna4);
+PG_FUNCTION_INFO_V1(kmersearch_matchscore_dna2);
+PG_FUNCTION_INFO_V1(kmersearch_matchscore_dna4);
 static simd_capability_t detect_cpu_capabilities(void);
 
 
@@ -166,7 +166,7 @@ static void kmersearch_occur_bitlen_assign_hook(int newval, void *extra);
 static void kmersearch_max_appearance_rate_assign_hook(double newval, void *extra);
 static void kmersearch_max_appearance_nrow_assign_hook(int newval, void *extra);
 static void kmersearch_min_score_assign_hook(int newval, void *extra);
-static void kmersearch_min_shared_ngram_key_rate_assign_hook(double newval, void *extra);
+static void kmersearch_min_shared_kmer_rate_assign_hook(double newval, void *extra);
 static void kmersearch_force_simd_capability_assign_hook(int newval, void *extra);
 
 static void 
@@ -213,9 +213,9 @@ kmersearch_kmer_size_assign_hook(int newval, void *extra)
     (void) extra;   /* Suppress unused parameter warning */
     
     
-    /* Clear query pattern cache */
-    if (query_pattern_cache_manager)
-        kmersearch_free_query_pattern_cache_manager(&query_pattern_cache_manager);
+    /* Clear query-kmer cache */
+    if (query_kmer_cache_manager)
+        kmersearch_free_query_kmer_cache_manager(&query_kmer_cache_manager);
     
     /* Clear actual min score cache */
     if (actual_min_score_cache_manager)
@@ -264,9 +264,9 @@ kmersearch_min_score_assign_hook(int newval, void *extra)
         kmersearch_free_actual_min_score_cache_manager(&actual_min_score_cache_manager);
 }
 
-/* Min shared ngram key rate change affects actual min score cache */
+/* Min shared k-mer rate change affects actual min score cache */
 static void
-kmersearch_min_shared_ngram_key_rate_assign_hook(double newval, void *extra)
+kmersearch_min_shared_kmer_rate_assign_hook(double newval, void *extra)
 {
     (void) newval;  /* Suppress unused parameter warning */
     (void) extra;   /* Suppress unused parameter warning */
@@ -363,7 +363,7 @@ kmersearch_occur_bitlen_check_hook(int *newval, void **extra, GucSource source)
     return true;
 }
 
-/* Occurrence bit length change affects rawscore and high-freq caches */
+/* Occurrence bit length change affects high-freq caches */
 static void
 kmersearch_occur_bitlen_assign_hook(int newval, void *extra)
 {
@@ -473,17 +473,17 @@ _PG_init(void)
                            kmersearch_kmer_size_assign_hook,
                            NULL);
     
-    DefineCustomRealVariable("kmersearch.min_shared_ngram_key_rate",
-                            "Minimum shared n-gram key rate for =% operator matching",
-                            "Minimum ratio of shared n-gram keys between query and target sequence (0.0-1.0)",
-                            &kmersearch_min_shared_ngram_key_rate,
-                            0.9,
+    DefineCustomRealVariable("kmersearch.min_shared_kmer_rate",
+                            "Minimum shared k-mer rate for =% operator matching",
+                            "Minimum ratio of shared k-mers between query and target sequence (0.0-1.0)",
+                            &kmersearch_min_shared_kmer_rate,
+                            0.5,
                             0.0,
                             1.0,
                             PGC_USERSET,
                             0,
                             NULL,
-                            kmersearch_min_shared_ngram_key_rate_assign_hook,
+                            kmersearch_min_shared_kmer_rate_assign_hook,
                             NULL);
 
     /* Define GUC variables */
@@ -522,17 +522,17 @@ _PG_init(void)
                            kmersearch_force_simd_capability_assign_hook,
                            NULL);
 
-    DefineCustomIntVariable("kmersearch.query_pattern_cache_max_entries",
-                           "Maximum number of entries in query pattern cache",
-                           "Controls the maximum number of cached query pattern extraction results",
-                           &kmersearch_query_pattern_cache_max_entries,
+    DefineCustomIntVariable("kmersearch.query_kmer_cache_max_entries",
+                           "Maximum number of entries in query-kmer cache",
+                           "Controls the maximum number of cached query k-mer extraction results",
+                           &kmersearch_query_kmer_cache_max_entries,
                            50000,
                            1000,
                            10000000,
                            PGC_USERSET,
                            0,
                            NULL,
-                           kmersearch_query_pattern_cache_max_entries_assign_hook,
+                           kmersearch_query_kmer_cache_max_entries_assign_hook,
                            NULL);
 
     DefineCustomIntVariable("kmersearch.actual_min_score_cache_max_entries",
@@ -2110,15 +2110,13 @@ kmersearch_dna4_match(PG_FUNCTION_ARGS)
 }
 
 /*
- * Corrected score functions - return unfiltered similarity scores
+ * Match score functions - calculate similarity scores
  * 
- * These functions calculate similarity scores without applying high-frequency k-mer exclusion.
- * Unlike rawscore functions which exclude high-frequency k-mers when analysis data is available,
- * correctedscore functions count all shared k-mers between sequence and query without filtering.
- * This provides the uncorrected baseline score for comparison with filtered rawscore results.
+ * These functions calculate similarity scores by counting all shared k-mers between
+ * sequence and query without any filtering or high-frequency k-mer exclusion.
  */
 Datum
-kmersearch_correctedscore_dna2(PG_FUNCTION_ARGS)
+kmersearch_matchscore_dna2(PG_FUNCTION_ARGS)
 {
     VarBit *sequence = PG_GETARG_VARBIT_P(0);  /* DNA2 is stored as VarBit */
     text *query_text = PG_GETARG_TEXT_P(1);
@@ -2155,7 +2153,7 @@ kmersearch_correctedscore_dna2(PG_FUNCTION_ARGS)
 }
 
 Datum
-kmersearch_correctedscore_dna4(PG_FUNCTION_ARGS)
+kmersearch_matchscore_dna4(PG_FUNCTION_ARGS)
 {
     VarBit *sequence = PG_GETARG_VARBIT_P(0);  /* DNA4 is stored as VarBit */
     text *query_text = PG_GETARG_TEXT_P(1);
@@ -2343,9 +2341,9 @@ kmersearch_simd_capability(PG_FUNCTION_ARGS)
 void
 _PG_fini(void)
 {
-    /* Free query pattern cache manager on module unload (uses TopMemoryContext - needs manual cleanup) */
+    /* Free query-kmer cache manager on module unload (uses TopMemoryContext - needs manual cleanup) */
     /* DNA2/DNA4 cache managers are now local and automatically freed with QueryContext */
-    kmersearch_free_query_pattern_cache_manager(&query_pattern_cache_manager);
+    kmersearch_free_query_kmer_cache_manager(&query_kmer_cache_manager);
     
     /* Free actual min score cache manager on module unload */
     kmersearch_free_actual_min_score_cache_manager(&actual_min_score_cache_manager);

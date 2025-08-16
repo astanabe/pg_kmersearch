@@ -7,8 +7,8 @@ CREATE EXTENSION IF NOT EXISTS pg_kmersearch;
 -- Set k-mer size for consistent cache behavior
 SET kmersearch.kmer_size = 4;
 SHOW kmersearch.kmer_size;
-SET kmersearch.min_shared_ngram_key_rate = 0.2;  -- Allow matches with 20% shared k-mers
-SHOW kmersearch.min_shared_ngram_key_rate;
+SET kmersearch.min_shared_kmer_rate = 0.2;  -- Allow matches with 20% shared k-mers
+SHOW kmersearch.min_shared_kmer_rate;
 
 -- Clean up any existing tables
 DROP TABLE IF EXISTS test_cache_dna2, test_cache_dna4 CASCADE;
@@ -51,20 +51,20 @@ SHOW kmersearch.actual_min_score_cache_max_entries;
 SET kmersearch.actual_min_score_cache_max_entries = 1000;
 SHOW kmersearch.actual_min_score_cache_max_entries;
 
-SHOW kmersearch.query_pattern_cache_max_entries;
-SET kmersearch.query_pattern_cache_max_entries = 3000;
-SHOW kmersearch.query_pattern_cache_max_entries;
+SHOW kmersearch.query_kmer_cache_max_entries;
+SET kmersearch.query_kmer_cache_max_entries = 3000;
+SHOW kmersearch.query_kmer_cache_max_entries;
 
 -- Reset to defaults for consistent testing
 SET kmersearch.actual_min_score_cache_max_entries = 50000;
-SET kmersearch.query_pattern_cache_max_entries = 50000;
+SET kmersearch.query_kmer_cache_max_entries = 50000;
 
 -- Test initial cache statistics (should be empty)
 SELECT 'Initial actual min score cache:' as test_phase;
 SELECT * FROM kmersearch_actual_min_score_cache_stats();
 
 SELECT 'Initial query pattern cache:' as test_phase;
-SELECT * FROM kmersearch_query_pattern_cache_stats();
+SELECT * FROM kmersearch_query_kmer_cache_stats();
 
 -- Execute some queries to populate caches
 SELECT 'Populating caches with queries...' as test_phase;
@@ -84,8 +84,8 @@ SELECT COUNT(*) FROM test_cache_dna4 WHERE sequence =% 'ATCGATCG';
 SELECT COUNT(*) FROM test_cache_dna4 WHERE sequence =% 'NNNNNNNN';
 
 -- Test scoring functions
-SELECT kmersearch_rawscore(sequence, 'ATCGATCG') FROM test_cache_dna2 WHERE id <= 2;
-SELECT kmersearch_rawscore(sequence, 'TTTTTTTT') FROM test_cache_dna2 WHERE id <= 2;
+SELECT kmersearch_matchscore(sequence, 'ATCGATCG') FROM test_cache_dna2 WHERE id <= 2;
+SELECT kmersearch_matchscore(sequence, 'TTTTTTTT') FROM test_cache_dna2 WHERE id <= 2;
 
 -- Check cache statistics after usage
 SELECT 'After query execution - actual min score cache:' as test_phase;
@@ -93,7 +93,7 @@ SELECT * FROM kmersearch_actual_min_score_cache_stats();
 -- Verify that current_entries > 0 (cache is storing entries)
 
 SELECT 'After query execution - query pattern cache:' as test_phase;
-SELECT * FROM kmersearch_query_pattern_cache_stats();
+SELECT * FROM kmersearch_query_kmer_cache_stats();
 -- Verify that current_entries > 0 (cache is storing entries)
 
 -- Test cache hit behavior
@@ -110,20 +110,20 @@ SELECT * FROM kmersearch_actual_min_score_cache_stats();
 SELECT 'Testing cache clear functions...' as test_phase;
 
 SELECT 'Clearing actual min score cache:' as action, kmersearch_actual_min_score_cache_free() as freed_entries;
-SELECT 'Clearing query pattern cache:' as action, kmersearch_query_pattern_cache_free() as freed_entries;
+SELECT 'Clearing query pattern cache:' as action, kmersearch_query_kmer_cache_free() as freed_entries;
 
 -- Verify caches are cleared
 SELECT 'After clearing - actual min score cache:' as test_phase;
 SELECT * FROM kmersearch_actual_min_score_cache_stats();
 
 SELECT 'After clearing - query pattern cache:' as test_phase;
-SELECT * FROM kmersearch_query_pattern_cache_stats();
+SELECT * FROM kmersearch_query_kmer_cache_stats();
 
 -- Test cache behavior with different min_score settings
 SELECT 'Testing with different min_score settings...' as test_phase;
 
 SET kmersearch.min_score = 5;
-SET kmersearch.min_shared_ngram_key_rate = 0.8;
+SET kmersearch.min_shared_kmer_rate = 0.8;
 
 -- Execute queries with new settings
 SELECT COUNT(*) FROM test_cache_dna2 WHERE sequence =% 'ATCGATCG';
@@ -135,7 +135,7 @@ SELECT * FROM kmersearch_actual_min_score_cache_stats();
 
 -- Reset to defaults
 SET kmersearch.min_score = 1;
-SET kmersearch.min_shared_ngram_key_rate = 0.2;
+SET kmersearch.min_shared_kmer_rate = 0.2;
 
 -- Test edge cases for cache limits
 SELECT 'Testing cache limit behavior...' as test_phase;
@@ -145,7 +145,7 @@ SET kmersearch.actual_min_score_cache_max_entries = 1000;
 
 -- Clear cache first
 SELECT kmersearch_actual_min_score_cache_free();
-SELECT kmersearch_query_pattern_cache_free();
+SELECT kmersearch_query_kmer_cache_free();
 
 -- Execute multiple different queries to test eviction
 SELECT COUNT(*) FROM test_cache_dna2 WHERE sequence =% 'AAAAAAAA';
