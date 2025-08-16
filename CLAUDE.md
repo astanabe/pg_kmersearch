@@ -36,6 +36,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - If something cannot be determined with certainty, explicitly state what needs to be checked
 - **Never make descriptions or changes based on speculation or assumptions - always verify before describing or modifying**
 
+## Coding Standards
+
+### C Function Naming Convention
+**MANDATORY**: All C language functions in this extension MUST use the `kmersearch_` prefix.
+- This applies to ALL functions: static, exported, utility, helper functions
+- Examples: `kmersearch_init()`, `kmersearch_process_data()`, `kmersearch_validate_input()`
+- This naming convention ensures namespace consistency and prevents conflicts with PostgreSQL internals
+- NOTE: Structures, enums, and typedefs do NOT require the `kmersearch_` prefix
+
 ## Important Development Assumptions
 
 **Extension Version Management:**

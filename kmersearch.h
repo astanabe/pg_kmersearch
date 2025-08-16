@@ -243,6 +243,29 @@ typedef struct DropAnalysisResult
 /*
  * Shared state for parallel k-mer analysis
  */
+/* Table type for partition detection */
+typedef enum KmerSearchTableType
+{
+    KMERSEARCH_TABLE_REGULAR,
+    KMERSEARCH_TABLE_PARTITIONED,
+    KMERSEARCH_TABLE_PARTITION_CHILD
+} KmerSearchTableType;
+
+/* Partition block mapping information */
+typedef struct PartitionBlockInfo
+{
+    Oid         partition_oid;            /* Partition OID */
+    BlockNumber start_block;              /* Starting global block number */
+    BlockNumber end_block;                /* Ending global block number */
+} PartitionBlockInfo;
+
+/* Partition to block mapping result */
+typedef struct PartitionBlockMapping
+{
+    Oid         partition_oid;            /* Partition OID */
+    BlockNumber local_block_number;       /* Local block number within partition */
+} PartitionBlockMapping;
+
 typedef struct KmerAnalysisSharedState
 {
     LWLockPadded mutex;                   /* Exclusive control mutex */
@@ -257,6 +280,13 @@ typedef struct KmerAnalysisSharedState
     BlockNumber total_blocks;             /* Total number of blocks in table */
     bool        worker_error_occurred;    /* Parallel worker error flag */
     char        error_message[256];       /* Error message buffer */
+    
+    /* Partition-specific fields */
+    bool        is_partitioned;           /* Is this a partitioned table */
+    int         num_partitions;           /* Number of child partitions */
+    PartitionBlockInfo *partition_blocks; /* Array of partition block ranges */
+    BlockNumber total_blocks_all_partitions; /* Total blocks across all partitions */
+    pg_atomic_uint32 next_global_block;   /* Global block counter for unified processing */
 } KmerAnalysisSharedState;
 
 /* K-mer entry structures for different sizes */
@@ -281,6 +311,7 @@ typedef struct KmerEntry64
 /* Shared memory keys for parallel processing */
 #define KMERSEARCH_KEY_SHARED_STATE  1
 #define KMERSEARCH_KEY_HANDLES       2  /* Combined DSM and hash handles */
+#define KMERSEARCH_KEY_PARTITION_BLOCKS 3  /* Partition block info array */
 
 /*
  * Query-kmer cache entry
@@ -738,6 +769,10 @@ Datum kmersearch_undo_highfreq_analysis(PG_FUNCTION_ARGS);
 DropAnalysisResult kmersearch_undo_highfreq_analysis_internal(Oid table_oid, const char *column_name, int k_size);
 KmerAnalysisResult kmersearch_perform_highfreq_analysis_parallel(Oid table_oid, const char *column_name, int k_size, int parallel_workers);
 void kmersearch_validate_analysis_parameters(Oid table_oid, const char *column_name, int k_size);
+
+/* Partition detection and handling functions (implemented in kmersearch_freq.c) */
+KmerSearchTableType kmersearch_get_table_type(Oid table_oid);
+List *kmersearch_get_partition_oids(Oid parent_oid);
 
 /* Utility functions for unique temporary table name generation */
 char *kmersearch_generate_unique_temp_table_name(const char *prefix, int additional_id);

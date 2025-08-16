@@ -9,6 +9,8 @@
  */
 
 #include "kmersearch.h"
+#include "partitioning/partdesc.h"
+#include "utils/lsyscache.h"
 
 /* PostgreSQL function info declarations for frequency functions */
 PG_FUNCTION_INFO_V1(kmersearch_perform_highfreq_analysis);
@@ -362,6 +364,8 @@ typedef struct KmerAnalysisHandles
 /* Forward declaration for block-based k-mer extraction */
 static void kmersearch_extract_kmers_from_block(Oid table_oid, AttrNumber column_attnum, Oid column_type_oid,
                                                BlockNumber block, int kmer_size, dshash_table *hash);
+static PartitionBlockMapping kmersearch_map_global_to_partition_block(BlockNumber global_block, 
+                                        KmerAnalysisSharedState *state);
 static void kmersearch_update_kmer_counts_in_dshash(Datum sequence_datum, int kmer_size, dshash_table *hash, Oid column_type_oid);
 static void create_analysis_dshash_resources(KmerAnalysisContext *ctx, int estimated_entries, int kmer_size);
 
@@ -700,6 +704,13 @@ kmersearch_perform_highfreq_analysis_parallel(Oid table_oid, const char *column_
     int64 total_rows;
     uint64 threshold_rows;
     uint64 rate_based_threshold;
+    KmerSearchTableType table_type;
+    List *partition_oids = NIL;
+    ListCell *lc;
+    int partition_idx = 0;
+    BlockNumber total_blocks_all_partitions = 0;
+    PartitionBlockInfo *partition_blocks = NULL;
+    int num_partitions = 0;
     
     
     PG_TRY();
@@ -717,19 +728,76 @@ kmersearch_perform_highfreq_analysis_parallel(Oid table_oid, const char *column_
         
         total_rows = 0; /* Initialize */
         
-        rel = table_open(table_oid, AccessShareLock);
-        column_attnum = get_attnum(table_oid, column_name);
-        if (column_attnum == InvalidAttrNumber)
-            elog(ERROR, "Column \"%s\" does not exist", column_name);
+        /* Check table type */
+        table_type = kmersearch_get_table_type(table_oid);
         
-        attr = TupleDescAttr(RelationGetDescr(rel), column_attnum - 1);
-        column_type_oid = attr->atttypid;
-        if (column_type_oid != TypenameGetTypid("dna2") && 
-            column_type_oid != TypenameGetTypid("dna4"))
-            elog(ERROR, "Column must be DNA2 or DNA4 type");
-        
-        total_blocks = RelationGetNumberOfBlocks(rel);
-        table_close(rel, AccessShareLock);
+        if (table_type == KMERSEARCH_TABLE_PARTITIONED)
+        {
+            /* Get partition list */
+            partition_oids = kmersearch_get_partition_oids(table_oid);
+            num_partitions = list_length(partition_oids);
+            
+            if (num_partitions == 0)
+            {
+                elog(ERROR, "Partitioned table has no partitions");
+            }
+            
+            /* Allocate partition block info array */
+            partition_blocks = palloc(sizeof(PartitionBlockInfo) * num_partitions);
+            
+            /* Calculate total blocks from all partitions */
+            partition_idx = 0;
+            foreach(lc, partition_oids)
+            {
+                Oid part_oid = lfirst_oid(lc);
+                Relation part_rel = table_open(part_oid, AccessShareLock);
+                BlockNumber part_blocks = RelationGetNumberOfBlocks(part_rel);
+                
+                partition_blocks[partition_idx].partition_oid = part_oid;
+                partition_blocks[partition_idx].start_block = total_blocks_all_partitions;
+                partition_blocks[partition_idx].end_block = total_blocks_all_partitions + part_blocks - 1;
+                
+                total_blocks_all_partitions += part_blocks;
+                partition_idx++;
+                
+                table_close(part_rel, AccessShareLock);
+            }
+            
+            total_blocks = total_blocks_all_partitions;
+            
+            /* Validate column exists in first partition */
+            {
+                Oid first_part_oid = linitial_oid(partition_oids);
+                column_attnum = get_attnum(first_part_oid, column_name);
+                if (column_attnum == InvalidAttrNumber)
+                    elog(ERROR, "Column \"%s\" does not exist in partitions", column_name);
+                
+                rel = table_open(first_part_oid, AccessShareLock);
+                attr = TupleDescAttr(RelationGetDescr(rel), column_attnum - 1);
+                column_type_oid = attr->atttypid;
+                if (column_type_oid != TypenameGetTypid("dna2") && 
+                    column_type_oid != TypenameGetTypid("dna4"))
+                    elog(ERROR, "Column must be DNA2 or DNA4 type");
+                table_close(rel, AccessShareLock);
+            }
+        }
+        else
+        {
+            /* Regular table processing */
+            rel = table_open(table_oid, AccessShareLock);
+            column_attnum = get_attnum(table_oid, column_name);
+            if (column_attnum == InvalidAttrNumber)
+                elog(ERROR, "Column \"%s\" does not exist", column_name);
+            
+            attr = TupleDescAttr(RelationGetDescr(rel), column_attnum - 1);
+            column_type_oid = attr->atttypid;
+            if (column_type_oid != TypenameGetTypid("dna2") && 
+                column_type_oid != TypenameGetTypid("dna4"))
+                elog(ERROR, "Column must be DNA2 or DNA4 type");
+            
+            total_blocks = RelationGetNumberOfBlocks(rel);
+            table_close(rel, AccessShareLock);
+        }
         
         /* Get row count */
         initStringInfo(&count_query);
@@ -782,7 +850,16 @@ kmersearch_perform_highfreq_analysis_parallel(Oid table_oid, const char *column_
         /* DSM size estimation - estimate each chunk separately as per PostgreSQL best practice */
         shm_toc_estimate_chunk(&pcxt->estimator, MAXALIGN(sizeof(KmerAnalysisSharedState)));
         shm_toc_estimate_chunk(&pcxt->estimator, MAXALIGN(sizeof(KmerAnalysisHandles)));
-        shm_toc_estimate_keys(&pcxt->estimator, 2); /* SHARED_STATE, HANDLES */
+        if (table_type == KMERSEARCH_TABLE_PARTITIONED)
+        {
+            /* Additional space for partition block info array */
+            shm_toc_estimate_chunk(&pcxt->estimator, MAXALIGN(sizeof(PartitionBlockInfo) * num_partitions));
+            shm_toc_estimate_keys(&pcxt->estimator, 3); /* SHARED_STATE, HANDLES, PARTITION_BLOCKS */
+        }
+        else
+        {
+            shm_toc_estimate_keys(&pcxt->estimator, 2); /* SHARED_STATE, HANDLES */
+        }
         elog(DEBUG1, "  - sizeof(KmerAnalysisSharedState) = %zu, MAXALIGN = %zu", 
              sizeof(KmerAnalysisSharedState), MAXALIGN(sizeof(KmerAnalysisSharedState)));
         elog(DEBUG1, "  - sizeof(dsm_handle) = %zu, MAXALIGN = %zu", 
@@ -813,8 +890,35 @@ kmersearch_perform_highfreq_analysis_parallel(Oid table_oid, const char *column_
         shared_state->next_block = 0;
         shared_state->total_blocks = total_blocks;
         shared_state->worker_error_occurred = false;
-        elog(DEBUG1, "kmersearch_perform_highfreq_analysis_parallel: Initialized shared state - next_block=%u, total_blocks=%u",
-             shared_state->next_block, shared_state->total_blocks);
+        
+        /* Set partition-specific fields */
+        shared_state->is_partitioned = (table_type == KMERSEARCH_TABLE_PARTITIONED);
+        shared_state->num_partitions = num_partitions;
+        
+        if (shared_state->is_partitioned)
+        {
+            /* Allocate and copy partition block info to shared memory */
+            PartitionBlockInfo *shm_partition_blocks;
+            shm_partition_blocks = (PartitionBlockInfo *)shm_toc_allocate(toc, 
+                sizeof(PartitionBlockInfo) * num_partitions);
+            if (!shm_partition_blocks)
+            {
+                elog(ERROR, "Failed to allocate memory for partition blocks in shm_toc");
+            }
+            memcpy(shm_partition_blocks, partition_blocks, sizeof(PartitionBlockInfo) * num_partitions);
+            shared_state->partition_blocks = shm_partition_blocks;
+            shared_state->total_blocks_all_partitions = total_blocks_all_partitions;
+            pg_atomic_init_u32(&shared_state->next_global_block, 0);
+            shm_toc_insert(toc, KMERSEARCH_KEY_PARTITION_BLOCKS, shm_partition_blocks);
+        }
+        else
+        {
+            shared_state->partition_blocks = NULL;
+            shared_state->total_blocks_all_partitions = 0;
+        }
+        
+        elog(DEBUG1, "kmersearch_perform_highfreq_analysis_parallel: Initialized shared state - next_block=%u, total_blocks=%u, is_partitioned=%d",
+             shared_state->next_block, shared_state->total_blocks, shared_state->is_partitioned);
         shm_toc_insert(toc, KMERSEARCH_KEY_SHARED_STATE, shared_state);
         
         /* Store handles for workers */
@@ -916,6 +1020,18 @@ kmersearch_perform_highfreq_analysis_parallel(Oid table_oid, const char *column_
     /* Normal cleanup - already done above, just cleanup dshash and unlock */
     kmersearch_cleanup_analysis_dshash();
     UnlockRelationOid(table_oid, ExclusiveLock);
+    
+    /* Free partition blocks if allocated */
+    if (partition_blocks)
+    {
+        pfree(partition_blocks);
+    }
+    
+    /* Free partition OID list */
+    if (partition_oids)
+    {
+        list_free(partition_oids);
+    }
     
     return result;
 }
@@ -2039,8 +2155,19 @@ kmersearch_analysis_worker(dsm_segment *seg, shm_toc *toc)
     if (!shared_state) {
         elog(ERROR, "kmersearch_analysis_worker: Failed to get shared state");
     }
-    elog(DEBUG1, "kmersearch_analysis_worker: Got shared state, table_oid=%u, kmer_size=%d", 
-         shared_state->table_oid, shared_state->kmer_size);
+    elog(DEBUG1, "kmersearch_analysis_worker: Got shared state, table_oid=%u, kmer_size=%d, is_partitioned=%d", 
+         shared_state->table_oid, shared_state->kmer_size, shared_state->is_partitioned);
+    
+    /* If partitioned table, get partition block info from shared memory */
+    if (shared_state->is_partitioned)
+    {
+        shared_state->partition_blocks = (PartitionBlockInfo *)shm_toc_lookup(toc, 
+            KMERSEARCH_KEY_PARTITION_BLOCKS, false);
+        if (!shared_state->partition_blocks)
+        {
+            elog(ERROR, "kmersearch_analysis_worker: Failed to get partition blocks");
+        }
+    }
     
     /* Get handles from shm_toc */
     handles = (KmerAnalysisHandles *)shm_toc_lookup(toc, KMERSEARCH_KEY_HANDLES, false);
@@ -2089,31 +2216,65 @@ kmersearch_analysis_worker(dsm_segment *seg, shm_toc *toc)
     /* Dynamic work acquisition loop */
     while (has_work)
     {
-        /* Acquire block number with short exclusive lock */
-        LWLockAcquire(&shared_state->mutex.lock, LW_EXCLUSIVE);
-        
-        if (shared_state->next_block < shared_state->total_blocks)
+        if (shared_state->is_partitioned)
         {
-            /* Get block to process */
-            current_block = shared_state->next_block;
-            shared_state->next_block++;
-            LWLockRelease(&shared_state->mutex.lock);
+            /* Partitioned table: use global block counter */
+            BlockNumber global_block;
             
-            /* Process block (parallel execution outside lock) */
-            kmersearch_extract_kmers_from_block(shared_state->table_oid,
-                                               shared_state->column_attnum,
-                                               shared_state->column_type_oid,
-                                               current_block,
-                                               shared_state->kmer_size,
-                                               hash);
-            elog(DEBUG2, "kmersearch_analysis_worker: Finished processing block %u", current_block);
+            /* Atomic increment to get next global block */
+            global_block = pg_atomic_fetch_add_u32(&shared_state->next_global_block, 1);
+            
+            if (global_block < shared_state->total_blocks_all_partitions)
+            {
+                /* Map global block to partition and local block */
+                PartitionBlockMapping mapping = kmersearch_map_global_to_partition_block(
+                    global_block, shared_state);
+                
+                /* Process block from specific partition */
+                kmersearch_extract_kmers_from_block(mapping.partition_oid,
+                                                   shared_state->column_attnum,
+                                                   shared_state->column_type_oid,
+                                                   mapping.local_block_number,
+                                                   shared_state->kmer_size,
+                                                   hash);
+                elog(DEBUG2, "kmersearch_analysis_worker: Finished processing global block %u (partition %u, local block %u)",
+                     global_block, mapping.partition_oid, mapping.local_block_number);
+            }
+            else
+            {
+                /* All blocks processed */
+                has_work = false;
+            }
         }
         else
         {
-            /* All blocks processed */
-            shared_state->all_processed = true;
-            LWLockRelease(&shared_state->mutex.lock);
-            has_work = false;
+            /* Regular table: use existing logic */
+            /* Acquire block number with short exclusive lock */
+            LWLockAcquire(&shared_state->mutex.lock, LW_EXCLUSIVE);
+            
+            if (shared_state->next_block < shared_state->total_blocks)
+            {
+                /* Get block to process */
+                current_block = shared_state->next_block;
+                shared_state->next_block++;
+                LWLockRelease(&shared_state->mutex.lock);
+                
+                /* Process block (parallel execution outside lock) */
+                kmersearch_extract_kmers_from_block(shared_state->table_oid,
+                                                   shared_state->column_attnum,
+                                                   shared_state->column_type_oid,
+                                                   current_block,
+                                                   shared_state->kmer_size,
+                                                   hash);
+                elog(DEBUG2, "kmersearch_analysis_worker: Finished processing block %u", current_block);
+            }
+            else
+            {
+                /* All blocks processed */
+                shared_state->all_processed = true;
+                LWLockRelease(&shared_state->mutex.lock);
+                has_work = false;
+            }
         }
     }
     
@@ -2475,6 +2636,103 @@ kmersearch_merge_worker_results_sql(KmerWorkerState *workers, int num_workers,
     
     pfree(query.data);
     pfree(union_query.data);
+}
+
+/*
+ * Map global block number to partition and local block
+ */
+static PartitionBlockMapping
+kmersearch_map_global_to_partition_block(BlockNumber global_block, 
+                                        KmerAnalysisSharedState *state)
+{
+    PartitionBlockMapping result;
+    int i;
+    
+    for (i = 0; i < state->num_partitions; i++)
+    {
+        if (global_block >= state->partition_blocks[i].start_block &&
+            global_block <= state->partition_blocks[i].end_block)
+        {
+            result.partition_oid = state->partition_blocks[i].partition_oid;
+            result.local_block_number = global_block - state->partition_blocks[i].start_block;
+            return result;
+        }
+    }
+    
+    /* Should not happen if everything is correct */
+    elog(ERROR, "Invalid global block number %u", global_block);
+}
+
+/*
+ * Partition detection functions
+ */
+
+/*
+ * Determine if a table is a regular table, partitioned table, or partition child
+ */
+KmerSearchTableType
+kmersearch_get_table_type(Oid table_oid)
+{
+    Relation rel;
+    KmerSearchTableType result;
+    
+    rel = table_open(table_oid, AccessShareLock);
+    
+    if (rel->rd_rel->relkind == RELKIND_PARTITIONED_TABLE)
+    {
+        result = KMERSEARCH_TABLE_PARTITIONED;
+    }
+    else if (rel->rd_rel->relispartition)
+    {
+        result = KMERSEARCH_TABLE_PARTITION_CHILD;
+    }
+    else
+    {
+        result = KMERSEARCH_TABLE_REGULAR;
+    }
+    
+    table_close(rel, AccessShareLock);
+    
+    return result;
+}
+
+/*
+ * Get list of partition OIDs for a partitioned table
+ * Returns empty list if table is not partitioned
+ */
+List *
+kmersearch_get_partition_oids(Oid parent_oid)
+{
+    Relation parent_rel;
+    PartitionDesc partdesc;
+    List *partition_oids = NIL;
+    int i;
+    
+    /* Open parent table */
+    parent_rel = table_open(parent_oid, AccessShareLock);
+    
+    /* Check if it's actually a partitioned table */
+    if (parent_rel->rd_rel->relkind != RELKIND_PARTITIONED_TABLE)
+    {
+        table_close(parent_rel, AccessShareLock);
+        return NIL;
+    }
+    
+    /* Get partition descriptor - include detached partitions */
+    partdesc = RelationGetPartitionDesc(parent_rel, false);
+    
+    /* Build list of partition OIDs */
+    if (partdesc != NULL)
+    {
+        for (i = 0; i < partdesc->nparts; i++)
+        {
+            partition_oids = lappend_oid(partition_oids, partdesc->oids[i]);
+        }
+    }
+    
+    table_close(parent_rel, AccessShareLock);
+    
+    return partition_oids;
 }
 
 
