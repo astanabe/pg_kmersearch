@@ -746,7 +746,6 @@ char *kmersearch_generate_unique_temp_table_name(const char *prefix, int additio
 
 /* Direct bit manipulation helper functions */
 void kmersearch_extract_dna4_kmer_expansions_direct_bits(VarBit *seq, int start_pos, int k, uint64 *output, int *count);
-VarBit **kmersearch_expand_dna4_kmer2_to_dna2_direct(VarBit *dna4_seq, int start_pos, int k, int *expansion_count);
 
 /* Direct DNA4 to uintkey expansion without VarBit intermediate */
 void kmersearch_expand_dna4_to_uintkey(VarBit *dna4_seq, int start_pos, int k, void **output, int *expansion_count, size_t elem_size);
