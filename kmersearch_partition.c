@@ -44,6 +44,7 @@ static void create_partition_table(const char *temp_table_name, const char *tabl
                                    const char *dna_column_name, int partition_count, const char *tablespace_name);
 static void migrate_data_in_batches(const char *table_name, const char *temp_table_name, Oid table_oid);
 static void replace_table_with_partition(const char *table_name, const char *temp_table_name);
+static void preserve_highfreq_analysis(Oid old_table_oid, const char *new_table_name);
 
 
 /*
@@ -101,6 +102,9 @@ kmersearch_partition_table(PG_FUNCTION_ARGS)
         
         /* Replace table with partition */
         replace_table_with_partition(table_name, temp_table_name);
+        
+        /* Preserve high-frequency k-mer analysis if exists */
+        preserve_highfreq_analysis(table_oid, table_name);
         
         SPI_finish();
     }
@@ -685,6 +689,100 @@ replace_table_with_partition(const char *table_name, const char *temp_table_name
         elog(ERROR, "ALTER TABLE RENAME failed: %s", SPI_result_code_string(ret));
         
     pfree(query.data);
+}
+
+/*
+ * preserve_highfreq_analysis
+ *
+ * Preserve and update high-frequency k-mer analysis results after partitioning
+ */
+static void
+preserve_highfreq_analysis(Oid old_table_oid, const char *new_table_name)
+{
+    StringInfoData query;
+    int ret;
+    Oid new_table_oid;
+    SPITupleTable *tuptable;
+    bool has_analysis = false;
+    
+    initStringInfo(&query);
+    
+    /* Check if there's existing high-frequency analysis for the old table */
+    appendStringInfo(&query,
+        "SELECT COUNT(*) FROM kmersearch_highfreq_kmer_meta "
+        "WHERE table_oid = %u", old_table_oid);
+    
+    ret = SPI_execute(query.data, true, 1);
+    if (ret == SPI_OK_SELECT && SPI_processed == 1)
+    {
+        bool isnull;
+        Datum count_datum;
+        
+        tuptable = SPI_tuptable;
+        count_datum = SPI_getbinval(tuptable->vals[0], tuptable->tupdesc, 1, &isnull);
+        if (!isnull && DatumGetInt64(count_datum) > 0)
+            has_analysis = true;
+    }
+    
+    if (!has_analysis)
+    {
+        /* No analysis to preserve */
+        pfree(query.data);
+        return;
+    }
+    
+    /* Get the new table OID */
+    new_table_oid = RangeVarGetRelid(makeRangeVar(NULL, (char *)new_table_name, -1), NoLock, false);
+    
+    /* Update kmersearch_highfreq_kmer table */
+    resetStringInfo(&query);
+    appendStringInfo(&query,
+        "UPDATE kmersearch_highfreq_kmer "
+        "SET table_oid = %u "
+        "WHERE table_oid = %u",
+        new_table_oid, old_table_oid);
+    
+    ret = SPI_execute(query.data, false, 0);
+    if (ret != SPI_OK_UPDATE)
+        elog(WARNING, "Failed to update kmersearch_highfreq_kmer: %s", SPI_result_code_string(ret));
+    
+    /* Update kmersearch_highfreq_kmer_meta table */
+    resetStringInfo(&query);
+    appendStringInfo(&query,
+        "UPDATE kmersearch_highfreq_kmer_meta "
+        "SET table_oid = %u "
+        "WHERE table_oid = %u",
+        new_table_oid, old_table_oid);
+    
+    ret = SPI_execute(query.data, false, 0);
+    if (ret != SPI_OK_UPDATE)
+        elog(WARNING, "Failed to update kmersearch_highfreq_kmer_meta: %s", SPI_result_code_string(ret));
+    
+    /* Update kmersearch_gin_index_meta table if exists */
+    resetStringInfo(&query);
+    appendStringInfo(&query,
+        "UPDATE kmersearch_gin_index_meta "
+        "SET table_oid = %u "
+        "WHERE table_oid = %u",
+        new_table_oid, old_table_oid);
+    
+    ret = SPI_execute(query.data, false, 0);
+    /* Don't error if this fails, as the table might not have GIN index metadata */
+    
+    /* Update kmersearch_index_info table if exists */
+    resetStringInfo(&query);
+    appendStringInfo(&query,
+        "UPDATE kmersearch_index_info "
+        "SET table_oid = %u "
+        "WHERE table_oid = %u",
+        new_table_oid, old_table_oid);
+    
+    ret = SPI_execute(query.data, false, 0);
+    /* Don't error if this fails, as the table might not have index info */
+    
+    pfree(query.data);
+    
+    elog(NOTICE, "High-frequency k-mer analysis preserved for partitioned table");
 }
 
 
