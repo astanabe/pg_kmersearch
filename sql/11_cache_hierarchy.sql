@@ -65,7 +65,7 @@ SET kmersearch.kmer_size = 4;
 SET kmersearch.occur_bitlen = 8;
 SET kmersearch.max_appearance_rate = 0.2;
 SET kmersearch.max_appearance_nrow = 3;
-SET kmersearch.min_shared_ngram_key_rate = 0.2;  -- Allow matches with 20% shared k-mers
+SET kmersearch.min_shared_kmer_rate = 0.2;  -- Allow matches with 20% shared k-mers
 SELECT test_seq =% 'ATCGATCG' as matching_guc_query FROM test_cache_hierarchy LIMIT 1;
 
 -- Test 2.2: Mismatched GUC - occur_bitlen (should fail during cache load)

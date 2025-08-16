@@ -490,20 +490,18 @@ foreach my $simd (@simd_capabilities) {
                 # Get matches with scores (sequential scan)
                 my $sth = $dbh->prepare("
                     SELECT id, 
-                           kmersearch_rawscore(seq, ?) as rawscore,
-                           kmersearch_correctedscore(seq, ?) as correctedscore
+                           kmersearch_matchscore(seq, ?) as matchscore
                     FROM $table_name
                     WHERE seq =% ?
                     ORDER BY id
                 ");
-                $sth->execute($query, $query, $query);
+                $sth->execute($query, $query);
                 
                 my @matches;
                 while (my $row = $sth->fetchrow_hashref()) {
                     push @matches, {
                         id => $row->{id},
-                        rawscore => $row->{rawscore},
-                        correctedscore => $row->{correctedscore}
+                        matchscore => $row->{matchscore}
                     };
                 }
                 $sth->finish();
@@ -522,8 +520,7 @@ foreach my $simd (@simd_capabilities) {
         
         # Calculate summary statistics
         my $total_matches = 0;
-        my $total_rawscore = 0;
-        my $total_correctedscore = 0;
+        my $total_matchscore = 0;
         my $queries_with_matches = 0;
         
         foreach my $result (@all_results) {
@@ -531,8 +528,7 @@ foreach my $simd (@simd_capabilities) {
             $queries_with_matches++ if $result->{match_count} > 0;
             
             foreach my $match (@{$result->{matches}}) {
-                $total_rawscore += $match->{rawscore};
-                $total_correctedscore += $match->{correctedscore};
+                $total_matchscore += $match->{matchscore};
             }
         }
         
@@ -544,8 +540,7 @@ foreach my $simd (@simd_capabilities) {
             queries_with_matches => $queries_with_matches,
             total_matches => $total_matches,
             avg_matches_per_query => sprintf("%.2f", $total_matches / scalar(@all_results)),
-            total_rawscore => $total_rawscore,
-            total_correctedscore => $total_correctedscore,
+            total_matchscore => $total_matchscore,
             results_sample => [@all_results[0..9]]  # Keep first 10 for comparison
         };
     });
@@ -555,9 +550,9 @@ foreach my $simd (@simd_capabilities) {
     printf "  Time: %.3fs, Total matches: %d, Queries with matches: %d/%d\n", 
            $seq_search_time, $seq_search_result->{total_matches}, 
            $seq_search_result->{queries_with_matches}, $seq_search_result->{query_count};
-    printf "  Avg matches/query: %s, Total rawscore: %d, Total correctedscore: %d\n\n",
+    printf "  Avg matches/query: %s, Total matchscore: %d\n\n",
            $seq_search_result->{avg_matches_per_query}, 
-           $seq_search_result->{total_rawscore}, $seq_search_result->{total_correctedscore};
+           $seq_search_result->{total_matchscore};
 }
 
 # DNA4 Test 4: Sequential search without GIN index
@@ -598,20 +593,18 @@ foreach my $simd (@simd_capabilities) {
                 # Get matches with scores (sequential scan)
                 my $sth = $dbh->prepare("
                     SELECT id, 
-                           kmersearch_rawscore(seq, ?) as rawscore,
-                           kmersearch_correctedscore(seq, ?) as correctedscore
+                           kmersearch_matchscore(seq, ?) as matchscore
                     FROM $table_name
                     WHERE seq =% ?
                     ORDER BY id
                 ");
-                $sth->execute($query, $query, $query);
+                $sth->execute($query, $query);
                 
                 my @matches;
                 while (my $row = $sth->fetchrow_hashref()) {
                     push @matches, {
                         id => $row->{id},
-                        rawscore => $row->{rawscore},
-                        correctedscore => $row->{correctedscore}
+                        matchscore => $row->{matchscore}
                     };
                 }
                 $sth->finish();
@@ -630,8 +623,7 @@ foreach my $simd (@simd_capabilities) {
         
         # Calculate summary statistics
         my $total_matches = 0;
-        my $total_rawscore = 0;
-        my $total_correctedscore = 0;
+        my $total_matchscore = 0;
         my $queries_with_matches = 0;
         
         foreach my $result (@all_results) {
@@ -639,8 +631,7 @@ foreach my $simd (@simd_capabilities) {
             $queries_with_matches++ if $result->{match_count} > 0;
             
             foreach my $match (@{$result->{matches}}) {
-                $total_rawscore += $match->{rawscore};
-                $total_correctedscore += $match->{correctedscore};
+                $total_matchscore += $match->{matchscore};
             }
         }
         
@@ -652,8 +643,7 @@ foreach my $simd (@simd_capabilities) {
             queries_with_matches => $queries_with_matches,
             total_matches => $total_matches,
             avg_matches_per_query => sprintf("%.2f", $total_matches / scalar(@all_results)),
-            total_rawscore => $total_rawscore,
-            total_correctedscore => $total_correctedscore,
+            total_matchscore => $total_matchscore,
             results_sample => [@all_results[0..9]]  # Keep first 10 for comparison
         };
     });
@@ -663,9 +653,9 @@ foreach my $simd (@simd_capabilities) {
     printf "  Time: %.3fs, Total matches: %d, Queries with matches: %d/%d\n", 
            $seq_search_time, $seq_search_result->{total_matches}, 
            $seq_search_result->{queries_with_matches}, $seq_search_result->{query_count};
-    printf "  Avg matches/query: %s, Total rawscore: %d, Total correctedscore: %d\n\n",
+    printf "  Avg matches/query: %s, Total matchscore: %d\n\n",
            $seq_search_result->{avg_matches_per_query}, 
-           $seq_search_result->{total_rawscore}, $seq_search_result->{total_correctedscore};
+           $seq_search_result->{total_matchscore};
     
     # Test 5: Search with =% operator WITH GIN index
     print "\nTest 5: Search with =% operator WITH GIN index\n";
@@ -687,8 +677,7 @@ foreach my $simd (@simd_capabilities) {
                 # Get matches with scores
                 my $sth = $dbh->prepare("
                     SELECT id, 
-                           kmersearch_rawscore(seq, ?) as rawscore,
-                           kmersearch_correctedscore(seq, ?) as correctedscore
+                                                      kmersearch_matchscore(seq, ?) as matchscore
                     FROM $table_name
                     WHERE seq =% ?
                     ORDER BY id
@@ -699,8 +688,7 @@ foreach my $simd (@simd_capabilities) {
                 while (my $row = $sth->fetchrow_hashref()) {
                     push @matches, {
                         id => $row->{id},
-                        rawscore => $row->{rawscore},
-                        correctedscore => $row->{correctedscore}
+                        matchscore => $row->{matchscore}
                     };
                 }
                 $sth->finish();
@@ -719,8 +707,7 @@ foreach my $simd (@simd_capabilities) {
         
         # Calculate summary statistics
         my $total_matches = 0;
-        my $total_rawscore = 0;
-        my $total_correctedscore = 0;
+        my $total_matchscore = 0;
         my $queries_with_matches = 0;
         
         foreach my $result (@all_results) {
@@ -728,8 +715,7 @@ foreach my $simd (@simd_capabilities) {
             $queries_with_matches++ if $result->{match_count} > 0;
             
             foreach my $match (@{$result->{matches}}) {
-                $total_rawscore += $match->{rawscore};
-                $total_correctedscore += $match->{correctedscore};
+                $total_matchscore += $match->{matchscore};
             }
         }
         
@@ -741,8 +727,7 @@ foreach my $simd (@simd_capabilities) {
             queries_with_matches => $queries_with_matches,
             total_matches => $total_matches,
             avg_matches_per_query => sprintf("%.2f", $total_matches / scalar(@all_results)),
-            total_rawscore => $total_rawscore,
-            total_correctedscore => $total_correctedscore,
+            total_matchscore => $total_matchscore,
             results_sample => [@all_results[0..9]]  # Keep first 10 for comparison
         };
     });
@@ -752,9 +737,9 @@ foreach my $simd (@simd_capabilities) {
     printf "  Time: %.3fs, Total matches: %d, Queries with matches: %d/%d\n", 
            $search_time, $search_result->{total_matches}, 
            $search_result->{queries_with_matches}, $search_result->{query_count};
-    printf "  Avg matches/query: %s, Total rawscore: %d, Total correctedscore: %d\n\n",
+    printf "  Avg matches/query: %s, Total matchscore: %d\n\n",
            $search_result->{avg_matches_per_query}, 
-           $search_result->{total_rawscore}, $search_result->{total_correctedscore};
+           $search_result->{total_matchscore};
 }
 
 # DNA2 Test 5: K-mer frequency analysis
@@ -1072,8 +1057,7 @@ foreach my $simd (@simd_capabilities) {
                 # Get matches with scores
                 my $sth = $dbh->prepare("
                     SELECT id, 
-                           kmersearch_rawscore(seq, ?) as rawscore,
-                           kmersearch_correctedscore(seq, ?) as correctedscore
+                                                      kmersearch_matchscore(seq, ?) as matchscore
                     FROM $table_name
                     WHERE seq =% ?
                     ORDER BY id
@@ -1084,8 +1068,7 @@ foreach my $simd (@simd_capabilities) {
                 while (my $row = $sth->fetchrow_hashref()) {
                     push @matches, {
                         id => $row->{id},
-                        rawscore => $row->{rawscore},
-                        correctedscore => $row->{correctedscore}
+                        matchscore => $row->{matchscore}
                     };
                 }
                 $sth->finish();
@@ -1104,8 +1087,7 @@ foreach my $simd (@simd_capabilities) {
         
         # Calculate summary statistics
         my $total_matches = 0;
-        my $total_rawscore = 0;
-        my $total_correctedscore = 0;
+        my $total_matchscore = 0;
         my $queries_with_matches = 0;
         
         foreach my $result (@all_results) {
@@ -1113,8 +1095,7 @@ foreach my $simd (@simd_capabilities) {
             $queries_with_matches++ if $result->{match_count} > 0;
             
             foreach my $match (@{$result->{matches}}) {
-                $total_rawscore += $match->{rawscore};
-                $total_correctedscore += $match->{correctedscore};
+                $total_matchscore += $match->{matchscore};
             }
         }
         
@@ -1126,8 +1107,7 @@ foreach my $simd (@simd_capabilities) {
             queries_with_matches => $queries_with_matches,
             total_matches => $total_matches,
             avg_matches_per_query => sprintf("%.2f", $total_matches / scalar(@all_results)),
-            total_rawscore => $total_rawscore,
-            total_correctedscore => $total_correctedscore,
+            total_matchscore => $total_matchscore,
             results_sample => [@all_results[0..9]]  # Keep first 10 for comparison
         };
     });
@@ -1137,9 +1117,9 @@ foreach my $simd (@simd_capabilities) {
     printf "  Time: %.3fs, Total matches: %d, Queries with matches: %d/%d\n", 
            $search_time, $search_result->{total_matches}, 
            $search_result->{queries_with_matches}, $search_result->{query_count};
-    printf "  Avg matches/query: %s, Total rawscore: %d, Total correctedscore: %d\n\n",
+    printf "  Avg matches/query: %s, Total matchscore: %d\n\n",
            $search_result->{avg_matches_per_query}, 
-           $search_result->{total_rawscore}, $search_result->{total_correctedscore};
+           $search_result->{total_matchscore};
 }
 
 # DNA4 Test 7: GIN index search
@@ -1173,8 +1153,7 @@ foreach my $simd (@simd_capabilities) {
                 # Get matches with scores
                 my $sth = $dbh->prepare("
                     SELECT id, 
-                           kmersearch_rawscore(seq, ?) as rawscore,
-                           kmersearch_correctedscore(seq, ?) as correctedscore
+                                                      kmersearch_matchscore(seq, ?) as matchscore
                     FROM $table_name
                     WHERE seq =% ?
                     ORDER BY id
@@ -1185,8 +1164,7 @@ foreach my $simd (@simd_capabilities) {
                 while (my $row = $sth->fetchrow_hashref()) {
                     push @matches, {
                         id => $row->{id},
-                        rawscore => $row->{rawscore},
-                        correctedscore => $row->{correctedscore}
+                        matchscore => $row->{matchscore}
                     };
                 }
                 $sth->finish();
@@ -1205,8 +1183,7 @@ foreach my $simd (@simd_capabilities) {
         
         # Calculate summary statistics
         my $total_matches = 0;
-        my $total_rawscore = 0;
-        my $total_correctedscore = 0;
+        my $total_matchscore = 0;
         my $queries_with_matches = 0;
         
         foreach my $result (@all_results) {
@@ -1214,8 +1191,7 @@ foreach my $simd (@simd_capabilities) {
             $queries_with_matches++ if $result->{match_count} > 0;
             
             foreach my $match (@{$result->{matches}}) {
-                $total_rawscore += $match->{rawscore};
-                $total_correctedscore += $match->{correctedscore};
+                $total_matchscore += $match->{matchscore};
             }
         }
         
@@ -1227,8 +1203,7 @@ foreach my $simd (@simd_capabilities) {
             queries_with_matches => $queries_with_matches,
             total_matches => $total_matches,
             avg_matches_per_query => sprintf("%.2f", $total_matches / scalar(@all_results)),
-            total_rawscore => $total_rawscore,
-            total_correctedscore => $total_correctedscore,
+            total_matchscore => $total_matchscore,
             results_sample => [@all_results[0..9]]  # Keep first 10 for comparison
         };
     });
@@ -1238,9 +1213,9 @@ foreach my $simd (@simd_capabilities) {
     printf "  Time: %.3fs, Total matches: %d, Queries with matches: %d/%d\n", 
            $search_time, $search_result->{total_matches}, 
            $search_result->{queries_with_matches}, $search_result->{query_count};
-    printf "  Avg matches/query: %s, Total rawscore: %d, Total correctedscore: %d\n\n",
+    printf "  Avg matches/query: %s, Total matchscore: %d\n\n",
            $search_result->{avg_matches_per_query}, 
-           $search_result->{total_rawscore}, $search_result->{total_correctedscore};
+           $search_result->{total_matchscore};
 }
 
 # Compare results across SIMD capabilities
@@ -1258,11 +1233,11 @@ foreach my $simd (@simd_capabilities[1..$#simd_capabilities]) {
     
     if ($seq_search->{total_matches} != $base_dna2_seq->{total_matches} ||
         $seq_search->{total_rawscore} != $base_dna2_seq->{total_rawscore} ||
-        $seq_search->{total_correctedscore} != $base_dna2_seq->{total_correctedscore}) {
+        $seq_search->{total_matchscore} != $base_dna2_seq->{total_matchscore}) {
         printf "  WARNING: Different DNA2 sequential search results for %s:\n", $simd->{name};
         printf "    Matches: %d vs %d\n", $seq_search->{total_matches}, $base_dna2_seq->{total_matches};
         printf "    Rawscore: %d vs %d\n", $seq_search->{total_rawscore}, $base_dna2_seq->{total_rawscore};
-        printf "    Correctedscore: %d vs %d\n", $seq_search->{total_correctedscore}, $base_dna2_seq->{total_correctedscore};
+        printf "    Correctedscore: %d vs %d\n", $seq_search->{total_matchscore}, $base_dna2_seq->{total_matchscore};
         $dna2_seq_consistent = 0;
     }
 }
@@ -1281,11 +1256,11 @@ foreach my $simd (@simd_capabilities[1..$#simd_capabilities]) {
     
     if ($seq_search->{total_matches} != $base_dna4_seq->{total_matches} ||
         $seq_search->{total_rawscore} != $base_dna4_seq->{total_rawscore} ||
-        $seq_search->{total_correctedscore} != $base_dna4_seq->{total_correctedscore}) {
+        $seq_search->{total_matchscore} != $base_dna4_seq->{total_matchscore}) {
         printf "  WARNING: Different DNA4 sequential search results for %s:\n", $simd->{name};
         printf "    Matches: %d vs %d\n", $seq_search->{total_matches}, $base_dna4_seq->{total_matches};
         printf "    Rawscore: %d vs %d\n", $seq_search->{total_rawscore}, $base_dna4_seq->{total_rawscore};
-        printf "    Correctedscore: %d vs %d\n", $seq_search->{total_correctedscore}, $base_dna4_seq->{total_correctedscore};
+        printf "    Correctedscore: %d vs %d\n", $seq_search->{total_matchscore}, $base_dna4_seq->{total_matchscore};
         $dna4_seq_consistent = 0;
     }
 }
@@ -1342,11 +1317,11 @@ foreach my $simd (@simd_capabilities[1..$#simd_capabilities]) {
     
     if ($search->{total_matches} != $base_dna2_gin_search->{total_matches} ||
         $search->{total_rawscore} != $base_dna2_gin_search->{total_rawscore} ||
-        $search->{total_correctedscore} != $base_dna2_gin_search->{total_correctedscore}) {
+        $search->{total_matchscore} != $base_dna2_gin_search->{total_matchscore}) {
         printf "  WARNING: Different DNA2 GIN search results for %s:\n", $simd->{name};
         printf "    Matches: %d vs %d\n", $search->{total_matches}, $base_dna2_gin_search->{total_matches};
         printf "    Rawscore: %d vs %d\n", $search->{total_rawscore}, $base_dna2_gin_search->{total_rawscore};
-        printf "    Correctedscore: %d vs %d\n", $search->{total_correctedscore}, $base_dna2_gin_search->{total_correctedscore};
+        printf "    Correctedscore: %d vs %d\n", $search->{total_matchscore}, $base_dna2_gin_search->{total_matchscore};
         $dna2_gin_search_consistent = 0;
     }
 }
@@ -1365,11 +1340,11 @@ foreach my $simd (@simd_capabilities[1..$#simd_capabilities]) {
     
     if ($search->{total_matches} != $base_dna4_gin_search->{total_matches} ||
         $search->{total_rawscore} != $base_dna4_gin_search->{total_rawscore} ||
-        $search->{total_correctedscore} != $base_dna4_gin_search->{total_correctedscore}) {
+        $search->{total_matchscore} != $base_dna4_gin_search->{total_matchscore}) {
         printf "  WARNING: Different DNA4 GIN search results for %s:\n", $simd->{name};
         printf "    Matches: %d vs %d\n", $search->{total_matches}, $base_dna4_gin_search->{total_matches};
         printf "    Rawscore: %d vs %d\n", $search->{total_rawscore}, $base_dna4_gin_search->{total_rawscore};
-        printf "    Correctedscore: %d vs %d\n", $search->{total_correctedscore}, $base_dna4_gin_search->{total_correctedscore};
+        printf "    Correctedscore: %d vs %d\n", $search->{total_matchscore}, $base_dna4_gin_search->{total_matchscore};
         $dna4_gin_search_consistent = 0;
     }
 }
@@ -1876,20 +1851,18 @@ foreach my $simd (@simd_capabilities) {
                 # Get matches with scores (sequential scan)
                 my $sth = $dbh->prepare("
                     SELECT id, 
-                           kmersearch_rawscore(seq, ?) as rawscore,
-                           kmersearch_correctedscore(seq, ?) as correctedscore
+                           kmersearch_matchscore(seq, ?) as matchscore
                     FROM $table_name
                     WHERE seq =% ?
                     ORDER BY id
                 ");
-                $sth->execute($query, $query, $query);
+                $sth->execute($query, $query);
                 
                 my @matches;
                 while (my $row = $sth->fetchrow_hashref()) {
                     push @matches, {
                         id => $row->{id},
-                        rawscore => $row->{rawscore},
-                        correctedscore => $row->{correctedscore}
+                        matchscore => $row->{matchscore}
                     };
                 }
                 $sth->finish();
@@ -1908,8 +1881,7 @@ foreach my $simd (@simd_capabilities) {
         
         # Calculate summary statistics
         my $total_matches = 0;
-        my $total_rawscore = 0;
-        my $total_correctedscore = 0;
+        my $total_matchscore = 0;
         my $queries_with_matches = 0;
         
         foreach my $result (@all_results) {
@@ -1917,8 +1889,7 @@ foreach my $simd (@simd_capabilities) {
             $queries_with_matches++ if $result->{match_count} > 0;
             
             foreach my $match (@{$result->{matches}}) {
-                $total_rawscore += $match->{rawscore};
-                $total_correctedscore += $match->{correctedscore};
+                $total_matchscore += $match->{matchscore};
             }
         }
         
@@ -1930,8 +1901,7 @@ foreach my $simd (@simd_capabilities) {
             queries_with_matches => $queries_with_matches,
             total_matches => $total_matches,
             avg_matches_per_query => sprintf("%.2f", $total_matches / scalar(@all_results)),
-            total_rawscore => $total_rawscore,
-            total_correctedscore => $total_correctedscore,
+            total_matchscore => $total_matchscore,
             results_sample => [@all_results[0..9]]  # Keep first 10 for comparison
         };
     });
@@ -1941,9 +1911,9 @@ foreach my $simd (@simd_capabilities) {
     printf "  Time: %.3fs, Total matches: %d, Queries with matches: %d/%d\n", 
            $seq_search_time, $seq_search_result->{total_matches}, 
            $seq_search_result->{queries_with_matches}, $seq_search_result->{query_count};
-    printf "  Avg matches/query: %s, Total rawscore: %d, Total correctedscore: %d\n",
+    printf "  Avg matches/query: %s, Total matchscore: %d\n",
            $seq_search_result->{avg_matches_per_query}, 
-           $seq_search_result->{total_rawscore}, $seq_search_result->{total_correctedscore};
+           $seq_search_result->{total_matchscore};
     
     # DNA4 Test 5: Search with =% operator WITH GIN index
     print "\nDNA4 Test 5: Search with =% operator WITH GIN index\n";
@@ -1965,8 +1935,7 @@ foreach my $simd (@simd_capabilities) {
                 # Get matches with scores
                 my $sth = $dbh->prepare("
                     SELECT id, 
-                           kmersearch_rawscore(seq, ?) as rawscore,
-                           kmersearch_correctedscore(seq, ?) as correctedscore
+                                                      kmersearch_matchscore(seq, ?) as matchscore
                     FROM $table_name
                     WHERE seq =% ?
                     ORDER BY id
@@ -1977,8 +1946,7 @@ foreach my $simd (@simd_capabilities) {
                 while (my $row = $sth->fetchrow_hashref()) {
                     push @matches, {
                         id => $row->{id},
-                        rawscore => $row->{rawscore},
-                        correctedscore => $row->{correctedscore}
+                        matchscore => $row->{matchscore}
                     };
                 }
                 $sth->finish();
@@ -1997,8 +1965,7 @@ foreach my $simd (@simd_capabilities) {
         
         # Calculate summary statistics
         my $total_matches = 0;
-        my $total_rawscore = 0;
-        my $total_correctedscore = 0;
+        my $total_matchscore = 0;
         my $queries_with_matches = 0;
         
         foreach my $result (@all_results) {
@@ -2006,8 +1973,7 @@ foreach my $simd (@simd_capabilities) {
             $queries_with_matches++ if $result->{match_count} > 0;
             
             foreach my $match (@{$result->{matches}}) {
-                $total_rawscore += $match->{rawscore};
-                $total_correctedscore += $match->{correctedscore};
+                $total_matchscore += $match->{matchscore};
             }
         }
         
@@ -2019,8 +1985,7 @@ foreach my $simd (@simd_capabilities) {
             queries_with_matches => $queries_with_matches,
             total_matches => $total_matches,
             avg_matches_per_query => sprintf("%.2f", $total_matches / scalar(@all_results)),
-            total_rawscore => $total_rawscore,
-            total_correctedscore => $total_correctedscore,
+            total_matchscore => $total_matchscore,
             results_sample => [@all_results[0..9]]  # Keep first 10 for comparison
         };
     });
@@ -2030,9 +1995,9 @@ foreach my $simd (@simd_capabilities) {
     printf "  Time: %.3fs, Total matches: %d, Queries with matches: %d/%d\n", 
            $search_time, $search_result->{total_matches}, 
            $search_result->{queries_with_matches}, $search_result->{query_count};
-    printf "  Avg matches/query: %s, Total rawscore: %d, Total correctedscore: %d\n\n",
+    printf "  Avg matches/query: %s, Total matchscore: %d\n\n",
            $search_result->{avg_matches_per_query}, 
-           $search_result->{total_rawscore}, $search_result->{total_correctedscore};
+           $search_result->{total_matchscore};
 }
 
 # Compare DNA4 results across SIMD capabilities

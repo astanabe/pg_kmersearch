@@ -77,7 +77,7 @@ int get_cached_actual_min_score_datum()     -> Split into int2/int4/int8 version
 ### Modified Cache Structures (kmersearch.h)
 
 ```c
-// Query pattern cache entry - store uintkeys instead of VarBit
+// query-kmer cache entry - store uintkeys instead of VarBit
 typedef struct QueryPatternCacheEntry {
     uint64 hash_key;
     char *query_string;
@@ -131,7 +131,7 @@ CREATE OPERATOR CLASS kmersearch_dna2_gin_ops_int2
 
 ### 4. Cache Management
 
-#### Query Pattern Cache
+#### query-kmer cache
 - Key: Query string hash
 - Value: Uintkey array (void* pointing to uint16/uint32/uint64 array)
 - No VarBit conversion needed

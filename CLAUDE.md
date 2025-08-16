@@ -143,11 +143,11 @@ This is particularly important when testing analysis functions and cache operati
 - `kmersearch.max_appearance_rate` (default: 0.5): Maximum appearance rate for high-frequency k-mer detection (0.0-1.0)
 - `kmersearch.max_appearance_nrow` (default: 0): Maximum number of rows for high-frequency k-mer detection (0 = unlimited)
 - `kmersearch.min_score` (default: 1): Minimum score threshold for search operations
-- `kmersearch.min_shared_ngram_key_rate` (default: 0.9): Minimum shared n-gram key rate for scoring (0.0-1.0)
+- `kmersearch.min_shared_kmer_rate` (default: 0.5): Minimum shared k-mer rate for scoring (0.0-1.0)
 - `kmersearch.preclude_highfreq_kmer` (default: false): Enable high-frequency k-mer filtering
 - `kmersearch.force_use_parallel_highfreq_kmer_cache` (default: false): Force parallel cache usage
 - `kmersearch.force_simd_capability` (default: -1): Force specific SIMD capability level (-1 = auto-detect)
-- `kmersearch.query_pattern_cache_max_entries` (default: 50000): Maximum cache entries for query patterns
+- `kmersearch.query_kmer_cache_max_entries` (default: 50000): Maximum cache entries for query patterns
 - `kmersearch.actual_min_score_cache_max_entries` (default: 50000): Maximum cache entries for minimum scores
 - `kmersearch.highfreq_kmer_cache_load_batch_size` (default: 10000): Batch size for loading high-frequency k-mers
 - `kmersearch.highfreq_analysis_batch_size` (default: 10000): Batch size for high-frequency k-mer analysis
@@ -155,19 +155,22 @@ This is particularly important when testing analysis functions and cache operati
 ### Core Functions
 - **Search Operators**: `=%` operator for k-mer based sequence search
 - **Scoring Functions**: 
-  - `kmersearch_rawscore()`: Calculate raw matching score
-  - `kmersearch_correctedscore()`: Calculate corrected score with degenerate base adjustments
+  - `kmersearch_matchscore()`: Calculate similarity score by counting shared k-mers
 - **Length Functions**: `bit_length()`, `nuc_length()`, `char_length()`, `length()`
 - **High-frequency Analysis**:
   - `kmersearch_perform_highfreq_analysis()`: Analyze and identify high-frequency k-mers
   - `kmersearch_undo_highfreq_analysis()`: Remove high-frequency k-mer analysis
 - **Cache Management**:
-  - `kmersearch_query_pattern_cache_stats()`: Query pattern cache statistics
-  - `kmersearch_query_pattern_cache_free()`: Clear query pattern cache
+  - `kmersearch_query_kmer_cache_stats()`: Query-kmer cache statistics
+  - `kmersearch_query_kmer_cache_free()`: Clear query-kmer cache
   - `kmersearch_actual_min_score_cache_stats()`: Minimum score cache statistics
   - `kmersearch_actual_min_score_cache_free()`: Clear minimum score cache
   - `kmersearch_highfreq_kmer_cache_load()`: Load high-frequency k-mers into cache
   - `kmersearch_highfreq_kmer_cache_free()`: Free high-frequency k-mer cache
+  - `kmersearch_highfreq_kmer_cache_free_all()`: Free all high-frequency k-mer cache entries
+  - `kmersearch_parallel_highfreq_kmer_cache_load()`: Load high-frequency k-mers into parallel dshash cache
+  - `kmersearch_parallel_highfreq_kmer_cache_free()`: Free specific entries from parallel cache
+  - `kmersearch_parallel_highfreq_kmer_cache_free_all()`: Free all entries from parallel cache
 
 ### System Tables
 - `kmersearch_highfreq_kmer`: Stores identified high-frequency k-mers

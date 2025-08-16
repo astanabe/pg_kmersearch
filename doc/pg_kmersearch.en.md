@@ -29,7 +29,7 @@ pg_kmersearch is a PostgreSQL extension that provides custom data types for effi
 - **Scoring search**: Retrieve matches by similarity score
 - **High-frequency k-mer filtering**: Optional exclusion of common k-mers
 - **Score-based filtering**: Minimum score thresholds for search quality control
-- **Score calculation functions**: `kmersearch_rawscore()` and `kmersearch_correctedscore()` for sequence scoring
+- **Score calculation functions**: `kmersearch_matchscore()` for sequence scoring
 - **High-frequency k-mer management**: Analysis and cache management functions
 - **Table partitioning**: Hash partitioning support for large databases
 
@@ -119,19 +119,19 @@ CREATE INDEX sequences_kmer_idx ON sequences USING gin (dna_seq);
 
 -- K-mer search using =% operator
 SELECT id, name, dna_seq,
-       kmersearch_rawscore(dna_seq, 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA') AS rawscore,
-       kmersearch_correctedscore(dna_seq, 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA') AS correctedscore
+       kmersearch_matchscore(dna_seq, 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA') AS matchscore,
+       kmersearch_matchscore(dna_seq, 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA') AS matchscore
 FROM sequences 
 WHERE dna_seq =% 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA'
-ORDER BY kmersearch_rawscore(dna_seq, 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA') DESC 
+ORDER BY kmersearch_matchscore(dna_seq, 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA') DESC 
 LIMIT 10;
 
 -- Search with degenerate codes in query
 SELECT id, name, dna_seq,
-       kmersearch_rawscore(dna_seq, 'ATCGATCGNNATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCG') AS rawscore
+       kmersearch_matchscore(dna_seq, 'ATCGATCGNNATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCG') AS matchscore
 FROM degenerate_sequences 
 WHERE dna_seq =% 'ATCGATCGNNATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCG'
-ORDER BY rawscore DESC 
+ORDER BY matchscore DESC 
 LIMIT 5;
 
 -- Configure occurrence bit length (default 8-bit)
@@ -153,8 +153,8 @@ pg_kmersearch provides several configuration variables that can be set using Pos
 | `kmersearch.max_appearance_rate` | 0.5 | 0.0-1.0 | Maximum k-mer appearance rate for indexing |
 | `kmersearch.max_appearance_nrow` | 0 | 0-∞ | Maximum rows containing k-mer (0=unlimited) |
 | `kmersearch.min_score` | 1 | 0-∞ | Minimum similarity score for search results |
-| `kmersearch.min_shared_ngram_key_rate` | 0.9 | 0.0-1.0 | Minimum threshold for shared n-gram key rate |
-| `kmersearch.query_pattern_cache_max_entries` | 50000 | 1000-10000000 | Maximum entries for query pattern cache |
+| `kmersearch.min_shared_kmer_rate` | 0.5 | 0.0-1.0 | Minimum threshold for shared k-mer rate |
+| `kmersearch.query_kmer_cache_max_entries` | 50000 | 1000-10000000 | Maximum entries for query-kmer cache |
 | `kmersearch.actual_min_score_cache_max_entries` | 50000 | 1000-10000000 | Maximum entries for actual min score cache |
 | `kmersearch.preclude_highfreq_kmer` | false | true/false | Enable high-frequency k-mer exclusion during GIN index construction |
 | `kmersearch.force_use_parallel_highfreq_kmer_cache` | false | true/false | Force use of dshash parallel cache for high-frequency k-mer lookups |
@@ -207,10 +207,10 @@ SHOW kmersearch.min_score;
 -- If query contains 3 excluded k-mers and min_score=50, 
 -- actual threshold becomes 47 for that query
 SELECT id, name, dna_seq,
-       kmersearch_rawscore(dna_seq, 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA') AS rawscore
+       kmersearch_matchscore(dna_seq, 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA') AS matchscore
 FROM sequences 
 WHERE dna_seq =% 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA'
-ORDER BY rawscore DESC LIMIT 10;
+ORDER BY matchscore DESC LIMIT 10;
 ```
 
 ### Score Calculation Functions
@@ -220,25 +220,25 @@ Retrieve match scores for individual sequences:
 ```sql
 -- Get raw scores for matched sequences
 SELECT id, name, dna_seq,
-       kmersearch_rawscore(dna_seq, 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA') AS rawscore
+       kmersearch_matchscore(dna_seq, 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA') AS matchscore
 FROM sequences 
 WHERE dna_seq =% 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA'
-ORDER BY rawscore DESC 
+ORDER BY matchscore DESC 
 LIMIT 10;
 
 -- Get corrected scores (accounting for excluded k-mers)
 SELECT id, name, dna_seq,
-       kmersearch_rawscore(dna_seq, 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA') AS raw_score,
-       kmersearch_correctedscore(dna_seq, 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA') AS corrected_score
+       kmersearch_matchscore(dna_seq, 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA') AS matchscore,
+       kmersearch_matchscore(dna_seq, 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA') AS match_score
 FROM sequences 
 WHERE dna_seq =% 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA'
 ORDER BY corrected_score DESC;
 
 -- Example with both DNA2 and DNA4 types
-SELECT 'DNA2' as type, id, kmersearch_rawscore(dna_seq, 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA') AS score
+SELECT 'DNA2' as type, id, kmersearch_matchscore(dna_seq, 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA') AS score
 FROM dna2_sequences WHERE dna_seq =% 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA'
 UNION ALL
-SELECT 'DNA4' as type, id, kmersearch_rawscore(dna_seq, 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA') AS score  
+SELECT 'DNA4' as type, id, kmersearch_matchscore(dna_seq, 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA') AS score  
 FROM dna4_sequences WHERE dna_seq =% 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA'
 ORDER BY score DESC;
 ```
@@ -546,21 +546,21 @@ SELECT kmersearch_parallel_highfreq_kmer_cache_free_all();
 
 ### Cache Statistics and Management
 
-#### Query Pattern Cache
+#### Query-kmer Cache
 
 ```sql
--- View query pattern cache statistics
-SELECT * FROM kmersearch_query_pattern_cache_stats();
+-- View query-kmer cache statistics
+SELECT * FROM kmersearch_query_kmer_cache_stats();
 
 -- Monitor cache efficiency
 SELECT hits, misses, current_entries, max_entries,
        CASE WHEN (hits + misses) > 0 
             THEN hits::float / (hits + misses)::float * 100
             ELSE 0 END as hit_rate_percent
-FROM kmersearch_query_pattern_cache_stats();
+FROM kmersearch_query_kmer_cache_stats();
 
--- Clear query pattern cache
-SELECT kmersearch_query_pattern_cache_free();
+-- Clear query-kmer cache
+SELECT kmersearch_query_kmer_cache_free();
 ```
 
 #### Actual Min Score Cache
@@ -603,7 +603,7 @@ SELECT kmersearch_highfreq_kmer_cache_load('sequences', 'dna_seq');
 SELECT kmersearch_parallel_highfreq_kmer_cache_load('sequences', 'dna_seq');
 
 -- 6. Perform searches
-SELECT id, name, kmersearch_rawscore(dna_seq, 'ATCGATCG') as score
+SELECT id, name, kmersearch_matchscore(dna_seq, 'ATCGATCG') as score
 FROM sequences 
 WHERE dna_seq =% 'ATCGATCG'
 ORDER BY score DESC;
@@ -704,14 +704,14 @@ pg_kmersearch provides two types of high-performance cache systems to improve se
 
 ### Actual Min Score Cache
 - **Purpose**: Optimization of search condition evaluation for the `=%` operator
-- **Mechanism**: Pre-calculates and caches `actual_min_score = max(kmersearch_min_score, ceil(kmersearch_min_shared_ngram_key_rate × query_total_kmers))`
+- **Mechanism**: Pre-calculates and caches `actual_min_score = max(kmersearch_min_score, ceil(kmersearch_min_shared_kmer_rate × query_total_kmers))`
 - **Use cases**: 
   - Matching condition evaluation in `=%` operator
   - Optimization of search condition evaluation
 - **Memory management**: TopMemoryContext-based implementation
 
-### Query Pattern Cache
-- **Purpose**: Performance improvement through query pattern reuse
+### Query-kmer Cache
+- **Purpose**: Performance improvement through query k-mer pattern reuse
 - **Memory management**: TopMemoryContext-based implementation
 
 ### Cache Statistics and Management Functions
@@ -719,16 +719,16 @@ pg_kmersearch provides two types of high-performance cache systems to improve se
 ```sql
 -- Check cache statistics
 SELECT * FROM kmersearch_actual_min_score_cache_stats();
-SELECT * FROM kmersearch_query_pattern_cache_stats();
+SELECT * FROM kmersearch_query_kmer_cache_stats();
 
 -- Clear caches
 SELECT kmersearch_actual_min_score_cache_free();
-SELECT kmersearch_query_pattern_cache_free();
+SELECT kmersearch_query_kmer_cache_free();
 SELECT kmersearch_highfreq_kmer_cache_free_all();
 
 -- Configure cache sizes
 SET kmersearch.actual_min_score_cache_max_entries = 25000;
-SET kmersearch.query_pattern_cache_max_entries = 25000;
+SET kmersearch.query_kmer_cache_max_entries = 25000;
 ```
 
 ## High-Frequency K-mer Hierarchical Cache System
@@ -801,7 +801,7 @@ SELECT kmersearch_parallel_highfreq_kmer_cache_load(
 -- High-speed search using cache hierarchy
 SELECT id, name FROM sequences 
 WHERE dna_seq =% 'ATCGATCG'
-ORDER BY kmersearch_rawscore(dna_seq, 'ATCGATCG') DESC;
+ORDER BY kmersearch_matchscore(dna_seq, 'ATCGATCG') DESC;
 
 -- Free caches
 SELECT kmersearch_highfreq_kmer_cache_free('sequences', 'dna_seq');

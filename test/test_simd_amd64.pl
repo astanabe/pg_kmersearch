@@ -793,20 +793,18 @@ sub test_gin_index_search {
                     
                     my $sth = $dbh->prepare("
                         SELECT id, 
-                               kmersearch_rawscore(seq, ?) as rawscore,
-                               kmersearch_correctedscore(seq, ?) as correctedscore
+                               kmersearch_matchscore(seq, ?) as matchscore
                         FROM $table_name
                         WHERE seq =% ?
                         ORDER BY id
                     ");
-                    $sth->execute($query, $query, $query);
+                    $sth->execute($query, $query);
                     
                     my @matches;
                     while (my $row = $sth->fetchrow_hashref()) {
                         push @matches, {
                             id => $row->{id},
-                            rawscore => $row->{rawscore},
-                            correctedscore => $row->{correctedscore}
+                            matchscore => $row->{matchscore}
                         };
                     }
                     $sth->finish();
@@ -825,8 +823,7 @@ sub test_gin_index_search {
             
             # Calculate summary statistics
             my $total_matches = 0;
-            my $total_rawscore = 0;
-            my $total_correctedscore = 0;
+            my $total_matchscore = 0;
             my $queries_with_matches = 0;
             
             foreach my $result (@all_results) {
@@ -834,8 +831,7 @@ sub test_gin_index_search {
                 $queries_with_matches++ if $result->{match_count} > 0;
                 
                 foreach my $match (@{$result->{matches}}) {
-                    $total_rawscore += $match->{rawscore};
-                    $total_correctedscore += $match->{correctedscore};
+                    $total_matchscore += $match->{matchscore};
                 }
             }
             
@@ -844,8 +840,7 @@ sub test_gin_index_search {
                 queries_with_matches => $queries_with_matches,
                 total_matches => $total_matches,
                 avg_matches_per_query => sprintf("%.2f", $total_matches / scalar(@all_results)),
-                total_rawscore => $total_rawscore,
-                total_correctedscore => $total_correctedscore,
+                total_matchscore => $total_matchscore,
                 results_sample => [@all_results[0..9]]
             };
         });
@@ -857,9 +852,9 @@ sub test_gin_index_search {
             printf "  Time: %.3fs, Total matches: %d, Queries with matches: %d/%d\n", 
                    $search_time, $search_result->{total_matches}, 
                    $search_result->{queries_with_matches}, $search_result->{query_count};
-            printf "  Avg matches/query: %s, Total rawscore: %d, Total correctedscore: %d\n\n",
+            printf "  Avg matches/query: %s, Total matchscore: %d\n\n",
                    $search_result->{avg_matches_per_query}, 
-                   $search_result->{total_rawscore}, $search_result->{total_correctedscore};
+                   $search_result->{total_matchscore};
         } else {
             printf "  Time: %.3fs, ERROR: Test failed\n\n", $search_time;
         }
@@ -876,13 +871,11 @@ sub test_gin_index_search {
             next unless $search;
             
             if ($search->{total_matches} != $base_search->{total_matches} ||
-                $search->{total_rawscore} != $base_search->{total_rawscore} ||
-                $search->{total_correctedscore} != $base_search->{total_correctedscore}) {
+                $search->{total_matchscore} != $base_search->{total_matchscore}) {
                 printf "  WARNING: Different search results for %s\n", $simd->{name};
-                printf "    Matches: %d vs %d, Rawscore: %d vs %d, Correctedscore: %d vs %d\n",
+                printf "    Matches: %d vs %d, Matchscore: %d vs %d\n",
                        $search->{total_matches}, $base_search->{total_matches},
-                       $search->{total_rawscore}, $base_search->{total_rawscore},
-                       $search->{total_correctedscore}, $base_search->{total_correctedscore};
+                       $search->{total_matchscore}, $base_search->{total_matchscore};
                 $search_consistent = 0;
             }
         }

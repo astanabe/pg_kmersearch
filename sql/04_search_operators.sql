@@ -10,8 +10,8 @@ SET kmersearch.max_appearance_rate = 0.5;
 SHOW kmersearch.max_appearance_rate;
 SET kmersearch.max_appearance_nrow = 0;
 SHOW kmersearch.max_appearance_nrow;
-SET kmersearch.min_shared_ngram_key_rate = 0.2;  -- Allow matches with 20% shared k-mers
-SHOW kmersearch.min_shared_ngram_key_rate;
+SET kmersearch.min_shared_kmer_rate = 0.2;  -- Allow matches with 20% shared k-mers
+SHOW kmersearch.min_shared_kmer_rate;
 
 -- Test k-mer search operators and functionality
 -- This test covers the =% operator and search functionality
@@ -87,10 +87,7 @@ SELECT id, name FROM test_dna4_sequences WHERE sequence =% 'NNATCG' ORDER BY id;
 SELECT id, name FROM test_dna4_sequences WHERE sequence =% 'ATCGNN' ORDER BY id;   -- contains N
 
 -- Test scoring functions with different patterns
-SELECT id, name, kmersearch_rawscore(sequence, 'ATCGATCG') as score 
-FROM test_dna2_sequences ORDER BY score DESC, id;
-
-SELECT id, name, kmersearch_correctedscore(sequence, 'ATCGATCG') as score
+SELECT id, name, kmersearch_matchscore(sequence, 'ATCGATCG') as score 
 FROM test_dna2_sequences ORDER BY score DESC, id;
 
 -- Clean up test tables

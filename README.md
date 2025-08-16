@@ -31,7 +31,7 @@ INSERT INTO sequences (name, dna) VALUES ('seq1', 'ATCGATCG');
 SELECT * FROM sequences WHERE dna =% 'ATCGATCG';
 
 -- Calculate similarity scores
-SELECT name, kmersearch_correctedscore(dna, 'ATCGATCG') AS score 
+SELECT name, kmersearch_matchscore(dna, 'ATCGATCG') AS score 
 FROM sequences ORDER BY score DESC;
 ```
 
@@ -55,19 +55,22 @@ FROM sequences ORDER BY score DESC;
 
 #### Search and Scoring
 - `=%` operator: K-mer based sequence search
-- `kmersearch_rawscore()`: Calculate raw matching score
-- `kmersearch_correctedscore()`: Calculate score with degenerate base adjustments
+- `kmersearch_matchscore()`: Calculate similarity score by counting shared k-mers
 
 #### High-frequency K-mer Management
 - `kmersearch_perform_highfreq_analysis()`: Analyze and identify high-frequency k-mers
 - `kmersearch_undo_highfreq_analysis()`: Remove analysis results
 - `kmersearch_highfreq_kmer_cache_load()`: Load high-frequency k-mers into cache
 - `kmersearch_highfreq_kmer_cache_free()`: Free cache memory
+- `kmersearch_highfreq_kmer_cache_free_all()`: Free all cache entries
+- `kmersearch_parallel_highfreq_kmer_cache_load()`: Load into parallel dshash cache
+- `kmersearch_parallel_highfreq_kmer_cache_free()`: Free from parallel cache
+- `kmersearch_parallel_highfreq_kmer_cache_free_all()`: Free all parallel cache entries
 
 #### Cache Management
-- `kmersearch_query_pattern_cache_stats()`: View query pattern cache statistics
+- `kmersearch_query_kmer_cache_stats()`: View query-kmer cache statistics
 - `kmersearch_actual_min_score_cache_stats()`: View minimum score cache statistics
-- `kmersearch_query_pattern_cache_free()`: Clear query pattern cache
+- `kmersearch_query_kmer_cache_free()`: Clear query-kmer cache
 - `kmersearch_actual_min_score_cache_free()`: Clear minimum score cache
 
 #### Utility Functions
@@ -82,10 +85,14 @@ FROM sequences ORDER BY score DESC;
 - `kmersearch.max_appearance_rate` (default: 0.5): Max appearance rate threshold (0.0-1.0)
 - `kmersearch.max_appearance_nrow` (default: 0): Max rows threshold (0 = unlimited)
 - `kmersearch.min_score` (default: 1): Minimum score for search results
-- `kmersearch.min_shared_ngram_key_rate` (default: 0.9): Min shared n-gram rate (0.0-1.0)
+- `kmersearch.min_shared_kmer_rate` (default: 0.5): Min shared k-mer rate (0.0-1.0)
 - `kmersearch.preclude_highfreq_kmer` (default: false): Enable high-frequency filtering
-- `kmersearch.query_pattern_cache_max_entries` (default: 50000): Query cache size
+- `kmersearch.force_use_parallel_highfreq_kmer_cache` (default: false): Force parallel cache usage
+- `kmersearch.force_simd_capability` (default: -1): Force specific SIMD capability level
+- `kmersearch.query_kmer_cache_max_entries` (default: 50000): Query cache size
 - `kmersearch.actual_min_score_cache_max_entries` (default: 50000): Score cache size
+- `kmersearch.highfreq_kmer_cache_load_batch_size` (default: 10000): Batch size for loading high-frequency k-mers
+- `kmersearch.highfreq_analysis_batch_size` (default: 10000): Batch size for high-frequency k-mer analysis
 
 ### System Tables and Views
 

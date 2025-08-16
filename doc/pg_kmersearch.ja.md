@@ -29,7 +29,7 @@ pg_kmersearchは、PostgreSQL用のDNA配列データを効率的に格納・処
 - **スコアリング検索**: 類似度スコアによるマッチ取得
 - **高頻出k-merフィルタリング**: 一般的なk-merのオプション除外
 - **スコアベースフィルタリング**: 検索品質制御のための最小スコア閾値
-- **スコア計算関数**: 配列スコアリング用の`kmersearch_rawscore()`と`kmersearch_correctedscore()`
+- **スコア計算関数**: 配列スコアリング用の`kmersearch_matchscore()`
 - **高頻出k-mer管理**: 解析とキャッシュ管理関数
 - **テーブルパーティション化**: 大規模データベース用のハッシュパーティション化サポート
 
@@ -119,19 +119,19 @@ CREATE INDEX sequences_kmer_idx ON sequences USING gin (dna_seq);
 
 -- k-mer検索（=%演算子を使用）
 SELECT id, name, dna_seq,
-       kmersearch_rawscore(dna_seq, 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA') AS rawscore,
-       kmersearch_correctedscore(dna_seq, 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA') AS correctedscore
+       kmersearch_matchscore(dna_seq, 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA') AS matchscore,
+       kmersearch_matchscore(dna_seq, 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA') AS matchscore
 FROM sequences 
 WHERE dna_seq =% 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA'
-ORDER BY kmersearch_rawscore(dna_seq, 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA') DESC 
+ORDER BY kmersearch_matchscore(dna_seq, 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA') DESC 
 LIMIT 10;
 
 -- 縮重コードを含むクエリでの検索
 SELECT id, name, dna_seq,
-       kmersearch_rawscore(dna_seq, 'ATCGATCGNNATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCG') AS rawscore
+       kmersearch_matchscore(dna_seq, 'ATCGATCGNNATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCG') AS matchscore
 FROM degenerate_sequences 
 WHERE dna_seq =% 'ATCGATCGNNATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCG'
-ORDER BY rawscore DESC 
+ORDER BY matchscore DESC 
 LIMIT 5;
 
 -- 出現回数ビット長の設定（デフォルト8ビット）
@@ -153,8 +153,8 @@ pg_kmersearchは、PostgreSQLの`SET`コマンドで設定可能な複数の設�
 | `kmersearch.max_appearance_rate` | 0.5 | 0.0-1.0 | インデックス化するk-merの最大出現率 |
 | `kmersearch.max_appearance_nrow` | 0 | 0-∞ | k-merが含まれる最大行数（0=無制限） |
 | `kmersearch.min_score` | 1 | 0-∞ | 検索結果の最小類似度スコア |
-| `kmersearch.min_shared_ngram_key_rate` | 0.9 | 0.0-1.0 | 共有n-gramキー率の最小閾値 |
-| `kmersearch.query_pattern_cache_max_entries` | 50000 | 1000-10000000 | クエリパターンキャッシュの最大エントリ数 |
+| `kmersearch.min_shared_kmer_rate` | 0.5 | 0.0-1.0 | 共有k-mer率の最小閾値 |
+| `kmersearch.query_kmer_cache_max_entries` | 50000 | 1000-10000000 | クエリパターンキャッシュの最大エントリ数 |
 | `kmersearch.actual_min_score_cache_max_entries` | 50000 | 1000-10000000 | actual min scoreキャッシュの最大エントリ数 |
 | `kmersearch.preclude_highfreq_kmer` | false | true/false | GINインデックス構築時の高頻出k-mer除外の有効化 |
 | `kmersearch.force_use_parallel_highfreq_kmer_cache` | false | true/false | 高頻出k-mer検索での並列dshashキャッシュの強制使用 |
@@ -207,10 +207,10 @@ SHOW kmersearch.min_score;
 -- クエリに除外k-merが3個含まれ、min_score=50の場合、
 -- そのクエリでは実際の閾値は47に調整される
 SELECT id, name, dna_seq,
-       kmersearch_rawscore(dna_seq, 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA') AS rawscore
+       kmersearch_matchscore(dna_seq, 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA') AS matchscore
 FROM sequences 
 WHERE dna_seq =% 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA'
-ORDER BY rawscore DESC LIMIT 10;
+ORDER BY matchscore DESC LIMIT 10;
 ```
 
 ### スコア計算関数
@@ -220,25 +220,25 @@ ORDER BY rawscore DESC LIMIT 10;
 ```sql
 -- マッチした配列の生スコアを取得
 SELECT id, name, dna_seq,
-       kmersearch_rawscore(dna_seq, 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA') AS rawscore
+       kmersearch_matchscore(dna_seq, 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA') AS matchscore
 FROM sequences 
 WHERE dna_seq =% 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA'
-ORDER BY rawscore DESC 
+ORDER BY matchscore DESC 
 LIMIT 10;
 
 -- 修正スコア（除外k-merを考慮）を取得
 SELECT id, name, dna_seq,
-       kmersearch_rawscore(dna_seq, 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA') AS raw_score,
-       kmersearch_correctedscore(dna_seq, 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA') AS corrected_score
+       kmersearch_matchscore(dna_seq, 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA') AS matchscore,
+       kmersearch_matchscore(dna_seq, 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA') AS match_score
 FROM sequences 
 WHERE dna_seq =% 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA'
 ORDER BY corrected_score DESC;
 
 -- DNA2型とDNA4型両方の例
-SELECT 'DNA2' as type, id, kmersearch_rawscore(dna_seq, 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA') AS score
+SELECT 'DNA2' as type, id, kmersearch_matchscore(dna_seq, 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA') AS score
 FROM dna2_sequences WHERE dna_seq =% 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA'
 UNION ALL
-SELECT 'DNA4' as type, id, kmersearch_rawscore(dna_seq, 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA') AS score  
+SELECT 'DNA4' as type, id, kmersearch_matchscore(dna_seq, 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA') AS score  
 FROM dna4_sequences WHERE dna_seq =% 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA'
 ORDER BY score DESC;
 ```
@@ -549,17 +549,17 @@ SELECT kmersearch_parallel_highfreq_kmer_cache_free_all();
 
 ```sql
 -- クエリパターンキャッシュ統計を表示
-SELECT * FROM kmersearch_query_pattern_cache_stats();
+SELECT * FROM kmersearch_query_kmer_cache_stats();
 
 -- キャッシュ効率を監視
 SELECT hits, misses, current_entries, max_entries,
        CASE WHEN (hits + misses) > 0 
             THEN hits::float / (hits + misses)::float * 100
             ELSE 0 END as hit_rate_percent
-FROM kmersearch_query_pattern_cache_stats();
+FROM kmersearch_query_kmer_cache_stats();
 
 -- クエリパターンキャッシュをクリア
-SELECT kmersearch_query_pattern_cache_free();
+SELECT kmersearch_query_kmer_cache_free();
 ```
 
 #### Actual Min Scoreキャッシュ
@@ -602,7 +602,7 @@ SELECT kmersearch_highfreq_kmer_cache_load('sequences', 'dna_seq');
 SELECT kmersearch_parallel_highfreq_kmer_cache_load('sequences', 'dna_seq');
 
 -- 6. 検索を実行
-SELECT id, name, kmersearch_rawscore(dna_seq, 'ATCGATCG') as score
+SELECT id, name, kmersearch_matchscore(dna_seq, 'ATCGATCG') as score
 FROM sequences 
 WHERE dna_seq =% 'ATCGATCG'
 ORDER BY score DESC;
@@ -703,18 +703,13 @@ pg_kmersearchは、検索性能を向上させるための2種類の高速キャ
 
 ### Actual Min Score Cache
 - **目的**: `=%`演算子での検索条件評価の最適化
-- **仕組み**: `actual_min_score = max(kmersearch_min_score, ceil(kmersearch_min_shared_ngram_key_rate × query_total_kmers))`を事前計算してキャッシュ
+- **仕組み**: `actual_min_score = max(kmersearch_min_score, ceil(kmersearch_min_shared_kmer_rate × query_total_kmers))`を事前計算してキャッシュ
 - **使用場面**: 
   - `=%`演算子でのマッチング条件判定
-  - rawscore cacheへの格納価値判定
+  - matchscore cacheへの格納価値判定
 - **メモリ管理**: TopMemoryContext-based実装
 
-### Rawscore Cache
-- **目的**: 計算済みrawscoreの高速取得
-- **仕組み**: 配列とクエリの組み合わせ結果をキャッシュ
-- **メモリ管理**: TopMemoryContext-based実装
-
-### Query Pattern Cache
+### Query-kmer Cache
 - **目的**: クエリパターンの再利用による高速化
 - **メモリ管理**: TopMemoryContext-based実装
 
@@ -723,16 +718,16 @@ pg_kmersearchは、検索性能を向上させるための2種類の高速キャ
 ```sql
 -- キャッシュ統計情報の確認
 SELECT * FROM kmersearch_actual_min_score_cache_stats();
-SELECT * FROM kmersearch_query_pattern_cache_stats();
+SELECT * FROM kmersearch_query_kmer_cache_stats();
 
 -- キャッシュクリア
 SELECT kmersearch_actual_min_score_cache_free();
-SELECT kmersearch_query_pattern_cache_free();
+SELECT kmersearch_query_kmer_cache_free();
 SELECT kmersearch_highfreq_kmer_cache_free_all();
 
 -- キャッシュサイズ設定
 SET kmersearch.actual_min_score_cache_max_entries = 25000;
-SET kmersearch.query_pattern_cache_max_entries = 25000;
+SET kmersearch.query_kmer_cache_max_entries = 25000;
 ```
 
 ## 高頻出k-mer階層キャッシュシステム
@@ -805,7 +800,7 @@ SELECT kmersearch_parallel_highfreq_kmer_cache_load(
 -- キャッシュ階層を使用した高速検索
 SELECT id, name FROM sequences 
 WHERE dna_seq =% 'ATCGATCG'
-ORDER BY kmersearch_rawscore(dna_seq, 'ATCGATCG') DESC;
+ORDER BY kmersearch_matchscore(dna_seq, 'ATCGATCG') DESC;
 
 -- キャッシュの解放
 SELECT kmersearch_highfreq_kmer_cache_free('sequences', 'dna_seq');
