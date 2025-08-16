@@ -41,9 +41,7 @@ static void check_operator_class_compatibility(const char *opclass_type);
 static void
 check_operator_class_compatibility(const char *opclass_type)
 {
-    int k_size = kmersearch_kmer_size;
-    int occur_bitlen = kmersearch_occur_bitlen;
-    int total_bits = k_size * 2 + occur_bitlen;
+    int total_bits = kmersearch_kmer_size * 2 + kmersearch_occur_bitlen;
     int storage_bits;
     const char *optimal_type;
     
@@ -72,7 +70,7 @@ check_operator_class_compatibility(const char *opclass_type)
                 (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
                  errmsg("operator class kmersearch_*_gin_ops_%s cannot store current configuration", opclass_type),
                  errdetail("Required bits: %d (kmer_size=%d * 2 + occur_bitlen=%d), Storage capacity: %d bits",
-                          total_bits, k_size, occur_bitlen, storage_bits),
+                          total_bits, kmersearch_kmer_size, kmersearch_occur_bitlen, storage_bits),
                  errhint("Use kmersearch_*_gin_ops_%s operator class for this configuration", optimal_type)));
     }
     
@@ -83,7 +81,7 @@ check_operator_class_compatibility(const char *opclass_type)
                 (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
                  errmsg("operator class kmersearch_*_gin_ops_%s is not optimal for current configuration", opclass_type),
                  errdetail("Current configuration requires %d bits (kmer_size=%d * 2 + occur_bitlen=%d)",
-                          total_bits, k_size, occur_bitlen),
+                          total_bits, kmersearch_kmer_size, kmersearch_occur_bitlen),
                  errhint("Use kmersearch_*_gin_ops_%s operator class for optimal performance and memory usage", optimal_type)));
     }
 }

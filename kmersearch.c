@@ -1805,10 +1805,9 @@ kmersearch_dna2_match(PG_FUNCTION_ARGS)
     int shared_count = 0;
     int actual_min_score;
     bool match = false;
-    int k_size = kmersearch_kmer_size;
     
     /* Extract uintkeys from query using cache */
-    query_uintkey = get_cached_query_uintkey(pattern_string, k_size, &query_nkeys);
+    query_uintkey = get_cached_query_uintkey(pattern_string, kmersearch_kmer_size, &query_nkeys);
     
     if (query_uintkey != NULL && query_nkeys > 0) {
         /* Extract uintkeys from DNA2 sequence */
@@ -1817,12 +1816,12 @@ kmersearch_dna2_match(PG_FUNCTION_ARGS)
         if (seq_uintkey != NULL && seq_nkeys > 0) {
             /* Count shared k-mers using optimized function */
             shared_count = kmersearch_count_matching_uintkey(seq_uintkey, seq_nkeys, 
-                                                            query_uintkey, query_nkeys, k_size);
+                                                            query_uintkey, query_nkeys, kmersearch_kmer_size);
             pfree(seq_uintkey);
         }
         
         /* Get cached actual min score */
-        actual_min_score = get_cached_actual_min_score_uintkey(query_uintkey, query_nkeys, k_size);
+        actual_min_score = get_cached_actual_min_score_uintkey(query_uintkey, query_nkeys, kmersearch_kmer_size);
         
         /* Evaluate match condition */
         match = (shared_count >= actual_min_score);
@@ -1850,10 +1849,9 @@ kmersearch_dna4_match(PG_FUNCTION_ARGS)
     int shared_count = 0;
     int actual_min_score;
     bool match = false;
-    int k_size = kmersearch_kmer_size;
     
     /* Extract uintkeys from query using cache */
-    query_uintkey = get_cached_query_uintkey(pattern_string, k_size, &query_nkeys);
+    query_uintkey = get_cached_query_uintkey(pattern_string, kmersearch_kmer_size, &query_nkeys);
     
     if (query_uintkey != NULL && query_nkeys > 0) {
         /* Extract uintkeys from DNA4 sequence (with degenerate expansion) */
@@ -1862,12 +1860,12 @@ kmersearch_dna4_match(PG_FUNCTION_ARGS)
         if (seq_uintkey != NULL && seq_nkeys > 0) {
             /* Count shared k-mers using optimized function */
             shared_count = kmersearch_count_matching_uintkey(seq_uintkey, seq_nkeys, 
-                                                            query_uintkey, query_nkeys, k_size);
+                                                            query_uintkey, query_nkeys, kmersearch_kmer_size);
             pfree(seq_uintkey);
         }
         
         /* Get cached actual min score */
-        actual_min_score = get_cached_actual_min_score_uintkey(query_uintkey, query_nkeys, k_size);
+        actual_min_score = get_cached_actual_min_score_uintkey(query_uintkey, query_nkeys, kmersearch_kmer_size);
         
         /* Evaluate match condition */
         match = (shared_count >= actual_min_score);
@@ -1898,7 +1896,6 @@ kmersearch_correctedscore_dna2(PG_FUNCTION_ARGS)
     int query_nkeys = 0;
     int seq_nkeys = 0;
     int shared_count = 0;
-    int k_size = kmersearch_kmer_size;
     
     query_string = text_to_cstring(query_text);
     
@@ -1906,12 +1903,12 @@ kmersearch_correctedscore_dna2(PG_FUNCTION_ARGS)
     kmersearch_extract_uintkey_from_dna2(sequence, &seq_uintkey, &seq_nkeys);
     
     /* Extract uintkeys from query using cache */
-    query_uintkey = get_cached_query_uintkey(query_string, k_size, &query_nkeys);
+    query_uintkey = get_cached_query_uintkey(query_string, kmersearch_kmer_size, &query_nkeys);
     
     /* Count shared k-mers using optimized function */
     if (seq_uintkey && query_uintkey && seq_nkeys > 0 && query_nkeys > 0) {
         shared_count = kmersearch_count_matching_uintkey(seq_uintkey, seq_nkeys,
-                                                        query_uintkey, query_nkeys, k_size);
+                                                        query_uintkey, query_nkeys, kmersearch_kmer_size);
     }
     
     /* Cleanup */
@@ -1947,7 +1944,7 @@ kmersearch_correctedscore_dna4(PG_FUNCTION_ARGS)
     /* Count shared k-mers using optimized function */
     if (seq_uintkey && query_uintkey && seq_nkeys > 0 && query_nkeys > 0) {
         shared_count = kmersearch_count_matching_uintkey(seq_uintkey, seq_nkeys,
-                                                        query_uintkey, query_nkeys, k_size);
+                                                        query_uintkey, query_nkeys, kmersearch_kmer_size);
     }
     
     /* Cleanup */
