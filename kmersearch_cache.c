@@ -2299,6 +2299,7 @@ kmersearch_lookup_uintkey_in_parallel_cache(uint64 uintkey, const char *table_na
     uint32 key32;
     uint64 key64;
     int k_value;
+    int total_bits;
     
     if (!parallel_highfreq_cache || !parallel_highfreq_cache->is_initialized || 
         parallel_highfreq_cache->num_entries == 0)
@@ -2310,11 +2311,14 @@ kmersearch_lookup_uintkey_in_parallel_cache(uint64 uintkey, const char *table_na
     /* Get k-mer size from cache */
     k_value = parallel_highfreq_cache->cache_key.kmer_size;
     
-    /* Prepare key based on k-mer size */
-    if (k_value <= 8) {
+    /* Calculate total bits needed for type selection */
+    total_bits = k_value * 2 + kmersearch_occur_bitlen;
+    
+    /* Prepare key based on total bits */
+    if (total_bits <= 16) {
         key16 = (uint16)uintkey;
         key_ptr = &key16;
-    } else if (k_value <= 16) {
+    } else if (total_bits <= 32) {
         key32 = (uint32)uintkey;
         key_ptr = &key32;
     } else {
