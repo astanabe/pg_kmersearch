@@ -202,6 +202,9 @@ store_query_kmer_cache_entry(QueryKmerCacheManager *manager, uint64 hash_key,
     MemoryContext old_context;
     bool found;
     size_t uintkey_size;
+    int total_bits;
+    
+    total_bits = k_size * 2 + kmersearch_occur_bitlen;
     
     /* Evict oldest entries if cache is full */
     while (manager->current_entries >= manager->max_entries)
@@ -218,10 +221,10 @@ store_query_kmer_cache_entry(QueryKmerCacheManager *manager, uint64 hash_key,
         entry->kmer_size = k_size;
         entry->kmer_count = kmer_count;
         
-        /* Determine size of uintkey array based on k_size */
-        if (k_size <= 8)
+        /* Determine size of uintkey array based on total_bits */
+        if (total_bits <= 16)
             uintkey_size = kmer_count * sizeof(uint16);
-        else if (k_size <= 16)
+        else if (total_bits <= 32)
             uintkey_size = kmer_count * sizeof(uint32);
         else
             uintkey_size = kmer_count * sizeof(uint64);
@@ -376,6 +379,9 @@ calculate_actual_min_score_from_uintkey(void *uintkey, int nkeys, int k_size)
     int actual_min_score;
     int relative_min = 0;
     int query_total_kmers = nkeys;
+    int total_bits;
+    
+    total_bits = k_size * 2 + kmersearch_occur_bitlen;
     
     /* Calculate base minimum score (maximum of absolute and relative) */
     if (query_total_kmers > 0)
@@ -389,7 +395,7 @@ calculate_actual_min_score_from_uintkey(void *uintkey, int nkeys, int k_size)
     if (kmersearch_is_highfreq_filtering_enabled())
     {
         /* Count high-frequency k-mers */
-        if (k_size <= 8)
+        if (total_bits <= 16)
         {
             uint16 *keys = (uint16 *)uintkey;
             for (int i = 0; i < nkeys; i++)
@@ -398,7 +404,7 @@ calculate_actual_min_score_from_uintkey(void *uintkey, int nkeys, int k_size)
                     highfreq_count++;
             }
         }
-        else if (k_size <= 16)
+        else if (total_bits <= 32)
         {
             uint32 *keys = (uint32 *)uintkey;
             for (int i = 0; i < nkeys; i++)
@@ -443,6 +449,9 @@ kmersearch_get_cached_actual_min_score_uintkey(void *uintkey, int nkeys, int k_s
     ActualMinScoreCacheEntry *cache_entry;
     uint64 query_hash = 0;
     MemoryContext old_context;
+    int total_bits;
+    
+    total_bits = k_size * 2 + kmersearch_occur_bitlen;
     
     /* Initialize cache manager if needed */
     if (actual_min_score_cache_manager == NULL)
@@ -452,14 +461,14 @@ kmersearch_get_cached_actual_min_score_uintkey(void *uintkey, int nkeys, int k_s
         MemoryContextSwitchTo(old_context);
     }
     
-    /* Calculate hash based on k_size to determine uintkey type */
-    if (k_size <= 8)
+    /* Calculate hash based on total_bits to determine uintkey type */
+    if (total_bits <= 16)
     {
         uint16 *keys = (uint16 *)uintkey;
         for (int i = 0; i < nkeys; i++)
             query_hash = query_hash * 31 + keys[i];
     }
-    else if (k_size <= 16)
+    else if (total_bits <= 32)
     {
         uint32 *keys = (uint32 *)uintkey;
         for (int i = 0; i < nkeys; i++)
@@ -2164,6 +2173,7 @@ kmersearch_parallel_cache_attach(dsm_handle handle)
     Size cache_struct_size;
     char *dsa_start;
     bool success;
+    int total_bits;
     
     /* Use TopMemoryContext for persistent dshash objects */
     oldcontext = MemoryContextSwitchTo(TopMemoryContext);
@@ -2183,20 +2193,27 @@ kmersearch_parallel_cache_attach(dsm_handle handle)
         return false;
     }
     
-    /* Set up dshash parameters based on k-mer size from cache */
+    /* Set up dshash parameters based on total_bits from cache */
+    /* Calculate total bits to determine key type */
+    total_bits = parallel_highfreq_cache->cache_key.kmer_size * 2 + 
+                 parallel_highfreq_cache->cache_key.occur_bitlen;
+    
     memset(&params, 0, sizeof(params));
     params.compare_function = dshash_memcmp;
     params.tranche_id = LWTRANCHE_KMERSEARCH_CACHE;
     
-    if (parallel_highfreq_cache->cache_key.kmer_size <= 8) {
+    if (total_bits <= 16) {
+        /* Use uint16 for keys when total_bits <= 16 */
         params.key_size = sizeof(uint16);
         params.entry_size = sizeof(ParallelHighfreqKmerCacheEntry16);
         params.hash_function = kmersearch_uint16_identity_hash;
-    } else if (parallel_highfreq_cache->cache_key.kmer_size <= 16) {
+    } else if (total_bits <= 32) {
+        /* Use uint32 for keys when total_bits <= 32 */
         params.key_size = sizeof(uint32);
         params.entry_size = sizeof(ParallelHighfreqKmerCacheEntry32);
         params.hash_function = kmersearch_uint32_identity_hash;
     } else {
+        /* Use uint64 for keys when total_bits <= 64 */
         params.key_size = sizeof(uint64);
         params.entry_size = sizeof(ParallelHighfreqKmerCacheEntry64);
         params.hash_function = dshash_memhash;

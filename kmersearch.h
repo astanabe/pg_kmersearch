@@ -274,6 +274,7 @@ typedef struct KmerAnalysisSharedState
     AttrNumber  column_attnum;            /* Target column attnum */
     Oid         column_type_oid;          /* Target column data type OID */
     int         kmer_size;                /* K-mer size (kmersearch_kmer_size) */
+    int         occur_bitlen;             /* Occurrence bit length (kmersearch_occur_bitlen) */
     int         batch_size;               /* Batch size (kmersearch_highfreq_analysis_batch_size) */
     bool        all_processed;            /* All rows processed flag */
     BlockNumber next_block;               /* Next block number to process */

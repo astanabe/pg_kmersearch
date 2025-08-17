@@ -32,7 +32,10 @@ WHERE c.oid = 'test_sequences'::regclass;
 SET client_min_messages = NOTICE;
 \set VERBOSITY terse
 SELECT kmersearch_partition_table('test_sequences', 4);
+INFO:  Starting partition table data migration: 8 rows to migrate in batches of 16384
+INFO:  Migration completed: 100% (8 / 8 rows migrated)
 NOTICE:  drop cascades to 5 other objects
+INFO:  Partition table creation completed successfully for table 'test_sequences' with 4 partitions
  kmersearch_partition_table 
 ----------------------------
  
@@ -109,7 +112,10 @@ INSERT INTO test_sequences_dna4 (sequence) VALUES
 SET client_min_messages = NOTICE;
 \set VERBOSITY terse
 SELECT kmersearch_partition_table('test_sequences_dna4', 2);
+INFO:  Starting partition table data migration: 4 rows to migrate in batches of 16384
+INFO:  Migration completed: 100% (4 / 4 rows migrated)
 NOTICE:  drop cascades to 3 other objects
+INFO:  Partition table creation completed successfully for table 'test_sequences_dna4' with 2 partitions
  kmersearch_partition_table 
 ----------------------------
  
@@ -153,7 +159,10 @@ INSERT INTO test_tablespace_table (sequence) VALUES
 SET client_min_messages = NOTICE;
 \set VERBOSITY terse
 SELECT kmersearch_partition_table('test_tablespace_table', 2);
+INFO:  Starting partition table data migration: 2 rows to migrate in batches of 16384
+INFO:  Migration completed: 100% (2 / 2 rows migrated)
 NOTICE:  drop cascades to 3 other objects
+INFO:  Partition table creation completed successfully for table 'test_tablespace_table' with 2 partitions
  kmersearch_partition_table 
 ----------------------------
  
@@ -183,6 +192,9 @@ INSERT INTO test_null_tablespace (sequence) VALUES
     ('GCTAGCTAGCTAGCTA');
 -- Convert to partitioned table with NULL tablespace
 SELECT kmersearch_partition_table('test_null_tablespace', 2, NULL);
+INFO:  Starting partition table data migration: 2 rows to migrate in batches of 16384
+INFO:  Migration completed: 100% (2 / 2 rows migrated)
+INFO:  Partition table creation completed successfully for table 'test_null_tablespace' with 2 partitions
  kmersearch_partition_table 
 ----------------------------
  
@@ -231,6 +243,9 @@ INSERT INTO test_highfreq_partitioned (sequence)
 SELECT sequence FROM test_highfreq_regular ORDER BY id;
 -- Convert the second table to partitioned with 4 partitions
 SELECT kmersearch_partition_table('test_highfreq_partitioned', 4);
+INFO:  Starting partition table data migration: 100 rows to migrate in batches of 16384
+INFO:  Migration completed: 100% (100 / 100 rows migrated)
+INFO:  Partition table creation completed successfully for table 'test_highfreq_partitioned' with 4 partitions
  kmersearch_partition_table 
 ----------------------------
  

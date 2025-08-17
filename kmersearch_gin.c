@@ -274,12 +274,15 @@ kmersearch_filter_uintkey_and_set_actual_min_score(void *uintkey, int *nkeys,
     int filtered_count = 0;
     int i;
     bool has_highfreq = false;
+    int total_bits;
+    
+    total_bits = k_size * 2 + kmersearch_occur_bitlen;
     
     if (!kmersearch_preclude_highfreq_kmer || uintkey == NULL || *nkeys == 0)
         return uintkey;
     
     /* First pass: check if there are any high-frequency k-mers */
-    if (k_size <= 8)
+    if (total_bits <= 16)
     {
         uint16 *keys = (uint16 *)uintkey;
         for (i = 0; i < *nkeys; i++)
@@ -291,7 +294,7 @@ kmersearch_filter_uintkey_and_set_actual_min_score(void *uintkey, int *nkeys,
             }
         }
     }
-    else if (k_size <= 16)
+    else if (total_bits <= 32)
     {
         uint32 *keys = (uint32 *)uintkey;
         for (i = 0; i < *nkeys; i++)
@@ -324,7 +327,7 @@ kmersearch_filter_uintkey_and_set_actual_min_score(void *uintkey, int *nkeys,
     }
     
     /* Allocate new array for filtered keys */
-    if (k_size <= 8)
+    if (total_bits <= 16)
     {
         uint16 *original = (uint16 *)uintkey;
         uint16 *filtered = (uint16 *)palloc(*nkeys * sizeof(uint16));
@@ -344,7 +347,7 @@ kmersearch_filter_uintkey_and_set_actual_min_score(void *uintkey, int *nkeys,
             pfree(filtered);
         }
     }
-    else if (k_size <= 16)
+    else if (total_bits <= 32)
     {
         uint32 *original = (uint32 *)uintkey;
         uint32 *filtered = (uint32 *)palloc(*nkeys * sizeof(uint32));
@@ -404,6 +407,9 @@ kmersearch_is_uintkey_highfreq(uint64 uintkey, int k_size)
     uint64 kmer_only;
     bool is_highfreq = false;
     int ret;
+    int total_bits;
+    
+    total_bits = k_size * 2 + kmersearch_occur_bitlen;
     
     /* For uintkey format, k-mer is in higher bits, occurrence in lower bits */
     kmer_only = uintkey >> kmersearch_occur_bitlen;
@@ -425,14 +431,14 @@ kmersearch_is_uintkey_highfreq(uint64 uintkey, int k_size)
         
         initStringInfo(&query);
         
-        /* Build query based on k-mer size */
-        if (k_size <= 8) {
+        /* Build query based on total_bits */
+        if (total_bits <= 16) {
             appendStringInfo(&query,
                 "SELECT 1 FROM kmersearch_highfreq_kmer "
                 "WHERE uintkey = %u "
                 "LIMIT 1",
                 (unsigned int)kmer_only);
-        } else if (k_size <= 16) {
+        } else if (total_bits <= 32) {
             appendStringInfo(&query,
                 "SELECT 1 FROM kmersearch_highfreq_kmer "
                 "WHERE uintkey = %u "

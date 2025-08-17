@@ -962,18 +962,21 @@ kmersearch_count_matching_uintkey_scalar(void *seq_keys, int seq_nkeys, void *qu
     HTAB *query_hash;
     HASHCTL hash_ctl;
     bool found;
+    int total_bits;
     
     if (seq_nkeys == 0 || query_nkeys == 0)
         return 0;
     
+    total_bits = k_size * 2 + kmersearch_occur_bitlen;
+    
     /* Use hash table for O(n+m) performance */
     memset(&hash_ctl, 0, sizeof(hash_ctl));
     
-    if (k_size <= 8) {
+    if (total_bits <= 16) {
         hash_ctl.keysize = sizeof(uint16);
         hash_ctl.entrysize = sizeof(uint16);
     }
-    else if (k_size <= 16) {
+    else if (total_bits <= 32) {
         hash_ctl.keysize = sizeof(uint32);
         hash_ctl.entrysize = sizeof(uint32);
     }
@@ -987,7 +990,7 @@ kmersearch_count_matching_uintkey_scalar(void *seq_keys, int seq_nkeys, void *qu
                             HASH_ELEM | HASH_FUNCTION | HASH_BLOBS);
     
     /* Insert all query uintkeys into hash table */
-    if (k_size <= 8) {
+    if (total_bits <= 16) {
         uint16 *query = (uint16 *)query_keys;
         uint16 *seq;
         
@@ -1003,7 +1006,7 @@ kmersearch_count_matching_uintkey_scalar(void *seq_keys, int seq_nkeys, void *qu
             }
         }
     }
-    else if (k_size <= 16) {
+    else if (total_bits <= 32) {
         uint32 *query = (uint32 *)query_keys;
         uint32 *seq;
         

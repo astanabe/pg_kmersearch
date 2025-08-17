@@ -14,6 +14,10 @@ include $(PGXS)
 override CPPFLAGS += -Wno-unused-variable -Wno-unused-function -std=c99
 override CFLAGS := $(filter-out -Werror=vla, $(CFLAGS))
 
+# Debug build settings (uncomment for debugging)
+# override CPPFLAGS += -g3 -O0 -fno-omit-frame-pointer -DDEBUG -ggdb
+# override CFLAGS += -g3 -O0 -fno-omit-frame-pointer
+
 # SIMD Optimization Support
 # To enable SIMD optimizations for DNA comparison functions, uncomment the
 # appropriate lines below based on your target CPU architecture:
