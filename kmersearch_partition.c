@@ -106,6 +106,11 @@ kmersearch_partition_table(PG_FUNCTION_ARGS)
         /* Preserve high-frequency k-mer analysis if exists */
         preserve_highfreq_analysis(table_oid, table_name);
         
+        /* Report successful completion */
+        ereport(INFO,
+                (errmsg("Partition table creation completed successfully for table '%s' with %d partitions",
+                        table_name, partition_count)));
+        
         SPI_finish();
     }
     PG_CATCH();
@@ -447,6 +452,11 @@ migrate_data_in_batches(const char *table_name, const char *temp_table_name, Oid
             total_rows = DatumGetInt64(count_datum);
     }
     
+    /* Report start of migration */
+    ereport(INFO,
+            (errmsg("Starting partition table data migration: %lu rows to migrate in batches of %d",
+                    total_rows, batch_size)));
+    
     if (has_suitable_index && total_rows > batch_size)
     {
         /* Batch processing with ordering by indexed column */
@@ -490,7 +500,15 @@ migrate_data_in_batches(const char *table_name, const char *temp_table_name, Oid
             /* If still invalid, use simple migration */
             if (!OidIsValid(column_type))
             {
-                perform_simple_migration(table_name, temp_table_name);
+                rows_migrated = perform_simple_migration(table_name, temp_table_name);
+                
+                /* Report completion */
+                if (total_rows > 0 && rows_migrated > 0)
+                {
+                    ereport(INFO,
+                            (errmsg("Migration completed: 100%% (%lu / %lu rows migrated)",
+                                    rows_migrated, total_rows)));
+                }
                 
                 /* Truncate original table */
                 resetStringInfo(&query);
@@ -508,8 +526,10 @@ migrate_data_in_batches(const char *table_name, const char *temp_table_name, Oid
             }
         }
         
-        
-        while (rows_migrated < total_rows)
+        {
+            int last_reported_percentage = 0;
+            
+            while (rows_migrated < total_rows)
         {
             resetStringInfo(&query);
             
@@ -547,6 +567,20 @@ migrate_data_in_batches(const char *table_name, const char *temp_table_name, Oid
             
             rows_migrated += SPI_processed;
             
+            /* Progress reporting every 5% */
+            if (total_rows > 0)
+            {
+                int current_percentage = (int)((rows_migrated * 100) / total_rows);
+                
+                if (current_percentage >= last_reported_percentage + 5 || rows_migrated >= total_rows)
+                {
+                    ereport(INFO,
+                            (errmsg("Migration progress: %d%% (%lu / %lu rows migrated)",
+                                    current_percentage, rows_migrated, total_rows)));
+                    last_reported_percentage = (current_percentage / 5) * 5;
+                }
+            }
+            
             /* If we processed fewer rows than batch size, we're done */
             if (SPI_processed < batch_size)
                 break;
@@ -568,18 +602,21 @@ migrate_data_in_batches(const char *table_name, const char *temp_table_name, Oid
                 if (isnull)
                     break;
             }
-            
-            /* Progress reporting */
-            if (rows_migrated % (batch_size * 10) == 0)
-            {
-                /* Progress reporting removed */
-            }
+        }
         }
     }
     else
     {
         /* Fall back to simple approach for small tables or tables without suitable index */
-        perform_simple_migration(table_name, temp_table_name);
+        rows_migrated = perform_simple_migration(table_name, temp_table_name);
+    }
+    
+    /* Report completion if we haven't already */
+    if (total_rows > 0 && rows_migrated > 0)
+    {
+        ereport(INFO,
+                (errmsg("Migration completed: 100%% (%lu / %lu rows migrated)",
+                        rows_migrated, total_rows)));
     }
     
     /* Now truncate the original table */
