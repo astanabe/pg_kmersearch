@@ -74,6 +74,7 @@ SELECT '1. High-frequency k-mer analysis execution:' as step;
 (1 row)
 
 SELECT kmersearch_perform_highfreq_analysis('test_dna_highfreq', 'seq');
+INFO:  Starting high-frequency k-mer analysis: 14 rows in 1 blocks with 2 parallel workers
  kmersearch_perform_highfreq_analysis 
 --------------------------------------
  (14,6,2,0.25,3)

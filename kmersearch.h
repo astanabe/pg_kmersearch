@@ -280,6 +280,7 @@ typedef struct KmerAnalysisSharedState
     BlockNumber total_blocks;             /* Total number of blocks in table */
     bool        worker_error_occurred;    /* Parallel worker error flag */
     char        error_message[256];       /* Error message buffer */
+    uint64      total_rows;               /* Total rows in the table for progress reporting */
     
     /* Partition-specific fields */
     bool        is_partitioned;           /* Is this a partitioned table */
@@ -646,6 +647,9 @@ Datum kmersearch_query_kmer_cache_free(PG_FUNCTION_ARGS);
 /* Cache manager functions (defined in kmersearch_cache.c) */
 void kmersearch_free_query_kmer_cache_manager(QueryKmerCacheManager **manager);
 void kmersearch_free_actual_min_score_cache_manager(ActualMinScoreCacheManager **manager);
+
+/* Build version information */
+#define KMERSEARCH_BUILD_VERSION "1.0.2024.08.17"
 
 /* High-frequency k-mer cache global variables (defined in kmersearch_cache.c) */
 

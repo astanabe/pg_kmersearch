@@ -2,6 +2,23 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## CRITICAL DATABASE SAFETY RULES
+
+**ABSOLUTELY FORBIDDEN - NEVER EXECUTE THESE COMMANDS:**
+- **NEVER** use `DROP EXTENSION ... CASCADE` - this will destroy user data tables
+- **NEVER** use `DROP TABLE` on any user data tables
+- **NEVER** use `TRUNCATE` on any user data tables
+- **NEVER** execute any destructive operations without explicit user confirmation
+- **NEVER** assume data can be easily restored - always assume NO BACKUPS EXIST
+
+**SAFE EXTENSION UPDATE PROCEDURES:**
+- To update extension code, use one of these methods:
+  1. Restart PostgreSQL to reload shared libraries: `sudo systemctl restart postgresql`
+  2. Use `CREATE OR REPLACE FUNCTION` for individual function updates
+  3. Drop and recreate ONLY the extension functions, never the data
+- **ALWAYS** ask for explicit permission before any DROP operations
+- **ALWAYS** warn about potential data loss before suggesting risky commands
+
 ## Language Usage Guidelines
 
 - **Dialogue/Conversation**: Use Japanese (日本語) for all interactions with the user

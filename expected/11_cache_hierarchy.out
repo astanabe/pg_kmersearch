@@ -59,6 +59,7 @@ SELECT kmersearch_perform_highfreq_analysis(
     'test_cache_hierarchy'::text,
     'test_seq'::text
 ) AS analysis_result;
+INFO:  Starting high-frequency k-mer analysis: 13 rows in 1 blocks with 2 parallel workers
  analysis_result 
 -----------------
  (13,86,2,0.2,2)

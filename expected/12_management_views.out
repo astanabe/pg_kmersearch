@@ -68,6 +68,7 @@ FROM kmersearch_perform_highfreq_analysis(
     'test_analysis_dna2', 
     'sequence'
 );
+INFO:  Starting high-frequency k-mer analysis: 3 rows in 1 blocks with 2 parallel workers
  total_rows | highfreq_kmers_count | parallel_workers_used | max_appearance_rate_used | max_appearance_nrow_used 
 ------------+----------------------+-----------------------+--------------------------+--------------------------
           3 |                   97 |                     2 |                      0.5 |                        1

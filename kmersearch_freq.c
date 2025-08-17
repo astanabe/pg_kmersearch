@@ -890,6 +890,7 @@ kmersearch_perform_highfreq_analysis_parallel(Oid table_oid, const char *column_
         shared_state->next_block = 0;
         shared_state->total_blocks = total_blocks;
         shared_state->worker_error_occurred = false;
+        shared_state->total_rows = total_rows;
         
         /* Set partition-specific fields */
         shared_state->is_partitioned = (table_type == KMERSEARCH_TABLE_PARTITIONED);
@@ -934,6 +935,21 @@ kmersearch_perform_highfreq_analysis_parallel(Oid table_oid, const char *column_
         /* Launch parallel workers */
         LaunchParallelWorkers(pcxt);
         result.parallel_workers_used = pcxt->nworkers_launched;
+        
+        /* Show initial progress */
+        {
+            BlockNumber total_blocks_to_process;
+            
+            if (shared_state->is_partitioned) {
+                total_blocks_to_process = shared_state->total_blocks_all_partitions;
+            } else {
+                total_blocks_to_process = shared_state->total_blocks;
+            }
+            
+            ereport(INFO, 
+                    (errmsg("Starting high-frequency k-mer analysis: %lu rows in %u blocks with %d parallel workers", 
+                            result.total_rows, total_blocks_to_process, result.parallel_workers_used)));
+        }
         
         /* Wait for workers to complete */
         WaitForParallelWorkersToFinish(pcxt);
@@ -2485,19 +2501,20 @@ create_analysis_dshash_resources(KmerAnalysisContext *ctx, int estimated_entries
     dshash_parameters params;
     Size segment_size;
     
-    /* Calculate DSM segment size */
-    segment_size = 1024 * 1024;  /* Start with 1MB */
-    if (estimated_entries > 10000) {
-        segment_size = estimated_entries * 64;  /* Estimate 64 bytes per entry */
+    /* Calculate DSM segment size - increased for large datasets */
+    segment_size = 64 * 1024 * 1024;  /* Start with 64MB base size */
+    if (estimated_entries > 100000) {
+        segment_size = (Size)estimated_entries * 128;  /* Estimate 128 bytes per entry for overhead */
     }
     
-    /* Limit maximum size to avoid out of shared memory */
-    if (segment_size > 4 * 1024 * 1024) {
-        segment_size = 4 * 1024 * 1024;  /* Maximum 4MB for 128MB shared_buffers */
+    /* Set reasonable limits based on shared_buffers (32GB in this system) */
+    /* Allow up to 1GB for very large datasets */
+    if (segment_size > 1024 * 1024 * 1024) {
+        segment_size = 1024 * 1024 * 1024;  /* Maximum 1GB */
     }
     /* Ensure minimum size for DSA overhead */
-    if (segment_size < 1 * 1024 * 1024) {
-        segment_size = 1 * 1024 * 1024;  /* Minimum 1MB */
+    if (segment_size < 64 * 1024 * 1024) {
+        segment_size = 64 * 1024 * 1024;  /* Minimum 64MB */
     }
     
     elog(DEBUG1, "create_analysis_dshash_resources: Creating DSM segment with size %zu for %d estimated entries", 
@@ -2647,6 +2664,22 @@ kmersearch_map_global_to_partition_block(BlockNumber global_block,
 {
     PartitionBlockMapping result;
     int i;
+    
+    /* Progress reporting at specific block milestones (every 5%) */
+    if (state->total_blocks_all_partitions > 20 && state->total_rows > 0) {
+        BlockNumber milestone_interval = state->total_blocks_all_partitions / 20; /* 5% intervals */
+        
+        if (global_block > 0 && global_block % milestone_interval == 0) {
+            int current_percentage = (int)((global_block * 100) / state->total_blocks_all_partitions);
+            uint64 estimated_rows = ((uint64)state->total_rows * global_block) / state->total_blocks_all_partitions;
+            
+            if (current_percentage < 100) {
+                ereport(INFO,
+                        (errmsg("Progress: %d%% (estimated %lu / %lu rows processed)",
+                                current_percentage, estimated_rows, state->total_rows)));
+            }
+        }
+    }
     
     for (i = 0; i < state->num_partitions; i++)
     {

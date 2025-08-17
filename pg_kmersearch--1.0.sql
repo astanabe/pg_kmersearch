@@ -558,6 +558,12 @@ CREATE TYPE kmersearch_drop_result AS (
     freed_storage_bytes bigint
 );
 
+-- Build information function
+CREATE FUNCTION kmersearch_show_buildno() 
+    RETURNS text
+    AS 'MODULE_PATHNAME', 'kmersearch_show_buildno'
+    LANGUAGE C IMMUTABLE STRICT;
+
 -- Parallel k-mer analysis functions
 CREATE FUNCTION kmersearch_perform_highfreq_analysis(table_name text, column_name text) 
     RETURNS kmersearch_analysis_result
