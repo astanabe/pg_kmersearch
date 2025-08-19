@@ -51,6 +51,9 @@ typedef struct SQLiteWorkerContext
     HTAB        *batch_hash;            /* Batch hash table for aggregation */
     int         batch_count;            /* Current batch count */
     int         total_bits;             /* Total bits for k-mer + occurrence */
+    Oid         dna2_oid;               /* Cached OID for dna2 type */
+    Oid         dna4_oid;               /* Cached OID for dna4 type */
+    Oid         column_type_oid;        /* Column data type OID */
 } SQLiteWorkerContext;
 
 static int analysis_kmer_hash_compare(const void *a, const void *b, size_t size, void *arg);
@@ -387,12 +390,9 @@ kmersearch_flush_buffer64_to_table(UintkeyBuffer64 *buffer, const char *temp_tab
 }
 
 
-/* Forward declaration for block-based k-mer extraction */
-static void kmersearch_extract_kmers_from_block(Oid table_oid, AttrNumber column_attnum, Oid column_type_oid,
-                                               BlockNumber block, int kmer_size, int occur_bitlen, dshash_table *hash);
+/* Forward declaration for partition block mapping */
 static PartitionBlockMapping kmersearch_map_global_to_partition_block(BlockNumber global_block, 
                                         KmerAnalysisSharedState *state);
-static void kmersearch_update_kmer_counts_in_dshash(Datum sequence_datum, int kmer_size, int occur_bitlen, dshash_table *hash, Oid column_type_oid);
 
 /* High-frequency k-mer dshash entry structure */
 typedef struct AnalysisHighfreqKmerEntry {
@@ -884,10 +884,6 @@ kmersearch_perform_highfreq_analysis_parallel(Oid table_oid, const char *column_
         shared_state->num_workers = requested_workers;
         shared_state->table_oid = table_oid;
         shared_state->column_attnum = column_attnum;
-        shared_state->column_type_oid = column_type_oid;
-        shared_state->kmer_size = k_size;
-        shared_state->occur_bitlen = kmersearch_occur_bitlen;
-        shared_state->batch_size = kmersearch_highfreq_analysis_batch_size;
         shared_state->all_processed = false;
         shared_state->next_block = 0;
         shared_state->total_blocks = total_blocks;
@@ -1857,8 +1853,8 @@ kmersearch_analysis_worker(dsm_segment *seg, shm_toc *toc)
     /* Get worker ID (simplified - use PID modulo MAX_PARALLEL_WORKERS) */
     worker_id = MyProcPid % MAX_PARALLEL_WORKERS;
     
-    elog(DEBUG1, "kmersearch_analysis_worker: Got shared state, table_oid=%u, kmer_size=%d, worker_id=%d", 
-         shared_state->table_oid, shared_state->kmer_size, worker_id);
+    elog(DEBUG1, "kmersearch_analysis_worker: Got shared state, table_oid=%u, worker_id=%d", 
+         shared_state->table_oid, worker_id);
     
     /* If partitioned table, get partition block info from shared memory */
     if (shared_state->is_partitioned)
@@ -1872,7 +1868,34 @@ kmersearch_analysis_worker(dsm_segment *seg, shm_toc *toc)
     }
     
     /* Calculate total bits for data type selection */
-    ctx.total_bits = shared_state->kmer_size * 2 + shared_state->occur_bitlen;
+    ctx.total_bits = kmersearch_kmer_size * 2 + kmersearch_occur_bitlen;
+    
+    /* Cache type OIDs at worker start (avoid repeated lookups) */
+    ctx.dna2_oid = TypenameGetTypid("dna2");
+    ctx.dna4_oid = TypenameGetTypid("dna4");
+    
+    /* Get column type from table metadata */
+    {
+        Relation rel;
+        TupleDesc tupdesc;
+        Form_pg_attribute attr;
+        Oid column_type_oid;
+        
+        rel = table_open(shared_state->table_oid, AccessShareLock);
+        tupdesc = RelationGetDescr(rel);
+        attr = TupleDescAttr(tupdesc, shared_state->column_attnum - 1);
+        column_type_oid = attr->atttypid;
+        table_close(rel, AccessShareLock);
+        
+        /* Validate column type */
+        if (column_type_oid != ctx.dna2_oid && column_type_oid != ctx.dna4_oid)
+        {
+            elog(ERROR, "Column must be DNA2 or DNA4 type");
+        }
+        
+        /* Store column type for later use */
+        ctx.column_type_oid = column_type_oid;
+    }
     
     /* Create temporary SQLite3 database */
     snprintf(ctx.db_path, MAXPGPATH, "%s/pg_kmersearch_%d_XXXXXX",
@@ -1989,7 +2012,13 @@ kmersearch_analysis_worker(dsm_segment *seg, shm_toc *toc)
     if (ctx.batch_hash && ctx.batch_count > 0)
     {
         kmersearch_flush_batch_to_sqlite(ctx.batch_hash, ctx.db, ctx.insert_stmt, ctx.total_bits);
+    }
+    
+    /* Destroy hash table only once at the end */
+    if (ctx.batch_hash)
+    {
         hash_destroy(ctx.batch_hash);
+        ctx.batch_hash = NULL;
     }
     
     /* Get final statistics before closing DB */
@@ -2018,198 +2047,6 @@ kmersearch_analysis_worker(dsm_segment *seg, shm_toc *toc)
     
     elog(DEBUG1, "kmersearch_analysis_worker: Worker completed, temp file: %s", ctx.db_path);
 }
-
-/*
- * Extract k-mers from a specific block
- */
-static void
-kmersearch_extract_kmers_from_block(Oid table_oid, AttrNumber column_attnum, Oid column_type_oid,
-                                   BlockNumber block, int kmer_size, int occur_bitlen, dshash_table *hash)
-{
-    Relation rel = NULL;
-    Buffer buffer;
-    Page page;
-    OffsetNumber offset;
-    int ntuples;
-    bool isnull;
-    Datum datum;
-    
-    elog(DEBUG2, "kmersearch_extract_kmers_from_block: Starting block %u", block);
-    
-    /* Open table */
-    rel = table_open(table_oid, AccessShareLock);
-    
-    /* Read block */
-    buffer = ReadBuffer(rel, block);
-    LockBuffer(buffer, BUFFER_LOCK_SHARE);
-    page = BufferGetPage(buffer);
-    ntuples = PageGetMaxOffsetNumber(page);
-    
-    /* Process each tuple in block */
-    for (offset = FirstOffsetNumber; offset <= ntuples; offset++)
-    {
-        ItemId itemid = PageGetItemId(page, offset);
-        HeapTupleData tuple;
-        
-        if (!ItemIdIsNormal(itemid))
-            continue;
-            
-        tuple.t_data = (HeapTupleHeader) PageGetItem(page, itemid);
-        tuple.t_len = ItemIdGetLength(itemid);
-        ItemPointerSet(&(tuple.t_self), block, offset);
-        
-        /* Get column value */
-        datum = heap_getattr(&tuple, column_attnum, RelationGetDescr(rel), &isnull);
-        if (isnull)
-            continue;
-            
-        /* Extract k-mers and update dshash */
-        kmersearch_update_kmer_counts_in_dshash(datum, kmer_size, occur_bitlen, hash, column_type_oid);
-    }
-    
-    UnlockReleaseBuffer(buffer);
-    table_close(rel, AccessShareLock);
-}
-
-/*
- * Update k-mer counts in dshash
- * Using uintkey format which already includes occurrence counts
- * The extract_uintkey functions already return unique k-mers, so no duplicate checking needed
- */
-static void
-kmersearch_update_kmer_counts_in_dshash(Datum sequence_datum, int kmer_size, int occur_bitlen, dshash_table *hash, Oid column_type_oid)
-{
-    void *kmer_array = NULL;
-    int kmer_count;
-    bool found;
-    Oid dna2_oid;
-    Oid dna4_oid;
-    int i;
-    int total_bits;
-    
-    /* Extract k-mers based on data type */
-    dna2_oid = TypenameGetTypid("dna2");
-    dna4_oid = TypenameGetTypid("dna4");
-    if (column_type_oid == dna2_oid)
-    {
-        VarBit *seq;
-        
-        /* Get properly detoasted sequence */
-        seq = DatumGetVarBitP(sequence_datum);
-        
-        /* Extract uintkey from DNA2 (includes occurrence counts) */
-        kmersearch_extract_uintkey_from_dna2(seq, &kmer_array, &kmer_count);
-        
-        /* Free detoasted copy if needed */
-        if ((void *)seq != DatumGetPointer(sequence_datum))
-            pfree(seq);
-    }
-    else if (column_type_oid == dna4_oid)
-    {
-        VarBit *seq;
-        
-        /* Get properly detoasted sequence */
-        seq = DatumGetVarBitP(sequence_datum);
-        
-        /* Extract uintkey from DNA4 (includes occurrence counts) */
-        kmersearch_extract_uintkey_from_dna4(seq, &kmer_array, &kmer_count);
-        
-        /* Free detoasted copy if needed */  
-        if ((void *)seq != DatumGetPointer(sequence_datum))
-            pfree(seq);
-    }
-    else
-    {
-        elog(ERROR, "Column must be DNA2 or DNA4 type");
-    }
-    
-    if (kmer_array == NULL || kmer_count <= 0)
-    {
-        if (kmer_array)
-            pfree(kmer_array);
-        return; /* No valid k-mers */
-    }
-    
-    /* No need for local hash table since extract_uintkey functions already return unique k-mers */
-    
-    /* Update counts for each unique uintkey in this row */
-    elog(DEBUG2, "Processing row with %d unique uintkeys", kmer_count);
-    
-    /* Calculate total bits to determine key type */
-    total_bits = kmer_size * 2 + occur_bitlen;
-    
-    for (i = 0; i < kmer_count; i++)
-    {
-        /* Process based on total_bits */
-        if (total_bits <= 16)
-        {
-            uint16 *uintkey16_array = (uint16 *)kmer_array;
-            uint16 uintkey16 = uintkey16_array[i];
-            KmerEntry16 *entry16;
-            
-            /* uintkey already includes occurrence count, each uintkey is unique */
-            elog(DEBUG2, "Processing uintkey %u", uintkey16);
-            entry16 = (KmerEntry16 *)dshash_find_or_insert(hash, &uintkey16, &found);
-            if (!found)
-            {
-                entry16->kmer = uintkey16;
-                entry16->count = 1;
-                elog(DEBUG2, "New uintkey %u, count=1", uintkey16);
-            }
-            else
-            {
-                entry16->count++;
-                elog(DEBUG2, "Existing uintkey %u, count=%d", uintkey16, entry16->count);
-            }
-            dshash_release_lock(hash, entry16);
-        }
-        else if (total_bits <= 32)
-        {
-            uint32 *uintkey32_array = (uint32 *)kmer_array;
-            uint32 uintkey32 = uintkey32_array[i];
-            KmerEntry32 *entry32;
-            
-            /* uintkey already includes occurrence count, each uintkey is unique */
-            entry32 = (KmerEntry32 *)dshash_find_or_insert(hash, &uintkey32, &found);
-            if (!found)
-            {
-                entry32->kmer = uintkey32;
-                entry32->count = 1;
-            }
-            else
-            {
-                if (entry32->count < INT_MAX)
-                    entry32->count++;
-            }
-            dshash_release_lock(hash, entry32);
-        }
-        else /* total_bits <= 64 */
-        {
-            uint64 *uintkey64_array = (uint64 *)kmer_array;
-            uint64 uintkey64 = uintkey64_array[i];
-            KmerEntry64 *entry64;
-            
-            /* uintkey already includes occurrence count, each uintkey is unique */
-            entry64 = (KmerEntry64 *)dshash_find_or_insert(hash, &uintkey64, &found);
-            if (!found)
-            {
-                entry64->kmer = uintkey64;
-                entry64->count = 1;
-            }
-            else
-            {
-                if (entry64->count < INT_MAX)
-                    entry64->count++;
-            }
-            dshash_release_lock(hash, entry64);
-        }
-    }
-    
-    /* Normal cleanup */
-    if (kmer_array)
-        pfree(kmer_array);
-}
-
 
 /*
  * Merge worker results using SQL aggregation
@@ -2568,6 +2405,23 @@ kmersearch_register_worker_temp_file(KmerAnalysisSharedState *shared_state,
 }
 
 /*
+ * Clear hash table for reuse
+ */
+static void
+kmersearch_clear_batch_hash(HTAB *batch_hash)
+{
+    HASH_SEQ_STATUS status;
+    void *entry;
+    
+    /* Remove all entries from hash table */
+    hash_seq_init(&status, batch_hash);
+    while ((entry = hash_seq_search(&status)) != NULL)
+    {
+        hash_search(batch_hash, entry, HASH_REMOVE, NULL);
+    }
+}
+
+/*
  * Flush batch hash table to SQLite3
  */
 static void
@@ -2665,7 +2519,7 @@ kmersearch_process_block_with_batch(BlockNumber block,
         }
         
         ctx->batch_hash = hash_create("KmerBatchHash",
-                                     shared_state->batch_size,
+                                     kmersearch_highfreq_analysis_batch_size,
                                      &hashctl, HASH_ELEM | HASH_BLOBS);
     }
     
@@ -2700,13 +2554,13 @@ kmersearch_process_block_with_batch(BlockNumber block,
         if (isnull)
             continue;
         
-        /* Extract k-mers based on data type */
-        if (shared_state->column_type_oid == TypenameGetTypid("dna2"))
+        /* Extract k-mers based on data type (type OIDs are cached at worker start) */
+        if (ctx->column_type_oid == ctx->dna2_oid)
         {
             VarBit *seq = DatumGetVarBitP(datum);
             kmersearch_extract_uintkey_from_dna2(seq, &kmer_array, &kmer_count);
         }
-        else if (shared_state->column_type_oid == TypenameGetTypid("dna4"))
+        else if (ctx->column_type_oid == ctx->dna4_oid)
         {
             VarBit *seq = DatumGetVarBitP(datum);
             kmersearch_extract_uintkey_from_dna4(seq, &kmer_array, &kmer_count);
@@ -2774,12 +2628,12 @@ kmersearch_process_block_with_batch(BlockNumber block,
         ctx->batch_count++;
         
         /* Flush batch if size limit reached */
-        if (ctx->batch_count >= shared_state->batch_size)
+        if (ctx->batch_count >= kmersearch_highfreq_analysis_batch_size)
         {
             kmersearch_flush_batch_to_sqlite(ctx->batch_hash, ctx->db,
                                            ctx->insert_stmt, ctx->total_bits);
-            hash_destroy(ctx->batch_hash);
-            ctx->batch_hash = NULL;
+            /* Clear hash table for reuse instead of destroying */
+            kmersearch_clear_batch_hash(ctx->batch_hash);
             ctx->batch_count = 0;
         }
     }

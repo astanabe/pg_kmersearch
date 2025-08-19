@@ -55,6 +55,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Coding Standards
 
+### Comment Guidelines
+**PROHIBITED**: Insertion of change history comments or modification tracking comments.
+- Comments must ONLY describe the current source code content
+- Do NOT add comments about what was changed, when it was changed, or why it was changed
+- Do NOT add TODO comments about past modifications
+- Do NOT add FIXME comments referencing previous versions
+- Comments should explain what the code does NOW, not what it used to do
+
 ### C Function Naming Convention
 **MANDATORY**: All C language functions in this extension MUST use the `kmersearch_` prefix.
 - This applies to ALL functions: static, exported, utility, helper functions

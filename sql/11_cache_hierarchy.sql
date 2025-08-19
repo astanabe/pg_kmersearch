@@ -1,4 +1,10 @@
 SET client_min_messages = WARNING;
+
+-- Limit parallel workers to 2 for consistent test results
+SET max_parallel_workers = 2;
+SET max_parallel_maintenance_workers = 2;
+SET max_parallel_workers_per_gather = 2;
+
 CREATE EXTENSION IF NOT EXISTS pg_kmersearch;
 
 -- Test comprehensive cache hierarchy and GUC validation functionality

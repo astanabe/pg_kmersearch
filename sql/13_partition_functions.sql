@@ -1,6 +1,12 @@
 -- Test partitioning support functions
 
 SET client_min_messages = WARNING;
+
+-- Limit parallel workers to 2 for consistent test results
+SET max_parallel_workers = 2;
+SET max_parallel_maintenance_workers = 2;
+SET max_parallel_workers_per_gather = 2;
+
 CREATE EXTENSION IF NOT EXISTS pg_kmersearch;
 
 -- Set maintenance_work_mem for batch processing
