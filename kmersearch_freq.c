@@ -895,6 +895,14 @@ kmersearch_perform_highfreq_analysis_parallel(Oid table_oid, const char *column_
         /* Initialize temporary directory path for SQLite3 files */
         {
             Oid tablespace_oid = GetNextTempTableSpace();
+            
+            /* If no temp_tablespaces configured, use database's default tablespace */
+            if (tablespace_oid == InvalidOid && OidIsValid(MyDatabaseTableSpace))
+            {
+                tablespace_oid = MyDatabaseTableSpace;
+                elog(DEBUG1, "Using database default tablespace OID: %u", tablespace_oid);
+            }
+            
             TempTablespacePath(shared_state->temp_dir_path, tablespace_oid);
             elog(DEBUG1, "Selected temp directory: %s (tablespace OID: %u)",
                  shared_state->temp_dir_path, tablespace_oid);
