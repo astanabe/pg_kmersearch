@@ -603,11 +603,11 @@ kmersearch_extract_uintkey_from_dna2_scalar(VarBit *seq, void **output, int *nke
                  errdetail("k-mer size must be between 4 and 32")));
     }
     
-    if (occur_bitlen < 1 || occur_bitlen > 16) {
+    if (occur_bitlen < 0 || occur_bitlen > 16) {
         ereport(ERROR,
                 (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
                  errmsg("Invalid occurrence bit length: %d", occur_bitlen),
-                 errdetail("Occurrence bit length must be between 1 and 16")));
+                 errdetail("Occurrence bit length must be between 0 and 16")));
     }
     
     if (total_bits > 64) {
@@ -668,10 +668,19 @@ kmersearch_extract_uintkey_from_dna2_scalar(VarBit *seq, void **output, int *nke
                 (KmerOccurrence16 *)occurrences, &occurrence_count,
                 kmer_value, max_kmers);
             if (current_count < 0) continue;
-            if (current_count > (1 << occur_bitlen)) continue;
+            if (occur_bitlen > 0 && current_count > (1 << occur_bitlen)) continue;
             
-            final_value = (kmer_value << occur_bitlen) | ((current_count - 1) & ((1 << occur_bitlen) - 1));
-            ((uint16 *)result)[result_count++] = final_value;
+            if (occur_bitlen == 0) {
+                /* For occur_bitlen=0, only output unique k-mers (first occurrence) */
+                if (current_count == 1) {
+                    final_value = kmer_value;
+                    ((uint16 *)result)[result_count++] = final_value;
+                }
+            } else {
+                /* Include occurrence count in the uintkey */
+                final_value = (kmer_value << occur_bitlen) | ((current_count - 1) & ((1 << occur_bitlen) - 1));
+                ((uint16 *)result)[result_count++] = final_value;
+            }
             
         } else if (elem_size == sizeof(uint32)) {
             uint32 kmer_value = 0;
@@ -689,10 +698,19 @@ kmersearch_extract_uintkey_from_dna2_scalar(VarBit *seq, void **output, int *nke
                 (KmerOccurrence32 *)occurrences, &occurrence_count,
                 kmer_value, max_kmers);
             if (current_count < 0) continue;
-            if (current_count > (1 << occur_bitlen)) continue;
+            if (occur_bitlen > 0 && current_count > (1 << occur_bitlen)) continue;
             
-            final_value = (kmer_value << occur_bitlen) | ((current_count - 1) & ((1 << occur_bitlen) - 1));
-            ((uint32 *)result)[result_count++] = final_value;
+            if (occur_bitlen == 0) {
+                /* For occur_bitlen=0, only output unique k-mers (first occurrence) */
+                if (current_count == 1) {
+                    final_value = kmer_value;
+                    ((uint32 *)result)[result_count++] = final_value;
+                }
+            } else {
+                /* Include occurrence count in the uintkey */
+                final_value = (kmer_value << occur_bitlen) | ((current_count - 1) & ((1 << occur_bitlen) - 1));
+                ((uint32 *)result)[result_count++] = final_value;
+            }
             
         } else {
             uint64 kmer_value = 0;
@@ -710,10 +728,19 @@ kmersearch_extract_uintkey_from_dna2_scalar(VarBit *seq, void **output, int *nke
                 (KmerOccurrence64 *)occurrences, &occurrence_count,
                 kmer_value, max_kmers);
             if (current_count < 0) continue;
-            if (current_count > (1 << occur_bitlen)) continue;
+            if (occur_bitlen > 0 && current_count > (1 << occur_bitlen)) continue;
             
-            final_value = (kmer_value << occur_bitlen) | ((current_count - 1) & ((1 << occur_bitlen) - 1));
-            ((uint64 *)result)[result_count++] = final_value;
+            if (occur_bitlen == 0) {
+                /* For occur_bitlen=0, only output unique k-mers (first occurrence) */
+                if (current_count == 1) {
+                    final_value = kmer_value;
+                    ((uint64 *)result)[result_count++] = final_value;
+                }
+            } else {
+                /* Include occurrence count in the uintkey */
+                final_value = (kmer_value << occur_bitlen) | ((current_count - 1) & ((1 << occur_bitlen) - 1));
+                ((uint64 *)result)[result_count++] = final_value;
+            }
         }
     }
     
@@ -787,11 +814,11 @@ kmersearch_extract_uintkey_from_dna4_scalar(VarBit *seq, void **output, int *nke
                  errdetail("k-mer size must be between 4 and 32")));
     }
     
-    if (occur_bitlen < 1 || occur_bitlen > 16) {
+    if (occur_bitlen < 0 || occur_bitlen > 16) {
         ereport(ERROR,
                 (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
                  errmsg("Invalid occurrence bit length: %d", occur_bitlen),
-                 errdetail("Occurrence bit length must be between 1 and 16")));
+                 errdetail("Occurrence bit length must be between 0 and 16")));
     }
     
     if (total_bits > 64) {
@@ -859,12 +886,21 @@ kmersearch_extract_uintkey_from_dna4_scalar(VarBit *seq, void **output, int *nke
                     continue;
                 }
                 
-                if (current_count > (1 << occur_bitlen)) {
+                if (occur_bitlen > 0 && current_count > (1 << occur_bitlen)) {
                     continue;
                 }
                 
-                final_value = (kmer_value << occur_bitlen) | ((current_count - 1) & ((1 << occur_bitlen) - 1));
-                ((uint16 *)result)[result_count++] = final_value;
+                if (occur_bitlen == 0) {
+                    /* For occur_bitlen=0, only output unique k-mers (first occurrence) */
+                    if (current_count == 1) {
+                        final_value = kmer_value;
+                        ((uint16 *)result)[result_count++] = final_value;
+                    }
+                } else {
+                    /* Include occurrence count in the uintkey */
+                    final_value = (kmer_value << occur_bitlen) | ((current_count - 1) & ((1 << occur_bitlen) - 1));
+                    ((uint16 *)result)[result_count++] = final_value;
+                }
                 
             } else if (elem_size == sizeof(uint32)) {
                 uint32 kmer_value = ((uint32 *)expanded_uintkeys)[j];
@@ -877,12 +913,21 @@ kmersearch_extract_uintkey_from_dna4_scalar(VarBit *seq, void **output, int *nke
                     continue;
                 }
                 
-                if (current_count > (1 << occur_bitlen)) {
+                if (occur_bitlen > 0 && current_count > (1 << occur_bitlen)) {
                     continue;
                 }
                 
-                final_value = (kmer_value << occur_bitlen) | ((current_count - 1) & ((1 << occur_bitlen) - 1));
-                ((uint32 *)result)[result_count++] = final_value;
+                if (occur_bitlen == 0) {
+                    /* For occur_bitlen=0, only output unique k-mers (first occurrence) */
+                    if (current_count == 1) {
+                        final_value = kmer_value;
+                        ((uint32 *)result)[result_count++] = final_value;
+                    }
+                } else {
+                    /* Include occurrence count in the uintkey */
+                    final_value = (kmer_value << occur_bitlen) | ((current_count - 1) & ((1 << occur_bitlen) - 1));
+                    ((uint32 *)result)[result_count++] = final_value;
+                }
                 
             } else {
                 uint64 kmer_value = ((uint64 *)expanded_uintkeys)[j];
@@ -895,12 +940,21 @@ kmersearch_extract_uintkey_from_dna4_scalar(VarBit *seq, void **output, int *nke
                     continue;
                 }
                 
-                if (current_count > (1 << occur_bitlen)) {
+                if (occur_bitlen > 0 && current_count > (1 << occur_bitlen)) {
                     continue;
                 }
                 
-                final_value = (kmer_value << occur_bitlen) | ((current_count - 1) & ((1 << occur_bitlen) - 1));
-                ((uint64 *)result)[result_count++] = final_value;
+                if (occur_bitlen == 0) {
+                    /* For occur_bitlen=0, only output unique k-mers (first occurrence) */
+                    if (current_count == 1) {
+                        final_value = kmer_value;
+                        ((uint64 *)result)[result_count++] = final_value;
+                    }
+                } else {
+                    /* Include occurrence count in the uintkey */
+                    final_value = (kmer_value << occur_bitlen) | ((current_count - 1) & ((1 << occur_bitlen) - 1));
+                    ((uint64 *)result)[result_count++] = final_value;
+                }
             }
         }
         
@@ -1206,11 +1260,11 @@ kmersearch_extract_uintkey_from_text(const char *text, void **output, int *nkeys
                  errdetail("k-mer size must be between 4 and 32")));
     }
     
-    if (occur_bitlen < 1 || occur_bitlen > 16) {
+    if (occur_bitlen < 0 || occur_bitlen > 16) {
         ereport(ERROR,
                 (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
                  errmsg("Invalid occurrence bit length: %d", occur_bitlen),
-                 errdetail("Occurrence bit length must be between 1 and 16")));
+                 errdetail("Occurrence bit length must be between 0 and 16")));
     }
     
     if (total_bits > 64) {
@@ -1291,12 +1345,21 @@ kmersearch_extract_uintkey_from_text(const char *text, void **output, int *nkeys
                     continue;
                 }
                 
-                if (current_count > (1 << occur_bitlen)) {
+                if (occur_bitlen > 0 && current_count > (1 << occur_bitlen)) {
                     continue;
                 }
                 
-                final_value = (kmer_value << occur_bitlen) | ((current_count - 1) & ((1 << occur_bitlen) - 1));
-                ((uint16 *)result)[result_count++] = final_value;
+                if (occur_bitlen == 0) {
+                    /* For occur_bitlen=0, only output unique k-mers (first occurrence) */
+                    if (current_count == 1) {
+                        final_value = kmer_value;
+                        ((uint16 *)result)[result_count++] = final_value;
+                    }
+                } else {
+                    /* Include occurrence count in the uintkey */
+                    final_value = (kmer_value << occur_bitlen) | ((current_count - 1) & ((1 << occur_bitlen) - 1));
+                    ((uint16 *)result)[result_count++] = final_value;
+                }
                 
             } else if (elem_size == sizeof(uint32)) {
                 uint32 kmer_value = ((uint32 *)expanded_uintkeys)[j];
@@ -1309,12 +1372,21 @@ kmersearch_extract_uintkey_from_text(const char *text, void **output, int *nkeys
                     continue;
                 }
                 
-                if (current_count > (1 << occur_bitlen)) {
+                if (occur_bitlen > 0 && current_count > (1 << occur_bitlen)) {
                     continue;
                 }
                 
-                final_value = (kmer_value << occur_bitlen) | ((current_count - 1) & ((1 << occur_bitlen) - 1));
-                ((uint32 *)result)[result_count++] = final_value;
+                if (occur_bitlen == 0) {
+                    /* For occur_bitlen=0, only output unique k-mers (first occurrence) */
+                    if (current_count == 1) {
+                        final_value = kmer_value;
+                        ((uint32 *)result)[result_count++] = final_value;
+                    }
+                } else {
+                    /* Include occurrence count in the uintkey */
+                    final_value = (kmer_value << occur_bitlen) | ((current_count - 1) & ((1 << occur_bitlen) - 1));
+                    ((uint32 *)result)[result_count++] = final_value;
+                }
                 
             } else {
                 uint64 kmer_value = ((uint64 *)expanded_uintkeys)[j];
@@ -1327,12 +1399,21 @@ kmersearch_extract_uintkey_from_text(const char *text, void **output, int *nkeys
                     continue;
                 }
                 
-                if (current_count > (1 << occur_bitlen)) {
+                if (occur_bitlen > 0 && current_count > (1 << occur_bitlen)) {
                     continue;
                 }
                 
-                final_value = (kmer_value << occur_bitlen) | ((current_count - 1) & ((1 << occur_bitlen) - 1));
-                ((uint64 *)result)[result_count++] = final_value;
+                if (occur_bitlen == 0) {
+                    /* For occur_bitlen=0, only output unique k-mers (first occurrence) */
+                    if (current_count == 1) {
+                        final_value = kmer_value;
+                        ((uint64 *)result)[result_count++] = final_value;
+                    }
+                } else {
+                    /* Include occurrence count in the uintkey */
+                    final_value = (kmer_value << occur_bitlen) | ((current_count - 1) & ((1 << occur_bitlen) - 1));
+                    ((uint64 *)result)[result_count++] = final_value;
+                }
             }
         }
         
