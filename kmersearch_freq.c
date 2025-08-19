@@ -1261,6 +1261,8 @@ kmersearch_create_analysis_dshash(int estimated_entries, int kmer_size)
 {
     dshash_parameters params;
     Size segment_size;
+    Size shared_buffers_size;
+    Size max_segment_size;
     int total_bits;
     
     /* Clean up any existing resources first */
@@ -1268,17 +1270,22 @@ kmersearch_create_analysis_dshash(int estimated_entries, int kmer_size)
         kmersearch_cleanup_analysis_dshash();
     }
     
-    /* Calculate required DSM segment size */
+    /* Calculate required DSM segment size based on shared_buffers */
+    shared_buffers_size = (Size)NBuffers * (Size)BLCKSZ;
+    max_segment_size = shared_buffers_size / 2;  /* Use half of shared_buffers as max */
+    
     segment_size = 1024 * 1024;  /* Start with 1MB */
     if (estimated_entries > 10000) {
         segment_size = estimated_entries * 64;  /* Estimate 64 bytes per entry */
     }
     
-    /* Limit maximum size to avoid out of shared memory */
-    /* With 128MB shared_buffers, we need to be very conservative */
-    if (segment_size > 4 * 1024 * 1024) {
-        segment_size = 4 * 1024 * 1024;  /* Maximum 4MB for 128MB shared_buffers */
+    /* Cap at half of shared_buffers to avoid excessive memory usage */
+    if (segment_size > max_segment_size) {
+        segment_size = max_segment_size;
+        elog(DEBUG1, "Capping DSM segment size to %zu bytes (half of shared_buffers: %zu bytes)",
+             segment_size, shared_buffers_size);
     }
+    
     /* Ensure minimum size for DSA overhead */
     if (segment_size < 1 * 1024 * 1024) {
         segment_size = 1 * 1024 * 1024;  /* Minimum 1MB */
@@ -2587,20 +2594,33 @@ create_analysis_dshash_resources(KmerAnalysisContext *ctx, int estimated_entries
 {
     dshash_parameters params;
     Size segment_size;
+    Size shared_buffers_size;
+    Size max_segment_size;
     int total_bits;
     
-    /* Calculate DSM segment size based on estimated entries */
-    segment_size = 64 * 1024 * 1024;  /* Start with 64MB base size */
-    if (estimated_entries > 100000) {
-        segment_size = (Size)estimated_entries * 128;  /* Estimate 128 bytes per entry for overhead */
+    /* Get shared_buffers size in bytes */
+    shared_buffers_size = (Size)NBuffers * (Size)BLCKSZ;
+    /* Use half of shared_buffers as maximum for DSM segment */
+    max_segment_size = shared_buffers_size / 2;
+    
+    /* Calculate initial DSM segment size
+     * DSA can grow dynamically, so we start with a reasonable initial size
+     * and let it expand as needed during processing
+     */
+    if (estimated_entries <= 100000) {
+        segment_size = 64 * 1024 * 1024;  /* 64MB for small datasets */
+    } else if (estimated_entries <= 10000000) {
+        segment_size = 256 * 1024 * 1024;  /* 256MB for medium datasets */
+    } else {
+        segment_size = 1024 * 1024 * 1024;  /* 1GB for large datasets */
     }
     
-    /* Ensure minimum size for DSA overhead */
-    if (segment_size < 64 * 1024 * 1024) {
-        segment_size = 64 * 1024 * 1024;  /* Minimum 64MB */
+    /* Cap at half of shared_buffers to avoid excessive memory usage */
+    if (segment_size > max_segment_size) {
+        segment_size = max_segment_size;
+        elog(WARNING, "Capping DSM segment size to %zu bytes (half of shared_buffers: %zu bytes)",
+             segment_size, shared_buffers_size);
     }
-    
-    /* No artificial cap - let PostgreSQL manage the limit based on available memory */
     
     elog(DEBUG1, "create_analysis_dshash_resources: Creating DSM segment with size %zu for %d estimated entries", 
          segment_size, estimated_entries);
