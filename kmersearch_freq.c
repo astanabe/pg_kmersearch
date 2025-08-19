@@ -27,19 +27,19 @@ PG_FUNCTION_INFO_V1(kmersearch_delete_tempfiles);
 typedef struct TempKmerFreqEntry16
 {
     uint16      uintkey;
-    uint64      nline;      /* Number of rows containing this k-mer */
+    uint64      nrow;      /* Number of rows containing this k-mer */
 } TempKmerFreqEntry16;
 
 typedef struct TempKmerFreqEntry32
 {
     uint32      uintkey;
-    uint64      nline;      /* Number of rows containing this k-mer */
+    uint64      nrow;      /* Number of rows containing this k-mer */
 } TempKmerFreqEntry32;
 
 typedef struct TempKmerFreqEntry64
 {
     uint64      uintkey;
-    uint64      nline;      /* Number of rows containing this k-mer */
+    uint64      nrow;      /* Number of rows containing this k-mer */
 } TempKmerFreqEntry64;
 
 /* SQLite3-based worker context */
@@ -1090,7 +1090,7 @@ kmersearch_perform_highfreq_analysis_parallel(Oid table_oid, const char *column_
             rc = sqlite3_exec(parent_db,
                              "CREATE TABLE kmersearch_highfreq_kmer ("
                              "uintkey INTEGER PRIMARY KEY, "
-                             "nline INTEGER)",
+                             "nrow INTEGER)",
                              NULL, NULL, NULL);
             if (rc != SQLITE_OK)
             {
@@ -1122,25 +1122,24 @@ kmersearch_perform_highfreq_analysis_parallel(Oid table_oid, const char *column_
                         sqlite3_stmt *merge_stmt;
                         int merge_count = 0;
                         rc = sqlite3_prepare_v2(parent_db,
-                                              "INSERT INTO main.kmersearch_highfreq_kmer (uintkey, nline) "
+                                              "INSERT INTO main.kmersearch_highfreq_kmer (uintkey, nrow) "
                                               "VALUES (?, ?) "
-                                              "ON CONFLICT(uintkey) DO UPDATE SET nline = nline + excluded.nline",
+                                              "ON CONFLICT(uintkey) DO UPDATE SET nrow = nrow + excluded.nrow",
                                               -1, &merge_stmt, NULL);
                         if (rc == SQLITE_OK)
                         {
-                            sqlite3_stmt *select_stmt;
                             rc = sqlite3_prepare_v2(parent_db,
-                                                  "SELECT uintkey, nline FROM worker_db.kmersearch_highfreq_kmer",
+                                                  "SELECT uintkey, nrow FROM worker_db.kmersearch_highfreq_kmer",
                                                   -1, &select_stmt, NULL);
                             if (rc == SQLITE_OK)
                             {
                                 while (sqlite3_step(select_stmt) == SQLITE_ROW)
                                 {
                                     int64 uintkey = sqlite3_column_int64(select_stmt, 0);
-                                    int64 nline = sqlite3_column_int64(select_stmt, 1);
+                                    int64 nrow = sqlite3_column_int64(select_stmt, 1);
                                     
                                     sqlite3_bind_int64(merge_stmt, 1, uintkey);
-                                    sqlite3_bind_int64(merge_stmt, 2, nline);
+                                    sqlite3_bind_int64(merge_stmt, 2, nrow);
                                     sqlite3_step(merge_stmt);
                                     sqlite3_reset(merge_stmt);
                                     merge_count++;
@@ -1185,7 +1184,7 @@ kmersearch_perform_highfreq_analysis_parallel(Oid table_oid, const char *column_
                 sqlite3_stmt *count_stmt;
                 
                 rc = sqlite3_prepare_v2(parent_db,
-                                       "SELECT COUNT(*) FROM kmersearch_highfreq_kmer WHERE nline > ?",
+                                       "SELECT COUNT(*) FROM kmersearch_highfreq_kmer WHERE nrow > ?",
                                        -1, &count_stmt, NULL);
                 if (rc == SQLITE_OK)
                 {
@@ -1209,7 +1208,7 @@ kmersearch_perform_highfreq_analysis_parallel(Oid table_oid, const char *column_
             
             /* Prepare to extract high-frequency k-mers from SQLite3 */
             rc = sqlite3_prepare_v2(parent_db,
-                                   "SELECT uintkey FROM kmersearch_highfreq_kmer WHERE nline > ?",
+                                   "SELECT uintkey FROM kmersearch_highfreq_kmer WHERE nrow > ?",
                                    -1, &select_stmt, NULL);
             if (rc != SQLITE_OK)
             {
@@ -2462,6 +2461,7 @@ kmersearch_analysis_worker(dsm_segment *seg, shm_toc *toc)
     bool has_work = true;
     int worker_id;
     int rc;
+    int fd;
     
     /* Initialize context */
     memset(&ctx, 0, sizeof(SQLiteWorkerContext));
@@ -2504,7 +2504,7 @@ kmersearch_analysis_worker(dsm_segment *seg, shm_toc *toc)
     snprintf(ctx.db_path, MAXPGPATH, "%s/pg_kmersearch_%d_XXXXXX",
              shared_state->temp_dir_path, MyProcPid);
     
-    int fd = mkstemp(ctx.db_path);
+    fd = mkstemp(ctx.db_path);
     if (fd < 0)
     {
         ereport(ERROR,
@@ -2531,7 +2531,7 @@ kmersearch_analysis_worker(dsm_segment *seg, shm_toc *toc)
     rc = sqlite3_exec(ctx.db, 
                      "CREATE TABLE kmersearch_highfreq_kmer ("
                      "uintkey INTEGER PRIMARY KEY, "
-                     "nline INTEGER)",
+                     "nrow INTEGER)",
                      NULL, NULL, NULL);
     if (rc != SQLITE_OK)
     {
@@ -2541,9 +2541,9 @@ kmersearch_analysis_worker(dsm_segment *seg, shm_toc *toc)
     
     /* Prepare INSERT statement */
     rc = sqlite3_prepare_v2(ctx.db,
-                           "INSERT INTO kmersearch_highfreq_kmer (uintkey, nline) "
+                           "INSERT INTO kmersearch_highfreq_kmer (uintkey, nrow) "
                            "VALUES (?, ?) "
-                           "ON CONFLICT(uintkey) DO UPDATE SET nline = nline + excluded.nline",
+                           "ON CONFLICT(uintkey) DO UPDATE SET nrow = nrow + excluded.nrow",
                            -1, &ctx.insert_stmt, NULL);
     if (rc != SQLITE_OK)
     {
@@ -2622,13 +2622,13 @@ kmersearch_analysis_worker(dsm_segment *seg, shm_toc *toc)
     if (ctx.db)
     {
         sqlite3_stmt *final_stats;
-        int rc = sqlite3_prepare_v2(ctx.db,
-                                    "SELECT COUNT(*), SUM(nline) FROM kmersearch_highfreq_kmer",
+        rc = sqlite3_prepare_v2(ctx.db,
+                                    "SELECT COUNT(*), SUM(nrow) FROM kmersearch_highfreq_kmer",
                                     -1, &final_stats, NULL);
         if (rc == SQLITE_OK && sqlite3_step(final_stats) == SQLITE_ROW)
         {
             int final_count = sqlite3_column_int(final_stats, 0);
-            int64 final_nline = sqlite3_column_int64(final_stats, 1);
+            int64 final_nrow = sqlite3_column_int64(final_stats, 1);
             sqlite3_finalize(final_stats);
         }
     }
@@ -3162,6 +3162,10 @@ kmersearch_delete_tempfiles(PG_FUNCTION_ARGS)
     Datum values[3];
     bool nulls[3] = {false};
     HeapTuple tuple;
+    int num_tablespaces;
+    Oid *tablespace_array;
+    time_t current_time;
+    int64 file_size;
     
     /* Build result tuple descriptor */
     if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
@@ -3175,9 +3179,7 @@ kmersearch_delete_tempfiles(PG_FUNCTION_ARGS)
     tablespace_oids = lappend_oid(tablespace_oids, InvalidOid);  /* Default tablespace */
     
     /* Get temp_tablespaces */
-    int num_tablespaces;
-    Oid *tablespace_array = palloc(sizeof(Oid) * 256);  /* Max 256 tablespaces */
-    
+    tablespace_array = palloc(sizeof(Oid) * 256);  /* Max 256 tablespaces */
     num_tablespaces = GetTempTablespaces(tablespace_array, 256);
     
     /* Add temp_tablespaces to list */
@@ -3234,7 +3236,7 @@ kmersearch_delete_tempfiles(PG_FUNCTION_ARGS)
                 continue;
             
             /* Check file age - skip files created within last 60 seconds */
-            time_t current_time = time(NULL);
+            current_time = time(NULL);
             if (current_time - st.st_mtime < 60)
             {
                 ereport(INFO,
@@ -3243,7 +3245,7 @@ kmersearch_delete_tempfiles(PG_FUNCTION_ARGS)
             }
             
             /* Record file size */
-            int64 file_size = st.st_size;
+            file_size = st.st_size;
             
             /* Delete the file */
             if (unlink(full_path) < 0)
@@ -3319,19 +3321,19 @@ kmersearch_flush_batch_to_sqlite(HTAB *batch_hash, sqlite3 *db,
         {
             TempKmerFreqEntry16 *e = (TempKmerFreqEntry16 *)entry;
             sqlite3_bind_int(stmt, 1, (int16)e->uintkey);
-            sqlite3_bind_int64(stmt, 2, (int64)e->nline);
+            sqlite3_bind_int64(stmt, 2, (int64)e->nrow);
         }
         else if (total_bits <= 32)
         {
             TempKmerFreqEntry32 *e = (TempKmerFreqEntry32 *)entry;
             sqlite3_bind_int(stmt, 1, (int32)e->uintkey);
-            sqlite3_bind_int64(stmt, 2, (int64)e->nline);
+            sqlite3_bind_int64(stmt, 2, (int64)e->nrow);
         }
         else
         {
             TempKmerFreqEntry64 *e = (TempKmerFreqEntry64 *)entry;
             sqlite3_bind_int64(stmt, 1, (int64)e->uintkey);
-            sqlite3_bind_int64(stmt, 2, (int64)e->nline);
+            sqlite3_bind_int64(stmt, 2, (int64)e->nrow);
         }
         
         rc = sqlite3_step(stmt);
@@ -3458,9 +3460,9 @@ kmersearch_process_block_with_batch(BlockNumber block,
                 if (!found)
                 {
                     freq_entry->uintkey = uintkey;
-                    freq_entry->nline = 0;
+                    freq_entry->nrow = 0;
                 }
-                freq_entry->nline++;
+                freq_entry->nrow++;
             }
             else if (ctx->total_bits <= 32)
             {
@@ -3472,9 +3474,9 @@ kmersearch_process_block_with_batch(BlockNumber block,
                 if (!found)
                 {
                     freq_entry->uintkey = uintkey;
-                    freq_entry->nline = 0;
+                    freq_entry->nrow = 0;
                 }
-                freq_entry->nline++;
+                freq_entry->nrow++;
             }
             else
             {
@@ -3486,9 +3488,9 @@ kmersearch_process_block_with_batch(BlockNumber block,
                 if (!found)
                 {
                     freq_entry->uintkey = uintkey;
-                    freq_entry->nline = 0;
+                    freq_entry->nrow = 0;
                 }
-                freq_entry->nline++;
+                freq_entry->nrow++;
             }
         }
         
