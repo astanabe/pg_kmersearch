@@ -1800,10 +1800,13 @@ kmersearch_parallel_highfreq_kmer_cache_load_internal(Oid table_oid, const char 
     /* Total size = cache structure + DSA area (at least 8192) + entries + overhead */
     segment_size = cache_struct_size + dsa_min_size + entries_size + dshash_overhead;
     
-    /* Ensure total size is reasonable */
+    /* Ensure minimum segment size for DSM/DSA requirements */
     if (segment_size < 16384) {
         segment_size = 16384; /* At least 16KB total */
     }
+    
+    elog(DEBUG1, "DSM segment size calculation: cache_struct=%zu, dsa_min=%zu, entries=%zu, overhead=%zu, total=%zu",
+         cache_struct_size, dsa_min_size, entries_size, dshash_overhead, segment_size);
     
     /* Create DSM segment */
     
