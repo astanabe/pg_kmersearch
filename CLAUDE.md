@@ -279,5 +279,9 @@ cp <backup_file> <original_file>
 - **NEVER** execute git commit without explicit user instruction
 - **NEVER** use `git add -A` or `git add .` when temporary files exist in the repository
 - **ALWAYS** wait for explicit user permission before any git operations
+- **ALWAYS** update KMERSEARCH_BUILD_VERSION in kmersearch.h before committing changes
+  - Format: `"1.0.YYYY.MM.DD"` where YYYY.MM.DD is the current date
+  - Example: `#define KMERSEARCH_BUILD_VERSION "1.0.2025.08.19"`
+  - Use `date +%Y.%m.%d` to get the correct date format
 - When preparing to commit, list the specific files to be committed and wait for user approval
 - Be aware of temporary files, build artifacts, and test outputs that should not be committed
