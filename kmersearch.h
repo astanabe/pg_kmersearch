@@ -266,6 +266,9 @@ typedef struct PartitionBlockMapping
     BlockNumber local_block_number;       /* Local block number within partition */
 } PartitionBlockMapping;
 
+/* Maximum number of parallel workers */
+#define MAX_PARALLEL_WORKERS 256
+
 typedef struct KmerAnalysisSharedState
 {
     LWLockPadded mutex;                   /* Exclusive control mutex */
@@ -289,6 +292,11 @@ typedef struct KmerAnalysisSharedState
     PartitionBlockInfo *partition_blocks; /* Array of partition block ranges */
     BlockNumber total_blocks_all_partitions; /* Total blocks across all partitions */
     pg_atomic_uint32 next_global_block;   /* Global block counter for unified processing */
+    
+    /* SQLite3-based temporary file management */
+    char        temp_dir_path[MAXPGPATH]; /* Temporary directory path for SQLite3 files */
+    char        worker_temp_files[MAX_PARALLEL_WORKERS][MAXPGPATH]; /* Worker temporary file paths */
+    slock_t     worker_file_lock;         /* Lock for worker file path registration */
 } KmerAnalysisSharedState;
 
 /* K-mer entry structures for different sizes */
@@ -685,6 +693,7 @@ Datum kmersearch_parallel_highfreq_kmer_cache_free(PG_FUNCTION_ARGS);
 /* Analysis functions */
 Datum kmersearch_perform_highfreq_analysis(PG_FUNCTION_ARGS);
 Datum kmersearch_undo_highfreq_analysis(PG_FUNCTION_ARGS);
+Datum kmersearch_delete_tempfiles(PG_FUNCTION_ARGS);
 
 /* Analysis dshash functions */
 bool kmersearch_is_kmer_hash_in_analysis_dshash(uint64 kmer_hash);

@@ -705,3 +705,13 @@ CREATE FUNCTION kmersearch_partition_table(table_name text, partition_count int,
 RETURNS void
 AS 'MODULE_PATHNAME', 'kmersearch_partition_table'
 LANGUAGE C;
+
+-- Temporary file cleanup function
+CREATE FUNCTION kmersearch_delete_tempfiles()
+RETURNS TABLE(
+    deleted_count integer,
+    deleted_size bigint,
+    error_count integer
+)
+AS 'MODULE_PATHNAME', 'kmersearch_delete_tempfiles'
+LANGUAGE C STRICT;
