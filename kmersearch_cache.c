@@ -1783,7 +1783,17 @@ kmersearch_parallel_highfreq_kmer_cache_load_internal(Oid table_oid, const char 
     /* Calculate required segment size using total count */
     
     cache_struct_size = MAXALIGN(sizeof(ParallelHighfreqKmerCache));
-    entries_size = total_kmer_count * sizeof(ParallelHighfreqKmerCacheEntry);
+    
+    /* Calculate entry size based on total_bits (kmer_size * 2 + occur_bitlen) */
+    total_bits = k_value * 2 + kmersearch_occur_bitlen;
+    if (total_bits <= 16) {
+        entries_size = total_kmer_count * sizeof(ParallelHighfreqKmerCacheEntry16);
+    } else if (total_bits <= 32) {
+        entries_size = total_kmer_count * sizeof(ParallelHighfreqKmerCacheEntry32);
+    } else {
+        entries_size = total_kmer_count * sizeof(ParallelHighfreqKmerCacheEntry64);
+    }
+    
     dsa_min_size = 8192; /* Minimum DSA area size */
     dshash_overhead = MAXALIGN(512); /* Extra space for dshash overhead */
     

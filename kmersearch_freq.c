@@ -57,11 +57,6 @@ static int analysis_kmer_hash_compare(const void *a, const void *b, size_t size,
 static uint32 analysis_kmer_hash_hash(const void *key, size_t size, void *arg);
 static uint32 kmersearch_uint16_identity_hash(const void *key, size_t keysize, void *arg);
 static uint32 kmersearch_uint32_identity_hash(const void *key, size_t keysize, void *arg);
-static bool kmersearch_create_analysis_dshash(int estimated_entries, int kmer_size);
-static void kmersearch_cleanup_analysis_dshash(void);
-static void kmersearch_populate_analysis_dshash_from_workers(KmerWorkerState *workers, int num_workers, uint64 threshold_rows);
-static int kmersearch_get_analysis_dshash_count(int k_size, uint64 threshold_rows);
-static void kmersearch_insert_uintkey_from_dshash(Oid table_oid, const char *column_name, int k_size, uint64 threshold_rows);
 
 /* SQLite3 helper functions */
 static void kmersearch_register_worker_temp_file(KmerAnalysisSharedState *shared_state, 
@@ -391,22 +386,6 @@ kmersearch_flush_buffer64_to_table(UintkeyBuffer64 *buffer, const char *temp_tab
     pfree(query.data);
 }
 
-/* Analysis context for managing dshash resources */
-typedef struct KmerAnalysisContext
-{
-    dsm_segment *dsm_seg;
-    dsa_area *dsa;
-    dshash_table *hash;
-    dsm_handle dsm_handle;
-    dshash_table_handle hash_handle;
-} KmerAnalysisContext;
-
-/* Handles structure for passing to workers via shm_toc */
-typedef struct KmerAnalysisHandles
-{
-    dsm_handle dsm_handle;
-    dshash_table_handle hash_handle;
-} KmerAnalysisHandles;
 
 /* Forward declaration for block-based k-mer extraction */
 static void kmersearch_extract_kmers_from_block(Oid table_oid, AttrNumber column_attnum, Oid column_type_oid,
@@ -414,13 +393,6 @@ static void kmersearch_extract_kmers_from_block(Oid table_oid, AttrNumber column
 static PartitionBlockMapping kmersearch_map_global_to_partition_block(BlockNumber global_block, 
                                         KmerAnalysisSharedState *state);
 static void kmersearch_update_kmer_counts_in_dshash(Datum sequence_datum, int kmer_size, int occur_bitlen, dshash_table *hash, Oid column_type_oid);
-static void create_analysis_dshash_resources(KmerAnalysisContext *ctx, int estimated_entries, int kmer_size);
-
-/* Analysis-specific dshash resources for temp_kmer_final replacement */
-/* IMPORTANT: These are only valid in the main process, NOT in parallel workers */
-static dsm_segment *analysis_dsm_segment = NULL;
-static dsa_area *analysis_dsa = NULL;
-static dshash_table *analysis_highfreq_hash = NULL;
 
 /* High-frequency k-mer dshash entry structure */
 typedef struct AnalysisHighfreqKmerEntry {
@@ -743,8 +715,6 @@ kmersearch_perform_highfreq_analysis_parallel(Oid table_oid, const char *column_
     KmerAnalysisResult result = {0};  /* Initialize all fields to zero */
     ParallelContext *pcxt = NULL;
     KmerAnalysisSharedState *shared_state = NULL;
-    KmerAnalysisContext analysis_ctx = {0};
-    KmerAnalysisHandles *handles = NULL;
     shm_toc *toc;
     char *shm_pointer;
     bool table_locked = false;
@@ -876,85 +846,27 @@ kmersearch_perform_highfreq_analysis_parallel(Oid table_oid, const char *column_
         LockRelationOid(table_oid, ExclusiveLock);
         table_locked = true;
         
-        /* Create dshash resources BEFORE entering parallel mode */
-        {
-            int total_bits;
-            uint64 max_possible_kmers;
-            uint64 practical_estimate;
-            uint64 estimated_kmers;
-            
-            /* Ensure global variables are NULL before entering parallel mode */
-            analysis_dsm_segment = NULL;
-            analysis_dsa = NULL;
-            analysis_highfreq_hash = NULL;
-            
-            /* Calculate theoretical maximum k-mer types based on bit configuration */
-            /* Total bits = kmer_size * 2 + occur_bitlen */
-            total_bits = k_size * 2 + kmersearch_occur_bitlen;
-            
-            /* Calculate theoretical maximum k-mer types: 2^total_bits */
-            /* This is the actual maximum number of distinct k-mers possible */
-            /* total_bits can be at most 64 (kmer_size max 32 * 2 + occur_bitlen max 16 = 64) */
-            if (total_bits == 64) {
-                /* Special case: 1ULL << 64 is undefined behavior (shift >= width) */
-                /* With 64 bits, all possible uint64 values are valid k-mers */
-                /* So the count is 2^64, but that overflows uint64, so we use UINT64_MAX */
-                /* which represents 2^64-1, close enough for estimation purposes */
-                max_possible_kmers = UINT64_MAX;
-            } else {
-                /* For less than 64 bits, calculate 2^total_bits normally */
-                max_possible_kmers = (1ULL << total_bits);
-            }
-            
-            /* Estimate actual k-mers as minimum of theoretical max and practical estimate */
-            /* Use total_rows * 100 as a practical upper bound (each row may have many k-mers) */
-            practical_estimate = total_rows * 100;
-            estimated_kmers = Min(max_possible_kmers, practical_estimate);
-            
-            /* Ensure we don't overflow int for the dshash API */
-            if (estimated_kmers > INT_MAX) {
-                estimated_kmers = INT_MAX;
-            }
-            
-            elog(DEBUG1, "K-mer estimation: k_size=%d, total_bits=%d, max_possible=%lu, practical=%lu, estimated=%lu",
-                 k_size, total_bits, max_possible_kmers, practical_estimate, estimated_kmers);
-            
-            /* Note: The dshash key type (uint16/uint32/uint64) is determined by k_size in
-             * create_analysis_dshash_resources(), but the actual value range is limited by total_bits */
-            
-            create_analysis_dshash_resources(&analysis_ctx, (int)estimated_kmers, k_size);
-        }
         
         /* Enter parallel mode */
         EnterParallelMode();
-        
-        /* Now set global pointers AFTER entering parallel mode so workers don't inherit them */
-        analysis_dsm_segment = analysis_ctx.dsm_seg;
-        analysis_dsa = analysis_ctx.dsa;
-        analysis_highfreq_hash = analysis_ctx.hash;
         
         /* Create parallel context */
         pcxt = CreateParallelContext("pg_kmersearch", "kmersearch_analysis_worker", requested_workers);
         
         /* DSM size estimation - estimate each chunk separately as per PostgreSQL best practice */
         shm_toc_estimate_chunk(&pcxt->estimator, MAXALIGN(sizeof(KmerAnalysisSharedState)));
-        shm_toc_estimate_chunk(&pcxt->estimator, MAXALIGN(sizeof(KmerAnalysisHandles)));
         if (table_type == KMERSEARCH_TABLE_PARTITIONED)
         {
             /* Additional space for partition block info array */
             shm_toc_estimate_chunk(&pcxt->estimator, MAXALIGN(sizeof(PartitionBlockInfo) * num_partitions));
-            shm_toc_estimate_keys(&pcxt->estimator, 3); /* SHARED_STATE, HANDLES, PARTITION_BLOCKS */
+            shm_toc_estimate_keys(&pcxt->estimator, 2); /* SHARED_STATE, PARTITION_BLOCKS */
         }
         else
         {
-            shm_toc_estimate_keys(&pcxt->estimator, 2); /* SHARED_STATE, HANDLES */
+            shm_toc_estimate_keys(&pcxt->estimator, 1); /* SHARED_STATE */
         }
         elog(DEBUG1, "  - sizeof(KmerAnalysisSharedState) = %zu, MAXALIGN = %zu", 
              sizeof(KmerAnalysisSharedState), MAXALIGN(sizeof(KmerAnalysisSharedState)));
-        elog(DEBUG1, "  - sizeof(dsm_handle) = %zu, MAXALIGN = %zu", 
-             sizeof(dsm_handle), MAXALIGN(sizeof(dsm_handle)));
-        elog(DEBUG1, "  - sizeof(dshash_table_handle) = %zu, MAXALIGN = %zu", 
-             sizeof(dshash_table_handle), MAXALIGN(sizeof(dshash_table_handle)));
         
         /* Initialize DSM */
         InitializeParallelDSM(pcxt);
@@ -1022,16 +934,6 @@ kmersearch_perform_highfreq_analysis_parallel(Oid table_oid, const char *column_
         elog(DEBUG1, "kmersearch_perform_highfreq_analysis_parallel: Initialized shared state - next_block=%u, total_blocks=%u, is_partitioned=%d",
              shared_state->next_block, shared_state->total_blocks, shared_state->is_partitioned);
         shm_toc_insert(toc, KMERSEARCH_KEY_SHARED_STATE, shared_state);
-        
-        /* Store handles for workers */
-        handles = (KmerAnalysisHandles *)shm_toc_allocate(toc, sizeof(KmerAnalysisHandles));
-        if (!handles)
-        {
-            elog(ERROR, "Failed to allocate memory for analysis handles in shm_toc");
-        }
-        handles->dsm_handle = analysis_ctx.dsm_handle;
-        handles->hash_handle = analysis_ctx.hash_handle;
-        shm_toc_insert(toc, KMERSEARCH_KEY_HANDLES, handles);
         
         /* Launch parallel workers */
         LaunchParallelWorkers(pcxt);
@@ -1295,7 +1197,6 @@ kmersearch_perform_highfreq_analysis_parallel(Oid table_oid, const char *column_
     PG_CATCH();
     {
         /* Error cleanup */
-        kmersearch_cleanup_analysis_dshash();
         if (pcxt) {
             DestroyParallelContext(pcxt);
         }
@@ -1308,8 +1209,7 @@ kmersearch_perform_highfreq_analysis_parallel(Oid table_oid, const char *column_
     }
     PG_END_TRY();
     
-    /* Normal cleanup - already done above, just cleanup dshash and unlock */
-    kmersearch_cleanup_analysis_dshash();
+    /* Normal cleanup - already done above, just unlock */
     UnlockRelationOid(table_oid, ExclusiveLock);
     
     /* Free partition blocks if allocated */
@@ -1485,545 +1385,11 @@ kmersearch_uint32_identity_hash(const void *key, size_t keysize, void *arg)
     return *(const uint32 *)key;
 }
 
-/*
- * Create DSM segment, DSA area, and dshash table for high-frequency k-mer analysis
- * This must be called before parallel workers are launched
- */
-static bool
-kmersearch_create_analysis_dshash(int estimated_entries, int kmer_size)
-{
-    dshash_parameters params;
-    Size segment_size;
-    Size shared_buffers_size;
-    Size max_segment_size;
-    int total_bits;
-    
-    /* Clean up any existing resources first */
-    if (analysis_dsm_segment != NULL || analysis_dsa != NULL || analysis_highfreq_hash != NULL) {
-        kmersearch_cleanup_analysis_dshash();
-    }
-    
-    /* Calculate required DSM segment size based on shared_buffers */
-    shared_buffers_size = (Size)NBuffers * (Size)BLCKSZ;
-    max_segment_size = shared_buffers_size / 2;  /* Use half of shared_buffers as max */
-    
-    segment_size = 1024 * 1024;  /* Start with 1MB */
-    if (estimated_entries > 10000) {
-        segment_size = estimated_entries * 64;  /* Estimate 64 bytes per entry */
-    }
-    
-    /* Cap at half of shared_buffers to avoid excessive memory usage */
-    if (segment_size > max_segment_size) {
-        segment_size = max_segment_size;
-        elog(DEBUG1, "Capping DSM segment size to %zu bytes (half of shared_buffers: %zu bytes)",
-             segment_size, shared_buffers_size);
-    }
-    
-    /* Ensure minimum size for DSA overhead */
-    if (segment_size < 1 * 1024 * 1024) {
-        segment_size = 1 * 1024 * 1024;  /* Minimum 1MB */
-    }
-    
-    /* Step 1: Create DSM segment */
-    PG_TRY();
-    {
-        analysis_dsm_segment = dsm_create(segment_size, 0);
-        if (analysis_dsm_segment == NULL) {
-            ereport(ERROR, (errmsg("Failed to create DSM segment for analysis")));
-        }
-        
-        /* Pin the DSM segment to prevent automatic cleanup */
-        dsm_pin_mapping(analysis_dsm_segment);
-    }
-    PG_CATCH();
-    {
-        ereport(ERROR, (errmsg("Failed to create or pin DSM segment for analysis")));
-        return false;
-    }
-    PG_END_TRY();
-    
-    /* Step 2: Create DSA area */
-    PG_TRY();
-    {
-        analysis_dsa = dsa_create_in_place(dsm_segment_address(analysis_dsm_segment), 
-                                          segment_size, 
-                                          LWTRANCHE_KMERSEARCH_ANALYSIS, 
-                                          analysis_dsm_segment);
-        if (analysis_dsa == NULL) {
-            ereport(ERROR, (errmsg("Failed to create DSA area for analysis")));
-        }
-        
-        /* Pin the DSA area */
-        dsa_pin(analysis_dsa);
-    }
-    PG_CATCH();
-    {
-        if (analysis_dsm_segment != NULL) {
-            dsm_unpin_mapping(analysis_dsm_segment);
-            dsm_detach(analysis_dsm_segment);
-            analysis_dsm_segment = NULL;
-        }
-        ereport(ERROR, (errmsg("Failed to create or pin DSA area for analysis")));
-        return false;
-    }
-    PG_END_TRY();
-    
-    /* Step 3: Set up dshash parameters based on total_bits */
-    /* Calculate total bits to determine key type */
-    total_bits = kmer_size * 2 + kmersearch_occur_bitlen;
-    
-    memset(&params, 0, sizeof(params));
-    if (total_bits <= 16) {
-        /* Use uint16 for keys when total_bits <= 16 */
-        params.key_size = sizeof(uint16);
-        params.entry_size = sizeof(KmerEntry16);
-        params.compare_function = dshash_memcmp;
-        params.hash_function = kmersearch_uint16_identity_hash;
-    } else if (total_bits <= 32) {
-        /* Use uint32 for keys when total_bits <= 32 */
-        params.key_size = sizeof(uint32);
-        params.entry_size = sizeof(KmerEntry32);
-        params.compare_function = dshash_memcmp;
-        params.hash_function = kmersearch_uint32_identity_hash;
-    } else {
-        /* Use uint64 for keys when total_bits <= 64 */
-        params.key_size = sizeof(uint64);
-        params.entry_size = sizeof(KmerEntry64);
-        params.compare_function = dshash_memcmp;
-        params.hash_function = dshash_memhash;
-    }
-    params.tranche_id = LWTRANCHE_KMERSEARCH_ANALYSIS;
-    
-    /* Step 4: Create dshash table */
-    PG_TRY();
-    {
-        analysis_highfreq_hash = dshash_create(analysis_dsa, &params, NULL);
-        if (analysis_highfreq_hash == NULL) {
-            ereport(ERROR, (errmsg("Failed to create dshash table for analysis")));
-        }
-    }
-    PG_CATCH();
-    {
-        if (analysis_dsa != NULL) {
-            dsa_unpin(analysis_dsa);
-            dsa_detach(analysis_dsa);
-            analysis_dsa = NULL;
-        }
-        if (analysis_dsm_segment != NULL) {
-            dsm_unpin_mapping(analysis_dsm_segment);
-            dsm_detach(analysis_dsm_segment);
-            analysis_dsm_segment = NULL;
-        }
-        ereport(ERROR, (errmsg("Failed to create dshash table for analysis")));
-        return false;
-    }
-    PG_END_TRY();
-    return true;
-}
 
-/*
- * Clean up analysis DSM/DSA/dshash resources
- */
-static void
-kmersearch_cleanup_analysis_dshash(void)
-{
-    /* Never perform cleanup in parallel workers */
-    if (IsParallelWorker()) {
-        return;
-    }
-    
-    /* Step 1: Clean up dshash table */
-    if (analysis_highfreq_hash != NULL) {
-        dshash_destroy(analysis_highfreq_hash);
-        analysis_highfreq_hash = NULL;
-    }
-    
-    /* Step 2: Clean up DSA area */
-    if (analysis_dsa != NULL) {
-        dsa_unpin(analysis_dsa);
-        dsa_detach(analysis_dsa);
-        analysis_dsa = NULL;
-    }
-    
-    /* Step 3: Clean up DSM segment */
-    if (analysis_dsm_segment != NULL) {
-        dsm_detach(analysis_dsm_segment);
-        analysis_dsm_segment = NULL;
-    }
-}
 
-/*
- * Check if a k-mer hash exists in the analysis dshash table
- * This function is called from kmersearch.c, so it's not static
- */
-bool
-kmersearch_is_kmer_hash_in_analysis_dshash(uint64 kmer_hash)
-{
-    AnalysisHighfreqKmerEntry *entry;
-    bool found = false;
-    
-    /* This function should not be called from parallel workers */
-    if (IsParallelWorker() || analysis_highfreq_hash == NULL) {
-        return false;
-    }
-    
-    /* Look up the k-mer hash in the dshash table */
-    entry = (AnalysisHighfreqKmerEntry *) dshash_find(analysis_highfreq_hash, 
-                                                     &kmer_hash, 
-                                                     false);
-    
-    if (entry != NULL) {
-        found = true;
-        dshash_release_lock(analysis_highfreq_hash, entry);
-    }
-    
-    return found;
-}
 
-/*
- * Populate analysis dshash using hybrid SQL+dshash approach
- * First creates temp_kmer_final table with SQL aggregation, then loads into dshash
- */
-static void
-kmersearch_populate_analysis_dshash_from_workers(KmerWorkerState *workers, int num_workers, uint64 threshold_rows)
-{
-    StringInfoData query;
-    char *temp_kmer_final_name;
-    int worker_id;
-    int ret;
-    int processed_entries = 0;
-    StringInfoData debug_query;
-    bool first_table;
-    int total_bits;
-    const char *kmer_type;
-    const char *freq_type;
-    
-    if (analysis_highfreq_hash == NULL) {
-        ereport(ERROR, (errmsg("Analysis dshash table not initialized")));
-    }
-    
-    /* Calculate total bits to determine appropriate data types */
-    total_bits = kmersearch_kmer_size * 2 + kmersearch_occur_bitlen;
-    
-    /* Determine appropriate data types based on total bits */
-    if (total_bits <= 16) {
-        kmer_type = "smallint";  /* int2 */
-    } else if (total_bits <= 32) {
-        kmer_type = "integer";   /* int4 */
-    } else {
-        kmer_type = "bigint";    /* int8 */
-    }
-    
-    /* Frequency count always uses integer (int4) as it represents occurrence count */
-    freq_type = "integer";
-    
-    /* Generate unique name for temp_kmer_final table */
-    temp_kmer_final_name = kmersearch_generate_unique_temp_table_name("temp_kmer_final", -1);
-    
-    /* Step 1: Create temp_kmer_final table with SQL aggregation (like original implementation) */
-    initStringInfo(&query);
-    appendStringInfo(&query, 
-        "CREATE TEMP TABLE %s ("
-        "kmer_data %s PRIMARY KEY, "
-        "frequency_count %s"
-        ")", temp_kmer_final_name, kmer_type, freq_type);
-    
-    ret = SPI_exec(query.data, 0);
-    if (ret != SPI_OK_UTILITY) {
-        ereport(ERROR, (errmsg("Failed to create temp_kmer_final table")));
-    }
-    pfree(query.data);
-    
-    /* Debug: Check worker table contents before merging */
-    for (worker_id = 0; worker_id < num_workers; worker_id++) {
-        if (workers[worker_id].temp_table_name == NULL) {
-            continue;
-        }
-        
-        initStringInfo(&debug_query);
-        appendStringInfo(&debug_query, "SELECT count(*) FROM %s", workers[worker_id].temp_table_name);
-        
-        ret = SPI_exec(debug_query.data, 0);
-        if (ret == SPI_OK_SELECT && SPI_processed > 0) {
-            bool isnull;
-            int row_count = DatumGetInt32(SPI_getbinval(SPI_tuptable->vals[0], SPI_tuptable->tupdesc, 1, &isnull));
-        }
-        pfree(debug_query.data);
-    }
-    
-    /* Step 2: Build UNION ALL query to combine all worker tables with SQL aggregation */
-    initStringInfo(&query);
-    appendStringInfo(&query, "INSERT INTO %s (kmer_data, frequency_count) ", temp_kmer_final_name);
-    appendStringInfoString(&query, "SELECT kmer_data, sum(frequency_count) FROM (");
-    
-    first_table = true;
-    for (worker_id = 0; worker_id < num_workers; worker_id++) {
-        if (workers[worker_id].temp_table_name == NULL) {
-            continue;
-        }
-        
-        if (!first_table) {
-            appendStringInfoString(&query, " UNION ALL ");
-        }
-        appendStringInfo(&query, "SELECT kmer_data, frequency_count FROM %s", 
-                        workers[worker_id].temp_table_name);
-        first_table = false;
-    }
-    
-    appendStringInfo(&query, ") AS combined GROUP BY kmer_data HAVING sum(frequency_count) > %lu", 
-                    (unsigned long)threshold_rows);
-    
-    /* Execute SQL aggregation query */
-    ret = SPI_exec(query.data, 0);
-    if (ret != SPI_OK_INSERT) {
-        ereport(ERROR,
-                (errcode(ERRCODE_INTERNAL_ERROR),
-                 errmsg("Failed to execute k-mer aggregation query"),
-                 errdetail("SPI_exec returned %d", ret),
-                 errhint("Query was: %s", query.data)));
-    }
-    pfree(query.data);
-    
-    /* Step 3: Load aggregated results from temp_kmer_final into dshash */
-    initStringInfo(&query);
-    appendStringInfo(&query, "SELECT kmer_data, frequency_count FROM %s", temp_kmer_final_name);
-    
-    ret = SPI_exec(query.data, 0);
-    if (ret == SPI_OK_SELECT) {
-        int i;
-        
-        /* Insert each high-frequency k-mer into the dshash table */
-        for (i = 0; i < SPI_processed; i++) {
-            bool isnull_kmer, isnull_freq;
-            uint64 kmer_hash = DatumGetUInt64(SPI_getbinval(SPI_tuptable->vals[i], 
-                                                            SPI_tuptable->tupdesc, 1, &isnull_kmer));
-            int frequency = DatumGetInt32(SPI_getbinval(SPI_tuptable->vals[i], 
-                                                       SPI_tuptable->tupdesc, 2, &isnull_freq));
-            
-            if (!isnull_kmer && !isnull_freq) {
-                AnalysisHighfreqKmerEntry *entry;
-                bool found;
-                
-                /* Insert entry in dshash table (should be new since we're loading from aggregated table) */
-                entry = (AnalysisHighfreqKmerEntry *) dshash_find_or_insert(analysis_highfreq_hash,
-                                                                           &kmer_hash,
-                                                                           &found);
-                if (entry != NULL) {
-                    entry->kmer_hash = kmer_hash;
-                    entry->frequency_count = frequency;
-                    processed_entries++;
-                    dshash_release_lock(analysis_highfreq_hash, entry);
-                    
-                    if (found) {
-                        ereport(WARNING, (errmsg("Duplicate k-mer hash found during dshash loading: %lu", kmer_hash)));
-                    }
-                }
-            }
-        }
-    }
-    pfree(query.data);
-    
-    /* Step 4: Clean up worker temp tables and temp_kmer_final */
-    for (worker_id = 0; worker_id < num_workers; worker_id++) {
-        if (workers[worker_id].temp_table_name == NULL) {
-            continue;
-        }
-        
-        initStringInfo(&query);
-        appendStringInfo(&query, "DROP TABLE IF EXISTS %s", workers[worker_id].temp_table_name);
-        SPI_exec(query.data, 0);
-        pfree(query.data);
-    }
-    
-    /* Clean up temp_kmer_final table */
-    initStringInfo(&query);
-    appendStringInfo(&query, "DROP TABLE IF EXISTS %s", temp_kmer_final_name);
-    SPI_exec(query.data, 0);
-    pfree(query.data);
-    
-    pfree(temp_kmer_final_name);
-}
 
-/*
- * Get count of high-frequency k-mers (those exceeding threshold)
- */
-static int
-kmersearch_get_analysis_dshash_count(int k_size, uint64 threshold_rows)
-{
-    int count = 0;
-    dshash_seq_status status;
-    void *entry;
-    int total_bits;
-    
-    if (analysis_highfreq_hash == NULL) {
-        return 0;
-    }
-    
-    total_bits = k_size * 2 + kmersearch_occur_bitlen;
-    
-    /* Iterate through all entries and count those exceeding threshold */
-    dshash_seq_init(&status, analysis_highfreq_hash, false);
-    while ((entry = dshash_seq_next(&status)) != NULL) {
-        int kmer_count;
-        
-        /* Extract count based on total_bits */
-        if (total_bits <= 16) {
-            KmerEntry16 *entry16 = (KmerEntry16 *)entry;
-            kmer_count = entry16->count;
-        } else if (total_bits <= 32) {
-            KmerEntry32 *entry32 = (KmerEntry32 *)entry;
-            kmer_count = entry32->count;
-        } else {
-            KmerEntry64 *entry64 = (KmerEntry64 *)entry;
-            kmer_count = entry64->count;
-        }
-        
-        /* Count only if exceeds threshold */
-        if (kmer_count > threshold_rows) {
-            count++;
-        }
-    }
-    dshash_seq_term(&status);
-    
-    return count;
-}
 
-/*
- * Insert uintkey values directly from dshash into kmersearch_highfreq_kmer table
- */
-static void
-kmersearch_insert_uintkey_from_dshash(Oid table_oid, const char *column_name, int k_size, uint64 threshold_rows)
-{
-    dshash_seq_status status;
-    void *entry;
-    StringInfoData query;
-    int processed_entries = 0;
-    bool first_entry = true;
-    int total_entries = 0;
-    int high_freq_entries = 0;
-    int total_bits;
-    
-    /* Ensure this function is never called from parallel workers */
-    if (IsParallelWorker())
-        ereport(ERROR,
-                (errcode(ERRCODE_INVALID_TRANSACTION_STATE),
-                 errmsg("cannot execute kmersearch_insert_uintkey_from_dshash() in a parallel worker")));
-    
-    if (analysis_highfreq_hash == NULL) {
-        ereport(ERROR, (errmsg("Analysis dshash table not initialized")));
-    }
-    
-    /* Double-check we're not in a parallel worker */
-    if (IsParallelWorker()) {
-        ereport(ERROR,
-                (errcode(ERRCODE_INVALID_TRANSACTION_STATE),
-                 errmsg("analysis_highfreq_hash access detected in parallel worker"),
-                 errdetail("This should never happen after initial check")));
-    }
-    
-    total_bits = k_size * 2 + kmersearch_occur_bitlen;
-    
-    /* Threshold already calculated in the caller - just use it */
-    elog(DEBUG1, "Using threshold_rows = %lu for filtering high-frequency k-mers", (unsigned long)threshold_rows);
-    
-    /* Build base insert query */
-    initStringInfo(&query);
-    appendStringInfo(&query,
-        "INSERT INTO kmersearch_highfreq_kmer (table_oid, column_name, uintkey, detection_reason) VALUES ");
-    
-    /* Iterate through all entries in the dshash table */
-    dshash_seq_init(&status, analysis_highfreq_hash, false);
-    
-    while ((entry = dshash_seq_next(&status)) != NULL) {
-        uint64 uintkey;
-        int count;
-        
-        total_entries++;
-        
-        /* Extract uintkey and count based on total_bits */
-        if (total_bits <= 16) {
-            KmerEntry16 *entry16 = (KmerEntry16 *)entry;
-            uintkey = (uint64)entry16->kmer;
-            count = entry16->count;
-        } else if (total_bits <= 32) {
-            KmerEntry32 *entry32 = (KmerEntry32 *)entry;
-            uintkey = (uint64)entry32->kmer;
-            count = entry32->count;
-        } else {
-            KmerEntry64 *entry64 = (KmerEntry64 *)entry;
-            uintkey = entry64->kmer;
-            count = entry64->count;
-        }
-        
-        /* Debug: log uintkey counts */
-        if (count > 0) {
-            elog(DEBUG1, "Uintkey %lu has count=%d, threshold=%lu", (unsigned long)uintkey, count, (unsigned long)threshold_rows);
-        }
-        
-        /* Only insert if count exceeds threshold */
-        if (count > threshold_rows) {
-            high_freq_entries++;
-            if (!first_entry) {
-                appendStringInfoString(&query, ", ");
-            }
-            
-            /* Add entry to batch insert */
-            appendStringInfo(&query, "(%u, %s, %ld, 'frequency_analysis')",
-                table_oid, 
-                quote_literal_cstr(column_name),
-                (int64)uintkey);
-            
-            processed_entries++;
-            first_entry = false;
-            
-            /* Execute batch insert every 1000 entries to avoid query length limits */
-            if (processed_entries % 1000 == 0) {
-                int ret;
-                
-                /* Safety check before SQL execution */
-                if (IsParallelWorker()) {
-                    ereport(ERROR,
-                            (errcode(ERRCODE_INVALID_TRANSACTION_STATE),
-                             errmsg("About to execute SQL in parallel worker - this should never happen"),
-                             errdetail("Query: %s", query.data)));
-                }
-                
-                ret = SPI_exec(query.data, 0);
-                if (ret != SPI_OK_INSERT) {
-                    ereport(ERROR, (errmsg("Failed to insert batch of uintkey values")));
-                }
-                
-                /* Reset query for next batch */
-                pfree(query.data);
-                initStringInfo(&query);
-                appendStringInfo(&query,
-                    "INSERT INTO kmersearch_highfreq_kmer (table_oid, column_name, uintkey, detection_reason) VALUES ");
-                first_entry = true;
-            }
-        }
-    }
-    
-    /* Execute final batch if there are remaining entries */
-    if (!first_entry) {
-        int ret;
-        
-        /* Final safety check before SQL execution */
-        if (IsParallelWorker()) {
-            ereport(ERROR,
-                    (errcode(ERRCODE_INVALID_TRANSACTION_STATE),
-                     errmsg("About to execute SQL in parallel worker - this should never happen"),
-                     errdetail("Query: %s", query.data)));
-        }
-        
-        ret = SPI_exec(query.data, 0);
-        if (ret != SPI_OK_INSERT) {
-            ereport(ERROR, (errmsg("Failed to insert final batch of uintkey values")));
-        }
-    }
-    
-    dshash_seq_term(&status);
-    pfree(query.data);
-}
 
 /*
  * Calculate optimal buffer size based on memory constraints
@@ -2836,106 +2202,6 @@ kmersearch_update_kmer_counts_in_dshash(Datum sequence_datum, int kmer_size, int
         pfree(kmer_array);
 }
 
-/*
- * Create dshash resources for analysis (must be called before EnterParallelMode)
- */
-static void
-create_analysis_dshash_resources(KmerAnalysisContext *ctx, int estimated_entries, int kmer_size)
-{
-    dshash_parameters params;
-    Size segment_size;
-    Size shared_buffers_size;
-    Size max_segment_size;
-    int total_bits;
-    
-    /* Get shared_buffers size in bytes */
-    shared_buffers_size = (Size)NBuffers * (Size)BLCKSZ;
-    /* Use half of shared_buffers as maximum for DSM segment */
-    max_segment_size = shared_buffers_size / 2;
-    
-    /* Calculate initial DSM segment size
-     * DSA can grow dynamically, so we start with a reasonable initial size
-     * and let it expand as needed during processing
-     */
-    if (estimated_entries <= 100000) {
-        segment_size = 64 * 1024 * 1024;  /* 64MB for small datasets */
-    } else if (estimated_entries <= 10000000) {
-        segment_size = 256 * 1024 * 1024;  /* 256MB for medium datasets */
-    } else {
-        segment_size = 1024 * 1024 * 1024;  /* 1GB for large datasets */
-    }
-    
-    /* Cap at half of shared_buffers to avoid excessive memory usage */
-    if (segment_size > max_segment_size) {
-        segment_size = max_segment_size;
-        elog(WARNING, "Capping DSM segment size to %zu bytes (half of shared_buffers: %zu bytes)",
-             segment_size, shared_buffers_size);
-    }
-    
-    elog(DEBUG1, "create_analysis_dshash_resources: Creating DSM segment with size %zu for %d estimated entries", 
-         segment_size, estimated_entries);
-    
-    /* Create DSM segment */
-    ctx->dsm_seg = dsm_create(segment_size, 0);
-    if (ctx->dsm_seg == NULL) {
-        ereport(ERROR, (errmsg("Failed to create DSM segment for analysis")));
-    }
-    /* Pin both the segment and mapping to prevent cleanup issues */
-    dsm_pin_segment(ctx->dsm_seg);
-    dsm_pin_mapping(ctx->dsm_seg);
-    ctx->dsm_handle = dsm_segment_handle(ctx->dsm_seg);
-    
-    /* Create DSA area */
-    ctx->dsa = dsa_create_in_place(dsm_segment_address(ctx->dsm_seg), 
-                                   segment_size, 
-                                   LWTRANCHE_KMERSEARCH_ANALYSIS, 
-                                   ctx->dsm_seg);
-    if (ctx->dsa == NULL) {
-        dsm_detach(ctx->dsm_seg);
-        ereport(ERROR, (errmsg("Failed to create DSA area for analysis")));
-    }
-    dsa_pin(ctx->dsa);
-    
-    /* Calculate total bits to determine key type */
-    total_bits = kmer_size * 2 + kmersearch_occur_bitlen;
-    
-    /* Set up dshash parameters based on total_bits */
-    memset(&params, 0, sizeof(params));
-    if (total_bits <= 16) {
-        /* Use uint16 for keys when total_bits <= 16 */
-        params.key_size = sizeof(uint16);
-        params.entry_size = sizeof(KmerEntry16);
-        params.compare_function = dshash_memcmp;
-        params.hash_function = kmersearch_uint16_identity_hash;
-    } else if (total_bits <= 32) {
-        /* Use uint32 for keys when total_bits <= 32 */
-        params.key_size = sizeof(uint32);
-        params.entry_size = sizeof(KmerEntry32);
-        params.compare_function = dshash_memcmp;
-        params.hash_function = kmersearch_uint32_identity_hash;
-    } else {
-        /* Use uint64 for keys when total_bits <= 64 */
-        params.key_size = sizeof(uint64);
-        params.entry_size = sizeof(KmerEntry64);
-        params.compare_function = dshash_memcmp;
-        params.hash_function = dshash_memhash;
-    }
-    params.tranche_id = LWTRANCHE_KMERSEARCH_ANALYSIS;
-    
-    /* Create dshash table */
-    ctx->hash = dshash_create(ctx->dsa, &params, NULL);
-    if (ctx->hash == NULL) {
-        dsa_unpin(ctx->dsa);
-        dsa_detach(ctx->dsa);
-        dsm_unpin_mapping(ctx->dsm_seg);
-        dsm_detach(ctx->dsm_seg);
-        ereport(ERROR, (errmsg("Failed to create dshash table for analysis")));
-    }
-    ctx->hash_handle = dshash_get_hash_table_handle(ctx->hash);
-    
-    /* IMPORTANT: Do NOT set global pointers here - they should only be set after
-     * EnterParallelMode() to prevent parallel workers from inheriting them */
-}
 
 /*
  * Merge worker results using SQL aggregation

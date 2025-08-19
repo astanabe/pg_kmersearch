@@ -695,10 +695,6 @@ Datum kmersearch_perform_highfreq_analysis(PG_FUNCTION_ARGS);
 Datum kmersearch_undo_highfreq_analysis(PG_FUNCTION_ARGS);
 Datum kmersearch_delete_tempfiles(PG_FUNCTION_ARGS);
 
-/* Analysis dshash functions */
-bool kmersearch_is_kmer_hash_in_analysis_dshash(uint64 kmer_hash);
-
-/* K-mer utility functions */
 /* K-mer utility functions */
 int kmersearch_count_degenerate_combinations(const char *kmer, int k);
 void kmersearch_set_bit_at(bits8 *data, int bit_pos, int value);
