@@ -901,7 +901,26 @@ kmersearch_perform_highfreq_analysis_parallel(Oid table_oid, const char *column_
                 elog(DEBUG1, "Using database default tablespace OID: %u", tablespace_oid);
             }
             
+            /* Get the temporary directory path */
             TempTablespacePath(shared_state->temp_dir_path, tablespace_oid);
+            
+            /* Ensure the pgsql_tmp directory exists by creating it if necessary */
+            {
+                char parent_dir[MAXPGPATH];
+                char *last_slash;
+                
+                /* Extract parent directory from temp_dir_path */
+                strlcpy(parent_dir, shared_state->temp_dir_path, MAXPGPATH);
+                last_slash = strrchr(parent_dir, '/');
+                if (last_slash != NULL)
+                {
+                    *last_slash = '\0';
+                    /* Create pgsql_tmp directory if it doesn't exist */
+                    PathNameCreateTemporaryDir(parent_dir, "pgsql_tmp");
+                    elog(DEBUG1, "Ensured pgsql_tmp directory exists in: %s", parent_dir);
+                }
+            }
+            
             elog(DEBUG1, "Selected temp directory: %s (tablespace OID: %u)",
                  shared_state->temp_dir_path, tablespace_oid);
         }
