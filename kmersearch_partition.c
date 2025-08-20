@@ -161,8 +161,8 @@ validate_table_for_partitioning(Oid table_oid, char **dna_column_name, Oid *dna_
     }
     
     /* Get DNA type OIDs */
-    dna2_type_oid = kmersearch_get_dna2_type_oid();
-    dna4_type_oid = kmersearch_get_dna4_type_oid();
+    dna2_type_oid = TypenameGetTypid("dna2");
+    dna4_type_oid = TypenameGetTypid("dna4");
     
     /* Check for DNA2/DNA4 columns */
     tupdesc = RelationGetDescr(rel);

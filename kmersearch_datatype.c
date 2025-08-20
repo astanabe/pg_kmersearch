@@ -12,7 +12,6 @@
 
 #include "kmersearch.h"
 
-static int kmersearch_dna_compare_simd(const uint8_t* a, const uint8_t* b, int bit_len);
 
 PG_FUNCTION_INFO_V1(kmersearch_dna2_in);
 PG_FUNCTION_INFO_V1(kmersearch_dna2_out);
@@ -818,13 +817,6 @@ kmersearch_dna_compare(const uint8_t* a, const uint8_t* b, int bit_len)
     return kmersearch_dna_compare_scalar(a, b, bit_len);
 }
 
-/* Main SIMD dispatch function - now renamed to kmersearch_dna_compare() */
-static int
-kmersearch_dna_compare_simd(const uint8_t* a, const uint8_t* b, int bit_len)
-{
-    /* This function is deprecated - use kmersearch_dna_compare() instead */
-    return kmersearch_dna_compare(a, b, bit_len);
-}
 
 /*
  * BTree comparison functions
@@ -849,7 +841,7 @@ kmersearch_dna2_cmp(PG_FUNCTION_ARGS)
         PG_RETURN_INT32(1);
     
     /* Same bit length, compare bit data using SIMD */
-    result = kmersearch_dna_compare_simd(VARBITS(a), VARBITS(b), bit_len_a);
+    result = kmersearch_dna_compare(VARBITS(a), VARBITS(b), bit_len_a);
     PG_RETURN_INT32(result);
 }
 
@@ -872,7 +864,7 @@ kmersearch_dna4_cmp(PG_FUNCTION_ARGS)
         PG_RETURN_INT32(1);
     
     /* Same bit length, compare bit data using SIMD */
-    result = kmersearch_dna_compare_simd(VARBITS(a), VARBITS(b), bit_len_a);
+    result = kmersearch_dna_compare(VARBITS(a), VARBITS(b), bit_len_a);
     PG_RETURN_INT32(result);
 }
 

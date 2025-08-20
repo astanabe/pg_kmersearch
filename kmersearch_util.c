@@ -14,21 +14,3 @@ kmersearch_show_buildno(PG_FUNCTION_ARGS)
 {
     PG_RETURN_TEXT_P(cstring_to_text(KMERSEARCH_BUILD_VERSION));
 }
-
-/*
- * Get DNA2 type OID
- */
-Oid
-kmersearch_get_dna2_type_oid(void)
-{
-    return TypenameGetTypid("dna2");
-}
-
-/*
- * Get DNA4 type OID  
- */
-Oid
-kmersearch_get_dna4_type_oid(void)
-{
-    return TypenameGetTypid("dna4");
-}

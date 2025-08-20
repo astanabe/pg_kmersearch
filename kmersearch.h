@@ -738,10 +738,6 @@ bool kmersearch_parallel_highfreq_kmer_cache_is_valid(Oid table_oid, const char 
 bool kmersearch_get_index_info(Oid index_oid, Oid *table_oid, char **column_name, int *k_size);
 bool evaluate_optimized_match_condition(VarBit **query_keys, int nkeys, int shared_count, const char *query_string, int query_total_kmers);
 
-/* Type OID helper functions */
-Oid kmersearch_get_dna2_type_oid(void);
-Oid kmersearch_get_dna4_type_oid(void);
-
 /* Cache management functions (implemented in kmersearch_cache.c) */
 
 /* Query-kmer cache functions (implemented in kmersearch_cache.c) */
