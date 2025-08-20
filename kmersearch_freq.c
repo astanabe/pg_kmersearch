@@ -719,6 +719,7 @@ kmersearch_perform_highfreq_analysis_parallel(Oid table_oid, const char *column_
     int64 total_rows;
     uint64 threshold_rows;
     uint64 rate_based_threshold;
+    char temp_dir_to_delete[MAXPGPATH] = {0};  /* Initialize to empty string */
     KmerSearchTableType table_type;
     List *partition_oids = NIL;
     ListCell *lc;
@@ -892,7 +893,10 @@ kmersearch_perform_highfreq_analysis_parallel(Oid table_oid, const char *column_
         
         /* Initialize temporary directory path for SQLite3 files */
         {
-            Oid tablespace_oid = GetNextTempTableSpace();
+            Oid tablespace_oid;
+            char base_temp_dir[MAXPGPATH];
+            
+            tablespace_oid = GetNextTempTableSpace();
             
             /* If no temp_tablespaces configured, use database's default tablespace */
             if (tablespace_oid == InvalidOid && OidIsValid(MyDatabaseTableSpace))
@@ -901,27 +905,20 @@ kmersearch_perform_highfreq_analysis_parallel(Oid table_oid, const char *column_
                 elog(DEBUG1, "Using database default tablespace OID: %u", tablespace_oid);
             }
             
-            /* Get the temporary directory path */
-            TempTablespacePath(shared_state->temp_dir_path, tablespace_oid);
+            /* Get the base temporary directory path (pgsql_tmp) */
+            TempTablespacePath(base_temp_dir, tablespace_oid);
             
-            /* Ensure the pgsql_tmp directory exists by creating it if necessary */
-            {
-                char parent_dir[MAXPGPATH];
-                char *last_slash;
-                
-                /* Extract parent directory from temp_dir_path */
-                strlcpy(parent_dir, shared_state->temp_dir_path, MAXPGPATH);
-                last_slash = strrchr(parent_dir, '/');
-                if (last_slash != NULL)
-                {
-                    *last_slash = '\0';
-                    /* Create pgsql_tmp directory if it doesn't exist */
-                    PathNameCreateTemporaryDir(parent_dir, "pgsql_tmp");
-                    elog(DEBUG1, "Ensured pgsql_tmp directory exists in: %s", parent_dir);
-                }
-            }
+            /* Create a dedicated temporary directory for this analysis session */
+            snprintf(shared_state->temp_dir_path, MAXPGPATH, "%s/%skmersearch_%d_%ld",
+                     base_temp_dir, PG_TEMP_FILE_PREFIX, MyProcPid, GetCurrentTimestamp());
             
-            elog(DEBUG1, "Selected temp directory: %s (tablespace OID: %u)",
+            /* Create the temporary directory (this will also create pgsql_tmp if it doesn't exist) */
+            PathNameCreateTemporaryDir(base_temp_dir, shared_state->temp_dir_path);
+            
+            /* Save the temp directory path for cleanup */
+            strlcpy(temp_dir_to_delete, shared_state->temp_dir_path, MAXPGPATH);
+            
+            elog(DEBUG1, "Created dedicated temp directory: %s (tablespace OID: %u)",
                  shared_state->temp_dir_path, tablespace_oid);
         }
         
@@ -1157,6 +1154,8 @@ kmersearch_perform_highfreq_analysis_parallel(Oid table_oid, const char *column_
                 }
             }
             
+            /* temp_dir_to_delete already contains the path from initialization */
+            
             /* Clean up parallel context and exit parallel mode BEFORE any SQL operations */
             DestroyParallelContext(pcxt);
             pcxt = NULL; /* Mark as destroyed to prevent double-free */
@@ -1303,6 +1302,13 @@ kmersearch_perform_highfreq_analysis_parallel(Oid table_oid, const char *column_
     if (partition_oids)
     {
         list_free(partition_oids);
+    }
+    
+    /* Clean up the temporary directory if it was created */
+    if (temp_dir_to_delete[0] != '\0')
+    {
+        PathNameDeleteTemporaryDir(temp_dir_to_delete);
+        elog(DEBUG1, "Deleted temporary directory: %s", temp_dir_to_delete);
     }
     
     return result;
@@ -2415,58 +2421,137 @@ kmersearch_delete_tempfiles(PG_FUNCTION_ARGS)
             continue;
         }
         
-        /* Scan directory for pg_kmersearch_* files */
+        /* Scan directory for pgsql_tmp.kmersearch_* directories and pg_kmersearch_* files */
         while ((de = readdir(dir)) != NULL)
         {
             char full_path[MAXPGPATH];
             struct stat st;
             
-            /* Check if filename starts with pg_kmersearch_ */
-            if (strncmp(de->d_name, "pg_kmersearch_", 14) != 0)
-                continue;
-            
-            /* Build full path */
-            snprintf(full_path, MAXPGPATH, "%s/%s", temp_path, de->d_name);
-            
-            /* Get file info */
-            if (stat(full_path, &st) < 0)
+            /* Check if it's a kmersearch temp directory */
+            if (strncmp(de->d_name, "pgsql_tmp.kmersearch_", 21) == 0)
             {
-                ereport(WARNING,
-                        (errmsg("could not stat file \"%s\": %m", full_path)));
-                error_count++;
-                continue;
+                /* This is a kmersearch temporary directory */
+                char subdir_path[MAXPGPATH];
+                DIR *subdir;
+                struct dirent *subde;
+                
+                snprintf(subdir_path, MAXPGPATH, "%s/%s", temp_path, de->d_name);
+                
+                /* Check directory age - skip directories created within last 60 seconds */
+                if (stat(subdir_path, &st) < 0)
+                {
+                    ereport(WARNING,
+                            (errmsg("could not stat directory \"%s\": %m", subdir_path)));
+                    error_count++;
+                    continue;
+                }
+                
+                current_time = time(NULL);
+                if (current_time - st.st_mtime < 60)
+                {
+                    ereport(INFO,
+                            (errmsg("skipping recently created directory \"%s\"", subdir_path)));
+                    continue;
+                }
+                
+                /* Scan and delete files inside the directory */
+                subdir = opendir(subdir_path);
+                if (subdir == NULL)
+                {
+                    ereport(WARNING,
+                            (errmsg("could not open directory \"%s\": %m", subdir_path)));
+                    error_count++;
+                    continue;
+                }
+                
+                while ((subde = readdir(subdir)) != NULL)
+                {
+                    char file_path[MAXPGPATH];
+                    
+                    if (strcmp(subde->d_name, ".") == 0 || strcmp(subde->d_name, "..") == 0)
+                        continue;
+                    
+                    snprintf(file_path, MAXPGPATH, "%s/%s", subdir_path, subde->d_name);
+                    
+                    if (stat(file_path, &st) < 0)
+                    {
+                        ereport(WARNING,
+                                (errmsg("could not stat file \"%s\": %m", file_path)));
+                        error_count++;
+                        continue;
+                    }
+                    
+                    if (S_ISREG(st.st_mode))
+                    {
+                        file_size = st.st_size;
+                        if (unlink(file_path) < 0)
+                        {
+                            ereport(WARNING,
+                                    (errmsg("could not delete file \"%s\": %m", file_path)));
+                            error_count++;
+                        }
+                        else
+                        {
+                            deleted_count++;
+                            deleted_size += file_size;
+                            ereport(INFO,
+                                    (errmsg("deleted temporary file \"%s\" (size: %ld bytes)",
+                                            file_path, file_size)));
+                        }
+                    }
+                }
+                
+                closedir(subdir);
+                
+                /* Note: We do NOT use PathNameDeleteTemporaryDir here */
+                /* We only delete the files inside, leaving directory removal to PostgreSQL */
             }
-            
-            /* Check if it's a regular file */
-            if (!S_ISREG(st.st_mode))
-                continue;
-            
-            /* Check file age - skip files created within last 60 seconds */
-            current_time = time(NULL);
-            if (current_time - st.st_mtime < 60)
+            /* Also check for old-style pg_kmersearch_* files directly in pgsql_tmp */
+            else if (strncmp(de->d_name, "pg_kmersearch_", 14) == 0)
             {
-                ereport(INFO,
-                        (errmsg("skipping recently created file \"%s\"", full_path)));
-                continue;
-            }
-            
-            /* Record file size */
-            file_size = st.st_size;
-            
-            /* Delete the file */
-            if (unlink(full_path) < 0)
-            {
-                ereport(WARNING,
-                        (errmsg("could not delete file \"%s\": %m", full_path)));
-                error_count++;
-            }
-            else
-            {
-                deleted_count++;
-                deleted_size += file_size;
-                ereport(INFO,
-                        (errmsg("deleted temporary file \"%s\" (size: %ld bytes)",
-                                full_path, file_size)));
+                /* Build full path */
+                snprintf(full_path, MAXPGPATH, "%s/%s", temp_path, de->d_name);
+                
+                /* Get file info */
+                if (stat(full_path, &st) < 0)
+                {
+                    ereport(WARNING,
+                            (errmsg("could not stat file \"%s\": %m", full_path)));
+                    error_count++;
+                    continue;
+                }
+                
+                /* Check if it's a regular file */
+                if (!S_ISREG(st.st_mode))
+                    continue;
+                
+                /* Check file age - skip files created within last 60 seconds */
+                current_time = time(NULL);
+                if (current_time - st.st_mtime < 60)
+                {
+                    ereport(INFO,
+                            (errmsg("skipping recently created file \"%s\"", full_path)));
+                    continue;
+                }
+                
+                /* Record file size */
+                file_size = st.st_size;
+                
+                /* Delete the file */
+                if (unlink(full_path) < 0)
+                {
+                    ereport(WARNING,
+                            (errmsg("could not delete file \"%s\": %m", full_path)));
+                    error_count++;
+                }
+                else
+                {
+                    deleted_count++;
+                    deleted_size += file_size;
+                    ereport(INFO,
+                            (errmsg("deleted temporary file \"%s\" (size: %ld bytes)",
+                                    full_path, file_size)));
+                }
             }
         }
         
