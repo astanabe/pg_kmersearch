@@ -2353,17 +2353,23 @@ kmersearch_delete_tempfiles(PG_FUNCTION_ARGS)
                         "that cannot accept a record")));
     }
     
-    /* Get all tablespace OIDs from temp_tablespaces and default */
-    tablespace_oids = lappend_oid(tablespace_oids, InvalidOid);  /* Default tablespace */
-    
     /* Get temp_tablespaces */
     tablespace_array = palloc(sizeof(Oid) * 256);  /* Max 256 tablespaces */
     num_tablespaces = GetTempTablespaces(tablespace_array, 256);
     
-    /* Add temp_tablespaces to list */
-    for (int i = 0; i < num_tablespaces; i++)
+    if (num_tablespaces == 0)
     {
-        tablespace_oids = lappend_oid(tablespace_oids, tablespace_array[i]);
+        /* No temp_tablespaces configured, use MyDatabaseTableSpace */
+        /* This will automatically fall back to system default if MyDatabaseTableSpace is InvalidOid */
+        tablespace_oids = lappend_oid(tablespace_oids, MyDatabaseTableSpace);
+    }
+    else
+    {
+        /* Add temp_tablespaces to list */
+        for (int i = 0; i < num_tablespaces; i++)
+        {
+            tablespace_oids = lappend_oid(tablespace_oids, tablespace_array[i]);
+        }
     }
     
     /* Scan each tablespace's pgsql_tmp directory */
