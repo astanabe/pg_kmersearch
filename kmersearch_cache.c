@@ -1703,11 +1703,16 @@ kmersearch_parallel_highfreq_kmer_cache_load_internal(Oid table_oid, const char 
         /* Verify cache data is still valid */
         if (parallel_highfreq_cache->is_initialized &&
             parallel_highfreq_cache->cache_key.table_oid == table_oid &&
-            parallel_highfreq_cache->cache_key.kmer_size == k_value) {
+            parallel_highfreq_cache->cache_key.column_name_hash == hash_any((unsigned char*)column_name, strlen(column_name)) &&
+            parallel_highfreq_cache->cache_key.kmer_size == k_value &&
+            parallel_highfreq_cache->cache_key.occur_bitlen == kmersearch_occur_bitlen &&
+            fabs(parallel_highfreq_cache->cache_key.max_appearance_rate - kmersearch_max_appearance_rate) < 0.0001 &&
+            parallel_highfreq_cache->cache_key.max_appearance_nrow == kmersearch_max_appearance_nrow) {
+            /* All parameters match (table, column, and GUC variables) - return true */
             return true;
         } else {
-            /* Cache exists but is for different table/k_value, clean it up */
-            kmersearch_parallel_highfreq_kmer_cache_free_internal();
+            /* Cache exists but GUC variables don't match - keep cache and return false */
+            return false;
         }
     }
     
@@ -1783,17 +1788,30 @@ kmersearch_parallel_highfreq_kmer_cache_load_internal(Oid table_oid, const char 
     /* Calculate required segment size using total count */
     
     cache_struct_size = MAXALIGN(sizeof(ParallelHighfreqKmerCache));
-    entries_size = total_kmer_count * sizeof(ParallelHighfreqKmerCacheEntry);
+    
+    /* Calculate entry size based on total_bits (kmer_size * 2 + occur_bitlen) */
+    total_bits = k_value * 2 + kmersearch_occur_bitlen;
+    if (total_bits <= 16) {
+        entries_size = total_kmer_count * sizeof(ParallelHighfreqKmerCacheEntry16);
+    } else if (total_bits <= 32) {
+        entries_size = total_kmer_count * sizeof(ParallelHighfreqKmerCacheEntry32);
+    } else {
+        entries_size = total_kmer_count * sizeof(ParallelHighfreqKmerCacheEntry64);
+    }
+    
     dsa_min_size = 8192; /* Minimum DSA area size */
     dshash_overhead = MAXALIGN(512); /* Extra space for dshash overhead */
     
     /* Total size = cache structure + DSA area (at least 8192) + entries + overhead */
     segment_size = cache_struct_size + dsa_min_size + entries_size + dshash_overhead;
     
-    /* Ensure total size is reasonable */
+    /* Ensure minimum segment size for DSM/DSA requirements */
     if (segment_size < 16384) {
         segment_size = 16384; /* At least 16KB total */
     }
+    
+    elog(DEBUG1, "DSM segment size calculation: cache_struct=%zu, dsa_min=%zu, entries=%zu, overhead=%zu, total=%zu",
+         cache_struct_size, dsa_min_size, entries_size, dshash_overhead, segment_size);
     
     /* Create DSM segment */
     

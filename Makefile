@@ -14,6 +14,9 @@ include $(PGXS)
 override CPPFLAGS += -Wno-unused-variable -Wno-unused-function -std=c99
 override CFLAGS := $(filter-out -Werror=vla, $(CFLAGS))
 
+# SQLite3 support
+SHLIB_LINK += -lsqlite3
+
 # Debug build settings (uncomment for debugging)
 # override CPPFLAGS += -g3 -O0 -fno-omit-frame-pointer -DDEBUG -ggdb
 # override CFLAGS += -g3 -O0 -fno-omit-frame-pointer

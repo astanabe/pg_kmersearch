@@ -8,33 +8,15 @@
  *
  *-------------------------------------------------------------------------
  */
-#include "postgres.h"
-#include "fmgr.h"
+#include "kmersearch.h"
 #include "access/genam.h"
-#include "access/htup_details.h"
 #include "access/table.h"
 #include "catalog/indexing.h"
-#include "catalog/namespace.h"
 #include "catalog/pg_attribute.h"
-#include "catalog/pg_class.h"
 #include "catalog/pg_inherits.h"
-#include "catalog/pg_type.h"
 #include "commands/tablespace.h"
-#include "executor/spi.h"
-#include "funcapi.h"
-#include "miscadmin.h"
 #include "nodes/makefuncs.h"
-#include "storage/ipc.h"
-#include "storage/lmgr.h"
-#include "utils/builtins.h"
-#include "utils/lsyscache.h"
-#include "utils/memutils.h"
-#include "utils/rel.h"
-#include "utils/snapmgr.h"
-#include "utils/syscache.h"
 #include "utils/timestamp.h"
-
-#include "kmersearch.h"
 
 PG_FUNCTION_INFO_V1(kmersearch_partition_table);
 
@@ -179,8 +161,8 @@ validate_table_for_partitioning(Oid table_oid, char **dna_column_name, Oid *dna_
     }
     
     /* Get DNA type OIDs */
-    dna2_type_oid = kmersearch_get_dna2_type_oid();
-    dna4_type_oid = kmersearch_get_dna4_type_oid();
+    dna2_type_oid = TypenameGetTypid("dna2");
+    dna4_type_oid = TypenameGetTypid("dna4");
     
     /* Check for DNA2/DNA4 columns */
     tupdesc = RelationGetDescr(rel);

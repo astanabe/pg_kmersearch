@@ -10,8 +10,6 @@
  */
 
 #include "kmersearch.h"
-#include "executor/spi.h"
-#include "lib/stringinfo.h"
 
 PG_FUNCTION_INFO_V1(kmersearch_extract_value_dna2_int2);
 PG_FUNCTION_INFO_V1(kmersearch_extract_value_dna2_int4);

@@ -266,16 +266,15 @@ typedef struct PartitionBlockMapping
     BlockNumber local_block_number;       /* Local block number within partition */
 } PartitionBlockMapping;
 
+/* Maximum number of parallel workers */
+#define MAX_PARALLEL_WORKERS 256
+
 typedef struct KmerAnalysisSharedState
 {
     LWLockPadded mutex;                   /* Exclusive control mutex */
     int         num_workers;              /* Number of parallel workers */
     Oid         table_oid;                /* Target table OID */
     AttrNumber  column_attnum;            /* Target column attnum */
-    Oid         column_type_oid;          /* Target column data type OID */
-    int         kmer_size;                /* K-mer size (kmersearch_kmer_size) */
-    int         occur_bitlen;             /* Occurrence bit length (kmersearch_occur_bitlen) */
-    int         batch_size;               /* Batch size (kmersearch_highfreq_analysis_batch_size) */
     bool        all_processed;            /* All rows processed flag */
     BlockNumber next_block;               /* Next block number to process */
     BlockNumber total_blocks;             /* Total number of blocks in table */
@@ -289,6 +288,15 @@ typedef struct KmerAnalysisSharedState
     PartitionBlockInfo *partition_blocks; /* Array of partition block ranges */
     BlockNumber total_blocks_all_partitions; /* Total blocks across all partitions */
     pg_atomic_uint32 next_global_block;   /* Global block counter for unified processing */
+    
+    /* SQLite3-based temporary file management */
+    char        temp_dir_path[MAXPGPATH]; /* Temporary directory path for SQLite3 files */
+    char        worker_temp_files[MAX_PARALLEL_WORKERS][MAXPGPATH]; /* Worker temporary file paths */
+    slock_t     worker_file_lock;         /* Lock for worker file path registration */
+    
+    /* Progress tracking for reproducible output */
+    pg_atomic_uint64 total_rows_processed; /* Total rows processed by all workers */
+    pg_atomic_uint64 total_batches_committed; /* Total batches committed by all workers */
 } KmerAnalysisSharedState;
 
 /* K-mer entry structures for different sizes */
@@ -650,7 +658,7 @@ void kmersearch_free_query_kmer_cache_manager(QueryKmerCacheManager **manager);
 void kmersearch_free_actual_min_score_cache_manager(ActualMinScoreCacheManager **manager);
 
 /* Build version information */
-#define KMERSEARCH_BUILD_VERSION "1.0.2025.08.19"
+#define KMERSEARCH_BUILD_VERSION "1.0.2025.08.21"
 
 /* High-frequency k-mer cache global variables (defined in kmersearch_cache.c) */
 
@@ -685,11 +693,8 @@ Datum kmersearch_parallel_highfreq_kmer_cache_free(PG_FUNCTION_ARGS);
 /* Analysis functions */
 Datum kmersearch_perform_highfreq_analysis(PG_FUNCTION_ARGS);
 Datum kmersearch_undo_highfreq_analysis(PG_FUNCTION_ARGS);
+Datum kmersearch_delete_tempfiles(PG_FUNCTION_ARGS);
 
-/* Analysis dshash functions */
-bool kmersearch_is_kmer_hash_in_analysis_dshash(uint64 kmer_hash);
-
-/* K-mer utility functions */
 /* K-mer utility functions */
 int kmersearch_count_degenerate_combinations(const char *kmer, int k);
 void kmersearch_set_bit_at(bits8 *data, int bit_pos, int value);
@@ -732,10 +737,6 @@ bool kmersearch_parallel_highfreq_kmer_cache_is_valid(Oid table_oid, const char 
 /* GIN index support function (implemented in kmersearch_gin.c) */
 bool kmersearch_get_index_info(Oid index_oid, Oid *table_oid, char **column_name, int *k_size);
 bool evaluate_optimized_match_condition(VarBit **query_keys, int nkeys, int shared_count, const char *query_string, int query_total_kmers);
-
-/* Type OID helper functions */
-Oid kmersearch_get_dna2_type_oid(void);
-Oid kmersearch_get_dna4_type_oid(void);
 
 /* Cache management functions (implemented in kmersearch_cache.c) */
 

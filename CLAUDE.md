@@ -43,6 +43,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - When GUC variables exist, use them directly - assigning GUC variables to local variables is forbidden
 - Unnecessary memory copying and data conversions are forbidden - always minimize memory allocations and data copies
 - In GIN consistent functions, any data conversion or transformation is absolutely prohibited - use data as-is
+- **CRITICAL**: Separate implementations for int2/int4/int8 and uint16/uint32/uint64 exist for performance and memory optimization reasons. These MUST NEVER be merged or consolidated - they are intentionally separate for speed and memory efficiency
 
 ## Code Analysis Requirements
 
@@ -54,6 +55,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **Never make descriptions or changes based on speculation or assumptions - always verify before describing or modifying**
 
 ## Coding Standards
+
+### Comment Guidelines
+**PROHIBITED**: Insertion of change history comments or modification tracking comments.
+- Comments must ONLY describe the current source code content
+- Do NOT add comments about what was changed, when it was changed, or why it was changed
+- Do NOT add TODO comments about past modifications
+- Do NOT add FIXME comments referencing previous versions
+- Comments should explain what the code does NOW, not what it used to do
 
 ### C Function Naming Convention
 **MANDATORY**: All C language functions in this extension MUST use the `kmersearch_` prefix.

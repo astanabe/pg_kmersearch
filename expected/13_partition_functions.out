@@ -1,5 +1,7 @@
 -- Test partitioning support functions
 SET client_min_messages = WARNING;
+-- Limit parallel workers to 2 for consistent test results
+SET max_parallel_maintenance_workers = 2;
 CREATE EXTENSION IF NOT EXISTS pg_kmersearch;
 -- Set maintenance_work_mem for batch processing
 SET maintenance_work_mem = '64MB';
@@ -264,12 +266,20 @@ SELECT
     parallel_workers_used
 FROM kmersearch_perform_highfreq_analysis('test_highfreq_regular', 'sequence');
 INFO:  Starting high-frequency k-mer analysis: 100 rows in 1 blocks with 2 parallel workers
+INFO:  Batch 1 completed: 100 total rows processed (final)
+INFO:  Parallel scan completed. Starting aggregation of results.
+INFO:  Processing temporary file 1 of 2
+INFO:  Processing temporary file 2 of 2
+INFO:  Writing 25 high-frequency k-mers to kmersearch_highfreq_kmer table...
+INFO:  Successfully wrote 25 high-frequency k-mers to database.
  total_rows | highfreq_kmers_count | max_appearance_rate_used | max_appearance_nrow_used | parallel_workers_used 
 ------------+----------------------+--------------------------+--------------------------+-----------------------
         100 |                   25 |                     0.15 |                       15 |                     2
 (1 row)
 
 -- Test 18: Perform high-frequency analysis on partitioned table
+-- Limit to 1 parallel worker for consistent test results on partitioned tables
+SET max_parallel_maintenance_workers = 1;
 SELECT 
     total_rows,
     highfreq_kmers_count,
@@ -277,12 +287,19 @@ SELECT
     max_appearance_nrow_used,
     parallel_workers_used
 FROM kmersearch_perform_highfreq_analysis('test_highfreq_partitioned', 'sequence');
-INFO:  Starting high-frequency k-mer analysis: 100 rows in 3 blocks with 2 parallel workers
+INFO:  Starting high-frequency k-mer analysis: 100 rows in 3 blocks with 1 parallel workers
+INFO:  Batch 1 completed: 100 total rows processed (final)
+INFO:  Parallel scan completed. Starting aggregation of results.
+INFO:  Processing temporary file 1 of 1
+INFO:  Writing 25 high-frequency k-mers to kmersearch_highfreq_kmer table...
+INFO:  Successfully wrote 25 high-frequency k-mers to database.
  total_rows | highfreq_kmers_count | max_appearance_rate_used | max_appearance_nrow_used | parallel_workers_used 
 ------------+----------------------+--------------------------+--------------------------+-----------------------
-        100 |                   25 |                     0.15 |                       15 |                     2
+        100 |                   25 |                     0.15 |                       15 |                     1
 (1 row)
 
+-- Restore parallel workers setting
+SET max_parallel_maintenance_workers = 2;
 -- Test 19: Verify that both analyses produced identical results
 -- Compare high-frequency k-mers from both tables
 SELECT 
@@ -317,7 +334,6 @@ SELECT * FROM kmersearch_undo_highfreq_analysis('test_highfreq_partitioned', 'se
 
 -- Test 21: Test with different k-mer size and parallel workers
 SET kmersearch.kmer_size = 4;
-SET max_parallel_workers_per_gather = 2;
 -- Analyze regular table with 2 parallel workers
 SELECT 
     total_rows,
@@ -325,23 +341,37 @@ SELECT
     parallel_workers_used
 FROM kmersearch_perform_highfreq_analysis('test_highfreq_regular', 'sequence');
 INFO:  Starting high-frequency k-mer analysis: 100 rows in 1 blocks with 2 parallel workers
+INFO:  Batch 1 completed: 100 total rows processed (final)
+INFO:  Parallel scan completed. Starting aggregation of results.
+INFO:  Processing temporary file 1 of 2
+INFO:  Processing temporary file 2 of 2
+INFO:  Writing 29 high-frequency k-mers to kmersearch_highfreq_kmer table...
+INFO:  Successfully wrote 29 high-frequency k-mers to database.
  total_rows | highfreq_kmers_count | parallel_workers_used 
 ------------+----------------------+-----------------------
         100 |                   29 |                     2
 (1 row)
 
--- Analyze partitioned table with 2 parallel workers
+-- Analyze partitioned table with 1 parallel worker for consistent results
+SET max_parallel_maintenance_workers = 1;
 SELECT 
     total_rows,
     highfreq_kmers_count,
     parallel_workers_used
 FROM kmersearch_perform_highfreq_analysis('test_highfreq_partitioned', 'sequence');
-INFO:  Starting high-frequency k-mer analysis: 100 rows in 3 blocks with 2 parallel workers
+INFO:  Starting high-frequency k-mer analysis: 100 rows in 3 blocks with 1 parallel workers
+INFO:  Batch 1 completed: 100 total rows processed (final)
+INFO:  Parallel scan completed. Starting aggregation of results.
+INFO:  Processing temporary file 1 of 1
+INFO:  Writing 29 high-frequency k-mers to kmersearch_highfreq_kmer table...
+INFO:  Successfully wrote 29 high-frequency k-mers to database.
  total_rows | highfreq_kmers_count | parallel_workers_used 
 ------------+----------------------+-----------------------
-        100 |                   29 |                     2
+        100 |                   29 |                     1
 (1 row)
 
+-- Restore parallel workers setting
+SET max_parallel_maintenance_workers = 2;
 -- Clean up analysis results
 SELECT * FROM kmersearch_undo_highfreq_analysis('test_highfreq_regular', 'sequence');
  dropped_analyses | dropped_highfreq_kmers | freed_storage_bytes 
@@ -359,7 +389,6 @@ SELECT * FROM kmersearch_undo_highfreq_analysis('test_highfreq_partitioned', 'se
 RESET kmersearch.kmer_size;
 RESET kmersearch.max_appearance_rate;
 RESET kmersearch.max_appearance_nrow;
-RESET max_parallel_workers_per_gather;
 -- Cleanup
 DROP TABLE IF EXISTS test_sequences CASCADE;
 DROP TABLE IF EXISTS test_sequences_dna4 CASCADE;

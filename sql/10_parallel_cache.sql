@@ -1,4 +1,8 @@
 SET client_min_messages = WARNING;
+
+-- Limit parallel workers to 2 for consistent test results
+SET max_parallel_maintenance_workers = 2;
+
 CREATE EXTENSION IF NOT EXISTS pg_kmersearch;
 
 -- High-frequency k-mer exclusion functionality parallel cache test
