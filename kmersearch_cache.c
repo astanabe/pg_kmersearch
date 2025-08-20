@@ -1703,11 +1703,16 @@ kmersearch_parallel_highfreq_kmer_cache_load_internal(Oid table_oid, const char 
         /* Verify cache data is still valid */
         if (parallel_highfreq_cache->is_initialized &&
             parallel_highfreq_cache->cache_key.table_oid == table_oid &&
-            parallel_highfreq_cache->cache_key.kmer_size == k_value) {
+            parallel_highfreq_cache->cache_key.column_name_hash == hash_any((unsigned char*)column_name, strlen(column_name)) &&
+            parallel_highfreq_cache->cache_key.kmer_size == k_value &&
+            parallel_highfreq_cache->cache_key.occur_bitlen == kmersearch_occur_bitlen &&
+            fabs(parallel_highfreq_cache->cache_key.max_appearance_rate - kmersearch_max_appearance_rate) < 0.0001 &&
+            parallel_highfreq_cache->cache_key.max_appearance_nrow == kmersearch_max_appearance_nrow) {
+            /* All parameters match (table, column, and GUC variables) - return true */
             return true;
         } else {
-            /* Cache exists but is for different table/k_value, clean it up */
-            kmersearch_parallel_highfreq_kmer_cache_free_internal();
+            /* Cache exists but GUC variables don't match - keep cache and return false */
+            return false;
         }
     }
     
