@@ -293,6 +293,10 @@ typedef struct KmerAnalysisSharedState
     char        temp_dir_path[MAXPGPATH]; /* Temporary directory path for SQLite3 files */
     char        worker_temp_files[MAX_PARALLEL_WORKERS][MAXPGPATH]; /* Worker temporary file paths */
     slock_t     worker_file_lock;         /* Lock for worker file path registration */
+    
+    /* Progress tracking for reproducible output */
+    pg_atomic_uint64 total_rows_processed; /* Total rows processed by all workers */
+    pg_atomic_uint64 total_batches_committed; /* Total batches committed by all workers */
 } KmerAnalysisSharedState;
 
 /* K-mer entry structures for different sizes */

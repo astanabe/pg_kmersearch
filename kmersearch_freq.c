@@ -10,12 +10,10 @@
 
 #include "kmersearch.h"
 #include "partitioning/partdesc.h"
-#include "utils/lsyscache.h"
 #include <sqlite3.h>
 #include <unistd.h>
 #include <sys/stat.h>
 #include <dirent.h>
-#include "funcapi.h"
 #include "storage/fd.h"
 
 /* PostgreSQL function info declarations for frequency functions */
@@ -491,7 +489,7 @@ kmersearch_perform_highfreq_analysis(PG_FUNCTION_ARGS)
     }
     
     /* Get configuration from GUC variables */
-    /* PostgreSQL will automatically limit based on max_parallel_workers and max_parallel_maintenance_workers */
+    /* Use max_parallel_maintenance_workers for analysis/maintenance operations like ANALYZE */
     parallel_workers = max_parallel_maintenance_workers;
     
     /* Comprehensive parameter validation */
@@ -887,6 +885,10 @@ kmersearch_perform_highfreq_analysis_parallel(Oid table_oid, const char *column_
         shared_state->all_processed = false;
         shared_state->next_block = 0;
         shared_state->total_blocks = total_blocks;
+        
+        /* Initialize progress tracking atomics */
+        pg_atomic_init_u64(&shared_state->total_rows_processed, 0);
+        pg_atomic_init_u64(&shared_state->total_batches_committed, 0);
         
         /* Initialize temporary directory path for SQLite3 files */
         {
@@ -2069,12 +2071,19 @@ kmersearch_analysis_worker(dsm_segment *seg, shm_toc *toc)
     /* Flush any remaining batch data */
     if (ctx.batch_hash && ctx.batch_count > 0)
     {
+        uint64 total_rows;
+        uint64 batch_num;
+        
         kmersearch_flush_batch_to_sqlite(ctx.batch_hash, ctx.db, ctx.insert_stmt, ctx.total_bits);
         
-        /* Report final progress */
+        /* Update shared progress counters for final batch */
+        total_rows = pg_atomic_add_fetch_u64(&shared_state->total_rows_processed, ctx.batch_count);
+        batch_num = pg_atomic_add_fetch_u64(&shared_state->total_batches_committed, 1);
+        
+        /* Report final cumulative progress (deterministic) */
         ereport(INFO,
-                (errmsg("Worker progress: %d rows processed (final batch)",
-                        ctx.batch_count)));
+                (errmsg("Batch %lu completed: %lu total rows processed (final)",
+                        (unsigned long)batch_num, (unsigned long)total_rows)));
     }
     
     /* Destroy hash table only once at the end */
@@ -2697,15 +2706,22 @@ kmersearch_process_block_with_batch(BlockNumber block,
         /* Flush batch if size limit reached */
         if (ctx->batch_count >= kmersearch_highfreq_analysis_batch_size)
         {
+            uint64 total_rows;
+            uint64 batch_num;
+            
             kmersearch_flush_batch_to_sqlite(ctx->batch_hash, ctx->db,
                                            ctx->insert_stmt, ctx->total_bits);
             /* Clear hash table for reuse instead of destroying */
             kmersearch_clear_batch_hash(ctx->batch_hash);
             
-            /* Report progress when batch is committed */
+            /* Update shared progress counters */
+            total_rows = pg_atomic_add_fetch_u64(&shared_state->total_rows_processed, ctx->batch_count);
+            batch_num = pg_atomic_add_fetch_u64(&shared_state->total_batches_committed, 1);
+            
+            /* Report cumulative progress (deterministic) */
             ereport(INFO,
-                    (errmsg("Worker progress: %d rows processed",
-                            ctx->batch_count)));
+                    (errmsg("Batch %lu completed: %lu total rows processed",
+                            (unsigned long)batch_num, (unsigned long)total_rows)));
             
             ctx->batch_count = 0;
         }

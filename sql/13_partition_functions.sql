@@ -3,9 +3,7 @@
 SET client_min_messages = WARNING;
 
 -- Limit parallel workers to 2 for consistent test results
-SET max_parallel_workers = 2;
 SET max_parallel_maintenance_workers = 2;
-SET max_parallel_workers_per_gather = 2;
 
 CREATE EXTENSION IF NOT EXISTS pg_kmersearch;
 
@@ -206,6 +204,8 @@ SELECT
 FROM kmersearch_perform_highfreq_analysis('test_highfreq_regular', 'sequence');
 
 -- Test 18: Perform high-frequency analysis on partitioned table
+-- Limit to 1 parallel worker for consistent test results on partitioned tables
+SET max_parallel_maintenance_workers = 1;
 SELECT 
     total_rows,
     highfreq_kmers_count,
@@ -213,6 +213,8 @@ SELECT
     max_appearance_nrow_used,
     parallel_workers_used
 FROM kmersearch_perform_highfreq_analysis('test_highfreq_partitioned', 'sequence');
+-- Restore parallel workers setting
+SET max_parallel_maintenance_workers = 2;
 
 -- Test 19: Verify that both analyses produced identical results
 -- Compare high-frequency k-mers from both tables
@@ -235,7 +237,6 @@ SELECT * FROM kmersearch_undo_highfreq_analysis('test_highfreq_partitioned', 'se
 
 -- Test 21: Test with different k-mer size and parallel workers
 SET kmersearch.kmer_size = 4;
-SET max_parallel_workers_per_gather = 2;
 
 -- Analyze regular table with 2 parallel workers
 SELECT 
@@ -244,12 +245,15 @@ SELECT
     parallel_workers_used
 FROM kmersearch_perform_highfreq_analysis('test_highfreq_regular', 'sequence');
 
--- Analyze partitioned table with 2 parallel workers
+-- Analyze partitioned table with 1 parallel worker for consistent results
+SET max_parallel_maintenance_workers = 1;
 SELECT 
     total_rows,
     highfreq_kmers_count,
     parallel_workers_used
 FROM kmersearch_perform_highfreq_analysis('test_highfreq_partitioned', 'sequence');
+-- Restore parallel workers setting
+SET max_parallel_maintenance_workers = 2;
 
 -- Clean up analysis results
 SELECT * FROM kmersearch_undo_highfreq_analysis('test_highfreq_regular', 'sequence');
@@ -259,7 +263,6 @@ SELECT * FROM kmersearch_undo_highfreq_analysis('test_highfreq_partitioned', 'se
 RESET kmersearch.kmer_size;
 RESET kmersearch.max_appearance_rate;
 RESET kmersearch.max_appearance_nrow;
-RESET max_parallel_workers_per_gather;
 
 -- Cleanup
 DROP TABLE IF EXISTS test_sequences CASCADE;
