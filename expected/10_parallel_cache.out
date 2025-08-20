@@ -79,6 +79,11 @@ SELECT '1. High-frequency k-mer analysis execution:' as step;
 
 SELECT kmersearch_perform_highfreq_analysis('test_dna_highfreq', 'seq');
 INFO:  Starting high-frequency k-mer analysis: 14 rows in 1 blocks with 2 parallel workers
+INFO:  Parallel scan completed. Starting aggregation of results from 2 workers.
+INFO:  Processing worker temp file 1/2
+INFO:  Processing worker temp file 2/2
+INFO:  Writing 6 high-frequency k-mers to kmersearch_highfreq_kmer table...
+INFO:  Successfully wrote 6 high-frequency k-mers to database.
  kmersearch_perform_highfreq_analysis 
 --------------------------------------
  (14,6,2,0.25,3)

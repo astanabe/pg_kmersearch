@@ -494,6 +494,17 @@ kmersearch_perform_highfreq_analysis(PG_FUNCTION_ARGS)
     /* PostgreSQL will automatically limit based on max_parallel_workers and max_parallel_maintenance_workers */
     parallel_workers = max_parallel_maintenance_workers;
     
+    /* Delete any existing temporary files before starting new analysis */
+    {
+        LOCAL_FCINFO(fake_fcinfo, 0);
+        
+        /* Initialize fake fcinfo for calling kmersearch_delete_tempfiles */
+        InitFunctionCallInfoData(*fake_fcinfo, NULL, 0, InvalidOid, NULL, NULL);
+        
+        /* Call the function directly */
+        kmersearch_delete_tempfiles(fake_fcinfo);
+    }
+    
     /* Comprehensive parameter validation */
     kmersearch_validate_analysis_parameters(table_oid, column_name, kmersearch_kmer_size);
     
@@ -965,6 +976,11 @@ kmersearch_perform_highfreq_analysis_parallel(Oid table_oid, const char *column_
         if (shared_state->worker_error_occurred)
             elog(ERROR, "Parallel worker error: %s", shared_state->error_message);
         
+        /* Announce start of parent aggregation */
+        ereport(INFO,
+                (errmsg("Parallel scan completed. Starting aggregation of results from %d workers.",
+                        result.parallel_workers_used)));
+        
         /* Aggregate results from worker SQLite3 files */
         {
             sqlite3 *parent_db = NULL;
@@ -972,6 +988,8 @@ kmersearch_perform_highfreq_analysis_parallel(Oid table_oid, const char *column_
             char parent_db_path[MAXPGPATH];
             int rc;
             int fd;
+            int worker_files_processed = 0;
+            int total_worker_files = 0;
             
             /* Create parent SQLite3 database */
             snprintf(parent_db_path, MAXPGPATH, "%s/pg_kmersearch_%d_XXXXXX",
@@ -1005,11 +1023,22 @@ kmersearch_perform_highfreq_analysis_parallel(Oid table_oid, const char *column_
             }
             
             /* Aggregate data from each worker */
+            /* Count total worker files first */
+            for (int i = 0; i < MAX_PARALLEL_WORKERS; i++)
+            {
+                if (strlen(shared_state->worker_temp_files[i]) > 0)
+                    total_worker_files++;
+            }
+            
             for (int i = 0; i < MAX_PARALLEL_WORKERS; i++)
             {
                 if (strlen(shared_state->worker_temp_files[i]) > 0)
                 {
                     char attach_sql[MAXPGPATH + 100];
+                    
+                    worker_files_processed++;
+                    elog(INFO, "Processing worker temp file %d/%d",
+                         worker_files_processed, total_worker_files);
                     
                     /* Attach worker database */
                     snprintf(attach_sql, sizeof(attach_sql),
@@ -1018,8 +1047,7 @@ kmersearch_perform_highfreq_analysis_parallel(Oid table_oid, const char *column_
                     rc = sqlite3_exec(parent_db, attach_sql, NULL, NULL, NULL);
                     if (rc != SQLITE_OK)
                     {
-                        elog(WARNING, "Failed to attach worker database %s: %s",
-                             shared_state->worker_temp_files[i], sqlite3_errmsg(parent_db));
+                        elog(WARNING, "Failed to attach worker database: %s", sqlite3_errmsg(parent_db));
                         continue;
                     }
                     
@@ -1126,45 +1154,68 @@ kmersearch_perform_highfreq_analysis_parallel(Oid table_oid, const char *column_
             
             sqlite3_bind_int64(select_stmt, 1, (int64)threshold_rows);
             
-            /* Insert high-frequency k-mers into PostgreSQL */
-            while (sqlite3_step(select_stmt) == SQLITE_ROW)
-            {
-                uint64 uintkey;
-                StringInfoData insert_query;
-                int insert_ret;
-                
-                /* Get uintkey based on total_bits */
-                int total_bits = k_size * 2 + kmersearch_occur_bitlen;
-                if (total_bits <= 32)
-                {
-                    uintkey = (uint64)sqlite3_column_int(select_stmt, 0);
-                }
-                else
-                {
-                    uintkey = (uint64)sqlite3_column_int64(select_stmt, 0);
-                }
-                
-                /* Insert into PostgreSQL table - cast uint64 to int64 for bigint column */
-                initStringInfo(&insert_query);
-                appendStringInfo(&insert_query,
-                    "INSERT INTO kmersearch_highfreq_kmer "
-                    "(table_oid, column_name, uintkey, detection_reason) "
-                    "VALUES (%u, %s, %ld, 'threshold') "
-                    "ON CONFLICT (table_oid, column_name, uintkey) DO NOTHING",
-                    table_oid, quote_literal_cstr(column_name), (int64)uintkey);
-                
-                insert_ret = SPI_exec(insert_query.data, 0);
-                if (insert_ret != SPI_OK_INSERT && insert_ret != SPI_OK_UPDATE)
-                {
-                    elog(WARNING, "Failed to insert high-frequency k-mer");
-                }
-                pfree(insert_query.data);
-            }
+            /* Announce start of writing to PostgreSQL table */
+            ereport(INFO,
+                    (errmsg("Writing %d high-frequency k-mers to kmersearch_highfreq_kmer table...",
+                            result.highfreq_kmers_count)));
             
-            /* Clean up SQLite3 resources */
-            sqlite3_finalize(select_stmt);
-            sqlite3_close(parent_db);
-            unlink(parent_db_path);
+            /* Insert high-frequency k-mers into PostgreSQL */
+            {
+                int kmers_written = 0;
+                
+                while (sqlite3_step(select_stmt) == SQLITE_ROW)
+                {
+                    uint64 uintkey;
+                    StringInfoData insert_query;
+                    int insert_ret;
+                    int total_bits;
+                    
+                    /* Get uintkey based on total_bits */
+                    total_bits = k_size * 2 + kmersearch_occur_bitlen;
+                    if (total_bits <= 32)
+                    {
+                        uintkey = (uint64)sqlite3_column_int(select_stmt, 0);
+                    }
+                    else
+                    {
+                        uintkey = (uint64)sqlite3_column_int64(select_stmt, 0);
+                    }
+                    
+                    /* Insert into PostgreSQL table - cast uint64 to int64 for bigint column */
+                    initStringInfo(&insert_query);
+                    appendStringInfo(&insert_query,
+                        "INSERT INTO kmersearch_highfreq_kmer "
+                        "(table_oid, column_name, uintkey, detection_reason) "
+                        "VALUES (%u, %s, %ld, 'threshold') "
+                        "ON CONFLICT (table_oid, column_name, uintkey) DO NOTHING",
+                        table_oid, quote_literal_cstr(column_name), (int64)uintkey);
+                    
+                    insert_ret = SPI_exec(insert_query.data, 0);
+                    if (insert_ret != SPI_OK_INSERT && insert_ret != SPI_OK_UPDATE)
+                    {
+                        elog(WARNING, "Failed to insert high-frequency k-mer");
+                    }
+                    pfree(insert_query.data);
+                    
+                    kmers_written++;
+                    /* Report progress every 1000 k-mers */
+                    if (kmers_written % 1000 == 0)
+                    {
+                        elog(INFO, "Written %d/%d high-frequency k-mers...",
+                             kmers_written, result.highfreq_kmers_count);
+                    }
+                }
+                
+                /* Clean up SQLite3 resources */
+                sqlite3_finalize(select_stmt);
+                sqlite3_close(parent_db);
+                unlink(parent_db_path);
+                
+                /* Report completion of writing */
+                ereport(INFO,
+                        (errmsg("Successfully wrote %d high-frequency k-mers to database.",
+                                kmers_written)));
+            }
         }
         
         /* Note: result.highfreq_kmers_count is already set above */
@@ -1949,7 +2000,11 @@ kmersearch_analysis_worker(dsm_segment *seg, shm_toc *toc)
     }
     
     /* Dynamic work acquisition loop */
-    while (has_work)
+    {
+        int blocks_processed = 0;
+        int batch_flushes = 0;
+        
+        while (has_work)
     {
         BlockNumber current_block;
         bool got_block = false;
@@ -1973,8 +2028,15 @@ kmersearch_analysis_worker(dsm_segment *seg, shm_toc *toc)
                 kmersearch_process_block_with_batch(mapping.local_block_number,
                                                    mapping.partition_oid,
                                                    shared_state, &ctx);
-                elog(DEBUG2, "kmersearch_analysis_worker: Finished processing global block %u",
-                     global_block);
+                blocks_processed++;
+                
+                /* Report progress every batch */
+                if (blocks_processed > 0 && (blocks_processed % kmersearch_highfreq_analysis_batch_size) == 0)
+                {
+                    elog(INFO, "Worker %d: Processed %d blocks, flushed %d batches",
+                         worker_id, blocks_processed, ++batch_flushes);
+                }
+                
                 got_block = true;
             }
         }
@@ -1994,7 +2056,15 @@ kmersearch_analysis_worker(dsm_segment *seg, shm_toc *toc)
                 kmersearch_process_block_with_batch(current_block, 
                                                    shared_state->table_oid,
                                                    shared_state, &ctx);
-                elog(DEBUG2, "kmersearch_analysis_worker: Finished processing block %u", current_block);
+                blocks_processed++;
+                
+                /* Report progress every batch */
+                if (blocks_processed > 0 && (blocks_processed % kmersearch_highfreq_analysis_batch_size) == 0)
+                {
+                    elog(INFO, "Worker %d: Processed %d blocks, flushed %d batches",
+                         worker_id, blocks_processed, ++batch_flushes);
+                }
+                
                 got_block = true;
             }
             else
@@ -2004,8 +2074,9 @@ kmersearch_analysis_worker(dsm_segment *seg, shm_toc *toc)
             }
         }
         
-        if (!got_block)
-            has_work = false;
+            if (!got_block)
+                has_work = false;
+        }
     }
     
     /* Flush any remaining batch data */
