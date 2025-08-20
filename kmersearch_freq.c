@@ -1033,6 +1033,11 @@ kmersearch_perform_highfreq_analysis_parallel(Oid table_oid, const char *column_
                     
                     worker_files_processed++;
                     
+                    /* Report progress for each temp file */
+                    ereport(INFO,
+                            (errmsg("Processing temporary file %d of %d",
+                                    worker_files_processed, total_worker_files)));
+                    
                     /* Attach worker database */
                     snprintf(attach_sql, sizeof(attach_sql),
                             "ATTACH DATABASE '%s' AS worker_db",
@@ -2026,14 +2031,6 @@ kmersearch_analysis_worker(dsm_segment *seg, shm_toc *toc)
                                                    shared_state, &ctx);
                 blocks_processed++;
                 
-                /* Report progress every 100 blocks */
-                if (blocks_processed % 100 == 0)
-                {
-                    ereport(INFO,
-                            (errmsg("Progress: %d blocks processed by worker %d",
-                                    blocks_processed, worker_id)));
-                }
-                
                 got_block = true;
             }
         }
@@ -2055,14 +2052,6 @@ kmersearch_analysis_worker(dsm_segment *seg, shm_toc *toc)
                                                    shared_state, &ctx);
                 blocks_processed++;
                 
-                /* Report progress every 100 blocks */
-                if (blocks_processed % 100 == 0)
-                {
-                    ereport(INFO,
-                            (errmsg("Progress: %d blocks processed by worker %d",
-                                    blocks_processed, worker_id)));
-                }
-                
                 got_block = true;
             }
             else
@@ -2081,6 +2070,11 @@ kmersearch_analysis_worker(dsm_segment *seg, shm_toc *toc)
     if (ctx.batch_hash && ctx.batch_count > 0)
     {
         kmersearch_flush_batch_to_sqlite(ctx.batch_hash, ctx.db, ctx.insert_stmt, ctx.total_bits);
+        
+        /* Report final progress */
+        ereport(INFO,
+                (errmsg("Worker progress: %d rows processed (final batch)",
+                        ctx.batch_count)));
     }
     
     /* Destroy hash table only once at the end */
@@ -2707,6 +2701,12 @@ kmersearch_process_block_with_batch(BlockNumber block,
                                            ctx->insert_stmt, ctx->total_bits);
             /* Clear hash table for reuse instead of destroying */
             kmersearch_clear_batch_hash(ctx->batch_hash);
+            
+            /* Report progress when batch is committed */
+            ereport(INFO,
+                    (errmsg("Worker progress: %d rows processed",
+                            ctx->batch_count)));
+            
             ctx->batch_count = 0;
         }
     }
