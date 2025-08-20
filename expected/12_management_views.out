@@ -73,9 +73,7 @@ FROM kmersearch_perform_highfreq_analysis(
     'sequence'
 );
 INFO:  Starting high-frequency k-mer analysis: 3 rows in 1 blocks with 2 parallel workers
-INFO:  Parallel scan completed. Starting aggregation of results from 2 workers.
-INFO:  Processing worker temp file 1/2
-INFO:  Processing worker temp file 2/2
+INFO:  Parallel scan completed. Starting aggregation of results.
 INFO:  Writing 97 high-frequency k-mers to kmersearch_highfreq_kmer table...
 INFO:  Successfully wrote 97 high-frequency k-mers to database.
  total_rows | highfreq_kmers_count | parallel_workers_used | max_appearance_rate_used | max_appearance_nrow_used 

@@ -494,17 +494,6 @@ kmersearch_perform_highfreq_analysis(PG_FUNCTION_ARGS)
     /* PostgreSQL will automatically limit based on max_parallel_workers and max_parallel_maintenance_workers */
     parallel_workers = max_parallel_maintenance_workers;
     
-    /* Delete any existing temporary files before starting new analysis */
-    {
-        LOCAL_FCINFO(fake_fcinfo, 0);
-        
-        /* Initialize fake fcinfo for calling kmersearch_delete_tempfiles */
-        InitFunctionCallInfoData(*fake_fcinfo, NULL, 0, InvalidOid, NULL, NULL);
-        
-        /* Call the function directly */
-        kmersearch_delete_tempfiles(fake_fcinfo);
-    }
-    
     /* Comprehensive parameter validation */
     kmersearch_validate_analysis_parameters(table_oid, column_name, kmersearch_kmer_size);
     
@@ -978,8 +967,7 @@ kmersearch_perform_highfreq_analysis_parallel(Oid table_oid, const char *column_
         
         /* Announce start of parent aggregation */
         ereport(INFO,
-                (errmsg("Parallel scan completed. Starting aggregation of results from %d workers.",
-                        result.parallel_workers_used)));
+                (errmsg("Parallel scan completed. Starting aggregation of results.")));
         
         /* Aggregate results from worker SQLite3 files */
         {
@@ -1010,6 +998,13 @@ kmersearch_perform_highfreq_analysis_parallel(Oid table_oid, const char *column_
                         (errmsg("could not open parent SQLite3 database: %s", sqlite3_errmsg(parent_db))));
             }
             
+            /* Configure parent database for better performance - MUST be done before creating any tables */
+            sqlite3_exec(parent_db, "PRAGMA page_size = 8192", NULL, NULL, NULL);
+            sqlite3_exec(parent_db, "PRAGMA cache_size = 50000", NULL, NULL, NULL);  /* 50000 * 8KB = ~400MB cache */
+            sqlite3_exec(parent_db, "PRAGMA temp_store = MEMORY", NULL, NULL, NULL);
+            sqlite3_exec(parent_db, "PRAGMA synchronous = OFF", NULL, NULL, NULL);
+            sqlite3_exec(parent_db, "PRAGMA journal_mode = OFF", NULL, NULL, NULL);
+            
             /* Create table in parent database */
             rc = sqlite3_exec(parent_db,
                              "CREATE TABLE kmersearch_highfreq_kmer ("
@@ -1037,8 +1032,6 @@ kmersearch_perform_highfreq_analysis_parallel(Oid table_oid, const char *column_
                     char attach_sql[MAXPGPATH + 100];
                     
                     worker_files_processed++;
-                    elog(INFO, "Processing worker temp file %d/%d",
-                         worker_files_processed, total_worker_files);
                     
                     /* Attach worker database */
                     snprintf(attach_sql, sizeof(attach_sql),
@@ -1051,10 +1044,14 @@ kmersearch_perform_highfreq_analysis_parallel(Oid table_oid, const char *column_
                         continue;
                     }
                     
-                        /* Merge worker data into parent - use separate INSERT for each row */
+                    /* Merge worker data into parent - use transaction for batch insert */
                     {
                         sqlite3_stmt *merge_stmt;
                         int merge_count = 0;
+                        
+                        /* Begin transaction for batch insert */
+                        sqlite3_exec(parent_db, "BEGIN TRANSACTION", NULL, NULL, NULL);
+                        
                         rc = sqlite3_prepare_v2(parent_db,
                                               "INSERT INTO main.kmersearch_highfreq_kmer (uintkey, nrow) "
                                               "VALUES (?, ?) "
@@ -1086,6 +1083,9 @@ kmersearch_perform_highfreq_analysis_parallel(Oid table_oid, const char *column_
                         {
                             elog(WARNING, "Failed to prepare merge statement: %s", sqlite3_errmsg(parent_db));
                         }
+                        
+                        /* Commit transaction */
+                        sqlite3_exec(parent_db, "COMMIT", NULL, NULL, NULL);
                     }
                     
                     /* Detach and delete worker database */
@@ -1893,8 +1893,6 @@ kmersearch_analysis_worker(dsm_segment *seg, shm_toc *toc)
         elog(ERROR, "kmersearch_analysis_worker called from non-parallel context");
     }
     
-    elog(DEBUG1, "kmersearch_analysis_worker: Worker started - PID %d", MyProcPid);
-    
     /* Get shared state from shm_toc */
     shared_state = (KmerAnalysisSharedState *)shm_toc_lookup(toc, KMERSEARCH_KEY_SHARED_STATE, false);
     if (!shared_state) {
@@ -1903,9 +1901,6 @@ kmersearch_analysis_worker(dsm_segment *seg, shm_toc *toc)
     
     /* Get worker ID (simplified - use PID modulo MAX_PARALLEL_WORKERS) */
     worker_id = MyProcPid % MAX_PARALLEL_WORKERS;
-    
-    elog(DEBUG1, "kmersearch_analysis_worker: Got shared state, table_oid=%u, worker_id=%d", 
-         shared_state->table_oid, worker_id);
     
     /* If partitioned table, get partition block info from shared memory */
     if (shared_state->is_partitioned)
@@ -1969,11 +1964,13 @@ kmersearch_analysis_worker(dsm_segment *seg, shm_toc *toc)
                 (errmsg("could not open SQLite3 database: %s", sqlite3_errmsg(ctx.db))));
     }
     
-    /* Configure SQLite3 for performance */
+    /* Configure SQLite3 for maximum performance - page_size MUST be set before creating tables */
+    sqlite3_exec(ctx.db, "PRAGMA page_size = 8192", NULL, NULL, NULL);     /* Larger page size for bulk operations */
+    sqlite3_exec(ctx.db, "PRAGMA cache_size = 20000", NULL, NULL, NULL);   /* 20000 * 8KB = ~160MB cache per worker */
+    sqlite3_exec(ctx.db, "PRAGMA temp_store = MEMORY", NULL, NULL, NULL);
     sqlite3_exec(ctx.db, "PRAGMA synchronous = OFF", NULL, NULL, NULL);
     sqlite3_exec(ctx.db, "PRAGMA journal_mode = OFF", NULL, NULL, NULL);  /* No journaling for temp data */
-    sqlite3_exec(ctx.db, "PRAGMA cache_size = 10000", NULL, NULL, NULL);
-    sqlite3_exec(ctx.db, "PRAGMA temp_store = MEMORY", NULL, NULL, NULL);
+    sqlite3_exec(ctx.db, "PRAGMA locking_mode = EXCLUSIVE", NULL, NULL, NULL);  /* No locking overhead */
     
     /* Create table */
     rc = sqlite3_exec(ctx.db, 
@@ -2002,7 +1999,6 @@ kmersearch_analysis_worker(dsm_segment *seg, shm_toc *toc)
     /* Dynamic work acquisition loop */
     {
         int blocks_processed = 0;
-        int batch_flushes = 0;
         
         while (has_work)
     {
@@ -2030,11 +2026,12 @@ kmersearch_analysis_worker(dsm_segment *seg, shm_toc *toc)
                                                    shared_state, &ctx);
                 blocks_processed++;
                 
-                /* Report progress every batch */
-                if (blocks_processed > 0 && (blocks_processed % kmersearch_highfreq_analysis_batch_size) == 0)
+                /* Report progress every 100 blocks */
+                if (blocks_processed % 100 == 0)
                 {
-                    elog(INFO, "Worker %d: Processed %d blocks, flushed %d batches",
-                         worker_id, blocks_processed, ++batch_flushes);
+                    ereport(INFO,
+                            (errmsg("Progress: %d blocks processed by worker %d",
+                                    blocks_processed, worker_id)));
                 }
                 
                 got_block = true;
@@ -2058,11 +2055,12 @@ kmersearch_analysis_worker(dsm_segment *seg, shm_toc *toc)
                                                    shared_state, &ctx);
                 blocks_processed++;
                 
-                /* Report progress every batch */
-                if (blocks_processed > 0 && (blocks_processed % kmersearch_highfreq_analysis_batch_size) == 0)
+                /* Report progress every 100 blocks */
+                if (blocks_processed % 100 == 0)
                 {
-                    elog(INFO, "Worker %d: Processed %d blocks, flushed %d batches",
-                         worker_id, blocks_processed, ++batch_flushes);
+                    ereport(INFO,
+                            (errmsg("Progress: %d blocks processed by worker %d",
+                                    blocks_processed, worker_id)));
                 }
                 
                 got_block = true;
@@ -2115,8 +2113,6 @@ kmersearch_analysis_worker(dsm_segment *seg, shm_toc *toc)
     
     /* Register temporary file path for parent process */
     kmersearch_register_worker_temp_file(shared_state, ctx.db_path, worker_id);
-    
-    elog(DEBUG1, "kmersearch_analysis_worker: Worker completed, temp file: %s", ctx.db_path);
 }
 
 /*
