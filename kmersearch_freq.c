@@ -69,6 +69,12 @@ static void kmersearch_process_block_with_batch(BlockNumber block,
                                                KmerAnalysisSharedState *shared_state,
                                                SQLiteWorkerContext *ctx);
 
+/* Parallel merge functions */
+PGDLLEXPORT void kmersearch_parallel_merge_worker(dsm_segment *seg, shm_toc *toc);
+static void kmersearch_aggregate_temp_files_parallel(char file_paths[][MAXPGPATH], 
+                                                    int num_files,
+                                                    const char *temp_dir_path);
+
 /*
  * Create worker temporary table for k-mer uintkeys
  */
@@ -992,10 +998,11 @@ kmersearch_perform_highfreq_analysis_parallel(Oid table_oid, const char *column_
             sqlite3 *parent_db = NULL;
             sqlite3_stmt *select_stmt = NULL;
             char parent_db_path[MAXPGPATH];
+            char worker_files[MAX_PARALLEL_WORKERS][MAXPGPATH];
             int rc;
             int fd;
-            int worker_files_processed = 0;
             int total_worker_files = 0;
+            int num_worker_files = 0;
             
             /* Create parent SQLite3 database */
             snprintf(parent_db_path, MAXPGPATH, "%s/pg_kmersearch_%d_XXXXXX",
@@ -1035,86 +1042,53 @@ kmersearch_perform_highfreq_analysis_parallel(Oid table_oid, const char *column_
                         (errmsg("could not create parent SQLite3 table: %s", sqlite3_errmsg(parent_db))));
             }
             
-            /* Aggregate data from each worker */
-            /* Count total worker files first */
-            for (int i = 0; i < MAX_PARALLEL_WORKERS; i++)
-            {
-                if (strlen(shared_state->worker_temp_files[i]) > 0)
-                    total_worker_files++;
-            }
+            /* Collect worker temp files for parallel aggregation */
             
             for (int i = 0; i < MAX_PARALLEL_WORKERS; i++)
             {
                 if (strlen(shared_state->worker_temp_files[i]) > 0)
                 {
-                    char attach_sql[MAXPGPATH + 100];
-                    
-                    worker_files_processed++;
-                    
-                    /* Report progress for each temp file */
-                    ereport(INFO,
-                            (errmsg("Processing temporary file %d of %d",
-                                    worker_files_processed, total_worker_files)));
-                    
-                    /* Attach worker database */
-                    snprintf(attach_sql, sizeof(attach_sql),
-                            "ATTACH DATABASE '%s' AS worker_db",
-                            shared_state->worker_temp_files[i]);
-                    rc = sqlite3_exec(parent_db, attach_sql, NULL, NULL, NULL);
-                    if (rc != SQLITE_OK)
-                    {
-                        elog(WARNING, "Failed to attach worker database: %s", sqlite3_errmsg(parent_db));
-                        continue;
-                    }
-                    
-                    /* Merge worker data into parent - use transaction for batch insert */
-                    {
-                        sqlite3_stmt *merge_stmt;
-                        int merge_count = 0;
-                        
-                        /* Begin transaction for batch insert */
-                        sqlite3_exec(parent_db, "BEGIN TRANSACTION", NULL, NULL, NULL);
-                        
-                        rc = sqlite3_prepare_v2(parent_db,
-                                              "INSERT INTO main.kmersearch_highfreq_kmer (uintkey, nrow) "
-                                              "VALUES (?, ?) "
-                                              "ON CONFLICT(uintkey) DO UPDATE SET nrow = nrow + excluded.nrow",
-                                              -1, &merge_stmt, NULL);
-                        if (rc == SQLITE_OK)
-                        {
-                            rc = sqlite3_prepare_v2(parent_db,
-                                                  "SELECT uintkey, nrow FROM worker_db.kmersearch_highfreq_kmer",
-                                                  -1, &select_stmt, NULL);
-                            if (rc == SQLITE_OK)
-                            {
-                                while (sqlite3_step(select_stmt) == SQLITE_ROW)
-                                {
-                                    int64 uintkey = sqlite3_column_int64(select_stmt, 0);
-                                    int64 nrow = sqlite3_column_int64(select_stmt, 1);
-                                    
-                                    sqlite3_bind_int64(merge_stmt, 1, uintkey);
-                                    sqlite3_bind_int64(merge_stmt, 2, nrow);
-                                    sqlite3_step(merge_stmt);
-                                    sqlite3_reset(merge_stmt);
-                                    merge_count++;
-                                }
-                                sqlite3_finalize(select_stmt);
-                            }
-                            sqlite3_finalize(merge_stmt);
-                        }
-                        else
-                        {
-                            elog(WARNING, "Failed to prepare merge statement: %s", sqlite3_errmsg(parent_db));
-                        }
-                        
-                        /* Commit transaction */
-                        sqlite3_exec(parent_db, "COMMIT", NULL, NULL, NULL);
-                    }
-                    
-                    /* Detach and delete worker database */
-                    sqlite3_exec(parent_db, "DETACH DATABASE worker_db", NULL, NULL, NULL);
-                    unlink(shared_state->worker_temp_files[i]);
+                    strlcpy(worker_files[num_worker_files], shared_state->worker_temp_files[i], MAXPGPATH);
+                    num_worker_files++;
                 }
+            }
+            
+            /* If we have multiple worker files, use parallel aggregation */
+            if (num_worker_files > 1)
+            {
+                ereport(INFO,
+                        (errmsg("Starting parallel aggregation of %d temporary files", num_worker_files)));
+                
+                /* Perform parallel aggregation */
+                kmersearch_aggregate_temp_files_parallel(worker_files, num_worker_files, shared_state->temp_dir_path);
+                
+                /* The first file now contains all aggregated data */
+                strlcpy(parent_db_path, worker_files[0], MAXPGPATH);
+                
+                /* Open the aggregated database */
+                rc = sqlite3_open(parent_db_path, &parent_db);
+                if (rc != SQLITE_OK)
+                {
+                    ereport(ERROR,
+                            (errmsg("could not open aggregated SQLite3 database: %s", sqlite3_errmsg(parent_db))));
+                }
+            }
+            else if (num_worker_files == 1)
+            {
+                /* Only one worker file, use it directly */
+                strlcpy(parent_db_path, worker_files[0], MAXPGPATH);
+                rc = sqlite3_open(parent_db_path, &parent_db);
+                if (rc != SQLITE_OK)
+                {
+                    ereport(ERROR,
+                            (errmsg("could not open worker SQLite3 database: %s", sqlite3_errmsg(parent_db))));
+                }
+            }
+            else
+            {
+                /* No worker files, this shouldn't happen but handle gracefully */
+                ereport(ERROR,
+                        (errmsg("No worker temporary files found")));
             }
             
             /* Calculate threshold based on GUC variables */
@@ -2354,6 +2328,264 @@ kmersearch_get_partition_oids(Oid parent_oid)
 }
 
 /*
+ * Parallel merge worker entry point
+ */
+PGDLLEXPORT void
+kmersearch_parallel_merge_worker(dsm_segment *seg, shm_toc *toc)
+{
+    char *source_file;
+    char *target_file;
+    sqlite3 *source_db = NULL;
+    sqlite3 *target_db = NULL;
+    int rc;
+    
+    /* Get worker ID from parallel context */
+    int worker_id;
+    char *file_paths_base;
+    
+    /* ParallelWorkerNumber is zero-based index of this worker */
+    worker_id = ParallelWorkerNumber;
+    
+    /* Get base pointer to all file paths */
+    file_paths_base = (char *) shm_toc_lookup(toc, 0, false);
+    if (!file_paths_base)
+    {
+        elog(ERROR, "Failed to get file paths from shared memory");
+        return;
+    }
+    
+    /* Calculate this worker's file paths */
+    source_file = file_paths_base + (worker_id * 2 * MAXPGPATH);
+    target_file = file_paths_base + (worker_id * 2 * MAXPGPATH + MAXPGPATH);
+    
+    /* Open source database */
+    rc = sqlite3_open(source_file, &source_db);
+    if (rc != SQLITE_OK)
+    {
+        elog(ERROR, "Failed to open source database %s: %s", source_file, sqlite3_errmsg(source_db));
+        return;
+    }
+    
+    /* Open target database */
+    rc = sqlite3_open(target_file, &target_db);
+    if (rc != SQLITE_OK)
+    {
+        sqlite3_close(source_db);
+        elog(ERROR, "Failed to open target database %s: %s", target_file, sqlite3_errmsg(target_db));
+        return;
+    }
+    
+    /* Configure databases for better performance */
+    sqlite3_exec(source_db, "PRAGMA synchronous = OFF", NULL, NULL, NULL);
+    sqlite3_exec(source_db, "PRAGMA journal_mode = OFF", NULL, NULL, NULL);
+    sqlite3_exec(target_db, "PRAGMA synchronous = OFF", NULL, NULL, NULL);
+    sqlite3_exec(target_db, "PRAGMA journal_mode = OFF", NULL, NULL, NULL);
+    
+    /* Attach target database to source */
+    {
+        char attach_sql[512];
+    snprintf(attach_sql, sizeof(attach_sql),
+             "ATTACH DATABASE '%s' AS target_db", target_file);
+        rc = sqlite3_exec(source_db, attach_sql, NULL, NULL, NULL);
+        if (rc != SQLITE_OK)
+        {
+            elog(ERROR, "Failed to attach target database: %s", sqlite3_errmsg(source_db));
+            goto cleanup;
+        }
+    }
+    
+    /* Merge data from target into source using prepared statements */
+    {
+        sqlite3_stmt *merge_stmt = NULL;
+        sqlite3_stmt *select_stmt = NULL;
+        
+        /* Begin transaction for better performance */
+        rc = sqlite3_exec(source_db, "BEGIN TRANSACTION", NULL, NULL, NULL);
+        if (rc != SQLITE_OK)
+        {
+            elog(ERROR, "Failed to begin transaction: %s", sqlite3_errmsg(source_db));
+            sqlite3_exec(source_db, "DETACH DATABASE target_db", NULL, NULL, NULL);
+            goto cleanup;
+        }
+        
+        /* Prepare INSERT/UPDATE statement */
+        rc = sqlite3_prepare_v2(source_db,
+                              "INSERT INTO main.kmersearch_highfreq_kmer (uintkey, nrow) "
+                              "VALUES (?, ?) "
+                              "ON CONFLICT(uintkey) DO UPDATE SET nrow = nrow + excluded.nrow",
+                              -1, &merge_stmt, NULL);
+        if (rc != SQLITE_OK)
+        {
+            elog(WARNING, "Failed to prepare merge statement: %s", sqlite3_errmsg(source_db));
+            sqlite3_exec(source_db, "ROLLBACK", NULL, NULL, NULL);
+            sqlite3_exec(source_db, "DETACH DATABASE target_db", NULL, NULL, NULL);
+            goto cleanup;
+        }
+        
+        /* Prepare SELECT statement for target database */
+        rc = sqlite3_prepare_v2(source_db,
+                              "SELECT uintkey, nrow FROM target_db.kmersearch_highfreq_kmer",
+                              -1, &select_stmt, NULL);
+        if (rc != SQLITE_OK)
+        {
+            elog(WARNING, "Failed to prepare select statement: %s", sqlite3_errmsg(source_db));
+            sqlite3_finalize(merge_stmt);
+            sqlite3_exec(source_db, "ROLLBACK", NULL, NULL, NULL);
+            sqlite3_exec(source_db, "DETACH DATABASE target_db", NULL, NULL, NULL);
+            goto cleanup;
+        }
+        
+        /* Process each row from target database */
+        while (sqlite3_step(select_stmt) == SQLITE_ROW)
+        {
+            int64 uintkey = sqlite3_column_int64(select_stmt, 0);
+            int64 nrow = sqlite3_column_int64(select_stmt, 1);
+            
+            sqlite3_bind_int64(merge_stmt, 1, uintkey);
+            sqlite3_bind_int64(merge_stmt, 2, nrow);
+            
+            rc = sqlite3_step(merge_stmt);
+            if (rc != SQLITE_DONE)
+            {
+                elog(WARNING, "Failed to merge row: %s", sqlite3_errmsg(source_db));
+            }
+            
+            sqlite3_reset(merge_stmt);
+        }
+        
+        /* Clean up statements */
+        sqlite3_finalize(select_stmt);
+        sqlite3_finalize(merge_stmt);
+        
+        /* Commit transaction */
+        rc = sqlite3_exec(source_db, "COMMIT", NULL, NULL, NULL);
+        if (rc != SQLITE_OK)
+        {
+            elog(WARNING, "Failed to commit transaction: %s", sqlite3_errmsg(source_db));
+            sqlite3_exec(source_db, "DETACH DATABASE target_db", NULL, NULL, NULL);
+            goto cleanup;
+        }
+    }
+    
+    /* Detach target database */
+    sqlite3_exec(source_db, "DETACH DATABASE target_db", NULL, NULL, NULL);
+    
+    /* Delete target file after successful merge */
+    unlink(target_file);
+    
+cleanup:
+    if (source_db)
+        sqlite3_close(source_db);
+    if (target_db)
+        sqlite3_close(target_db);
+}
+
+/*
+ * Parallel aggregation of temporary SQLite3 files
+ */
+static void
+kmersearch_aggregate_temp_files_parallel(char file_paths[][MAXPGPATH], int num_files,
+                                        const char *temp_dir_path)
+{
+    int current_files = num_files;
+    int stage = 0;
+    #define KMERSEARCH_MAGIC 0x1234567890ABCDEF  /* Magic number for TOC */
+    
+    PG_TRY();
+    {
+        while (current_files > 1)
+        {
+            int num_parallel = current_files / 2;
+            ParallelContext *pcxt;
+            shm_toc *toc;
+            char *shm_pointer;
+            
+            stage++;
+            ereport(INFO,
+                    (errmsg("Merge stage %d: %d files, %d parallel workers",
+                            stage, current_files, num_parallel)));
+            
+            /* Create parallel context */
+            EnterParallelMode();
+            pcxt = CreateParallelContext("pg_kmersearch", "kmersearch_parallel_merge_worker", num_parallel);
+            pcxt->nworkers = num_parallel;  /* Ensure correct number of workers */
+            
+            /* Estimate shared memory size using parallel context's estimator */
+            shm_toc_estimate_chunk(&pcxt->estimator, MAXPGPATH * 2 * num_parallel);
+            shm_toc_estimate_keys(&pcxt->estimator, 1);  /* Single key for file paths array */
+            
+            /* Initialize shared memory segment */
+            InitializeParallelDSM(pcxt);
+            
+            /* Attach table of contents */
+            toc = pcxt->toc;
+            
+            /* Allocate and set up shared memory for file paths */
+            shm_pointer = shm_toc_allocate(toc, MAXPGPATH * 2 * num_parallel);
+            
+            /* Set up shared memory for each worker */
+            for (int i = 0; i < num_parallel; i++)
+            {
+                char *source_path = shm_pointer + (i * 2 * MAXPGPATH);
+                char *target_path = shm_pointer + (i * 2 * MAXPGPATH + MAXPGPATH);
+                
+                /* Copy file paths to shared memory */
+                strlcpy(source_path, file_paths[i * 2], MAXPGPATH);
+                strlcpy(target_path, file_paths[i * 2 + 1], MAXPGPATH);
+            }
+            
+            /* Register base pointer in TOC */
+            shm_toc_insert(toc, 0, shm_pointer);
+            
+            /* Launch parallel workers */
+            LaunchParallelWorkers(pcxt);
+            
+            /* Wait for workers to complete */
+            WaitForParallelWorkersToFinish(pcxt);
+            
+            /* Update file list */
+            {
+                int new_idx = 0;
+            for (int i = 0; i < current_files; i += 2)
+            {
+                if (i + 1 < current_files)
+                {
+                    /* Files were merged, keep the source file */
+                    strlcpy(file_paths[new_idx], file_paths[i], MAXPGPATH);
+                    new_idx++;
+                }
+                else
+                {
+                    /* Odd file, keep it for next round */
+                    strlcpy(file_paths[new_idx], file_paths[i], MAXPGPATH);
+                    new_idx++;
+                }
+                }
+                current_files = new_idx;
+            }
+            
+            /* Cleanup */
+            DestroyParallelContext(pcxt);
+            ExitParallelMode();
+        }
+    }
+    PG_CATCH();
+    {
+        /* Error cleanup - delete temporary directory if needed */
+        if (temp_dir_path && temp_dir_path[0] != '\0')
+        {
+            PathNameDeleteTemporaryDir(temp_dir_path);
+            elog(DEBUG1, "Deleted temporary directory on error: %s", temp_dir_path);
+        }
+        PG_RE_THROW();
+    }
+    PG_END_TRY();
+    
+    ereport(INFO,
+            (errmsg("Merge completed after %d stages", stage)));
+}
+
+/*
  * Delete temporary SQLite3 files created by high-frequency k-mer analysis
  */
 Datum
@@ -2427,8 +2659,8 @@ kmersearch_delete_tempfiles(PG_FUNCTION_ARGS)
             char full_path[MAXPGPATH];
             struct stat st;
             
-            /* Check if it's a kmersearch temp directory */
-            if (strncmp(de->d_name, "pgsql_tmp.kmersearch_", 21) == 0)
+            /* Check if it's a kmersearch temp directory (new naming convention) */
+            if (strncmp(de->d_name, "pg_kmersearch_", 14) == 0)
             {
                 /* This is a kmersearch temporary directory */
                 char subdir_path[MAXPGPATH];
@@ -2503,54 +2735,16 @@ kmersearch_delete_tempfiles(PG_FUNCTION_ARGS)
                 
                 closedir(subdir);
                 
-                /* Note: We do NOT use PathNameDeleteTemporaryDir here */
-                /* We only delete the files inside, leaving directory removal to PostgreSQL */
-            }
-            /* Also check for old-style pg_kmersearch_* files directly in pgsql_tmp */
-            else if (strncmp(de->d_name, "pg_kmersearch_", 14) == 0)
-            {
-                /* Build full path */
-                snprintf(full_path, MAXPGPATH, "%s/%s", temp_path, de->d_name);
-                
-                /* Get file info */
-                if (stat(full_path, &st) < 0)
-                {
-                    ereport(WARNING,
-                            (errmsg("could not stat file \"%s\": %m", full_path)));
-                    error_count++;
-                    continue;
-                }
-                
-                /* Check if it's a regular file */
-                if (!S_ISREG(st.st_mode))
-                    continue;
-                
-                /* Check file age - skip files created within last 60 seconds */
-                current_time = time(NULL);
-                if (current_time - st.st_mtime < 60)
+                /* Try to remove the directory after deleting files */
+                if (rmdir(subdir_path) < 0)
                 {
                     ereport(INFO,
-                            (errmsg("skipping recently created file \"%s\"", full_path)));
-                    continue;
-                }
-                
-                /* Record file size */
-                file_size = st.st_size;
-                
-                /* Delete the file */
-                if (unlink(full_path) < 0)
-                {
-                    ereport(WARNING,
-                            (errmsg("could not delete file \"%s\": %m", full_path)));
-                    error_count++;
+                            (errmsg("could not remove directory \"%s\": %m (this is normal if still in use)", subdir_path)));
                 }
                 else
                 {
-                    deleted_count++;
-                    deleted_size += file_size;
                     ereport(INFO,
-                            (errmsg("deleted temporary file \"%s\" (size: %ld bytes)",
-                                    full_path, file_size)));
+                            (errmsg("removed temporary directory \"%s\"", subdir_path)));
                 }
             }
         }
