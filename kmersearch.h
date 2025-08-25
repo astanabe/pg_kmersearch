@@ -509,6 +509,7 @@ extern int kmersearch_query_kmer_cache_max_entries;
 extern int kmersearch_actual_min_score_cache_max_entries;
 extern int kmersearch_highfreq_kmer_cache_load_batch_size;
 extern int kmersearch_highfreq_analysis_batch_size;
+extern int kmersearch_highfreq_analysis_hashtable_size;
 
 /* Global cache managers */
 extern ActualMinScoreCacheManager *actual_min_score_cache_manager;
@@ -658,7 +659,7 @@ void kmersearch_free_query_kmer_cache_manager(QueryKmerCacheManager **manager);
 void kmersearch_free_actual_min_score_cache_manager(ActualMinScoreCacheManager **manager);
 
 /* Build version information */
-#define KMERSEARCH_BUILD_VERSION "1.0.2025.08.21"
+#define KMERSEARCH_BUILD_VERSION "1.0.2025.08.25"
 
 /* High-frequency k-mer cache global variables (defined in kmersearch_cache.c) */
 

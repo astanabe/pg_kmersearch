@@ -909,8 +909,8 @@ kmersearch_perform_highfreq_analysis_parallel(Oid table_oid, const char *column_
             TempTablespacePath(base_temp_dir, tablespace_oid);
             
             /* Create a dedicated temporary directory for this analysis session */
-            snprintf(shared_state->temp_dir_path, MAXPGPATH, "%s/%skmersearch_%d_%ld",
-                     base_temp_dir, PG_TEMP_FILE_PREFIX, MyProcPid, GetCurrentTimestamp());
+            snprintf(shared_state->temp_dir_path, MAXPGPATH, "%s/pg_kmersearch_%d_%ld",
+                     base_temp_dir, MyProcPid, GetCurrentTimestamp());
             
             /* Create the temporary directory (this will also create pgsql_tmp if it doesn't exist) */
             PathNameCreateTemporaryDir(base_temp_dir, shared_state->temp_dir_path);
@@ -2588,17 +2588,50 @@ kmersearch_register_worker_temp_file(KmerAnalysisSharedState *shared_state,
  * Clear hash table for reuse
  */
 static void
-kmersearch_clear_batch_hash(HTAB *batch_hash)
+kmersearch_clear_batch_hash(HTAB *batch_hash, int total_bits)
 {
     HASH_SEQ_STATUS status;
     void *entry;
+    List *keys_to_remove = NIL;
+    ListCell *lc;
     
-    /* Remove all entries from hash table */
+    /* First pass: collect keys to remove */
     hash_seq_init(&status, batch_hash);
     while ((entry = hash_seq_search(&status)) != NULL)
     {
-        hash_search(batch_hash, entry, HASH_REMOVE, NULL);
+        if (total_bits <= 16)
+        {
+            TempKmerFreqEntry16 *e = (TempKmerFreqEntry16 *)entry;
+            uint16 *key_copy = (uint16 *)palloc(sizeof(uint16));
+            *key_copy = e->uintkey;
+            keys_to_remove = lappend(keys_to_remove, key_copy);
+        }
+        else if (total_bits <= 32)
+        {
+            TempKmerFreqEntry32 *e = (TempKmerFreqEntry32 *)entry;
+            uint32 *key_copy = (uint32 *)palloc(sizeof(uint32));
+            *key_copy = e->uintkey;
+            keys_to_remove = lappend(keys_to_remove, key_copy);
+        }
+        else
+        {
+            TempKmerFreqEntry64 *e = (TempKmerFreqEntry64 *)entry;
+            uint64 *key_copy = (uint64 *)palloc(sizeof(uint64));
+            *key_copy = e->uintkey;
+            keys_to_remove = lappend(keys_to_remove, key_copy);
+        }
     }
+    
+    /* Second pass: remove entries using the collected keys */
+    foreach(lc, keys_to_remove)
+    {
+        void *key = lfirst(lc);
+        hash_search(batch_hash, key, HASH_REMOVE, NULL);
+        pfree(key);
+    }
+    
+    /* Clean up the list */
+    list_free(keys_to_remove);
 }
 
 /*
@@ -2699,7 +2732,7 @@ kmersearch_process_block_with_batch(BlockNumber block,
         }
         
         ctx->batch_hash = hash_create("KmerBatchHash",
-                                     kmersearch_highfreq_analysis_batch_size,
+                                     kmersearch_highfreq_analysis_hashtable_size,
                                      &hashctl, HASH_ELEM | HASH_BLOBS);
     }
     
@@ -2816,7 +2849,7 @@ kmersearch_process_block_with_batch(BlockNumber block,
             kmersearch_flush_batch_to_sqlite(ctx->batch_hash, ctx->db,
                                            ctx->insert_stmt, ctx->total_bits);
             /* Clear hash table for reuse instead of destroying */
-            kmersearch_clear_batch_hash(ctx->batch_hash);
+            kmersearch_clear_batch_hash(ctx->batch_hash, ctx->total_bits);
             
             /* Update shared progress counters */
             total_rows = pg_atomic_add_fetch_u64(&shared_state->total_rows_processed, ctx->batch_count);

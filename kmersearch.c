@@ -46,6 +46,7 @@ int kmersearch_query_kmer_cache_max_entries = 50000;  /* Default max query-kmer 
 int kmersearch_actual_min_score_cache_max_entries = 50000;  /* Default max actual min score cache entries */
 int kmersearch_highfreq_kmer_cache_load_batch_size = 10000;  /* Default batch size for loading high-frequency k-mers */
 int kmersearch_highfreq_analysis_batch_size = 10000;  /* Default batch size for high-frequency k-mer analysis */
+int kmersearch_highfreq_analysis_hashtable_size = 1000000;  /* Default hash table size for high-frequency k-mer analysis */
 
 /* Global cache managers */
 ActualMinScoreCacheManager *actual_min_score_cache_manager = NULL;
@@ -568,6 +569,19 @@ _PG_init(void)
                            10000,
                            1000,
                            1000000,
+                           PGC_USERSET,
+                           0,
+                           NULL,
+                           NULL,
+                           NULL);
+
+    DefineCustomIntVariable("kmersearch.highfreq_analysis_hashtable_size",
+                           "Hash table size for high-frequency k-mer analysis",
+                           "Initial size of the hash table used during analysis",
+                           &kmersearch_highfreq_analysis_hashtable_size,
+                           1000000,
+                           10000,
+                           100000000,
                            PGC_USERSET,
                            0,
                            NULL,
