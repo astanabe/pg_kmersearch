@@ -186,6 +186,7 @@ This is particularly important when testing analysis functions and cache operati
 - `kmersearch.actual_min_score_cache_max_entries` (default: 50000): Maximum cache entries for minimum scores
 - `kmersearch.highfreq_kmer_cache_load_batch_size` (default: 10000): Batch size for loading high-frequency k-mers
 - `kmersearch.highfreq_analysis_batch_size` (default: 10000): Batch size for high-frequency k-mer analysis
+- `kmersearch.highfreq_analysis_hashtable_size` (default: 1000000): Initial hash table size for high-frequency k-mer analysis (10000-100000000)
 
 ### Core Functions
 - **Search Operators**: `=%` operator for k-mer based sequence search

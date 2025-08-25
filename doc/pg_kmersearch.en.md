@@ -161,6 +161,7 @@ pg_kmersearch provides several configuration variables that can be set using Pos
 | `kmersearch.force_simd_capability` | -1 | -1-100 | Force SIMD capability level (-1 = auto-detect) |
 | `kmersearch.highfreq_kmer_cache_load_batch_size` | 10000 | 1000-1000000 | Batch size for loading high-frequency k-mers into cache |
 | `kmersearch.highfreq_analysis_batch_size` | 10000 | 1000-1000000 | Batch size for high-frequency k-mer analysis |
+| `kmersearch.highfreq_analysis_hashtable_size` | 1000000 | 10000-100000000 | Initial hash table size for high-frequency k-mer analysis |
 
 ### High-Frequency K-mer Exclusion
 
