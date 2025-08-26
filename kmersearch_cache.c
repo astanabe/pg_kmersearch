@@ -528,10 +528,10 @@ kmersearch_get_cached_actual_min_score_datum_int2(Datum *queryKeys, int nkeys)
         MemoryContextSwitchTo(old_context);
     }
     
-    /* Calculate hash from int2 values */
+    /* Calculate hash from uint16 values - must match extract_query */
     for (int i = 0; i < nkeys; i++)
     {
-        int16 key = DatumGetInt16(queryKeys[i]);
+        uint16 key = (uint16)DatumGetInt16(queryKeys[i]);
         query_hash = query_hash * 31 + key;
     }
     
@@ -568,10 +568,10 @@ kmersearch_get_cached_actual_min_score_datum_int4(Datum *queryKeys, int nkeys)
         MemoryContextSwitchTo(old_context);
     }
     
-    /* Calculate hash from int4 values */
+    /* Calculate hash from uint32 values - must match extract_query */
     for (int i = 0; i < nkeys; i++)
     {
-        int32 key = DatumGetInt32(queryKeys[i]);
+        uint32 key = (uint32)DatumGetInt32(queryKeys[i]);
         query_hash = query_hash * 31 + key;
     }
     
@@ -608,10 +608,10 @@ kmersearch_get_cached_actual_min_score_datum_int8(Datum *queryKeys, int nkeys)
         MemoryContextSwitchTo(old_context);
     }
     
-    /* Calculate hash from int8 values */
+    /* Calculate hash from uint64 values - must match extract_query */
     for (int i = 0; i < nkeys; i++)
     {
-        int64 key = DatumGetInt64(queryKeys[i]);
+        uint64 key = (uint64)DatumGetInt64(queryKeys[i]);
         query_hash = query_hash * 31 + key;
     }
     
