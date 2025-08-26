@@ -52,6 +52,7 @@ typedef struct SQLiteWorkerContext
     Oid         dna2_oid;               /* Cached OID for dna2 type */
     Oid         dna4_oid;               /* Cached OID for dna4 type */
     Oid         column_type_oid;        /* Column data type OID */
+    bool        batch_flushed;          /* Flag indicating batch was flushed */
 } SQLiteWorkerContext;
 
 static int analysis_kmer_hash_compare(const void *a, const void *b, size_t size, void *arg);
@@ -1889,6 +1890,8 @@ kmersearch_analysis_worker(dsm_segment *seg, shm_toc *toc)
     int worker_id;
     int rc;
     int fd;
+    MemoryContext batch_memory_context;
+    MemoryContext old_context;
     
     /* Initialize context */
     memset(&ctx, 0, sizeof(SQLiteWorkerContext));
@@ -2002,6 +2005,11 @@ kmersearch_analysis_worker(dsm_segment *seg, shm_toc *toc)
                 (errmsg("could not prepare SQLite3 statement: %s", sqlite3_errmsg(ctx.db))));
     }
     
+    /* Create a memory context for batch processing */
+    batch_memory_context = AllocSetContextCreate(CurrentMemoryContext,
+                                                 "KmerBatchMemoryContext",
+                                                 ALLOCSET_DEFAULT_SIZES);
+    
     /* Dynamic work acquisition loop */
     {
         int blocks_processed = 0;
@@ -2026,11 +2034,31 @@ kmersearch_analysis_worker(dsm_segment *seg, shm_toc *toc)
                     global_block, shared_state);
                 
                 
+                /* Switch to batch memory context before processing */
+                old_context = MemoryContextSwitchTo(batch_memory_context);
+                
+                /* Clear the batch flushed flag before processing */
+                ctx.batch_flushed = false;
+                
                 /* Process block with batch - pass partition OID for partitioned tables */
                 kmersearch_process_block_with_batch(mapping.local_block_number,
                                                    mapping.partition_oid,
                                                    shared_state, &ctx);
                 blocks_processed++;
+                
+                /* Switch back to original context */
+                MemoryContextSwitchTo(old_context);
+                
+                /* If batch was flushed, destroy hash table and reset the memory context */
+                if (ctx.batch_flushed)
+                {
+                    if (ctx.batch_hash)
+                    {
+                        hash_destroy(ctx.batch_hash);
+                        ctx.batch_hash = NULL;
+                    }
+                    MemoryContextReset(batch_memory_context);
+                }
                 
                 got_block = true;
             }
@@ -2046,12 +2074,31 @@ kmersearch_analysis_worker(dsm_segment *seg, shm_toc *toc)
                 shared_state->next_block++;
                 LWLockRelease(&shared_state->mutex.lock);
                 
+                /* Switch to batch memory context before processing */
+                old_context = MemoryContextSwitchTo(batch_memory_context);
+                
+                /* Clear the batch flushed flag before processing */
+                ctx.batch_flushed = false;
                 
                 /* Process block with batch - use table_oid for regular tables */
                 kmersearch_process_block_with_batch(current_block, 
                                                    shared_state->table_oid,
                                                    shared_state, &ctx);
                 blocks_processed++;
+                
+                /* Switch back to original context */
+                MemoryContextSwitchTo(old_context);
+                
+                /* If batch was flushed, destroy hash table and reset the memory context */
+                if (ctx.batch_flushed)
+                {
+                    if (ctx.batch_hash)
+                    {
+                        hash_destroy(ctx.batch_hash);
+                        ctx.batch_hash = NULL;
+                    }
+                    MemoryContextReset(batch_memory_context);
+                }
                 
                 got_block = true;
             }
@@ -2112,6 +2159,9 @@ kmersearch_analysis_worker(dsm_segment *seg, shm_toc *toc)
         sqlite3_finalize(ctx.insert_stmt);
     if (ctx.db)
         sqlite3_close(ctx.db);
+    
+    /* Delete the batch memory context to free all remaining memory */
+    MemoryContextDelete(batch_memory_context);
     
     /* Register temporary file path for parent process */
     kmersearch_register_worker_temp_file(shared_state, ctx.db_path, worker_id);
@@ -2223,22 +2273,6 @@ kmersearch_map_global_to_partition_block(BlockNumber global_block,
 {
     PartitionBlockMapping result;
     int i;
-    
-    /* Progress reporting at specific block milestones (every 5%) */
-    if (state->total_blocks_all_partitions > 20 && state->total_rows > 0) {
-        BlockNumber milestone_interval = state->total_blocks_all_partitions / 20; /* 5% intervals */
-        
-        if (global_block > 0 && global_block % milestone_interval == 0) {
-            int current_percentage = (int)((global_block * 100) / state->total_blocks_all_partitions);
-            uint64 estimated_rows = ((uint64)state->total_rows * global_block) / state->total_blocks_all_partitions;
-            
-            if (current_percentage < 100) {
-                ereport(INFO,
-                        (errmsg("Progress: %d%% (estimated %lu / %lu rows processed)",
-                                current_percentage, estimated_rows, state->total_rows)));
-            }
-        }
-    }
     
     for (i = 0; i < state->num_partitions; i++)
     {
@@ -2779,56 +2813,6 @@ kmersearch_register_worker_temp_file(KmerAnalysisSharedState *shared_state,
 }
 
 /*
- * Clear hash table for reuse
- */
-static void
-kmersearch_clear_batch_hash(HTAB *batch_hash, int total_bits)
-{
-    HASH_SEQ_STATUS status;
-    void *entry;
-    List *keys_to_remove = NIL;
-    ListCell *lc;
-    
-    /* First pass: collect keys to remove */
-    hash_seq_init(&status, batch_hash);
-    while ((entry = hash_seq_search(&status)) != NULL)
-    {
-        if (total_bits <= 16)
-        {
-            TempKmerFreqEntry16 *e = (TempKmerFreqEntry16 *)entry;
-            uint16 *key_copy = (uint16 *)palloc(sizeof(uint16));
-            *key_copy = e->uintkey;
-            keys_to_remove = lappend(keys_to_remove, key_copy);
-        }
-        else if (total_bits <= 32)
-        {
-            TempKmerFreqEntry32 *e = (TempKmerFreqEntry32 *)entry;
-            uint32 *key_copy = (uint32 *)palloc(sizeof(uint32));
-            *key_copy = e->uintkey;
-            keys_to_remove = lappend(keys_to_remove, key_copy);
-        }
-        else
-        {
-            TempKmerFreqEntry64 *e = (TempKmerFreqEntry64 *)entry;
-            uint64 *key_copy = (uint64 *)palloc(sizeof(uint64));
-            *key_copy = e->uintkey;
-            keys_to_remove = lappend(keys_to_remove, key_copy);
-        }
-    }
-    
-    /* Second pass: remove entries using the collected keys */
-    foreach(lc, keys_to_remove)
-    {
-        void *key = lfirst(lc);
-        hash_search(batch_hash, key, HASH_REMOVE, NULL);
-        pfree(key);
-    }
-    
-    /* Clean up the list */
-    list_free(keys_to_remove);
-}
-
-/*
  * Flush batch hash table to SQLite3
  */
 static void
@@ -3042,8 +3026,8 @@ kmersearch_process_block_with_batch(BlockNumber block,
             
             kmersearch_flush_batch_to_sqlite(ctx->batch_hash, ctx->db,
                                            ctx->insert_stmt, ctx->total_bits);
-            /* Clear hash table for reuse instead of destroying */
-            kmersearch_clear_batch_hash(ctx->batch_hash, ctx->total_bits);
+            
+            /* Note: hash table will be destroyed in the calling context */
             
             /* Update shared progress counters */
             total_rows = pg_atomic_add_fetch_u64(&shared_state->total_rows_processed, ctx->batch_count);
@@ -3055,6 +3039,7 @@ kmersearch_process_block_with_batch(BlockNumber block,
                             (unsigned long)batch_num, (unsigned long)total_rows)));
             
             ctx->batch_count = 0;
+            ctx->batch_flushed = true;  /* Mark that batch was flushed */
         }
     }
     
