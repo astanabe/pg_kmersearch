@@ -1791,6 +1791,10 @@ kmersearch_worker_analyze_blocks(KmerWorkerState *worker, Relation rel,
             /* No need to convert to Datum array - use uintkeys directly */
         }
         
+        /* Free detoasted datum if it was copied */
+        if ((Pointer)sequence != DatumGetPointer(value))
+            pfree(sequence);
+        
         if (uintkeys == NULL || nkeys == 0) {
             continue;
         }
@@ -2485,6 +2489,7 @@ kmersearch_parallel_merge_worker(dsm_segment *seg, shm_toc *toc)
             }
             
             sqlite3_reset(merge_stmt);
+            sqlite3_clear_bindings(merge_stmt);
         }
         
         /* Clean up statements */
@@ -2862,6 +2867,7 @@ kmersearch_flush_batch_to_sqlite(HTAB *batch_hash, sqlite3 *db,
                     (errmsg("SQLite3 INSERT failed: %s", sqlite3_errmsg(db))));
         }
         sqlite3_reset(stmt);
+        sqlite3_clear_bindings(stmt);
     }
     
     /* Commit transaction */
@@ -2871,6 +2877,9 @@ kmersearch_flush_batch_to_sqlite(HTAB *batch_hash, sqlite3 *db,
         ereport(ERROR,
                 (errmsg("SQLite3 COMMIT failed: %s", sqlite3_errmsg(db))));
     }
+    
+    /* Release SQLite3 internal memory after batch completion */
+    sqlite3_db_release_memory(db);
 }
 
 /*
@@ -2950,11 +2959,17 @@ kmersearch_process_block_with_batch(BlockNumber block,
         {
             VarBit *seq = DatumGetVarBitP(datum);
             kmersearch_extract_uintkey_from_dna2(seq, &kmer_array, &kmer_count);
+            /* Free detoasted datum if it was copied */
+            if ((Pointer)seq != DatumGetPointer(datum))
+                pfree(seq);
         }
         else if (ctx->column_type_oid == ctx->dna4_oid)
         {
             VarBit *seq = DatumGetVarBitP(datum);
             kmersearch_extract_uintkey_from_dna4(seq, &kmer_array, &kmer_count);
+            /* Free detoasted datum if it was copied */
+            if ((Pointer)seq != DatumGetPointer(datum))
+                pfree(seq);
         }
         else
         {
