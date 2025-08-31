@@ -52,6 +52,7 @@ typedef struct SQLiteWorkerContext
     Oid         column_type_oid;        /* Column data type OID */
     bool        batch_flushed;          /* Flag indicating batch was flushed */
     bool        table_created;          /* Flag indicating if table has been created */
+    MemoryContext batch_memory_context; /* Memory context for batch processing */
 } SQLiteWorkerContext;
 
 static int analysis_kmer_hash_compare(const void *a, const void *b, size_t size, void *arg);
@@ -1893,8 +1894,6 @@ kmersearch_analysis_worker(dsm_segment *seg, shm_toc *toc)
     int worker_id;
     int rc;
     int fd;
-    MemoryContext batch_memory_context;
-    MemoryContext old_context;
     
     /* Initialize context */
     memset(&ctx, 0, sizeof(SQLiteWorkerContext));
@@ -2004,7 +2003,7 @@ kmersearch_analysis_worker(dsm_segment *seg, shm_toc *toc)
     ctx.table_created = true;
     
     /* Note: batch_memory_context will be created/deleted for each batch */
-    batch_memory_context = NULL;
+    ctx.batch_memory_context = NULL;
     
     /* Dynamic work acquisition loop */
     {
@@ -2030,14 +2029,6 @@ kmersearch_analysis_worker(dsm_segment *seg, shm_toc *toc)
                     global_block, shared_state);
                 
                 
-                /* Create a new memory context for this batch */
-                batch_memory_context = AllocSetContextCreate(CurrentMemoryContext,
-                                                            "KmerBatchMemoryContext",
-                                                            ALLOCSET_DEFAULT_SIZES);
-                
-                /* Switch to batch memory context before processing */
-                old_context = MemoryContextSwitchTo(batch_memory_context);
-                
                 /* Clear the batch flushed flag before processing */
                 ctx.batch_flushed = false;
                 
@@ -2046,21 +2037,6 @@ kmersearch_analysis_worker(dsm_segment *seg, shm_toc *toc)
                                                    mapping.partition_oid,
                                                    shared_state, &ctx);
                 blocks_processed++;
-                
-                /* Switch back to original context */
-                MemoryContextSwitchTo(old_context);
-                
-                /* If batch was flushed, destroy hash table and delete the memory context */
-                if (ctx.batch_flushed)
-                {
-                    if (ctx.batch_hash)
-                    {
-                        hash_destroy(ctx.batch_hash);
-                        ctx.batch_hash = NULL;
-                    }
-                    MemoryContextDelete(batch_memory_context);
-                    batch_memory_context = NULL;
-                }
                 
                 got_block = true;
             }
@@ -2076,14 +2052,6 @@ kmersearch_analysis_worker(dsm_segment *seg, shm_toc *toc)
                 shared_state->next_block++;
                 LWLockRelease(&shared_state->mutex.lock);
                 
-                /* Create a new memory context for this batch */
-                batch_memory_context = AllocSetContextCreate(CurrentMemoryContext,
-                                                            "KmerBatchMemoryContext",
-                                                            ALLOCSET_DEFAULT_SIZES);
-                
-                /* Switch to batch memory context before processing */
-                old_context = MemoryContextSwitchTo(batch_memory_context);
-                
                 /* Clear the batch flushed flag before processing */
                 ctx.batch_flushed = false;
                 
@@ -2092,21 +2060,6 @@ kmersearch_analysis_worker(dsm_segment *seg, shm_toc *toc)
                                                    shared_state->table_oid,
                                                    shared_state, &ctx);
                 blocks_processed++;
-                
-                /* Switch back to original context */
-                MemoryContextSwitchTo(old_context);
-                
-                /* If batch was flushed, destroy hash table and delete the memory context */
-                if (ctx.batch_flushed)
-                {
-                    if (ctx.batch_hash)
-                    {
-                        hash_destroy(ctx.batch_hash);
-                        ctx.batch_hash = NULL;
-                    }
-                    MemoryContextDelete(batch_memory_context);
-                    batch_memory_context = NULL;
-                }
                 
                 got_block = true;
             }
@@ -2173,8 +2126,8 @@ kmersearch_analysis_worker(dsm_segment *seg, shm_toc *toc)
     }
     
     /* Delete the batch memory context if it still exists */
-    if (batch_memory_context)
-        MemoryContextDelete(batch_memory_context);
+    if (ctx.batch_memory_context)
+        MemoryContextDelete(ctx.batch_memory_context);
     
     /* Register temporary file path for parent process */
     kmersearch_register_worker_temp_file(shared_state, ctx.db_path, worker_id);
@@ -2971,10 +2924,24 @@ kmersearch_process_block_with_batch(BlockNumber block,
     Page page;
     OffsetNumber maxoff;
     
-    /* Initialize batch hash if needed */
+    /* Initialize batch memory context if needed */
+    if (ctx->batch_memory_context == NULL)
+    {
+        /* Create memory context for batch processing under TopMemoryContext */
+        ctx->batch_memory_context = AllocSetContextCreate(TopMemoryContext,
+                                                         "KmerBatchMemoryContext",
+                                                         ALLOCSET_DEFAULT_SIZES);
+    }
+    
+    /* Initialize batch hash if needed (start of new batch) */
     if (ctx->batch_hash == NULL)
     {
         HASHCTL hashctl;
+        MemoryContext old_context;
+        
+        /* Switch to batch memory context */
+        old_context = MemoryContextSwitchTo(ctx->batch_memory_context);
+        
         memset(&hashctl, 0, sizeof(hashctl));
         
         if (ctx->total_bits <= 16)
@@ -2999,6 +2966,9 @@ kmersearch_process_block_with_batch(BlockNumber block,
         ctx->batch_hash = hash_create("KmerBatchHash",
                                      kmersearch_highfreq_analysis_hashtable_size,
                                      &hashctl, HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
+        
+        /* Switch back to original context */
+        MemoryContextSwitchTo(old_context);
     }
     
     /* Open table and read block */
@@ -3013,6 +2983,7 @@ kmersearch_process_block_with_batch(BlockNumber block,
          offnum <= maxoff;
          offnum = OffsetNumberNext(offnum))
     {
+        MemoryContext old_context;
         ItemId itemid = PageGetItemId(page, offnum);
         HeapTupleData tuple;
         bool isnull;
@@ -3031,6 +3002,9 @@ kmersearch_process_block_with_batch(BlockNumber block,
                            RelationGetDescr(rel), &isnull);
         if (isnull)
             continue;
+        
+        /* Switch to batch memory context for k-mer extraction and hash table operations */
+        old_context = MemoryContextSwitchTo(ctx->batch_memory_context);
         
         /* Extract k-mers based on data type (type OIDs are cached at worker start) */
         if (ctx->column_type_oid == ctx->dna2_oid)
@@ -3054,7 +3028,6 @@ kmersearch_process_block_with_batch(BlockNumber block,
             elog(ERROR, "Unsupported column type");
             continue;
         }
-        
         
         /* Add k-mers to batch hash table */
         for (int i = 0; i < kmer_count; i++)
@@ -3109,6 +3082,9 @@ kmersearch_process_block_with_batch(BlockNumber block,
         if (kmer_array)
             pfree(kmer_array);
         
+        /* Switch back to original context */
+        MemoryContextSwitchTo(old_context);
+        
         ctx->batch_count++;
         
         /* Flush batch if size limit reached */
@@ -3130,6 +3106,60 @@ kmersearch_process_block_with_batch(BlockNumber block,
             ereport(INFO,
                     (errmsg("Batch %lu completed: %lu total rows processed",
                             (unsigned long)batch_num, (unsigned long)total_rows)));
+            
+            /* Destroy hash table and delete memory context for completed batch */
+            if (ctx->batch_hash)
+            {
+                hash_destroy(ctx->batch_hash);
+                ctx->batch_hash = NULL;
+            }
+            if (ctx->batch_memory_context)
+            {
+                MemoryContextDelete(ctx->batch_memory_context);
+                ctx->batch_memory_context = NULL;
+            }
+            
+            /* Create new memory context and hash table for next batch */
+            {
+                HASHCTL hashctl;
+                MemoryContext batch_old_context;
+                
+                /* Create memory context for next batch */
+                ctx->batch_memory_context = AllocSetContextCreate(TopMemoryContext,
+                                                                 "KmerBatchMemoryContext",
+                                                                 ALLOCSET_DEFAULT_SIZES);
+                
+                /* Switch to batch memory context */
+                batch_old_context = MemoryContextSwitchTo(ctx->batch_memory_context);
+                
+                memset(&hashctl, 0, sizeof(hashctl));
+                
+                if (ctx->total_bits <= 16)
+                {
+                    hashctl.keysize = sizeof(uint16);
+                    hashctl.entrysize = sizeof(TempKmerFreqEntry16);
+                }
+                else if (ctx->total_bits <= 32)
+                {
+                    hashctl.keysize = sizeof(uint32);
+                    hashctl.entrysize = sizeof(TempKmerFreqEntry32);
+                }
+                else
+                {
+                    hashctl.keysize = sizeof(uint64);
+                    hashctl.entrysize = sizeof(TempKmerFreqEntry64);
+                }
+                
+                /* Use HASH_CONTEXT to ensure hash table is created in current memory context */
+                hashctl.hcxt = CurrentMemoryContext;
+                
+                ctx->batch_hash = hash_create("KmerBatchHash",
+                                             kmersearch_highfreq_analysis_hashtable_size,
+                                             &hashctl, HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
+                
+                /* Switch back to original context */
+                MemoryContextSwitchTo(batch_old_context);
+            }
             
             ctx->batch_count = 0;
             ctx->batch_flushed = true;  /* Mark that batch was flushed */
