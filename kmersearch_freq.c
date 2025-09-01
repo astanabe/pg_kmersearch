@@ -2900,15 +2900,27 @@ kmersearch_flush_batch_to_sqlite(HTAB *batch_hash, const char *db_path,
     /* Clean up and close connection */
     sqlite3_finalize(stmt);
     
+    /* Log SQLite3 memory usage before cleanup */
+    elog(DEBUG1, "SQLite3 memory: current=%ld bytes, highwater=%ld bytes",
+         (long)sqlite3_memory_used(), (long)sqlite3_memory_highwater(0));
+    
     /* Release database memory before closing */
     sqlite3_db_release_memory(db);
     
     /* Close the database connection */
     sqlite3_close_v2(db);
     
+    /* Log SQLite3 memory usage after connection close */
+    elog(DEBUG1, "SQLite3 memory after close: current=%ld bytes, highwater=%ld bytes",
+         (long)sqlite3_memory_used(), (long)sqlite3_memory_highwater(0));
+    
     /* Shutdown SQLite3 to release all global memory and caches */
     /* Next sqlite3_open() will automatically call sqlite3_initialize() */
     sqlite3_shutdown();
+    
+    /* Log SQLite3 memory usage after shutdown */
+    elog(DEBUG1, "SQLite3 memory after shutdown: current=%ld bytes",
+         (long)sqlite3_memory_used());
 }
 
 /*
