@@ -1017,6 +1017,11 @@ kmersearch_perform_highfreq_analysis_parallel(Oid table_oid, const char *column_
             }
             close(fd);
             
+            /* Initialize and configure SQLite3 before opening */
+            sqlite3_initialize();
+            sqlite3_config(SQLITE_CONFIG_MMAP_SIZE, (sqlite3_int64)0, (sqlite3_int64)0);
+            sqlite3_soft_heap_limit64(128 * 1024 * 1024);
+            
             rc = sqlite3_open(parent_db_path, &parent_db);
             if (rc != SQLITE_OK)
             {
@@ -1024,12 +1029,13 @@ kmersearch_perform_highfreq_analysis_parallel(Oid table_oid, const char *column_
                         (errmsg("could not open parent SQLite3 database: %s", sqlite3_errmsg(parent_db))));
             }
             
-            /* Configure parent database for better performance - MUST be done before creating any tables */
+            /* Configure parent database for better performance */
             sqlite3_exec(parent_db, "PRAGMA page_size = 8192", NULL, NULL, NULL);
-            sqlite3_exec(parent_db, "PRAGMA cache_size = 50000", NULL, NULL, NULL);  /* 50000 * 8KB = ~400MB cache */
+            sqlite3_exec(parent_db, "PRAGMA cache_size = 10000", NULL, NULL, NULL);  /* ~80MB cache */
             sqlite3_exec(parent_db, "PRAGMA temp_store = MEMORY", NULL, NULL, NULL);
             sqlite3_exec(parent_db, "PRAGMA synchronous = OFF", NULL, NULL, NULL);
             sqlite3_exec(parent_db, "PRAGMA journal_mode = OFF", NULL, NULL, NULL);
+            sqlite3_exec(parent_db, "PRAGMA locking_mode = EXCLUSIVE", NULL, NULL, NULL);
             
             /* Create table in parent database */
             rc = sqlite3_exec(parent_db,
@@ -1066,6 +1072,11 @@ kmersearch_perform_highfreq_analysis_parallel(Oid table_oid, const char *column_
                 /* The first file now contains all aggregated data */
                 strlcpy(parent_db_path, worker_files[0], MAXPGPATH);
                 
+                /* Initialize and configure SQLite3 before opening */
+                sqlite3_initialize();
+                sqlite3_config(SQLITE_CONFIG_MMAP_SIZE, (sqlite3_int64)0, (sqlite3_int64)0);
+                sqlite3_soft_heap_limit64(128 * 1024 * 1024);
+                
                 /* Open the aggregated database */
                 rc = sqlite3_open(parent_db_path, &parent_db);
                 if (rc != SQLITE_OK)
@@ -1073,17 +1084,38 @@ kmersearch_perform_highfreq_analysis_parallel(Oid table_oid, const char *column_
                     ereport(ERROR,
                             (errmsg("could not open aggregated SQLite3 database: %s", sqlite3_errmsg(parent_db))));
                 }
+                
+                /* Configure database settings */
+                sqlite3_exec(parent_db, "PRAGMA page_size = 8192", NULL, NULL, NULL);
+                sqlite3_exec(parent_db, "PRAGMA cache_size = 10000", NULL, NULL, NULL);
+                sqlite3_exec(parent_db, "PRAGMA temp_store = MEMORY", NULL, NULL, NULL);
+                sqlite3_exec(parent_db, "PRAGMA synchronous = OFF", NULL, NULL, NULL);
+                sqlite3_exec(parent_db, "PRAGMA journal_mode = OFF", NULL, NULL, NULL);
+                sqlite3_exec(parent_db, "PRAGMA locking_mode = EXCLUSIVE", NULL, NULL, NULL);
             }
             else if (num_worker_files == 1)
             {
                 /* Only one worker file, use it directly */
                 strlcpy(parent_db_path, worker_files[0], MAXPGPATH);
+                /* Initialize and configure SQLite3 before opening */
+                sqlite3_initialize();
+                sqlite3_config(SQLITE_CONFIG_MMAP_SIZE, (sqlite3_int64)0, (sqlite3_int64)0);
+                sqlite3_soft_heap_limit64(128 * 1024 * 1024);
+                
                 rc = sqlite3_open(parent_db_path, &parent_db);
                 if (rc != SQLITE_OK)
                 {
                     ereport(ERROR,
                             (errmsg("could not open worker SQLite3 database: %s", sqlite3_errmsg(parent_db))));
                 }
+                
+                /* Configure database settings */
+                sqlite3_exec(parent_db, "PRAGMA page_size = 8192", NULL, NULL, NULL);
+                sqlite3_exec(parent_db, "PRAGMA cache_size = 10000", NULL, NULL, NULL);
+                sqlite3_exec(parent_db, "PRAGMA temp_store = MEMORY", NULL, NULL, NULL);
+                sqlite3_exec(parent_db, "PRAGMA synchronous = OFF", NULL, NULL, NULL);
+                sqlite3_exec(parent_db, "PRAGMA journal_mode = OFF", NULL, NULL, NULL);
+                sqlite3_exec(parent_db, "PRAGMA locking_mode = EXCLUSIVE", NULL, NULL, NULL);
             }
             else
             {
@@ -1971,6 +2003,11 @@ kmersearch_analysis_worker(dsm_segment *seg, shm_toc *toc)
     {
         sqlite3 *init_db = NULL;
         
+        /* Initialize and configure SQLite3 before opening */
+        sqlite3_initialize();
+        sqlite3_config(SQLITE_CONFIG_MMAP_SIZE, (sqlite3_int64)0, (sqlite3_int64)0);
+        sqlite3_soft_heap_limit64(128 * 1024 * 1024);
+        
         rc = sqlite3_open(ctx.db_path, &init_db);
         if (rc != SQLITE_OK)
         {
@@ -2106,6 +2143,11 @@ kmersearch_analysis_worker(dsm_segment *seg, shm_toc *toc)
     {
         sqlite3 *db = NULL;
         sqlite3_stmt *final_stats = NULL;
+        
+        /* Initialize and configure SQLite3 before opening */
+        sqlite3_initialize();
+        sqlite3_config(SQLITE_CONFIG_MMAP_SIZE, (sqlite3_int64)0, (sqlite3_int64)0);
+        sqlite3_soft_heap_limit64(128 * 1024 * 1024);
         
         /* Open connection just to get statistics */
         rc = sqlite3_open(ctx.db_path, &db);
@@ -2358,6 +2400,11 @@ kmersearch_parallel_merge_worker(dsm_segment *seg, shm_toc *toc)
     source_file = file_paths_base + (worker_id * 2 * MAXPGPATH);
     target_file = file_paths_base + (worker_id * 2 * MAXPGPATH + MAXPGPATH);
     
+    /* Initialize and configure SQLite3 before opening */
+    sqlite3_initialize();
+    sqlite3_config(SQLITE_CONFIG_MMAP_SIZE, (sqlite3_int64)0, (sqlite3_int64)0);
+    sqlite3_soft_heap_limit64(128 * 1024 * 1024);
+    
     /* Open source database */
     rc = sqlite3_open(source_file, &source_db);
     if (rc != SQLITE_OK)
@@ -2376,10 +2423,19 @@ kmersearch_parallel_merge_worker(dsm_segment *seg, shm_toc *toc)
     }
     
     /* Configure databases for better performance */
+    sqlite3_exec(source_db, "PRAGMA page_size = 8192", NULL, NULL, NULL);
+    sqlite3_exec(source_db, "PRAGMA cache_size = 10000", NULL, NULL, NULL);
+    sqlite3_exec(source_db, "PRAGMA temp_store = MEMORY", NULL, NULL, NULL);
     sqlite3_exec(source_db, "PRAGMA synchronous = OFF", NULL, NULL, NULL);
     sqlite3_exec(source_db, "PRAGMA journal_mode = OFF", NULL, NULL, NULL);
+    sqlite3_exec(source_db, "PRAGMA locking_mode = EXCLUSIVE", NULL, NULL, NULL);
+    
+    sqlite3_exec(target_db, "PRAGMA page_size = 8192", NULL, NULL, NULL);
+    sqlite3_exec(target_db, "PRAGMA cache_size = 10000", NULL, NULL, NULL);
+    sqlite3_exec(target_db, "PRAGMA temp_store = MEMORY", NULL, NULL, NULL);
     sqlite3_exec(target_db, "PRAGMA synchronous = OFF", NULL, NULL, NULL);
     sqlite3_exec(target_db, "PRAGMA journal_mode = OFF", NULL, NULL, NULL);
+    sqlite3_exec(target_db, "PRAGMA locking_mode = EXCLUSIVE", NULL, NULL, NULL);
     
     /* Attach target database to source */
     {
@@ -2793,6 +2849,14 @@ kmersearch_flush_batch_to_sqlite(HTAB *batch_hash, const char *db_path,
     void *entry;
     int rc;
     
+    /* Initialize SQLite3 if needed (required before sqlite3_config) */
+    /* Note: sqlite3_shutdown() was called at end of previous batch */
+    sqlite3_initialize();
+    
+    /* Configure SQLite3 global settings before opening connection */
+    sqlite3_config(SQLITE_CONFIG_MMAP_SIZE, (sqlite3_int64)0, (sqlite3_int64)0);  /* Disable mmap */
+    sqlite3_soft_heap_limit64(128 * 1024 * 1024);  /* 128MB soft heap limit */
+    
     /* Open SQLite3 database connection */
     rc = sqlite3_open(db_path, &db);
     if (rc != SQLITE_OK)
@@ -2802,8 +2866,7 @@ kmersearch_flush_batch_to_sqlite(HTAB *batch_hash, const char *db_path,
                         db ? sqlite3_errmsg(db) : "unknown error")));
     }
     
-    /* Configure SQLite3 for maximum performance with memory limit */
-    sqlite3_exec(db, "PRAGMA soft_heap_limit = 134217728", NULL, NULL, NULL);  /* 128MB limit */
+    /* Configure SQLite3 connection-specific settings for maximum performance */
     sqlite3_exec(db, "PRAGMA page_size = 8192", NULL, NULL, NULL);
     sqlite3_exec(db, "PRAGMA cache_size = 10000", NULL, NULL, NULL);  /* ~80MB cache (reduced from 160MB) */
     sqlite3_exec(db, "PRAGMA temp_store = MEMORY", NULL, NULL, NULL);
