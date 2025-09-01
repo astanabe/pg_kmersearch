@@ -14,6 +14,7 @@
 #include <unistd.h>
 #include <sys/stat.h>
 #include <dirent.h>
+#include <malloc.h>
 #include "storage/fd.h"
 
 /* PostgreSQL function info declarations for frequency functions */
@@ -3197,6 +3198,22 @@ kmersearch_process_block_with_batch(BlockNumber block,
             
             /* Show memory usage after batch memory context deletion */
             MemoryContextStats(TopMemoryContext);
+            
+            /* Log glibc memory statistics and trim unused memory */
+            {
+                struct mallinfo2 mi = mallinfo2();
+                elog(DEBUG1, "glibc memory before trim: arena=%zu, ordblks=%zu, hblkhd=%zu, uordblks=%zu, fordblks=%zu",
+                     (size_t)mi.arena, (size_t)mi.ordblks, (size_t)mi.hblkhd, 
+                     (size_t)mi.uordblks, (size_t)mi.fordblks);
+                
+                /* Trim unused memory back to OS */
+                malloc_trim(0);
+                
+                mi = mallinfo2();
+                elog(DEBUG1, "glibc memory after trim: arena=%zu, ordblks=%zu, hblkhd=%zu, uordblks=%zu, fordblks=%zu",
+                     (size_t)mi.arena, (size_t)mi.ordblks, (size_t)mi.hblkhd,
+                     (size_t)mi.uordblks, (size_t)mi.fordblks);
+            }
             
             /* Create new memory context and hash table for next batch */
             {
