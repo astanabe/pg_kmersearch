@@ -1832,53 +1832,19 @@ kmersearch_worker_analyze_blocks(KmerWorkerState *worker, Relation rel,
             continue;
         }
         
-        /* Use hash set to track unique k-mers in this row to avoid counting duplicates */
-        {
-            HTAB *row_kmer_set = NULL;
-            HASHCTL hash_ctl;
-            
-            /* Create hash table for unique k-mers in this row */
-            memset(&hash_ctl, 0, sizeof(hash_ctl));
-            hash_ctl.keysize = sizeof(uint64_t);
-            hash_ctl.entrysize = sizeof(uint64_t);
-            hash_ctl.hcxt = CurrentMemoryContext;
-            
-            row_kmer_set = hash_create("row_kmer_set", nkeys, &hash_ctl, 
-                                       HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
-            
-            /* Process each uintkey in this row - deduplicate within row */
-            for (j = 0; j < nkeys; j++) {
-                uint64_t uintkey_value;
-                bool found;
-                
-                /* Get uintkey value directly from array */
-                if (total_bits <= 16) {
-                    uintkey_value = ((uint16 *)uintkeys)[j];
-                } else if (total_bits <= 32) {
-                    uintkey_value = ((uint32 *)uintkeys)[j];
-                } else {
-                    uintkey_value = ((uint64 *)uintkeys)[j];
-                }
-                
-                /* Only add to buffer if not already seen in this row */
-                hash_search(row_kmer_set, (void *) &uintkey_value, HASH_ENTER, &found);
-                if (!found) {
-                    /* Add to buffer (will flush to temp table if full) */
-                    if (worker->buffer_type == 0) {
-                        kmersearch_add_hash_to_buffer16((UintkeyBuffer16 *)worker->buffer, 
-                                                       (uint16)uintkey_value, worker->temp_table_name);
-                    } else if (worker->buffer_type == 1) {
-                        kmersearch_add_hash_to_buffer32((UintkeyBuffer32 *)worker->buffer, 
-                                                       (uint32)uintkey_value, worker->temp_table_name);
-                    } else {
-                        kmersearch_add_hash_to_buffer64((UintkeyBuffer64 *)worker->buffer, 
-                                                       uintkey_value, worker->temp_table_name);
-                    }
-                }
+        /* Process each uintkey in this row directly - no deduplication needed */
+        for (j = 0; j < nkeys; j++) {
+            /* Add to buffer (will flush to temp table if full) */
+            if (worker->buffer_type == 0) {
+                kmersearch_add_hash_to_buffer16((UintkeyBuffer16 *)worker->buffer, 
+                                               ((uint16 *)uintkeys)[j], worker->temp_table_name);
+            } else if (worker->buffer_type == 1) {
+                kmersearch_add_hash_to_buffer32((UintkeyBuffer32 *)worker->buffer, 
+                                               ((uint32 *)uintkeys)[j], worker->temp_table_name);
+            } else {
+                kmersearch_add_hash_to_buffer64((UintkeyBuffer64 *)worker->buffer, 
+                                               ((uint64 *)uintkeys)[j], worker->temp_table_name);
             }
-            
-            /* Clean up row hash table */
-            hash_destroy(row_kmer_set);
         }
         
         /* Cleanup uintkey array */
