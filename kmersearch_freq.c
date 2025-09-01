@@ -924,13 +924,7 @@ kmersearch_perform_highfreq_analysis_parallel(Oid table_oid, const char *column_
                             (errmsg("could not open aggregated SQLite3 database: %s", sqlite3_errmsg(parent_db))));
                 }
                 
-                /* Configure database settings */
-                sqlite3_exec(parent_db, "PRAGMA page_size = 8192", NULL, NULL, NULL);
-                sqlite3_exec(parent_db, "PRAGMA cache_size = 10000", NULL, NULL, NULL);
-                sqlite3_exec(parent_db, "PRAGMA temp_store = MEMORY", NULL, NULL, NULL);
-                sqlite3_exec(parent_db, "PRAGMA synchronous = OFF", NULL, NULL, NULL);
-                sqlite3_exec(parent_db, "PRAGMA journal_mode = OFF", NULL, NULL, NULL);
-                sqlite3_exec(parent_db, "PRAGMA locking_mode = EXCLUSIVE", NULL, NULL, NULL);
+                /* Note: PRAGMA settings not needed here - database was already configured by workers */
             }
             else if (num_worker_files == 1)
             {
@@ -948,13 +942,7 @@ kmersearch_perform_highfreq_analysis_parallel(Oid table_oid, const char *column_
                             (errmsg("could not open worker SQLite3 database: %s", sqlite3_errmsg(parent_db))));
                 }
                 
-                /* Configure database settings */
-                sqlite3_exec(parent_db, "PRAGMA page_size = 8192", NULL, NULL, NULL);
-                sqlite3_exec(parent_db, "PRAGMA cache_size = 10000", NULL, NULL, NULL);
-                sqlite3_exec(parent_db, "PRAGMA temp_store = MEMORY", NULL, NULL, NULL);
-                sqlite3_exec(parent_db, "PRAGMA synchronous = OFF", NULL, NULL, NULL);
-                sqlite3_exec(parent_db, "PRAGMA journal_mode = OFF", NULL, NULL, NULL);
-                sqlite3_exec(parent_db, "PRAGMA locking_mode = EXCLUSIVE", NULL, NULL, NULL);
+                /* Note: PRAGMA settings not needed here - database was already configured by worker */
             }
             else
             {
@@ -1695,6 +1683,8 @@ kmersearch_parallel_merge_worker(dsm_segment *seg, shm_toc *toc)
     sqlite3 *source_db = NULL;
     sqlite3 *target_db = NULL;
     int rc;
+    MemoryContext merge_context;
+    MemoryContext old_context;
     
     /* Get worker ID from parallel context */
     int worker_id;
@@ -1715,6 +1705,12 @@ kmersearch_parallel_merge_worker(dsm_segment *seg, shm_toc *toc)
     source_file = file_paths_base + (worker_id * 2 * MAXPGPATH);
     target_file = file_paths_base + (worker_id * 2 * MAXPGPATH + MAXPGPATH);
     
+    /* Create memory context for merge operation */
+    merge_context = AllocSetContextCreate(TopMemoryContext,
+                                         "KmerMergeWorkerContext",
+                                         ALLOCSET_DEFAULT_SIZES);
+    old_context = MemoryContextSwitchTo(merge_context);
+    
     /* Initialize and configure SQLite3 before opening */
     sqlite3_initialize();
     sqlite3_config(SQLITE_CONFIG_MMAP_SIZE, (sqlite3_int64)0, (sqlite3_int64)0);
@@ -1727,6 +1723,12 @@ kmersearch_parallel_merge_worker(dsm_segment *seg, shm_toc *toc)
         elog(ERROR, "Failed to open source database %s: %s", source_file, sqlite3_errmsg(source_db));
         return;
     }
+    
+    /* Re-initialize SQLite3 settings before opening target database
+     * Note: sqlite3_config and soft_heap_limit are global settings,
+     * but it's good practice to ensure they're set before each open */
+    sqlite3_config(SQLITE_CONFIG_MMAP_SIZE, (sqlite3_int64)0, (sqlite3_int64)0);
+    sqlite3_soft_heap_limit64(128 * 1024 * 1024);
     
     /* Open target database */
     rc = sqlite3_open(target_file, &target_db);
@@ -1846,10 +1848,55 @@ kmersearch_parallel_merge_worker(dsm_segment *seg, shm_toc *toc)
     unlink(target_file);
     
 cleanup:
+    /* Log SQLite3 memory usage before cleanup */
+    elog(DEBUG1, "Merge worker %d: SQLite3 memory before cleanup: current=%ld bytes, highwater=%ld bytes",
+         worker_id, (long)sqlite3_memory_used(), (long)sqlite3_memory_highwater(0));
+    
+    /* Close databases and release memory */
     if (source_db)
+    {
+        sqlite3_db_release_memory(source_db);
         sqlite3_close_v2(source_db);
+    }
     if (target_db)
+    {
+        sqlite3_db_release_memory(target_db);
         sqlite3_close_v2(target_db);
+    }
+    
+    /* Log SQLite3 memory after close */
+    elog(DEBUG1, "Merge worker %d: SQLite3 memory after close: current=%ld bytes",
+         worker_id, (long)sqlite3_memory_used());
+    
+    /* Shutdown SQLite3 to release all global memory */
+    sqlite3_shutdown();
+    
+    /* Log SQLite3 memory after shutdown */
+    elog(DEBUG1, "Merge worker %d: SQLite3 memory after shutdown: current=%ld bytes",
+         worker_id, (long)sqlite3_memory_used());
+    
+    /* Switch back to original context and delete merge context */
+    MemoryContextSwitchTo(old_context);
+    MemoryContextDelete(merge_context);
+    
+    /* Show memory usage after context deletion */
+    MemoryContextStats(TopMemoryContext);
+    
+    /* Log glibc memory statistics and trim unused memory */
+    {
+        struct mallinfo2 mi = mallinfo2();
+        elog(DEBUG1, "Merge worker %d: glibc memory before trim: arena=%zu, ordblks=%zu, hblkhd=%zu, uordblks=%zu, fordblks=%zu",
+             worker_id, (size_t)mi.arena, (size_t)mi.ordblks, (size_t)mi.hblkhd, 
+             (size_t)mi.uordblks, (size_t)mi.fordblks);
+        
+        /* Trim unused memory back to OS */
+        malloc_trim(0);
+        
+        mi = mallinfo2();
+        elog(DEBUG1, "Merge worker %d: glibc memory after trim: arena=%zu, ordblks=%zu, hblkhd=%zu, uordblks=%zu, fordblks=%zu",
+             worker_id, (size_t)mi.arena, (size_t)mi.ordblks, (size_t)mi.hblkhd,
+             (size_t)mi.uordblks, (size_t)mi.fordblks);
+    }
 }
 
 /*
