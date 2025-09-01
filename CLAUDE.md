@@ -44,6 +44,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - Unnecessary memory copying and data conversions are forbidden - always minimize memory allocations and data copies
 - In GIN consistent functions, any data conversion or transformation is absolutely prohibited - use data as-is
 - **CRITICAL**: Separate implementations for int2/int4/int8 and uint16/uint32/uint64 exist for performance and memory optimization reasons. These MUST NEVER be merged or consolidated - they are intentionally separate for speed and memory efficiency
+- **CRITICAL**: Using sed or other commands to delete code by specifying line numbers is STRICTLY FORBIDDEN - use only Edit or MultiEdit tools with exact string matching for code modifications
 
 ## Code Analysis Requirements
 
