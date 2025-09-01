@@ -1146,7 +1146,7 @@ kmersearch_perform_highfreq_analysis_parallel(Oid table_oid, const char *column_
                                    -1, &select_stmt, NULL);
             if (rc != SQLITE_OK)
             {
-                sqlite3_close(parent_db);
+                sqlite3_close_v2(parent_db);
                 unlink(parent_db_path);
                 ereport(ERROR,
                         (errmsg("could not prepare SQLite3 select statement: %s", sqlite3_errmsg(parent_db))));
@@ -1208,7 +1208,7 @@ kmersearch_perform_highfreq_analysis_parallel(Oid table_oid, const char *column_
                 
                 /* Clean up SQLite3 resources */
                 sqlite3_finalize(select_stmt);
-                sqlite3_close(parent_db);
+                sqlite3_close_v2(parent_db);
                 unlink(parent_db_path);
                 
                 /* Report completion of writing */
@@ -1990,13 +1990,13 @@ kmersearch_analysis_worker(dsm_segment *seg, shm_toc *toc)
                          NULL, NULL, NULL);
         if (rc != SQLITE_OK)
         {
-            sqlite3_close(init_db);
+            sqlite3_close_v2(init_db);
             ereport(ERROR,
                     (errmsg("could not create SQLite3 table: %s", sqlite3_errmsg(init_db))));
         }
         
         /* Close the database immediately to free all memory */
-        sqlite3_close(init_db);
+        sqlite3_close_v2(init_db);
     }
     
     /* Initialize table_created flag to true since we just created it */
@@ -2121,7 +2121,7 @@ kmersearch_analysis_worker(dsm_segment *seg, shm_toc *toc)
             }
             if (final_stats)
                 sqlite3_finalize(final_stats);
-            sqlite3_close(db);
+            sqlite3_close_v2(db);
         }
     }
     
@@ -2370,7 +2370,7 @@ kmersearch_parallel_merge_worker(dsm_segment *seg, shm_toc *toc)
     rc = sqlite3_open(target_file, &target_db);
     if (rc != SQLITE_OK)
     {
-        sqlite3_close(source_db);
+        sqlite3_close_v2(source_db);
         elog(ERROR, "Failed to open target database %s: %s", target_file, sqlite3_errmsg(target_db));
         return;
     }
@@ -2476,9 +2476,9 @@ kmersearch_parallel_merge_worker(dsm_segment *seg, shm_toc *toc)
     
 cleanup:
     if (source_db)
-        sqlite3_close(source_db);
+        sqlite3_close_v2(source_db);
     if (target_db)
-        sqlite3_close(target_db);
+        sqlite3_close_v2(target_db);
 }
 
 /*
@@ -2802,9 +2802,10 @@ kmersearch_flush_batch_to_sqlite(HTAB *batch_hash, const char *db_path,
                         db ? sqlite3_errmsg(db) : "unknown error")));
     }
     
-    /* Configure SQLite3 for maximum performance */
+    /* Configure SQLite3 for maximum performance with memory limit */
+    sqlite3_exec(db, "PRAGMA soft_heap_limit = 134217728", NULL, NULL, NULL);  /* 128MB limit */
     sqlite3_exec(db, "PRAGMA page_size = 8192", NULL, NULL, NULL);
-    sqlite3_exec(db, "PRAGMA cache_size = 20000", NULL, NULL, NULL);  /* ~160MB cache */
+    sqlite3_exec(db, "PRAGMA cache_size = 10000", NULL, NULL, NULL);  /* ~80MB cache (reduced from 160MB) */
     sqlite3_exec(db, "PRAGMA temp_store = MEMORY", NULL, NULL, NULL);
     sqlite3_exec(db, "PRAGMA synchronous = OFF", NULL, NULL, NULL);
     sqlite3_exec(db, "PRAGMA journal_mode = OFF", NULL, NULL, NULL);
@@ -2820,7 +2821,7 @@ kmersearch_flush_batch_to_sqlite(HTAB *batch_hash, const char *db_path,
                          NULL, NULL, NULL);
         if (rc != SQLITE_OK)
         {
-            sqlite3_close(db);
+            sqlite3_close_v2(db);
             ereport(ERROR,
                     (errmsg("could not create SQLite3 table: %s", sqlite3_errmsg(db))));
         }
@@ -2835,7 +2836,7 @@ kmersearch_flush_batch_to_sqlite(HTAB *batch_hash, const char *db_path,
                            -1, &stmt, NULL);
     if (rc != SQLITE_OK)
     {
-        sqlite3_close(db);
+        sqlite3_close_v2(db);
         ereport(ERROR,
                 (errmsg("could not prepare SQLite3 statement: %s", sqlite3_errmsg(db))));
     }
@@ -2845,7 +2846,7 @@ kmersearch_flush_batch_to_sqlite(HTAB *batch_hash, const char *db_path,
     if (rc != SQLITE_OK)
     {
         sqlite3_finalize(stmt);
-        sqlite3_close(db);
+        sqlite3_close_v2(db);
         ereport(ERROR,
                 (errmsg("SQLite3 BEGIN TRANSACTION failed: %s", sqlite3_errmsg(db))));
     }
@@ -2878,7 +2879,7 @@ kmersearch_flush_batch_to_sqlite(HTAB *batch_hash, const char *db_path,
         if (rc != SQLITE_DONE)
         {
             sqlite3_finalize(stmt);
-            sqlite3_close(db);
+            sqlite3_close_v2(db);
             ereport(ERROR,
                     (errmsg("SQLite3 INSERT failed: %s", sqlite3_errmsg(db))));
         }
@@ -2891,7 +2892,7 @@ kmersearch_flush_batch_to_sqlite(HTAB *batch_hash, const char *db_path,
     if (rc != SQLITE_OK)
     {
         sqlite3_finalize(stmt);
-        sqlite3_close(db);
+        sqlite3_close_v2(db);
         ereport(ERROR,
                 (errmsg("SQLite3 COMMIT failed: %s", sqlite3_errmsg(db))));
     }
@@ -2903,7 +2904,7 @@ kmersearch_flush_batch_to_sqlite(HTAB *batch_hash, const char *db_path,
     sqlite3_db_release_memory(db);
     
     /* Close the database connection */
-    sqlite3_close(db);
+    sqlite3_close_v2(db);
     
     /* Shutdown SQLite3 to release all global memory and caches */
     /* Next sqlite3_open() will automatically call sqlite3_initialize() */
@@ -3118,6 +3119,9 @@ kmersearch_process_block_with_batch(BlockNumber block,
                 MemoryContextDelete(ctx->batch_memory_context);
                 ctx->batch_memory_context = NULL;
             }
+            
+            /* Show memory usage after batch memory context deletion */
+            MemoryContextStats(TopMemoryContext);
             
             /* Create new memory context and hash table for next batch */
             {
