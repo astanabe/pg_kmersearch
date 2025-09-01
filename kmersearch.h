@@ -356,35 +356,6 @@ typedef struct QueryKmerCacheManager
  * K-mer data union for different k-values
  */
 /*
- * Uintkey buffers for batch processing during high-frequency analysis
- * Three separate structures for optimal memory usage based on k-mer size
- */
-
-typedef struct UintkeyBuffer16
-{
-    uint16         *uintkeys;            /* Array of uint16 uintkey values */
-    int             count;               /* Current count */
-    int             capacity;            /* Buffer capacity */
-    int             kmer_size;           /* K-mer size */
-} UintkeyBuffer16;
-
-typedef struct UintkeyBuffer32
-{
-    uint32         *uintkeys;            /* Array of uint32 uintkey values */
-    int             count;               /* Current count */
-    int             capacity;            /* Buffer capacity */
-    int             kmer_size;           /* K-mer size */
-} UintkeyBuffer32;
-
-typedef struct UintkeyBuffer64
-{
-    uint64         *uintkeys;            /* Array of uint64 uintkey values */
-    int             count;               /* Current count */
-    int             capacity;            /* Buffer capacity */
-    int             kmer_size;           /* K-mer size */
-} UintkeyBuffer64;
-
-/*
  * High-frequency k-mer hash entry
  */
 typedef struct HighfreqKmerHashEntry
@@ -460,22 +431,6 @@ typedef struct ParallelHighfreqKmerCache
     dsm_handle          dsm_handle;      /* DSM segment handle */
     HighfreqCacheKey    cache_key;       /* cache key for validation */
 } ParallelHighfreqKmerCache;
-
-/*
- * Worker state for parallel k-mer analysis
- */
-typedef struct KmerWorkerState
-{
-    int         worker_id;                /* Worker identifier */
-    BlockNumber start_block;              /* Starting block number */
-    BlockNumber end_block;                /* Ending block number */
-    /* Buffer pointer - points to one of the buffer types based on k-mer size */
-    void           *buffer;              /* Points to UintkeyBuffer16/32/64 */
-    int             buffer_type;         /* 0=16bit, 1=32bit, 2=64bit */
-    int         local_highfreq_count;     /* Local count of highly frequent k-mers */
-    int64       rows_processed;           /* Number of rows processed */
-    char       *temp_table_name;          /* Temporary table name for this worker */
-} KmerWorkerState;
 
 /* DNA type definitions */
 typedef struct
@@ -709,29 +664,12 @@ uint8 kmersearch_get_bit_at(bits8 *data, int bit_pos);
 bool kmersearch_will_exceed_degenerate_limit(const char *seq, int len);
 
 
-/* Parallel analysis functions (implemented in kmersearch.c) */
-void kmersearch_worker_analyze_blocks(KmerWorkerState *worker, Relation rel, const char *column_name, int k_size, int target_attno, bool is_dna4_type);
-void kmersearch_merge_worker_results_sql(KmerWorkerState *workers, int num_workers, const char *final_table_name, int k_size, int threshold_rows);
-
 /* Parallel worker function for k-mer analysis */
 PGDLLEXPORT void kmersearch_analysis_worker(dsm_segment *seg, shm_toc *toc);
 
 /* Frequency analysis persistence function (implemented in kmersearch_freq.c) */
 void kmersearch_persist_highfreq_kmers_from_temp(Oid table_oid, const char *column_name, int k_size, const char *temp_table_name);
 void kmersearch_create_worker_kmer_temp_table(const char *table_name);
-/* Buffer management functions for each size */
-void kmersearch_init_buffer16(UintkeyBuffer16 *buffer, int k_size);
-void kmersearch_init_buffer32(UintkeyBuffer32 *buffer, int k_size);
-void kmersearch_init_buffer64(UintkeyBuffer64 *buffer, int k_size);
-
-void kmersearch_add_to_buffer16(UintkeyBuffer16 *buffer, uint16 uintkey, const char *temp_table_name);
-void kmersearch_add_to_buffer32(UintkeyBuffer32 *buffer, uint32 uintkey, const char *temp_table_name);
-void kmersearch_add_to_buffer64(UintkeyBuffer64 *buffer, uint64 uintkey, const char *temp_table_name);
-
-void kmersearch_flush_buffer16_to_table(UintkeyBuffer16 *buffer, const char *temp_table_name);
-void kmersearch_flush_buffer32_to_table(UintkeyBuffer32 *buffer, const char *temp_table_name);
-void kmersearch_flush_buffer64_to_table(UintkeyBuffer64 *buffer, const char *temp_table_name);
-
 /* Cache validity check function (implemented in kmersearch_cache.c) */
 bool kmersearch_parallel_highfreq_kmer_cache_is_valid(Oid table_oid, const char *column_name, int k_value);
 
