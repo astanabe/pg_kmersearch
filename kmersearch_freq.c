@@ -65,7 +65,8 @@ static uint32 kmersearch_uint32_identity_hash(const void *key, size_t keysize, v
 static void kmersearch_register_worker_temp_file(KmerAnalysisSharedState *shared_state, 
                                                 const char *file_path, int worker_id);
 static void kmersearch_flush_batch_to_sqlite(HTAB *batch_hash, const char *db_path,
-                                            int total_bits, bool *table_created);
+                                            int total_bits, bool *table_created,
+                                            MemoryContext batch_memory_context);
 static void kmersearch_process_block_with_batch(BlockNumber block,
                                                Oid table_oid,
                                                KmerAnalysisSharedState *shared_state,
@@ -1462,7 +1463,8 @@ kmersearch_analysis_worker(dsm_segment *seg, shm_toc *toc)
         uint64 batch_num;
         
         kmersearch_flush_batch_to_sqlite(ctx.batch_hash, ctx.db_path, 
-                                       ctx.total_bits, &ctx.table_created);
+                                       ctx.total_bits, &ctx.table_created,
+                                       ctx.batch_memory_context);
         
         /* Update shared progress counters for final batch */
         total_rows = pg_atomic_add_fetch_u64(&shared_state->total_rows_processed, ctx.batch_count);
@@ -2155,13 +2157,18 @@ kmersearch_register_worker_temp_file(KmerAnalysisSharedState *shared_state,
  */
 static void
 kmersearch_flush_batch_to_sqlite(HTAB *batch_hash, const char *db_path,
-                                int total_bits, bool *table_created)
+                                int total_bits, bool *table_created,
+                                MemoryContext batch_memory_context)
 {
     sqlite3 *db = NULL;
     sqlite3_stmt *stmt = NULL;
     HASH_SEQ_STATUS status;
     void *entry;
     int rc;
+    MemoryContext old_context;
+    
+    /* Switch to batch memory context for SQLite operations */
+    old_context = MemoryContextSwitchTo(batch_memory_context);
     
     /* Initialize SQLite3 if needed (required before sqlite3_config) */
     /* Note: sqlite3_shutdown() was called at end of previous batch */
@@ -2298,6 +2305,9 @@ kmersearch_flush_batch_to_sqlite(HTAB *batch_hash, const char *db_path,
     /* Log SQLite3 memory usage after shutdown */
     elog(DEBUG1, "SQLite3 memory after shutdown: current=%ld bytes",
          (long)sqlite3_memory_used());
+    
+    /* Restore previous memory context */
+    MemoryContextSwitchTo(old_context);
 }
 
 /*
@@ -2484,7 +2494,8 @@ kmersearch_process_block_with_batch(BlockNumber block,
             uint64 batch_num;
             
             kmersearch_flush_batch_to_sqlite(ctx->batch_hash, ctx->db_path,
-                                           ctx->total_bits, &ctx->table_created);
+                                           ctx->total_bits, &ctx->table_created,
+                                           ctx->batch_memory_context);
             
             /* Note: hash table will be destroyed in the calling context */
             
