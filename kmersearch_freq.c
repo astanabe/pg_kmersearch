@@ -1510,6 +1510,13 @@ kmersearch_analysis_worker(dsm_segment *seg, shm_toc *toc)
         }
     }
     
+    /* Destroy hash table if it still exists */
+    if (ctx.batch_hash)
+    {
+        hash_destroy(ctx.batch_hash);
+        ctx.batch_hash = NULL;
+    }
+    
     /* Delete the batch memory context if it still exists */
     if (ctx.batch_memory_context)
         MemoryContextDelete(ctx.batch_memory_context);
@@ -2343,8 +2350,8 @@ kmersearch_process_block_with_batch(BlockNumber block,
             hashctl.entrysize = sizeof(TempKmerFreqEntry64);
         }
         
-        /* Use HASH_CONTEXT to ensure hash table is created in current memory context */
-        hashctl.hcxt = CurrentMemoryContext;
+        /* Use HASH_CONTEXT to ensure hash table is created in batch memory context */
+        hashctl.hcxt = ctx->batch_memory_context;
         
         ctx->batch_hash = hash_create("KmerBatchHash",
                                      kmersearch_highfreq_analysis_hashtable_size,
@@ -2552,8 +2559,8 @@ kmersearch_process_block_with_batch(BlockNumber block,
                     hashctl.entrysize = sizeof(TempKmerFreqEntry64);
                 }
                 
-                /* Use HASH_CONTEXT to ensure hash table is created in current memory context */
-                hashctl.hcxt = CurrentMemoryContext;
+                /* Use HASH_CONTEXT to ensure hash table is created in batch memory context */
+                hashctl.hcxt = ctx->batch_memory_context;
                 
                 ctx->batch_hash = hash_create("KmerBatchHash",
                                              kmersearch_highfreq_analysis_hashtable_size,
