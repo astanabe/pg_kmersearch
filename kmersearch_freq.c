@@ -2378,7 +2378,7 @@ kmersearch_process_block_with_batch(BlockNumber block,
     /* Use bulk read strategy to avoid polluting shared_buffers */
     strategy = GetAccessStrategy(BAS_BULKREAD);
     buffer = ReadBufferExtended(rel, MAIN_FORKNUM, block,
-                               RBM_NORMAL, strategy);
+                               RBM_NORMAL_NO_LOG, strategy);
     LockBuffer(buffer, BUFFER_LOCK_SHARE);
     page = BufferGetPage(buffer);
     maxoff = PageGetMaxOffsetNumber(page);
@@ -2543,6 +2543,9 @@ kmersearch_process_block_with_batch(BlockNumber block,
                      (size_t)mi.arena, (size_t)mi.ordblks, (size_t)mi.hblkhd,
                      (size_t)mi.uordblks, (size_t)mi.fordblks);
             }
+            
+            /* Give OS time to reclaim memory and reduce RSS/RssShmem */
+            pg_usleep(100000);  /* 100ms pause after each batch to allow OS memory management */
             
             /* Create new memory context and hash table for next batch */
             {
