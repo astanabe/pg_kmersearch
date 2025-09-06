@@ -1659,7 +1659,7 @@ kmersearch_parallel_merge_worker(dsm_segment *seg, shm_toc *toc)
     target_file = file_paths_base + (worker_id * 2 * MAXPGPATH + MAXPGPATH);
     
     /* Create memory context for merge operation */
-    merge_context = AllocSetContextCreate(TopMemoryContext,
+    merge_context = AllocSetContextCreate(CurrentMemoryContext,
                                          "KmerMergeWorkerContext",
                                          ALLOCSET_DEFAULT_SIZES);
     old_context = MemoryContextSwitchTo(merge_context);
@@ -2323,12 +2323,13 @@ kmersearch_process_block_with_batch(BlockNumber block,
     Buffer buffer;
     Page page;
     OffsetNumber maxoff;
+    BufferAccessStrategy strategy;
     
     /* Initialize batch memory context if needed */
     if (ctx->batch_memory_context == NULL)
     {
-        /* Create memory context for batch processing under TopMemoryContext */
-        ctx->batch_memory_context = AllocSetContextCreate(TopMemoryContext,
+        /* Create memory context for batch processing under CurrentMemoryContext */
+        ctx->batch_memory_context = AllocSetContextCreate(CurrentMemoryContext,
                                                          "KmerBatchMemoryContext",
                                                          ALLOCSET_DEFAULT_SIZES);
     }
@@ -2373,7 +2374,11 @@ kmersearch_process_block_with_batch(BlockNumber block,
     
     /* Open table and read block */
     rel = table_open(table_oid, AccessShareLock);
-    buffer = ReadBuffer(rel, block);
+    
+    /* Use bulk read strategy to avoid polluting shared_buffers */
+    strategy = GetAccessStrategy(BAS_BULKREAD);
+    buffer = ReadBufferExtended(rel, MAIN_FORKNUM, block,
+                               RBM_NORMAL, strategy);
     LockBuffer(buffer, BUFFER_LOCK_SHARE);
     page = BufferGetPage(buffer);
     maxoff = PageGetMaxOffsetNumber(page);
@@ -2545,7 +2550,7 @@ kmersearch_process_block_with_batch(BlockNumber block,
                 MemoryContext batch_old_context;
                 
                 /* Create memory context for next batch */
-                ctx->batch_memory_context = AllocSetContextCreate(TopMemoryContext,
+                ctx->batch_memory_context = AllocSetContextCreate(CurrentMemoryContext,
                                                                  "KmerBatchMemoryContext",
                                                                  ALLOCSET_DEFAULT_SIZES);
                 
@@ -2587,6 +2592,7 @@ kmersearch_process_block_with_batch(BlockNumber block,
     }
     
     UnlockReleaseBuffer(buffer);
+    FreeAccessStrategy(strategy);
     table_close(rel, AccessShareLock);
 }
 
