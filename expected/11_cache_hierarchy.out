@@ -62,7 +62,7 @@ SELECT kmersearch_perform_highfreq_analysis(
     'test_seq'::text
 ) AS analysis_result;
 INFO:  Starting high-frequency k-mer analysis: 13 rows in 1 blocks with 2 parallel workers
-INFO:  Batch 1 completed: 13 total rows processed (final)
+INFO:  Batch 1 completed: 13 / 13 rows processed of column test_seq in table test_cache_hierarchy (final)
 INFO:  Parallel scan completed. Starting aggregation of results.
 INFO:  Starting parallel aggregation of 2 temporary files
 INFO:  Merge stage 1: 2 files, 1 parallel workers

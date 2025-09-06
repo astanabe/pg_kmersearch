@@ -730,6 +730,22 @@ kmersearch_perform_highfreq_analysis_parallel(Oid table_oid, const char *column_
         shared_state->num_workers = requested_workers;
         shared_state->table_oid = table_oid;
         shared_state->column_attnum = column_attnum;
+        
+        /* Store table name and column name for progress reporting */
+        {
+            char *table_name_str = get_rel_name(table_oid);
+            if (table_name_str)
+            {
+                strlcpy(shared_state->table_name, table_name_str, NAMEDATALEN);
+                pfree(table_name_str);
+            }
+            else
+            {
+                snprintf(shared_state->table_name, NAMEDATALEN, "oid_%u", table_oid);
+            }
+        }
+        strlcpy(shared_state->column_name, column_name, NAMEDATALEN);
+        
         shared_state->all_processed = false;
         shared_state->next_block = 0;
         shared_state->total_blocks = total_blocks;
@@ -1472,8 +1488,10 @@ kmersearch_analysis_worker(dsm_segment *seg, shm_toc *toc)
         
         /* Report final cumulative progress (deterministic) */
         ereport(INFO,
-                (errmsg("Batch %lu completed: %lu total rows processed (final)",
-                        (unsigned long)batch_num, (unsigned long)total_rows)));
+                (errmsg("Batch %lu completed: %lu / %lu rows processed of column %s in table %s (final)",
+                        (unsigned long)batch_num, (unsigned long)total_rows,
+                        (unsigned long)shared_state->total_rows,
+                        shared_state->column_name, shared_state->table_name)));
     }
     
     /* Destroy hash table only once at the end */
@@ -2375,10 +2393,32 @@ kmersearch_process_block_with_batch(BlockNumber block,
     /* Open table and read block */
     rel = table_open(table_oid, AccessShareLock);
     
-    /* Use bulk read strategy to avoid polluting shared_buffers */
-    strategy = GetAccessStrategy(BAS_BULKREAD);
-    buffer = ReadBufferExtended(rel, MAIN_FORKNUM, block,
-                               RBM_NORMAL_NO_LOG, strategy);
+    /* Choose buffer strategy based on shared_buffers size and parallel workers */
+    {
+        int tuples_per_page = 10;  /* Conservative estimate for sequence data */
+        int pages_needed = (kmersearch_highfreq_analysis_batch_size / tuples_per_page) * 1.5;
+        int ring_size_kb = Max(pages_needed * 8, 10 * 1024);  /* 8KB per page, minimum 10MB */
+        int total_ring_size_kb = ring_size_kb * max_parallel_maintenance_workers;
+        int shared_buffers_kb = NBuffers * 8;  /* NBuffers is in pages, 8KB per page */
+        
+        /* If shared_buffers is small relative to total ring buffer needs,
+         * use normal buffer access to avoid ring buffer constraints */
+        if (shared_buffers_kb < total_ring_size_kb * 2)
+        {
+            elog(DEBUG2, "Using normal buffer access: shared_buffers=%d KB < ring_requirement=%d KB",
+                 shared_buffers_kb, total_ring_size_kb * 2);
+            buffer = ReadBuffer(rel, block);
+            strategy = NULL;  /* No strategy needed for normal buffer access */
+        }
+        else
+        {
+            elog(DEBUG2, "Using ring buffer strategy: size=%d KB for batch_size=%d, shared_buffers=%d KB",
+                 ring_size_kb, kmersearch_highfreq_analysis_batch_size, shared_buffers_kb);
+            strategy = GetAccessStrategyWithSize(BAS_BULKREAD, ring_size_kb);
+            buffer = ReadBufferExtended(rel, MAIN_FORKNUM, block,
+                                       RBM_NORMAL_NO_LOG, strategy);
+        }
+    }
     LockBuffer(buffer, BUFFER_LOCK_SHARE);
     page = BufferGetPage(buffer);
     maxoff = PageGetMaxOffsetNumber(page);
@@ -2510,8 +2550,10 @@ kmersearch_process_block_with_batch(BlockNumber block,
             
             /* Report cumulative progress (deterministic) */
             ereport(INFO,
-                    (errmsg("Batch %lu completed: %lu total rows processed",
-                            (unsigned long)batch_num, (unsigned long)total_rows)));
+                    (errmsg("Batch %lu completed: %lu / %lu rows processed of column %s in table %s",
+                            (unsigned long)batch_num, (unsigned long)total_rows,
+                            (unsigned long)shared_state->total_rows,
+                            shared_state->column_name, shared_state->table_name)));
             
             /* Destroy hash table and delete memory context for completed batch */
             if (ctx->batch_hash)
@@ -2543,9 +2585,6 @@ kmersearch_process_block_with_batch(BlockNumber block,
                      (size_t)mi.arena, (size_t)mi.ordblks, (size_t)mi.hblkhd,
                      (size_t)mi.uordblks, (size_t)mi.fordblks);
             }
-            
-            /* Give OS time to reclaim memory and reduce RSS/RssShmem */
-            pg_usleep(100000);  /* 100ms pause after each batch to allow OS memory management */
             
             /* Create new memory context and hash table for next batch */
             {
@@ -2595,7 +2634,8 @@ kmersearch_process_block_with_batch(BlockNumber block,
     }
     
     UnlockReleaseBuffer(buffer);
-    FreeAccessStrategy(strategy);
+    if (strategy)
+        FreeAccessStrategy(strategy);
     table_close(rel, AccessShareLock);
 }
 

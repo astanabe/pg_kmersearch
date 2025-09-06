@@ -275,6 +275,8 @@ typedef struct KmerAnalysisSharedState
     int         num_workers;              /* Number of parallel workers */
     Oid         table_oid;                /* Target table OID */
     AttrNumber  column_attnum;            /* Target column attnum */
+    char        table_name[NAMEDATALEN];  /* Table name for progress reporting */
+    char        column_name[NAMEDATALEN]; /* Column name for progress reporting */
     bool        all_processed;            /* All rows processed flag */
     BlockNumber next_block;               /* Next block number to process */
     BlockNumber total_blocks;             /* Total number of blocks in table */
@@ -614,7 +616,7 @@ void kmersearch_free_query_kmer_cache_manager(QueryKmerCacheManager **manager);
 void kmersearch_free_actual_min_score_cache_manager(ActualMinScoreCacheManager **manager);
 
 /* Build version information */
-#define KMERSEARCH_BUILD_VERSION "1.0.2025.09.06"
+#define KMERSEARCH_BUILD_VERSION "1.0.2025.09.07"
 
 /* High-frequency k-mer cache global variables (defined in kmersearch_cache.c) */
 

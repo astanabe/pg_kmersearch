@@ -71,7 +71,7 @@ FROM kmersearch_perform_highfreq_analysis(
     'sequence'
 );
 INFO:  Starting high-frequency k-mer analysis: 3 rows in 1 blocks with 2 parallel workers
-INFO:  Batch 1 completed: 3 total rows processed (final)
+INFO:  Batch 1 completed: 3 / 3 rows processed of column sequence in table test_analysis_dna2 (final)
 INFO:  Parallel scan completed. Starting aggregation of results.
 INFO:  Starting parallel aggregation of 2 temporary files
 INFO:  Merge stage 1: 2 files, 1 parallel workers

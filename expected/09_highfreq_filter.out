@@ -77,7 +77,7 @@ SELECT '1. High-frequency k-mer analysis execution:' as step;
 
 SELECT kmersearch_perform_highfreq_analysis('test_dna_highfreq', 'seq');
 INFO:  Starting high-frequency k-mer analysis: 14 rows in 1 blocks with 2 parallel workers
-INFO:  Batch 1 completed: 14 total rows processed (final)
+INFO:  Batch 1 completed: 14 / 14 rows processed of column seq in table test_dna_highfreq (final)
 INFO:  Parallel scan completed. Starting aggregation of results.
 INFO:  Starting parallel aggregation of 2 temporary files
 INFO:  Merge stage 1: 2 files, 1 parallel workers
