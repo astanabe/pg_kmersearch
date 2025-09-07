@@ -926,7 +926,7 @@ kmersearch_dna2_match(PG_FUNCTION_ARGS)
         /* Evaluate match condition */
         match = (shared_count >= actual_min_score);
         
-        /* NOTE: Do NOT free query_uintkey - it is managed by the cache */
+        /* Do not free query_uintkey - managed by cache */
     }
     
     pfree(pattern_string);
@@ -970,7 +970,7 @@ kmersearch_dna4_match(PG_FUNCTION_ARGS)
         /* Evaluate match condition */
         match = (shared_count >= actual_min_score);
         
-        /* NOTE: Do NOT free query_uintkey - it is managed by the cache */
+        /* Do not free query_uintkey - managed by cache */
     }
     
     pfree(pattern_string);
@@ -1013,7 +1013,7 @@ kmersearch_matchscore_dna2(PG_FUNCTION_ARGS)
     if (seq_uintkey) {
         pfree(seq_uintkey);
     }
-    /* NOTE: Do NOT free query_uintkey - it is managed by the cache */
+    /* Do not free query_uintkey - managed by cache */
     pfree(query_string);
     
     /* Return corrected score (shared k-mer count) */
@@ -1049,7 +1049,7 @@ kmersearch_matchscore_dna4(PG_FUNCTION_ARGS)
     if (seq_uintkey) {
         pfree(seq_uintkey);
     }
-    /* NOTE: Do NOT free query_uintkey - it is managed by the cache */
+    /* Do not free query_uintkey - managed by cache */
     pfree(query_string);
     
     /* Return corrected score (shared k-mer count) */

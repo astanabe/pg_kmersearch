@@ -53,11 +53,9 @@ typedef struct SQLiteWorkerContext
     Oid         dna2_oid;               /* Cached OID for dna2 type */
     Oid         dna4_oid;               /* Cached OID for dna4 type */
     Oid         column_type_oid;        /* Column data type OID */
-    bool        batch_flushed;          /* Flag indicating batch was flushed */
     MemoryContext batch_memory_context; /* Memory context for batch processing */
-    BufferAccessStrategy strategy;      /* Buffer access strategy for ring buffer (reused across blocks) */
-    sqlite3     *db;                    /* SQLite3 database connection (reused across batches) */
-    sqlite3_stmt *insert_stmt;          /* Prepared INSERT statement (reused across batches) */
+    BufferAccessStrategy strategy;      /* Buffer access strategy for ring buffer */
+    sqlite3     *db;                    /* SQLite3 database connection */
 } SQLiteWorkerContext;
 
 /* SQLite3 helper functions */
@@ -139,7 +137,7 @@ kmersearch_persist_highfreq_kmers_from_temp(Oid table_oid, const char *column_na
     initStringInfo(&query);
     
     /* Insert highly frequent k-mers into permanent table */
-    /* Note: Combining kmer_data and frequency_count into single uintkey */
+    /* Combining kmer_data and frequency_count into single uintkey */
     
     if (k_size > 32) {
         /* k > 32 not supported */
@@ -891,7 +889,7 @@ kmersearch_perform_highfreq_analysis_parallel(Oid table_oid, const char *column_
                         (errmsg("could not open SQLite3 database: %s", sqlite3_errmsg(parent_db))));
             }
             
-            /* Note: PRAGMA settings not needed here - database was already configured by workers */
+            /* PRAGMA settings already configured by workers */
             
             /* Calculate threshold based on GUC variables */
             rate_based_threshold = (uint64)(result.total_rows * kmersearch_max_appearance_rate);
@@ -1019,9 +1017,9 @@ kmersearch_perform_highfreq_analysis_parallel(Oid table_oid, const char *column_
             }
         }
         
-        /* Note: result.highfreq_kmers_count is already set above */
+        /* result.highfreq_kmers_count is already set above */
         
-        /* Note: DestroyParallelContext and ExitParallelMode already called above */
+        /* DestroyParallelContext and ExitParallelMode already called above */
         
         /* Insert metadata */
         {
@@ -1283,14 +1281,13 @@ kmersearch_analysis_worker(dsm_segment *seg, shm_toc *toc)
     
     /* Initialize SQLite3 once for the entire worker lifetime */
     ctx.db = NULL;
-    ctx.insert_stmt = NULL;
     
     /* Initialize and configure SQLite3 before opening */
     sqlite3_initialize();
     sqlite3_config(SQLITE_CONFIG_MMAP_SIZE, (sqlite3_int64)0, (sqlite3_int64)0);
     sqlite3_soft_heap_limit64(128 * 1024 * 1024);
     
-    /* Open database connection (keep it open for entire worker lifetime) */
+    /* Open database connection for entire worker lifetime */
     rc = sqlite3_open(ctx.db_path, &ctx.db);
     if (rc != SQLITE_OK)
     {
@@ -1317,18 +1314,6 @@ kmersearch_analysis_worker(dsm_segment *seg, shm_toc *toc)
     {
         ereport(ERROR,
                 (errmsg("could not create SQLite3 table: %s", sqlite3_errmsg(ctx.db))));
-    }
-    
-    /* Prepare the INSERT statement for reuse */
-    rc = sqlite3_prepare_v2(ctx.db,
-                           "INSERT INTO kmersearch_highfreq_kmer (uintkey, nrow) "
-                           "VALUES (?, ?) "
-                           "ON CONFLICT(uintkey) DO UPDATE SET nrow = nrow + excluded.nrow",
-                           -1, &ctx.insert_stmt, NULL);
-    if (rc != SQLITE_OK)
-    {
-        ereport(ERROR,
-                (errmsg("could not prepare SQLite3 statement: %s", sqlite3_errmsg(ctx.db))));
     }
     
     /* SQLite3 is now initialized and table created */
@@ -1386,9 +1371,6 @@ kmersearch_analysis_worker(dsm_segment *seg, shm_toc *toc)
                     global_block, shared_state);
                 
                 
-                /* Clear the batch flushed flag before processing */
-                ctx.batch_flushed = false;
-                
                 /* Process block with batch - pass partition OID for partitioned tables */
                 kmersearch_process_block_with_batch(mapping.local_block_number,
                                                    mapping.partition_oid,
@@ -1408,9 +1390,6 @@ kmersearch_analysis_worker(dsm_segment *seg, shm_toc *toc)
                 current_block = shared_state->next_block;
                 shared_state->next_block++;
                 LWLockRelease(&shared_state->mutex.lock);
-                
-                /* Clear the batch flushed flag before processing */
-                ctx.batch_flushed = false;
                 
                 /* Process block with batch - use table_oid for regular tables */
                 kmersearch_process_block_with_batch(current_block, 
@@ -1506,13 +1485,6 @@ kmersearch_analysis_worker(dsm_segment *seg, shm_toc *toc)
     /* Clean up SQLite3 resources */
     if (ctx.db)
     {
-        /* Finalize prepared statement */
-        if (ctx.insert_stmt)
-        {
-            sqlite3_finalize(ctx.insert_stmt);
-            ctx.insert_stmt = NULL;
-        }
-        
         /* Close database connection */
         if (ctx.db)
         {
@@ -1702,8 +1674,7 @@ kmersearch_parallel_merge_worker(dsm_segment *seg, shm_toc *toc)
     }
     
     /* Re-initialize SQLite3 settings before opening target database
-     * Note: sqlite3_config and soft_heap_limit are global settings,
-     * but it's good practice to ensure they're set before each open */
+     * sqlite3_config and soft_heap_limit are global settings */
     sqlite3_config(SQLITE_CONFIG_MMAP_SIZE, (sqlite3_int64)0, (sqlite3_int64)0);
     sqlite3_soft_heap_limit64(128 * 1024 * 1024);
     
@@ -1717,7 +1688,7 @@ kmersearch_parallel_merge_worker(dsm_segment *seg, shm_toc *toc)
     }
     
     /* Configure databases for better performance */
-    /* Note: Workers already have these settings, but need to ensure consistency */
+    /* Ensure database settings consistency */
     sqlite3_exec(source_db, "PRAGMA page_size = 8192", NULL, NULL, NULL);
     sqlite3_exec(source_db, "PRAGMA cache_size = 10000", NULL, NULL, NULL);
     sqlite3_exec(source_db, "PRAGMA temp_store = MEMORY", NULL, NULL, NULL);
@@ -2188,9 +2159,10 @@ kmersearch_flush_batch_to_sqlite(SQLiteWorkerContext *ctx)
     void *entry;
     int rc;
     MemoryContext old_context;
+    sqlite3_stmt *insert_stmt = NULL;
     
     /* Ensure SQLite3 is initialized */
-    if (!ctx->db || !ctx->insert_stmt)
+    if (!ctx->db)
     {
         ereport(ERROR,
                 (errmsg("SQLite3 not properly initialized for worker")));
@@ -2199,10 +2171,23 @@ kmersearch_flush_batch_to_sqlite(SQLiteWorkerContext *ctx)
     /* Switch to batch memory context for hash table operations */
     old_context = MemoryContextSwitchTo(ctx->batch_memory_context);
     
+    /* Prepare INSERT statement for this batch */
+    rc = sqlite3_prepare_v2(ctx->db,
+                           "INSERT INTO kmersearch_highfreq_kmer (uintkey, nrow) "
+                           "VALUES (?, ?) "
+                           "ON CONFLICT(uintkey) DO UPDATE SET nrow = nrow + excluded.nrow",
+                           -1, &insert_stmt, NULL);
+    if (rc != SQLITE_OK)
+    {
+        ereport(ERROR,
+                (errmsg("could not prepare SQLite3 statement: %s", sqlite3_errmsg(ctx->db))));
+    }
+    
     /* Begin transaction */
     rc = sqlite3_exec(ctx->db, "BEGIN TRANSACTION", NULL, NULL, NULL);
     if (rc != SQLITE_OK)
     {
+        sqlite3_finalize(insert_stmt);
         ereport(ERROR,
                 (errmsg("SQLite3 BEGIN TRANSACTION failed: %s", sqlite3_errmsg(ctx->db))));
     }
@@ -2215,45 +2200,50 @@ kmersearch_flush_batch_to_sqlite(SQLiteWorkerContext *ctx)
         if (ctx->total_bits <= 16)
         {
             TempKmerFreqEntry16 *e = (TempKmerFreqEntry16 *)entry;
-            sqlite3_bind_int(ctx->insert_stmt, 1, (int16)e->uintkey);
-            sqlite3_bind_int64(ctx->insert_stmt, 2, (int64)e->nrow);
+            sqlite3_bind_int(insert_stmt, 1, (int16)e->uintkey);
+            sqlite3_bind_int64(insert_stmt, 2, (int64)e->nrow);
         }
         else if (ctx->total_bits <= 32)
         {
             TempKmerFreqEntry32 *e = (TempKmerFreqEntry32 *)entry;
-            sqlite3_bind_int(ctx->insert_stmt, 1, (int32)e->uintkey);
-            sqlite3_bind_int64(ctx->insert_stmt, 2, (int64)e->nrow);
+            sqlite3_bind_int(insert_stmt, 1, (int32)e->uintkey);
+            sqlite3_bind_int64(insert_stmt, 2, (int64)e->nrow);
         }
         else
         {
             TempKmerFreqEntry64 *e = (TempKmerFreqEntry64 *)entry;
-            sqlite3_bind_int64(ctx->insert_stmt, 1, (int64)e->uintkey);
-            sqlite3_bind_int64(ctx->insert_stmt, 2, (int64)e->nrow);
+            sqlite3_bind_int64(insert_stmt, 1, (int64)e->uintkey);
+            sqlite3_bind_int64(insert_stmt, 2, (int64)e->nrow);
         }
         
-        rc = sqlite3_step(ctx->insert_stmt);
+        rc = sqlite3_step(insert_stmt);
         if (rc != SQLITE_DONE)
         {
+            sqlite3_finalize(insert_stmt);
             ereport(ERROR,
                     (errmsg("SQLite3 INSERT failed: %s", sqlite3_errmsg(ctx->db))));
         }
-        sqlite3_reset(ctx->insert_stmt);
-        sqlite3_clear_bindings(ctx->insert_stmt);
+        sqlite3_reset(insert_stmt);
+        sqlite3_clear_bindings(insert_stmt);
     }
     
     /* Commit transaction */
     rc = sqlite3_exec(ctx->db, "COMMIT", NULL, NULL, NULL);
     if (rc != SQLITE_OK)
     {
+        sqlite3_finalize(insert_stmt);
         ereport(ERROR,
                 (errmsg("SQLite3 COMMIT failed: %s", sqlite3_errmsg(ctx->db))));
     }
+    
+    /* Finalize prepared statement after batch processing */
+    sqlite3_finalize(insert_stmt);
     
     /* Log SQLite3 memory usage */
     elog(DEBUG1, "SQLite3 memory: current=%ld bytes, highwater=%ld bytes",
          (long)sqlite3_memory_used(), (long)sqlite3_memory_highwater(0));
     
-    /* Release excess database memory (but keep connection open) */
+    /* Release excess database memory */
     sqlite3_db_release_memory(ctx->db);
     
     /* Log SQLite3 memory usage after releasing memory */
@@ -2532,7 +2522,6 @@ kmersearch_process_block_with_batch(BlockNumber block,
             }
             
             ctx->batch_count = 0;
-            ctx->batch_flushed = true;  /* Mark that batch was flushed */
         }
     }
     
