@@ -4,12 +4,6 @@
  * kmersearch_kmer.c
  * Simple k-mer utility functions for the pg_kmersearch extension.
  */
-static inline bool
-kmersearch_is_valid_dna4_char(char c)
-{
-    return kmersearch_dna4_encode_table[(unsigned char)c] != 0 || c == 'A' || c == 'a';
-}
-
 /* DNA4 to DNA2 expansion table: [expansion_count, base1, base2, base3, base4] */
 static const uint8 kmersearch_dna4_to_dna2_table[16][5] = {
     {0, 0, 0, 0, 0},     /* 0000 - invalid */
@@ -134,18 +128,7 @@ static const uint8 kmersearch_text_to_dna2_table[256][5] = {
     {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}
 };
 
-static int kmersearch_count_matching_kmer_fast_scalar_simple(VarBit **seq_keys, int seq_nkeys, VarBit **query_keys, int query_nkeys);
-static int kmersearch_count_matching_kmer_fast_scalar_hashtable(VarBit **seq_keys, int seq_nkeys, VarBit **query_keys, int query_nkeys);
 static int kmersearch_count_matching_uintkey_scalar(void *seq_keys, int seq_nkeys, void *query_keys, int query_nkeys, int k_size);
-
-#ifdef __x86_64__
-static int kmersearch_count_matching_kmer_fast_avx2(VarBit **seq_keys, int seq_nkeys, VarBit **query_keys, int query_nkeys);
-static int kmersearch_count_matching_kmer_fast_avx512(VarBit **seq_keys, int seq_nkeys, VarBit **query_keys, int query_nkeys);
-#endif
-#ifdef __aarch64__
-static int kmersearch_count_matching_kmer_fast_neon(VarBit **seq_keys, int seq_nkeys, VarBit **query_keys, int query_nkeys);
-static int kmersearch_count_matching_kmer_fast_sve(VarBit **seq_keys, int seq_nkeys, VarBit **query_keys, int query_nkeys);
-#endif
 
 /*
  * Simple utility function: Set a specific bit in a bit array
@@ -480,100 +463,6 @@ kmersearch_will_exceed_degenerate_limit(const char *seq, int len)
  * Extract k-mers directly from DNA2 bit sequence (with SIMD dispatch)
  */
 
-
-/*
- * Count matching k-mers using simple O(n*m) algorithm
- * Suitable for small data sets
- */
-static int
-kmersearch_count_matching_kmer_fast_scalar_simple(VarBit **seq_keys, int seq_nkeys, VarBit **query_keys, int query_nkeys)
-{
-    int match_count = 0;
-    int i, j;
-    
-    if (seq_nkeys == 0 || query_nkeys == 0)
-        return 0;
-
-    /* Simple O(n*m) algorithm - good for small data sets */
-    for (i = 0; i < seq_nkeys; i++)
-    {
-        for (j = 0; j < query_nkeys; j++)
-        {
-            if (VARBITLEN(seq_keys[i]) == VARBITLEN(query_keys[j]) &&
-                VARSIZE(seq_keys[i]) == VARSIZE(query_keys[j]) &&
-                memcmp(VARBITS(seq_keys[i]), VARBITS(query_keys[j]), VARBITBYTES(seq_keys[i])) == 0)
-            {
-                match_count++;
-                break; /* Each seq key matches at most once */
-            }
-        }
-    }
-
-    return match_count;
-}
-
-/*
- * Count matching k-mers using hash table for O(n+m) performance
- * Suitable for large data sets
- */
-static int
-kmersearch_count_matching_kmer_fast_scalar_hashtable(VarBit **seq_keys, int seq_nkeys, VarBit **query_keys, int query_nkeys)
-{
-    int match_count = 0;
-    int i;
-    HTAB *query_hash;
-    HASHCTL hash_ctl;
-    bool found;
-    
-    if (seq_nkeys == 0 || query_nkeys == 0)
-        return 0;
-    
-    /* Create hash table using VarBit content as key */
-    memset(&hash_ctl, 0, sizeof(hash_ctl));
-    
-    /* Safety check: ensure we have valid query keys */
-    if (query_keys[0] == NULL) {
-        return 0;
-    }
-    
-    hash_ctl.keysize = VARBITBYTES(query_keys[0]);  /* Use data size, not total size */
-    hash_ctl.entrysize = sizeof(bool);
-    hash_ctl.hash = tag_hash;
-    
-    query_hash = hash_create("QueryKmerHash", query_nkeys * 2, &hash_ctl,
-                            HASH_ELEM | HASH_FUNCTION | HASH_BLOBS);
-    
-    /* Insert all query k-mers into hash table using content as key */
-    for (i = 0; i < query_nkeys; i++)
-    {
-        if (query_keys[i] == NULL) {
-            continue;
-        }
-        hash_search(query_hash, VARBITS(query_keys[i]), HASH_ENTER, &found);
-    }
-    
-    /* Check each sequence k-mer against hash table */
-    for (i = 0; i < seq_nkeys; i++)
-    {
-        if (seq_keys[i] == NULL) {
-            continue;
-        }
-        
-        if (VARBITBYTES(seq_keys[i]) != VARBITBYTES(query_keys[0])) {
-            continue;
-        }
-        
-        if (hash_search(query_hash, VARBITS(seq_keys[i]), HASH_FIND, NULL))
-        {
-            match_count++;
-        }
-    }
-    
-    /* Cleanup */
-    hash_destroy(query_hash);
-    
-    return match_count;
-}
 
 /*
  * Extract uint keys with occurrence counting from DNA2 sequence (scalar implementation)

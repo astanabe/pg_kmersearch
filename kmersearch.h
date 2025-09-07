@@ -117,29 +117,8 @@ typedef enum {
 #define SIMD_COMPARE_SVE2_THRESHOLD    128     /* 128 bits: Use SVE2 */
 
 /*
- * SIMD k-mer extraction thresholds (sequence bit length)
- * These thresholds determine when to use SIMD for k-mer extraction
- */
-#define SIMD_EXTRACT_AVX2_THRESHOLD    512     /* 512 bits: Use AVX2 for extraction */
-#define SIMD_EXTRACT_AVX512_THRESHOLD  1024    /* 1024 bits: Use AVX512 for extraction */
-#define SIMD_EXTRACT_NEON_THRESHOLD    256     /* 256 bits: Use NEON for extraction */
-#define SIMD_EXTRACT_SVE_THRESHOLD     512     /* 512 bits: Use SVE for extraction */
-#define SIMD_EXTRACT_SVE2_THRESHOLD    512     /* 512 bits: Use SVE2 for extraction */
-
-/*
- * SIMD k-mer matching thresholds (key combination count)
- * These thresholds determine when to use SIMD for k-mer matching
- */
-#define SIMD_KEYCOMB_AVX2_THRESHOLD    128     /* 128 combinations: Use AVX2 for matching */
-#define SIMD_KEYCOMB_AVX512_THRESHOLD  256     /* 256 combinations: Use AVX512 for matching */
-#define SIMD_KEYCOMB_NEON_THRESHOLD    64      /* 64 combinations: Use NEON for matching */
-#define SIMD_KEYCOMB_SVE_THRESHOLD     128     /* 128 combinations: Use SVE for matching */
-#define SIMD_KEYCOMB_SVE2_THRESHOLD    128     /* 128 combinations: Use SVE2 for matching */
-
-/*
  * SIMD encoding thresholds (input character length)
  * Initially set to same values as SIMD_EXTRACT thresholds
- * TODO: These values need performance testing for optimal settings
  */
 #define SIMD_ENCODE_AVX2_THRESHOLD     512     /* 512 chars: Use AVX2 for encoding */
 #define SIMD_ENCODE_AVX512_THRESHOLD   1024    /* 1024 chars: Use AVX512 for encoding */
@@ -150,7 +129,6 @@ typedef enum {
 /*
  * SIMD decoding thresholds (bit length)
  * Initially set to same values as SIMD_EXTRACT thresholds
- * TODO: These values need performance testing for optimal settings
  */
 #define SIMD_DECODE_AVX2_THRESHOLD     512     /* 512 bits: Use AVX2 for decoding */
 #define SIMD_DECODE_AVX512_THRESHOLD   1024    /* 1024 bits: Use AVX512 for decoding */
@@ -158,22 +136,6 @@ typedef enum {
 #define SIMD_DECODE_SVE_THRESHOLD      512     /* 512 bits: Use SVE for decoding */
 #define SIMD_DECODE_SVE2_THRESHOLD     512     /* 512 bits: Use SVE2 for decoding */
 
-/*
- * SIMD DNA4 k-mer expansion thresholds (bit length)
- * These thresholds determine when to use SIMD for DNA4 k-mer expansion
- * 
- * NOTE: These values are initially set to match SIMD_EXTRACT_*_THRESHOLD values
- * for consistency, but should be re-evaluated through performance testing
- * as DNA4 expansion has different characteristics than simple extraction.
- * TODO: Conduct performance benchmarks to determine optimal threshold values
- */
-#define SIMD_DNA4KMER2_AVX2_THRESHOLD    512     /* 512 bits: Use AVX2 for expansion */
-#define SIMD_DNA4KMER2_AVX512_THRESHOLD  1024    /* 1024 bits: Use AVX512 for expansion */
-#define SIMD_DNA4KMER2_NEON_THRESHOLD    256     /* 256 bits: Use NEON for expansion */
-#define SIMD_DNA4KMER2_SVE_THRESHOLD     512     /* 512 bits: Use SVE for expansion */
-#define SIMD_DNA4KMER2_SVE2_THRESHOLD    512     /* 512 bits: Use SVE2 for expansion */
-
-/* Removed SIMD dispatch table - now using direct threshold-based dispatch */
 
 /*
  * Actual min score cache entry
@@ -743,22 +705,6 @@ Datum *kmersearch_create_datum_array_from_uintkey(void *uintkey_array, int nkeys
 /* Zero-copy extraction functions - directly create Datum arrays */
 Datum *kmersearch_extract_datum_from_dna2(VarBit *dna_seq, int *nkeys, size_t key_size);
 Datum *kmersearch_extract_datum_from_dna4(VarBit *dna_seq, int *nkeys, size_t key_size);
-
-/* Memory pool management structures and functions */
-typedef struct UintkeyMemoryPool {
-    void *buffer;          /* Pre-allocated memory buffer */
-    size_t buffer_size;    /* Total size of the buffer */
-    size_t used;          /* Currently used bytes */
-    size_t high_water;    /* High water mark for usage tracking */
-    int alloc_count;      /* Number of allocations */
-    struct UintkeyMemoryPool *next;  /* For chaining pools if needed */
-} UintkeyMemoryPool;
-
-UintkeyMemoryPool *kmersearch_mempool_create(size_t initial_size);
-void *kmersearch_mempool_alloc(UintkeyMemoryPool *pool, size_t size);
-void kmersearch_mempool_reset(UintkeyMemoryPool *pool);
-void kmersearch_mempool_destroy(UintkeyMemoryPool *pool);
-size_t kmersearch_mempool_get_usage(UintkeyMemoryPool *pool);
 
 /* Utility functions */
 void kmersearch_spi_connect_or_error(void);
