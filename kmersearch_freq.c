@@ -54,6 +54,7 @@ typedef struct SQLiteWorkerContext
     bool        batch_flushed;          /* Flag indicating batch was flushed */
     bool        table_created;          /* Flag indicating if table has been created */
     MemoryContext batch_memory_context; /* Memory context for batch processing */
+    BufferAccessStrategy strategy;      /* Buffer access strategy for ring buffer (reused across blocks) */
 } SQLiteWorkerContext;
 
 static int analysis_kmer_hash_compare(const void *a, const void *b, size_t size, void *arg);
@@ -1402,6 +1403,30 @@ kmersearch_analysis_worker(dsm_segment *seg, shm_toc *toc)
     /* Note: batch_memory_context will be created/deleted for each batch */
     ctx.batch_memory_context = NULL;
     
+    /* Initialize buffer access strategy once for the entire worker lifetime */
+    {
+        int tuples_per_page = 10;  /* Conservative estimate for sequence data */
+        int pages_needed = (kmersearch_highfreq_analysis_batch_size / tuples_per_page) * 1.5;
+        int ring_size_kb = Max(pages_needed * 8, 10 * 1024);  /* 8KB per page, minimum 10MB */
+        int total_ring_size_kb = ring_size_kb * max_parallel_maintenance_workers;
+        int shared_buffers_kb = NBuffers * 8;  /* NBuffers is in pages, 8KB per page */
+        
+        /* If shared_buffers is small relative to total ring buffer needs,
+         * use normal buffer access to avoid ring buffer constraints */
+        if (shared_buffers_kb < total_ring_size_kb * 2)
+        {
+            elog(DEBUG2, "Worker using normal buffer access: shared_buffers=%d KB < ring_requirement=%d KB",
+                 shared_buffers_kb, total_ring_size_kb * 2);
+            ctx.strategy = NULL;  /* No strategy needed for normal buffer access */
+        }
+        else
+        {
+            elog(DEBUG2, "Worker using ring buffer strategy: size=%d KB for batch_size=%d, shared_buffers=%d KB",
+                 ring_size_kb, kmersearch_highfreq_analysis_batch_size, shared_buffers_kb);
+            ctx.strategy = GetAccessStrategyWithSize(BAS_BULKREAD, ring_size_kb);
+        }
+    }
+    
     /* Dynamic work acquisition loop */
     {
         int blocks_processed = 0;
@@ -1540,6 +1565,10 @@ kmersearch_analysis_worker(dsm_segment *seg, shm_toc *toc)
     /* Delete the batch memory context if it still exists */
     if (ctx.batch_memory_context)
         MemoryContextDelete(ctx.batch_memory_context);
+    
+    /* Free the buffer access strategy if it was allocated */
+    if (ctx.strategy)
+        FreeAccessStrategy(ctx.strategy);
     
     /* Register temporary file path for parent process */
     kmersearch_register_worker_temp_file(shared_state, ctx.db_path, worker_id);
@@ -2341,7 +2370,6 @@ kmersearch_process_block_with_batch(BlockNumber block,
     Buffer buffer;
     Page page;
     OffsetNumber maxoff;
-    BufferAccessStrategy strategy;
     
     /* Initialize batch memory context if needed */
     if (ctx->batch_memory_context == NULL)
@@ -2393,31 +2421,15 @@ kmersearch_process_block_with_batch(BlockNumber block,
     /* Open table and read block */
     rel = table_open(table_oid, AccessShareLock);
     
-    /* Choose buffer strategy based on shared_buffers size and parallel workers */
+    /* Use the pre-allocated buffer strategy from context */
+    if (ctx->strategy)
     {
-        int tuples_per_page = 10;  /* Conservative estimate for sequence data */
-        int pages_needed = (kmersearch_highfreq_analysis_batch_size / tuples_per_page) * 1.5;
-        int ring_size_kb = Max(pages_needed * 8, 10 * 1024);  /* 8KB per page, minimum 10MB */
-        int total_ring_size_kb = ring_size_kb * max_parallel_maintenance_workers;
-        int shared_buffers_kb = NBuffers * 8;  /* NBuffers is in pages, 8KB per page */
-        
-        /* If shared_buffers is small relative to total ring buffer needs,
-         * use normal buffer access to avoid ring buffer constraints */
-        if (shared_buffers_kb < total_ring_size_kb * 2)
-        {
-            elog(DEBUG2, "Using normal buffer access: shared_buffers=%d KB < ring_requirement=%d KB",
-                 shared_buffers_kb, total_ring_size_kb * 2);
-            buffer = ReadBuffer(rel, block);
-            strategy = NULL;  /* No strategy needed for normal buffer access */
-        }
-        else
-        {
-            elog(DEBUG2, "Using ring buffer strategy: size=%d KB for batch_size=%d, shared_buffers=%d KB",
-                 ring_size_kb, kmersearch_highfreq_analysis_batch_size, shared_buffers_kb);
-            strategy = GetAccessStrategyWithSize(BAS_BULKREAD, ring_size_kb);
-            buffer = ReadBufferExtended(rel, MAIN_FORKNUM, block,
-                                       RBM_NORMAL_NO_LOG, strategy);
-        }
+        buffer = ReadBufferExtended(rel, MAIN_FORKNUM, block,
+                                   RBM_NORMAL_NO_LOG, ctx->strategy);
+    }
+    else
+    {
+        buffer = ReadBuffer(rel, block);
     }
     LockBuffer(buffer, BUFFER_LOCK_SHARE);
     page = BufferGetPage(buffer);
@@ -2634,8 +2646,7 @@ kmersearch_process_block_with_batch(BlockNumber block,
     }
     
     UnlockReleaseBuffer(buffer);
-    if (strategy)
-        FreeAccessStrategy(strategy);
+    /* Note: strategy is now managed at worker level, not freed here */
     table_close(rel, AccessShareLock);
 }
 
