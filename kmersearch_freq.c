@@ -55,6 +55,9 @@ typedef struct SQLiteWorkerContext
     bool        table_created;          /* Flag indicating if table has been created */
     MemoryContext batch_memory_context; /* Memory context for batch processing */
     BufferAccessStrategy strategy;      /* Buffer access strategy for ring buffer (reused across blocks) */
+    sqlite3     *db;                    /* SQLite3 database connection (reused across batches) */
+    sqlite3_stmt *insert_stmt;          /* Prepared INSERT statement (reused across batches) */
+    bool        sqlite_initialized;     /* Flag indicating SQLite3 has been initialized */
 } SQLiteWorkerContext;
 
 static int analysis_kmer_hash_compare(const void *a, const void *b, size_t size, void *arg);
@@ -65,9 +68,7 @@ static uint32 kmersearch_uint32_identity_hash(const void *key, size_t keysize, v
 /* SQLite3 helper functions */
 static void kmersearch_register_worker_temp_file(KmerAnalysisSharedState *shared_state, 
                                                 const char *file_path, int worker_id);
-static void kmersearch_flush_batch_to_sqlite(HTAB *batch_hash, const char *db_path,
-                                            int total_bits, bool *table_created,
-                                            MemoryContext batch_memory_context);
+static void kmersearch_flush_batch_to_sqlite(SQLiteWorkerContext *ctx);
 static void kmersearch_process_block_with_batch(BlockNumber block,
                                                Oid table_oid,
                                                KmerAnalysisSharedState *shared_state,
@@ -1355,49 +1356,58 @@ kmersearch_analysis_worker(dsm_segment *seg, shm_toc *toc)
     }
     close(fd);  /* SQLite3 will open it later when needed */
     
-    /* Create the SQLite3 table immediately to ensure it exists for merge operations */
+    /* Initialize SQLite3 once for the entire worker lifetime */
+    ctx.db = NULL;
+    ctx.insert_stmt = NULL;
+    ctx.sqlite_initialized = false;
+    
+    /* Initialize and configure SQLite3 before opening */
+    sqlite3_initialize();
+    sqlite3_config(SQLITE_CONFIG_MMAP_SIZE, (sqlite3_int64)0, (sqlite3_int64)0);
+    sqlite3_soft_heap_limit64(128 * 1024 * 1024);
+    
+    /* Open database connection (keep it open for entire worker lifetime) */
+    rc = sqlite3_open(ctx.db_path, &ctx.db);
+    if (rc != SQLITE_OK)
     {
-        sqlite3 *init_db = NULL;
-        
-        /* Initialize and configure SQLite3 before opening */
-        sqlite3_initialize();
-        sqlite3_config(SQLITE_CONFIG_MMAP_SIZE, (sqlite3_int64)0, (sqlite3_int64)0);
-        sqlite3_soft_heap_limit64(128 * 1024 * 1024);
-        
-        rc = sqlite3_open(ctx.db_path, &init_db);
-        if (rc != SQLITE_OK)
-        {
-            ereport(ERROR,
-                    (errmsg("could not open SQLite3 database for initialization: %s", 
-                            init_db ? sqlite3_errmsg(init_db) : "unknown error")));
-        }
-        
-        /* Configure SQLite3 for better performance */
-        sqlite3_exec(init_db, "PRAGMA page_size = 8192", NULL, NULL, NULL);
-        sqlite3_exec(init_db, "PRAGMA cache_size = 10000", NULL, NULL, NULL);
-        sqlite3_exec(init_db, "PRAGMA temp_store = MEMORY", NULL, NULL, NULL);
-        sqlite3_exec(init_db, "PRAGMA synchronous = OFF", NULL, NULL, NULL);
-        sqlite3_exec(init_db, "PRAGMA journal_mode = OFF", NULL, NULL, NULL);
-        sqlite3_exec(init_db, "PRAGMA locking_mode = EXCLUSIVE", NULL, NULL, NULL);
-        
-        /* Create table */
-        rc = sqlite3_exec(init_db,
-                         "CREATE TABLE IF NOT EXISTS kmersearch_highfreq_kmer ("
-                         "uintkey INTEGER PRIMARY KEY, "
-                         "nrow INTEGER)",
-                         NULL, NULL, NULL);
-        if (rc != SQLITE_OK)
-        {
-            sqlite3_close_v2(init_db);
-            ereport(ERROR,
-                    (errmsg("could not create SQLite3 table: %s", sqlite3_errmsg(init_db))));
-        }
-        
-        /* Close the database immediately to free all memory */
-        sqlite3_close_v2(init_db);
+        ereport(ERROR,
+                (errmsg("could not open SQLite3 database: %s", 
+                        ctx.db ? sqlite3_errmsg(ctx.db) : "unknown error")));
     }
     
-    /* Initialize table_created flag to true since we just created it */
+    /* Configure SQLite3 for better performance */
+    sqlite3_exec(ctx.db, "PRAGMA page_size = 8192", NULL, NULL, NULL);
+    sqlite3_exec(ctx.db, "PRAGMA cache_size = 10000", NULL, NULL, NULL);
+    sqlite3_exec(ctx.db, "PRAGMA temp_store = MEMORY", NULL, NULL, NULL);
+    sqlite3_exec(ctx.db, "PRAGMA synchronous = OFF", NULL, NULL, NULL);
+    sqlite3_exec(ctx.db, "PRAGMA journal_mode = OFF", NULL, NULL, NULL);
+    sqlite3_exec(ctx.db, "PRAGMA locking_mode = EXCLUSIVE", NULL, NULL, NULL);
+    
+    /* Create table */
+    rc = sqlite3_exec(ctx.db,
+                     "CREATE TABLE IF NOT EXISTS kmersearch_highfreq_kmer ("
+                     "uintkey INTEGER PRIMARY KEY, "
+                     "nrow INTEGER)",
+                     NULL, NULL, NULL);
+    if (rc != SQLITE_OK)
+    {
+        ereport(ERROR,
+                (errmsg("could not create SQLite3 table: %s", sqlite3_errmsg(ctx.db))));
+    }
+    
+    /* Prepare the INSERT statement for reuse */
+    rc = sqlite3_prepare_v2(ctx.db,
+                           "INSERT INTO kmersearch_highfreq_kmer (uintkey, nrow) "
+                           "VALUES (?, ?) "
+                           "ON CONFLICT(uintkey) DO UPDATE SET nrow = nrow + excluded.nrow",
+                           -1, &ctx.insert_stmt, NULL);
+    if (rc != SQLITE_OK)
+    {
+        ereport(ERROR,
+                (errmsg("could not prepare SQLite3 statement: %s", sqlite3_errmsg(ctx.db))));
+    }
+    
+    ctx.sqlite_initialized = true;
     ctx.table_created = true;
     
     /* Note: batch_memory_context will be created/deleted for each batch */
@@ -1503,9 +1513,7 @@ kmersearch_analysis_worker(dsm_segment *seg, shm_toc *toc)
         uint64 total_rows;
         uint64 batch_num;
         
-        kmersearch_flush_batch_to_sqlite(ctx.batch_hash, ctx.db_path, 
-                                       ctx.total_bits, &ctx.table_created,
-                                       ctx.batch_memory_context);
+        kmersearch_flush_batch_to_sqlite(&ctx);
         
         /* Update shared progress counters for final batch */
         total_rows = pg_atomic_add_fetch_u64(&shared_state->total_rows_processed, ctx.batch_count);
@@ -1569,6 +1577,39 @@ kmersearch_analysis_worker(dsm_segment *seg, shm_toc *toc)
     /* Free the buffer access strategy if it was allocated */
     if (ctx.strategy)
         FreeAccessStrategy(ctx.strategy);
+    
+    /* Clean up SQLite3 resources */
+    if (ctx.sqlite_initialized)
+    {
+        /* Finalize prepared statement */
+        if (ctx.insert_stmt)
+        {
+            sqlite3_finalize(ctx.insert_stmt);
+            ctx.insert_stmt = NULL;
+        }
+        
+        /* Close database connection */
+        if (ctx.db)
+        {
+            /* Log final memory usage */
+            elog(DEBUG1, "Worker %d: SQLite3 final memory before close: current=%ld bytes, highwater=%ld bytes",
+                 worker_id, (long)sqlite3_memory_used(), (long)sqlite3_memory_highwater(0));
+            
+            /* Release any remaining memory */
+            sqlite3_db_release_memory(ctx.db);
+            
+            /* Close the database */
+            sqlite3_close_v2(ctx.db);
+            ctx.db = NULL;
+            
+            /* Shutdown SQLite3 to release all global memory */
+            sqlite3_shutdown();
+            
+            /* Log final memory usage */
+            elog(DEBUG1, "Worker %d: SQLite3 memory after shutdown: current=%ld bytes",
+                 worker_id, (long)sqlite3_memory_used());
+        }
+    }
     
     /* Register temporary file path for parent process */
     kmersearch_register_worker_temp_file(shared_state, ctx.db_path, worker_id);
@@ -2200,157 +2241,85 @@ kmersearch_register_worker_temp_file(KmerAnalysisSharedState *shared_state,
 
 /*
  * Flush batch hash table to SQLite3
- * Opens connection, writes data, and closes connection for each batch
+ * Reuses existing connection and prepared statement for efficiency
  */
 static void
-kmersearch_flush_batch_to_sqlite(HTAB *batch_hash, const char *db_path,
-                                int total_bits, bool *table_created,
-                                MemoryContext batch_memory_context)
+kmersearch_flush_batch_to_sqlite(SQLiteWorkerContext *ctx)
 {
-    sqlite3 *db = NULL;
-    sqlite3_stmt *stmt = NULL;
     HASH_SEQ_STATUS status;
     void *entry;
     int rc;
     MemoryContext old_context;
     
-    /* Switch to batch memory context for SQLite operations */
-    old_context = MemoryContextSwitchTo(batch_memory_context);
-    
-    /* Initialize SQLite3 if needed (required before sqlite3_config) */
-    /* Note: sqlite3_shutdown() was called at end of previous batch */
-    sqlite3_initialize();
-    
-    /* Configure SQLite3 global settings before opening connection */
-    sqlite3_config(SQLITE_CONFIG_MMAP_SIZE, (sqlite3_int64)0, (sqlite3_int64)0);  /* Disable mmap */
-    sqlite3_soft_heap_limit64(128 * 1024 * 1024);  /* 128MB soft heap limit */
-    
-    /* Open SQLite3 database connection */
-    rc = sqlite3_open(db_path, &db);
-    if (rc != SQLITE_OK)
+    /* Ensure SQLite3 is initialized */
+    if (!ctx->sqlite_initialized || !ctx->db || !ctx->insert_stmt)
     {
         ereport(ERROR,
-                (errmsg("could not open SQLite3 database: %s", 
-                        db ? sqlite3_errmsg(db) : "unknown error")));
+                (errmsg("SQLite3 not properly initialized for worker")));
     }
     
-    /* Configure SQLite3 connection-specific settings for maximum performance */
-    sqlite3_exec(db, "PRAGMA page_size = 8192", NULL, NULL, NULL);
-    sqlite3_exec(db, "PRAGMA cache_size = 10000", NULL, NULL, NULL);  /* ~80MB cache */
-    sqlite3_exec(db, "PRAGMA temp_store = MEMORY", NULL, NULL, NULL);
-    sqlite3_exec(db, "PRAGMA synchronous = OFF", NULL, NULL, NULL);
-    sqlite3_exec(db, "PRAGMA journal_mode = OFF", NULL, NULL, NULL);
-    sqlite3_exec(db, "PRAGMA locking_mode = EXCLUSIVE", NULL, NULL, NULL);
-    
-    /* Create table if this is the first batch */
-    if (!*table_created)
-    {
-        rc = sqlite3_exec(db,
-                         "CREATE TABLE IF NOT EXISTS kmersearch_highfreq_kmer ("
-                         "uintkey INTEGER PRIMARY KEY, "
-                         "nrow INTEGER)",
-                         NULL, NULL, NULL);
-        if (rc != SQLITE_OK)
-        {
-            sqlite3_close_v2(db);
-            ereport(ERROR,
-                    (errmsg("could not create SQLite3 table: %s", sqlite3_errmsg(db))));
-        }
-        *table_created = true;
-    }
-    
-    /* Prepare INSERT statement */
-    rc = sqlite3_prepare_v2(db,
-                           "INSERT INTO kmersearch_highfreq_kmer (uintkey, nrow) "
-                           "VALUES (?, ?) "
-                           "ON CONFLICT(uintkey) DO UPDATE SET nrow = nrow + excluded.nrow",
-                           -1, &stmt, NULL);
-    if (rc != SQLITE_OK)
-    {
-        sqlite3_close_v2(db);
-        ereport(ERROR,
-                (errmsg("could not prepare SQLite3 statement: %s", sqlite3_errmsg(db))));
-    }
+    /* Switch to batch memory context for hash table operations */
+    old_context = MemoryContextSwitchTo(ctx->batch_memory_context);
     
     /* Begin transaction */
-    rc = sqlite3_exec(db, "BEGIN TRANSACTION", NULL, NULL, NULL);
+    rc = sqlite3_exec(ctx->db, "BEGIN TRANSACTION", NULL, NULL, NULL);
     if (rc != SQLITE_OK)
     {
-        sqlite3_finalize(stmt);
-        sqlite3_close_v2(db);
         ereport(ERROR,
-                (errmsg("SQLite3 BEGIN TRANSACTION failed: %s", sqlite3_errmsg(db))));
+                (errmsg("SQLite3 BEGIN TRANSACTION failed: %s", sqlite3_errmsg(ctx->db))));
     }
     
     /* Scan hash table and write to SQLite3 */
-    hash_seq_init(&status, batch_hash);
+    hash_seq_init(&status, ctx->batch_hash);
     
     while ((entry = hash_seq_search(&status)) != NULL)
     {
-        if (total_bits <= 16)
+        if (ctx->total_bits <= 16)
         {
             TempKmerFreqEntry16 *e = (TempKmerFreqEntry16 *)entry;
-            sqlite3_bind_int(stmt, 1, (int16)e->uintkey);
-            sqlite3_bind_int64(stmt, 2, (int64)e->nrow);
+            sqlite3_bind_int(ctx->insert_stmt, 1, (int16)e->uintkey);
+            sqlite3_bind_int64(ctx->insert_stmt, 2, (int64)e->nrow);
         }
-        else if (total_bits <= 32)
+        else if (ctx->total_bits <= 32)
         {
             TempKmerFreqEntry32 *e = (TempKmerFreqEntry32 *)entry;
-            sqlite3_bind_int(stmt, 1, (int32)e->uintkey);
-            sqlite3_bind_int64(stmt, 2, (int64)e->nrow);
+            sqlite3_bind_int(ctx->insert_stmt, 1, (int32)e->uintkey);
+            sqlite3_bind_int64(ctx->insert_stmt, 2, (int64)e->nrow);
         }
         else
         {
             TempKmerFreqEntry64 *e = (TempKmerFreqEntry64 *)entry;
-            sqlite3_bind_int64(stmt, 1, (int64)e->uintkey);
-            sqlite3_bind_int64(stmt, 2, (int64)e->nrow);
+            sqlite3_bind_int64(ctx->insert_stmt, 1, (int64)e->uintkey);
+            sqlite3_bind_int64(ctx->insert_stmt, 2, (int64)e->nrow);
         }
         
-        rc = sqlite3_step(stmt);
+        rc = sqlite3_step(ctx->insert_stmt);
         if (rc != SQLITE_DONE)
         {
-            sqlite3_finalize(stmt);
-            sqlite3_close_v2(db);
             ereport(ERROR,
-                    (errmsg("SQLite3 INSERT failed: %s", sqlite3_errmsg(db))));
+                    (errmsg("SQLite3 INSERT failed: %s", sqlite3_errmsg(ctx->db))));
         }
-        sqlite3_reset(stmt);
-        sqlite3_clear_bindings(stmt);
+        sqlite3_reset(ctx->insert_stmt);
+        sqlite3_clear_bindings(ctx->insert_stmt);
     }
     
     /* Commit transaction */
-    rc = sqlite3_exec(db, "COMMIT", NULL, NULL, NULL);
+    rc = sqlite3_exec(ctx->db, "COMMIT", NULL, NULL, NULL);
     if (rc != SQLITE_OK)
     {
-        sqlite3_finalize(stmt);
-        sqlite3_close_v2(db);
         ereport(ERROR,
-                (errmsg("SQLite3 COMMIT failed: %s", sqlite3_errmsg(db))));
+                (errmsg("SQLite3 COMMIT failed: %s", sqlite3_errmsg(ctx->db))));
     }
     
-    /* Clean up and close connection */
-    sqlite3_finalize(stmt);
-    
-    /* Log SQLite3 memory usage before cleanup */
+    /* Log SQLite3 memory usage */
     elog(DEBUG1, "SQLite3 memory: current=%ld bytes, highwater=%ld bytes",
          (long)sqlite3_memory_used(), (long)sqlite3_memory_highwater(0));
     
-    /* Release database memory before closing */
-    sqlite3_db_release_memory(db);
+    /* Release excess database memory (but keep connection open) */
+    sqlite3_db_release_memory(ctx->db);
     
-    /* Close the database connection */
-    sqlite3_close_v2(db);
-    
-    /* Log SQLite3 memory usage after connection close */
-    elog(DEBUG1, "SQLite3 memory after close: current=%ld bytes, highwater=%ld bytes",
-         (long)sqlite3_memory_used(), (long)sqlite3_memory_highwater(0));
-    
-    /* Shutdown SQLite3 to release all global memory and caches */
-    /* Next sqlite3_open() will automatically call sqlite3_initialize() */
-    sqlite3_shutdown();
-    
-    /* Log SQLite3 memory usage after shutdown */
-    elog(DEBUG1, "SQLite3 memory after shutdown: current=%ld bytes",
+    /* Log SQLite3 memory usage after releasing memory */
+    elog(DEBUG1, "SQLite3 memory after release: current=%ld bytes",
          (long)sqlite3_memory_used());
     
     /* Restore previous memory context */
@@ -2550,9 +2519,7 @@ kmersearch_process_block_with_batch(BlockNumber block,
             uint64 total_rows;
             uint64 batch_num;
             
-            kmersearch_flush_batch_to_sqlite(ctx->batch_hash, ctx->db_path,
-                                           ctx->total_bits, &ctx->table_created,
-                                           ctx->batch_memory_context);
+            kmersearch_flush_batch_to_sqlite(ctx);
             
             /* Note: hash table will be destroyed in the calling context */
             
