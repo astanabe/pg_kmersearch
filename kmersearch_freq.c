@@ -2260,7 +2260,6 @@ kmersearch_flush_batch_to_sqlite(SQLiteWorkerContext *ctx)
     elog(DEBUG1, "SQLite3 memory after release: current=%ld bytes",
          (long)sqlite3_memory_used());
     
-    /* Restore previous memory context */
     MemoryContextSwitchTo(old_context);
 }
 

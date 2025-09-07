@@ -263,25 +263,6 @@ typedef struct KmerAnalysisSharedState
     pg_atomic_uint64 total_batches_committed; /* Total batches committed by all workers */
 } KmerAnalysisSharedState;
 
-/* K-mer entry structures for different sizes */
-typedef struct KmerEntry16
-{
-    uint16      kmer;                     /* uintkey (key) */
-    int         count;                    /* Number of rows containing this k-mer */
-} KmerEntry16;
-
-typedef struct KmerEntry32
-{
-    uint32      kmer;                     /* uintkey (key) */
-    int         count;                    /* Number of rows containing this k-mer */
-} KmerEntry32;
-
-typedef struct KmerEntry64
-{
-    uint64      kmer;                     /* uintkey (key) */
-    int         count;                    /* Number of rows containing this k-mer */
-} KmerEntry64;
-
 /* Shared memory keys for parallel processing */
 #define KMERSEARCH_KEY_SHARED_STATE  1
 #define KMERSEARCH_KEY_HANDLES       2  /* Combined DSM and hash handles */
