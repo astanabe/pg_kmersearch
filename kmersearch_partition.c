@@ -674,17 +674,11 @@ replace_table_with_partition(const char *table_name, const char *temp_table_name
         
         for (i = 0; i < SPI_processed; i++)
         {
-            bool name_isnull, type_isnull;
             char *obj_name_str;
             char *obj_type_str;
             
             obj_name_str = SPI_getvalue(tuptable->vals[i], tuptable->tupdesc, 1);
             obj_type_str = SPI_getvalue(tuptable->vals[i], tuptable->tupdesc, 2);
-            
-            if (obj_name_str && obj_type_str)
-            {
-                /* Info about cascade drops removed */
-            }
             
             if (obj_name_str)
                 pfree(obj_name_str);
