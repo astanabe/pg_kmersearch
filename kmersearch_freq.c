@@ -2263,6 +2263,7 @@ kmersearch_process_block_with_batch(BlockNumber block,
                                    SQLiteWorkerContext *ctx)
 {
     Relation rel;
+    TupleDesc tupdesc;
     Buffer buffer;
     Page page;
     OffsetNumber maxoff;
@@ -2307,6 +2308,8 @@ kmersearch_process_block_with_batch(BlockNumber block,
     
     /* Open table and read block */
     rel = table_open(table_oid, AccessShareLock);
+    /* Cache the tuple descriptor to avoid repeated calls in the loop */
+    tupdesc = RelationGetDescr(rel);
     
     /* Use the pre-allocated buffer strategy from context */
     if (ctx->strategy)
@@ -2341,14 +2344,18 @@ kmersearch_process_block_with_batch(BlockNumber block,
         tuple.t_data = (HeapTupleHeader) PageGetItem(page, itemid);
         tuple.t_len = ItemIdGetLength(itemid);
         
-        /* Get sequence data */
-        datum = heap_getattr(&tuple, shared_state->column_attnum,
-                           RelationGetDescr(rel), &isnull);
-        if (isnull)
-            continue;
-        
-        /* Switch to batch memory context for k-mer extraction and hash table operations */
+        /* Switch to batch memory context BEFORE getting data to ensure all allocations happen there */
         old_context = MemoryContextSwitchTo(ctx->batch_memory_context);
+        
+        /* Get sequence data - now allocated in batch memory context */
+        datum = heap_getattr(&tuple, shared_state->column_attnum,
+                           tupdesc, &isnull);
+        if (isnull)
+        {
+            /* Switch back to original context before continuing */
+            MemoryContextSwitchTo(old_context);
+            continue;
+        }
         
         /* Extract k-mers based on data type (type OIDs are cached at worker start) */
         if (ctx->column_type_oid == ctx->dna2_oid)
