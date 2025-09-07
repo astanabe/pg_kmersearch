@@ -52,12 +52,10 @@ typedef struct SQLiteWorkerContext
     Oid         dna4_oid;               /* Cached OID for dna4 type */
     Oid         column_type_oid;        /* Column data type OID */
     bool        batch_flushed;          /* Flag indicating batch was flushed */
-    bool        table_created;          /* Flag indicating if table has been created */
     MemoryContext batch_memory_context; /* Memory context for batch processing */
     BufferAccessStrategy strategy;      /* Buffer access strategy for ring buffer (reused across blocks) */
     sqlite3     *db;                    /* SQLite3 database connection (reused across batches) */
     sqlite3_stmt *insert_stmt;          /* Prepared INSERT statement (reused across batches) */
-    bool        sqlite_initialized;     /* Flag indicating SQLite3 has been initialized */
 } SQLiteWorkerContext;
 
 static int analysis_kmer_hash_compare(const void *a, const void *b, size_t size, void *arg);
@@ -1359,7 +1357,6 @@ kmersearch_analysis_worker(dsm_segment *seg, shm_toc *toc)
     /* Initialize SQLite3 once for the entire worker lifetime */
     ctx.db = NULL;
     ctx.insert_stmt = NULL;
-    ctx.sqlite_initialized = false;
     
     /* Initialize and configure SQLite3 before opening */
     sqlite3_initialize();
@@ -1407,11 +1404,12 @@ kmersearch_analysis_worker(dsm_segment *seg, shm_toc *toc)
                 (errmsg("could not prepare SQLite3 statement: %s", sqlite3_errmsg(ctx.db))));
     }
     
-    ctx.sqlite_initialized = true;
-    ctx.table_created = true;
+    /* SQLite3 is now initialized and table created */
     
-    /* Note: batch_memory_context will be created/deleted for each batch */
-    ctx.batch_memory_context = NULL;
+    /* Create batch memory context once for the entire worker lifetime */
+    ctx.batch_memory_context = AllocSetContextCreate(CurrentMemoryContext,
+                                                     "KmerBatchMemoryContext",
+                                                     ALLOCSET_DEFAULT_SIZES);
     
     /* Initialize buffer access strategy once for the entire worker lifetime */
     {
@@ -1535,7 +1533,7 @@ kmersearch_analysis_worker(dsm_segment *seg, shm_toc *toc)
     }
     
     /* Get final statistics from SQLite3 file */
-    if (ctx.table_created)
+    if (ctx.db)
     {
         sqlite3 *db = NULL;
         sqlite3_stmt *final_stats = NULL;
@@ -1579,7 +1577,7 @@ kmersearch_analysis_worker(dsm_segment *seg, shm_toc *toc)
         FreeAccessStrategy(ctx.strategy);
     
     /* Clean up SQLite3 resources */
-    if (ctx.sqlite_initialized)
+    if (ctx.db)
     {
         /* Finalize prepared statement */
         if (ctx.insert_stmt)
@@ -1609,6 +1607,20 @@ kmersearch_analysis_worker(dsm_segment *seg, shm_toc *toc)
             elog(DEBUG1, "Worker %d: SQLite3 memory after shutdown: current=%ld bytes",
                  worker_id, (long)sqlite3_memory_used());
         }
+    }
+    
+    /* Delete batch memory context at worker termination */
+    if (ctx.batch_memory_context)
+    {
+        MemoryContextDelete(ctx.batch_memory_context);
+        ctx.batch_memory_context = NULL;
+    }
+    
+    /* Free buffer access strategy at worker termination */
+    if (ctx.strategy)
+    {
+        FreeAccessStrategy(ctx.strategy);
+        ctx.strategy = NULL;
     }
     
     /* Register temporary file path for parent process */
@@ -2252,7 +2264,7 @@ kmersearch_flush_batch_to_sqlite(SQLiteWorkerContext *ctx)
     MemoryContext old_context;
     
     /* Ensure SQLite3 is initialized */
-    if (!ctx->sqlite_initialized || !ctx->db || !ctx->insert_stmt)
+    if (!ctx->db || !ctx->insert_stmt)
     {
         ereport(ERROR,
                 (errmsg("SQLite3 not properly initialized for worker")));
@@ -2339,15 +2351,6 @@ kmersearch_process_block_with_batch(BlockNumber block,
     Buffer buffer;
     Page page;
     OffsetNumber maxoff;
-    
-    /* Initialize batch memory context if needed */
-    if (ctx->batch_memory_context == NULL)
-    {
-        /* Create memory context for batch processing under CurrentMemoryContext */
-        ctx->batch_memory_context = AllocSetContextCreate(CurrentMemoryContext,
-                                                         "KmerBatchMemoryContext",
-                                                         ALLOCSET_DEFAULT_SIZES);
-    }
     
     /* Initialize batch hash if needed (start of new batch) */
     if (ctx->batch_hash == NULL)
@@ -2534,19 +2537,20 @@ kmersearch_process_block_with_batch(BlockNumber block,
                             (unsigned long)shared_state->total_rows,
                             shared_state->column_name, shared_state->table_name)));
             
-            /* Destroy hash table and delete memory context for completed batch */
+            /* Destroy hash table for completed batch */
             if (ctx->batch_hash)
             {
                 hash_destroy(ctx->batch_hash);
                 ctx->batch_hash = NULL;
             }
+            
+            /* Reset memory context instead of delete/recreate */
             if (ctx->batch_memory_context)
             {
-                MemoryContextDelete(ctx->batch_memory_context);
-                ctx->batch_memory_context = NULL;
+                MemoryContextReset(ctx->batch_memory_context);
             }
             
-            /* Show memory usage after batch memory context deletion */
+            /* Show memory usage after batch memory context reset */
             MemoryContextStats(TopMemoryContext);
             
             /* Log glibc memory statistics and trim unused memory */
@@ -2556,7 +2560,7 @@ kmersearch_process_block_with_batch(BlockNumber block,
                      (size_t)mi.arena, (size_t)mi.ordblks, (size_t)mi.hblkhd, 
                      (size_t)mi.uordblks, (size_t)mi.fordblks);
                 
-                /* Trim unused memory back to OS */
+                /* Trim unused memory back to OS after MemoryContextReset */
                 malloc_trim(0);
                 
                 mi = mallinfo2();
@@ -2565,15 +2569,10 @@ kmersearch_process_block_with_batch(BlockNumber block,
                      (size_t)mi.uordblks, (size_t)mi.fordblks);
             }
             
-            /* Create new memory context and hash table for next batch */
+            /* Create new hash table for next batch (reusing memory context) */
             {
                 HASHCTL hashctl;
                 MemoryContext batch_old_context;
-                
-                /* Create memory context for next batch */
-                ctx->batch_memory_context = AllocSetContextCreate(CurrentMemoryContext,
-                                                                 "KmerBatchMemoryContext",
-                                                                 ALLOCSET_DEFAULT_SIZES);
                 
                 /* Switch to batch memory context */
                 batch_old_context = MemoryContextSwitchTo(ctx->batch_memory_context);
