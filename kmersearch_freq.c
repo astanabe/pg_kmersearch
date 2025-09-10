@@ -18,6 +18,7 @@
 #include <malloc.h>
 #endif
 #include "storage/fd.h"
+#include "storage/bufmgr.h"
 
 /* PostgreSQL function info declarations for frequency functions */
 PG_FUNCTION_INFO_V1(kmersearch_perform_highfreq_analysis);
@@ -2468,6 +2469,39 @@ kmersearch_process_block_with_batch(BlockNumber block,
             if (ctx->batch_memory_context)
             {
                 MemoryContextReset(ctx->batch_memory_context);
+            }
+            
+            /* Clear TOAST table buffers after batch completion */
+            {
+                Relation temp_rel;
+                Oid toast_oid;
+                
+                /* Open relation to get TOAST table OID */
+                temp_rel = table_open(table_oid, AccessShareLock);
+                toast_oid = temp_rel->rd_rel->reltoastrelid;
+                
+                if (OidIsValid(toast_oid))
+                {
+                    /* Open TOAST relation and flush its buffers */
+                    Relation toast_rel = table_open(toast_oid, AccessShareLock);
+                    ForkNumber fork = MAIN_FORKNUM;
+                    BlockNumber first_del_block = 0;
+                    
+                    elog(DEBUG2, "Clearing TOAST table buffers for OID %u after batch completion", toast_oid);
+                    
+                    /* Flush any dirty buffers first */
+                    FlushRelationBuffers(toast_rel);
+                    
+                    /* Drop all buffers for the TOAST table using SMgr */
+                    DropRelationBuffers(RelationGetSmgr(toast_rel), 
+                                      &fork,
+                                      1,
+                                      &first_del_block);
+                    
+                    table_close(toast_rel, AccessShareLock);
+                }
+                
+                table_close(temp_rel, AccessShareLock);
             }
             
             /* Show memory usage after batch memory context reset */
