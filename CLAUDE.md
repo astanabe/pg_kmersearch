@@ -64,6 +64,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - Do NOT add TODO comments about past modifications
 - Do NOT add FIXME comments referencing previous versions
 - Comments should explain what the code does NOW, not what it used to do
+- Do NOT add comments explaining differences or changes from previous implementations
+- Do NOT add comments for single-line self-explanatory code
+- Avoid obvious comments that simply restate what the code clearly does
 
 ### C Function Naming Convention
 **MANDATORY**: All C language functions in this extension MUST use the `kmersearch_` prefix.

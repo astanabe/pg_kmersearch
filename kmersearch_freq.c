@@ -757,8 +757,8 @@ kmersearch_perform_highfreq_analysis_parallel(Oid table_oid, const char *column_
             TempTablespacePath(base_temp_dir, tablespace_oid);
             
             /* Create a dedicated temporary directory for this analysis session */
-            snprintf(shared_state->temp_dir_path, MAXPGPATH, "%s/pg_kmersearch_%d_%ld",
-                     base_temp_dir, MyProcPid, GetCurrentTimestamp());
+            snprintf(shared_state->temp_dir_path, MAXPGPATH, "%s/pg_kmersearch_db%u_%d_%ld",
+                     base_temp_dir, MyDatabaseId, MyProcPid, GetCurrentTimestamp());
             
             /* Create the temporary directory (this will also create pgsql_tmp if it doesn't exist) */
             PathNameCreateTemporaryDir(base_temp_dir, shared_state->temp_dir_path);
@@ -1268,8 +1268,8 @@ kmersearch_analysis_worker(dsm_segment *seg, shm_toc *toc)
     }
     
     /* Create temporary SQLite3 database */
-    snprintf(ctx.db_path, MAXPGPATH, "%s/pg_kmersearch_%d_XXXXXX",
-             shared_state->temp_dir_path, MyProcPid);
+    snprintf(ctx.db_path, MAXPGPATH, "%s/pg_kmersearch_XXXXXX",
+             shared_state->temp_dir_path);
     
     fd = mkstemp(ctx.db_path);
     if (fd < 0)
@@ -2029,9 +2029,13 @@ kmersearch_delete_tempfiles(PG_FUNCTION_ARGS)
         {
             char full_path[MAXPGPATH];
             struct stat st;
+            char expected_prefix[32];
             
-            /* Check if it's a kmersearch temp directory (new naming convention) */
-            if (strncmp(de->d_name, "pg_kmersearch_", 14) == 0)
+            /* Build expected prefix with current database OID */
+            snprintf(expected_prefix, sizeof(expected_prefix), "pg_kmersearch_db%u_", MyDatabaseId);
+            
+            /* Check if it's a kmersearch temp directory for this database */
+            if (strncmp(de->d_name, expected_prefix, strlen(expected_prefix)) == 0)
             {
                 /* This is a kmersearch temporary directory */
                 char subdir_path[MAXPGPATH];
@@ -2444,6 +2448,15 @@ kmersearch_process_block_with_batch(BlockNumber block,
         {
             uint64 total_rows;
             uint64 batch_num;
+            bool need_buffer_clear = true;
+            
+            /* Release current buffer before clearing buffers */
+            if (BufferIsValid(buffer))
+            {
+                UnlockReleaseBuffer(buffer);
+                buffer = InvalidBuffer;
+                need_buffer_clear = true;
+            }
             
             kmersearch_flush_batch_to_sqlite(ctx);
             
@@ -2472,40 +2485,63 @@ kmersearch_process_block_with_batch(BlockNumber block,
             }
             
             /* Clear TOAST table buffers after batch completion */
+            if (need_buffer_clear)
             {
-                Relation temp_rel;
+                Relation main_rel;
                 Oid toast_oid;
                 
-                /* Open relation to get TOAST table OID */
-                temp_rel = table_open(table_oid, AccessShareLock);
-                toast_oid = temp_rel->rd_rel->reltoastrelid;
+                /* Open main relation to get TOAST table OID */
+                main_rel = table_open(table_oid, AccessShareLock);
+                toast_oid = main_rel->rd_rel->reltoastrelid;
                 
+                /* Clear TOAST table buffers if present */
                 if (OidIsValid(toast_oid))
                 {
-                    /* Open TOAST relation and flush its buffers */
-                    Relation toast_rel = table_open(toast_oid, AccessShareLock);
+                    Relation toast_rel;
                     ForkNumber fork = MAIN_FORKNUM;
                     BlockNumber first_del_block = 0;
                     
-                    elog(DEBUG2, "Clearing TOAST table buffers for OID %u after batch completion", toast_oid);
+                    /* Open TOAST relation and flush its buffers */
+                    toast_rel = table_open(toast_oid, AccessShareLock);
                     
-                    /* Flush any dirty buffers first */
-                    FlushRelationBuffers(toast_rel);
-                    
-                    /* Drop all buffers for the TOAST table using SMgr */
-                    DropRelationBuffers(RelationGetSmgr(toast_rel), 
-                                      &fork,
-                                      1,
-                                      &first_del_block);
+                    PG_TRY();
+                    {
+                        elog(DEBUG1, "Attempting to clear TOAST table buffers for OID %u after batch completion", toast_oid);
+                        
+                        /* Flush any dirty buffers first */
+                        FlushRelationBuffers(toast_rel);
+                        
+                        /* Drop all buffers for the TOAST table using SMgr */
+                        DropRelationBuffers(RelationGetSmgr(toast_rel), 
+                                          &fork,
+                                          1,
+                                          &first_del_block);
+                        elog(DEBUG1, "Successfully cleared TOAST table buffers");
+                    }
+                    PG_CATCH();
+                    {
+                        /* Ignore errors from buffers pinned by other workers */
+                        FlushErrorState();
+                        elog(DEBUG1, "Could not clear all TOAST table buffers (pinned by other workers) - continuing");
+                    }
+                    PG_END_TRY();
                     
                     table_close(toast_rel, AccessShareLock);
                 }
                 
-                table_close(temp_rel, AccessShareLock);
+                table_close(main_rel, AccessShareLock);
             }
             
             /* Show memory usage after batch memory context reset */
             MemoryContextStats(TopMemoryContext);
+            
+            /* Re-acquire buffer after batch completion if needed */
+            if (!BufferIsValid(buffer))
+            {
+                buffer = ReadBuffer(rel, block);
+                LockBuffer(buffer, BUFFER_LOCK_SHARE);
+                page = BufferGetPage(buffer);
+            }
             
             /* Log memory statistics and trim unused memory if using GLIBC */
 #ifdef __GLIBC__
@@ -2566,7 +2602,44 @@ kmersearch_process_block_with_batch(BlockNumber block,
         }
     }
     
-    UnlockReleaseBuffer(buffer);
+    /* Release buffer */
+    if (BufferIsValid(buffer))
+        UnlockReleaseBuffer(buffer);
+    
     table_close(rel, AccessShareLock);
+    
+    /* Clear main table buffers periodically to control memory usage */
+    /* Clear every N blocks to balance between memory usage and performance */
+    if ((block % 3) == 2)  /* Every 3 blocks (temporary for debugging) */
+    {
+        Relation main_rel;
+        ForkNumber fork = MAIN_FORKNUM;
+        BlockNumber clear_from_block = 0;  /* Clear all blocks */
+        
+        main_rel = table_open(table_oid, AccessShareLock);
+        
+        PG_TRY();
+        {
+            /* Flush dirty buffers first */
+            FlushRelationBuffers(main_rel);
+            
+            /* DropRelationBuffers clears buffers from clear_from_block onwards */
+            /* By specifying 0, we clear all blocks of the relation */
+            DropRelationBuffers(RelationGetSmgr(main_rel),
+                              &fork,
+                              1,
+                              &clear_from_block);
+            elog(DEBUG1, "Cleared main table buffers after processing block %u", block);
+        }
+        PG_CATCH();
+        {
+            /* Ignore errors - likely some buffers are pinned by other workers */
+            FlushErrorState();
+            elog(DEBUG2, "Could not clear all main table buffers after block %u (some pinned by other workers)", block);
+        }
+        PG_END_TRY();
+        
+        table_close(main_rel, AccessShareLock);
+    }
 }
 
