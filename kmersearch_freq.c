@@ -2272,6 +2272,7 @@ kmersearch_process_block_with_batch(BlockNumber block,
     Buffer buffer;
     Page page;
     OffsetNumber maxoff;
+    static bool batch_completed = false;  /* Flag to clear buffers after batch completion */
     
     /* Initialize batch hash if needed (start of new batch) */
     if (ctx->batch_hash == NULL)
@@ -2448,14 +2449,12 @@ kmersearch_process_block_with_batch(BlockNumber block,
         {
             uint64 total_rows;
             uint64 batch_num;
-            bool need_buffer_clear = true;
             
             /* Release current buffer before clearing buffers */
             if (BufferIsValid(buffer))
             {
                 UnlockReleaseBuffer(buffer);
                 buffer = InvalidBuffer;
-                need_buffer_clear = true;
             }
             
             kmersearch_flush_batch_to_sqlite(ctx);
@@ -2484,54 +2483,6 @@ kmersearch_process_block_with_batch(BlockNumber block,
                 MemoryContextReset(ctx->batch_memory_context);
             }
             
-            /* Clear TOAST table buffers after batch completion */
-            if (need_buffer_clear)
-            {
-                Relation main_rel;
-                Oid toast_oid;
-                
-                /* Open main relation to get TOAST table OID */
-                main_rel = table_open(table_oid, AccessShareLock);
-                toast_oid = main_rel->rd_rel->reltoastrelid;
-                
-                /* Clear TOAST table buffers if present */
-                if (OidIsValid(toast_oid))
-                {
-                    Relation toast_rel;
-                    ForkNumber fork = MAIN_FORKNUM;
-                    BlockNumber first_del_block = 0;
-                    
-                    /* Open TOAST relation and flush its buffers */
-                    toast_rel = table_open(toast_oid, AccessShareLock);
-                    
-                    PG_TRY();
-                    {
-                        elog(DEBUG1, "Attempting to clear TOAST table buffers for OID %u after batch completion", toast_oid);
-                        
-                        /* Flush any dirty buffers first */
-                        FlushRelationBuffers(toast_rel);
-                        
-                        /* Drop all buffers for the TOAST table using SMgr */
-                        DropRelationBuffers(RelationGetSmgr(toast_rel), 
-                                          &fork,
-                                          1,
-                                          &first_del_block);
-                        elog(DEBUG1, "Successfully cleared TOAST table buffers");
-                    }
-                    PG_CATCH();
-                    {
-                        /* Ignore errors from buffers pinned by other workers */
-                        FlushErrorState();
-                        elog(DEBUG1, "Could not clear all TOAST table buffers (pinned by other workers) - continuing");
-                    }
-                    PG_END_TRY();
-                    
-                    table_close(toast_rel, AccessShareLock);
-                }
-                
-                table_close(main_rel, AccessShareLock);
-            }
-            
             /* Show memory usage after batch memory context reset */
             MemoryContextStats(TopMemoryContext);
             
@@ -2542,6 +2493,9 @@ kmersearch_process_block_with_batch(BlockNumber block,
                 LockBuffer(buffer, BUFFER_LOCK_SHARE);
                 page = BufferGetPage(buffer);
             }
+            
+            /* Set flag to clear main table buffers at end of current block */
+            batch_completed = true;
             
             /* Log memory statistics and trim unused memory if using GLIBC */
 #ifdef __GLIBC__
@@ -2608,16 +2562,18 @@ kmersearch_process_block_with_batch(BlockNumber block,
     
     table_close(rel, AccessShareLock);
     
-    /* Clear main table buffers periodically to control memory usage */
-    /* Clear every N blocks to balance between memory usage and performance */
-    if ((block % 3) == 2)  /* Every 3 blocks (temporary for debugging) */
+    /* Clear main and TOAST table buffers after batch completion */
+    if (batch_completed)
     {
         Relation main_rel;
+        Oid toast_oid;
         ForkNumber fork = MAIN_FORKNUM;
         BlockNumber clear_from_block = 0;  /* Clear all blocks */
         
         main_rel = table_open(table_oid, AccessShareLock);
+        toast_oid = main_rel->rd_rel->reltoastrelid;
         
+        /* Clear main table buffers */
         PG_TRY();
         {
             /* Flush dirty buffers first */
@@ -2629,17 +2585,52 @@ kmersearch_process_block_with_batch(BlockNumber block,
                               &fork,
                               1,
                               &clear_from_block);
-            elog(DEBUG1, "Cleared main table buffers after processing block %u", block);
+            elog(DEBUG1, "Cleared main table buffers after batch completion at block %u", block);
         }
         PG_CATCH();
         {
             /* Ignore errors - likely some buffers are pinned by other workers */
             FlushErrorState();
-            elog(DEBUG2, "Could not clear all main table buffers after block %u (some pinned by other workers)", block);
+            elog(DEBUG2, "Could not clear all main table buffers after batch (some pinned by other workers)");
         }
         PG_END_TRY();
         
+        /* Clear TOAST table buffers if present */
+        if (OidIsValid(toast_oid))
+        {
+            Relation toast_rel;
+            
+            toast_rel = table_open(toast_oid, AccessShareLock);
+            
+            PG_TRY();
+            {
+                elog(DEBUG1, "Attempting to clear TOAST table buffers for OID %u after batch completion", toast_oid);
+                
+                /* Flush any dirty buffers first */
+                FlushRelationBuffers(toast_rel);
+                
+                /* Drop all buffers for the TOAST table using SMgr */
+                DropRelationBuffers(RelationGetSmgr(toast_rel), 
+                                  &fork,
+                                  1,
+                                  &clear_from_block);
+                elog(DEBUG1, "Successfully cleared TOAST table buffers");
+            }
+            PG_CATCH();
+            {
+                /* Ignore errors from buffers pinned by other workers */
+                FlushErrorState();
+                elog(DEBUG1, "Could not clear all TOAST table buffers (pinned by other workers) - continuing");
+            }
+            PG_END_TRY();
+            
+            table_close(toast_rel, AccessShareLock);
+        }
+        
         table_close(main_rel, AccessShareLock);
+        
+        /* Reset flag */
+        batch_completed = false;
     }
 }
 
