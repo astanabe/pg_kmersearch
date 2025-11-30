@@ -2274,8 +2274,8 @@ kmersearch_process_block_with_batch(BlockNumber block,
     Buffer buffer;
     Page page;
     OffsetNumber maxoff;
-    static bool batch_completed = false;  /* Flag to clear buffers after batch completion */
-    
+    bool batch_completed = false;
+
     /* Initialize batch hash if needed (start of new batch) */
     if (ctx->batch_hash == NULL)
     {
@@ -2348,10 +2348,17 @@ kmersearch_process_block_with_batch(BlockNumber block,
         
         if (!ItemIdIsNormal(itemid))
             continue;
-        
+
+        memset(&tuple, 0, sizeof(HeapTupleData));
         tuple.t_data = (HeapTupleHeader) PageGetItem(page, itemid);
         tuple.t_len = ItemIdGetLength(itemid);
-        
+        tuple.t_tableOid = table_oid;
+        ItemPointerSet(&tuple.t_self, block, offnum);
+
+        /* MVCC visibility check: skip tuples not visible to current snapshot */
+        if (!HeapTupleSatisfiesVisibility(&tuple, GetActiveSnapshot(), buffer))
+            continue;
+
         /* Switch to batch memory context BEFORE getting data to ensure all allocations happen there */
         old_context = MemoryContextSwitchTo(ctx->batch_memory_context);
         
@@ -2495,10 +2502,7 @@ kmersearch_process_block_with_batch(BlockNumber block,
                 LockBuffer(buffer, BUFFER_LOCK_SHARE);
                 page = BufferGetPage(buffer);
             }
-            
-            /* Set flag to clear main table buffers at end of current block */
-            batch_completed = true;
-            
+
             /* Log memory statistics and trim unused memory if using GLIBC */
 #ifdef __GLIBC__
             {
@@ -2555,15 +2559,16 @@ kmersearch_process_block_with_batch(BlockNumber block,
             }
             
             ctx->batch_count = 0;
+            batch_completed = true;
         }
     }
-    
+
     /* Release buffer */
     if (BufferIsValid(buffer))
         UnlockReleaseBuffer(buffer);
-    
+
     table_close(rel, AccessShareLock);
-    
+
     /* Clear main and TOAST table buffers after batch completion */
     if (batch_completed)
     {
@@ -2571,16 +2576,16 @@ kmersearch_process_block_with_batch(BlockNumber block,
         Oid toast_oid;
         ForkNumber fork = MAIN_FORKNUM;
         BlockNumber clear_from_block = 0;  /* Clear all blocks */
-        
+
         main_rel = table_open(table_oid, AccessShareLock);
         toast_oid = main_rel->rd_rel->reltoastrelid;
-        
+
         /* Clear main table buffers */
         PG_TRY();
         {
             /* Flush dirty buffers first */
             FlushRelationBuffers(main_rel);
-            
+
             /* DropRelationBuffers clears buffers from clear_from_block onwards */
             /* By specifying 0, we clear all blocks of the relation */
             DropRelationBuffers(RelationGetSmgr(main_rel),
@@ -2596,34 +2601,34 @@ kmersearch_process_block_with_batch(BlockNumber block,
             elog(DEBUG2, "Could not clear main table buffers after batch (some pinned by other workers)");
         }
         PG_END_TRY();
-        
+
         /* Clear main table index buffers - independently from main table buffers */
         {
             List *main_index_list;
             ListCell *lc;
-            
+
             main_index_list = RelationGetIndexList(main_rel);
             foreach(lc, main_index_list)
             {
                 Oid main_index_oid = lfirst_oid(lc);
                 Relation main_index_rel;
-                
+
                 PG_TRY();
                 {
                     main_index_rel = index_open(main_index_oid, AccessShareLock);
-                    
+
                     elog(DEBUG1, "Attempting to clear main table index buffers for OID %u", main_index_oid);
-                    
+
                     /* Flush dirty buffers for the index */
                     FlushRelationBuffers(main_index_rel);
-                    
+
                     /* Drop all buffers for the main table index */
                     DropRelationBuffers(RelationGetSmgr(main_index_rel),
                                       &fork,
                                       1,
                                       &clear_from_block);
                     elog(DEBUG1, "Successfully cleared main table index buffers");
-                    
+
                     index_close(main_index_rel, AccessShareLock);
                 }
                 PG_CATCH();
@@ -2636,24 +2641,24 @@ kmersearch_process_block_with_batch(BlockNumber block,
             }
             list_free(main_index_list);
         }
-        
+
         /* Clear TOAST table buffers if present */
         if (OidIsValid(toast_oid))
         {
             Relation toast_rel;
-            
+
             toast_rel = table_open(toast_oid, AccessShareLock);
-            
+
             /* Clear TOAST table buffers */
             PG_TRY();
             {
                 elog(DEBUG1, "Attempting to clear TOAST table buffers for OID %u after batch completion", toast_oid);
-                
+
                 /* Flush any dirty buffers first */
                 FlushRelationBuffers(toast_rel);
-                
+
                 /* Drop all buffers for the TOAST table using SMgr */
-                DropRelationBuffers(RelationGetSmgr(toast_rel), 
+                DropRelationBuffers(RelationGetSmgr(toast_rel),
                                   &fork,
                                   1,
                                   &clear_from_block);
@@ -2666,34 +2671,34 @@ kmersearch_process_block_with_batch(BlockNumber block,
                 elog(DEBUG2, "Could not clear TOAST table buffers (pinned by other workers)");
             }
             PG_END_TRY();
-            
+
             /* Clear TOAST index buffers - independently from TOAST table buffers */
             {
                 List *toast_index_list;
                 ListCell *lc;
-                
+
                 toast_index_list = RelationGetIndexList(toast_rel);
                 foreach(lc, toast_index_list)
                 {
                     Oid toast_index_oid = lfirst_oid(lc);
                     Relation toast_index_rel;
-                    
+
                     PG_TRY();
                     {
                         toast_index_rel = index_open(toast_index_oid, AccessShareLock);
-                        
+
                         elog(DEBUG1, "Attempting to clear TOAST index buffers for OID %u", toast_index_oid);
-                        
+
                         /* Flush dirty buffers for the index */
                         FlushRelationBuffers(toast_index_rel);
-                        
+
                         /* Drop all buffers for the TOAST index */
                         DropRelationBuffers(RelationGetSmgr(toast_index_rel),
                                           &fork,
                                           1,
                                           &clear_from_block);
                         elog(DEBUG1, "Successfully cleared TOAST index buffers");
-                        
+
                         index_close(toast_index_rel, AccessShareLock);
                     }
                     PG_CATCH();
@@ -2706,14 +2711,11 @@ kmersearch_process_block_with_batch(BlockNumber block,
                 }
                 list_free(toast_index_list);
             }
-            
+
             table_close(toast_rel, AccessShareLock);
         }
-        
+
         table_close(main_rel, AccessShareLock);
-        
-        /* Reset flag */
-        batch_completed = false;
     }
 }
 
