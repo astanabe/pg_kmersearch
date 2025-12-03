@@ -134,6 +134,71 @@ kmersearch_get_index_info(Oid index_oid, Oid *table_oid, char **column_name, int
 
 
 /*
+ * Filter Datum array for indexing by removing high-frequency k-mers
+ */
+static Datum *
+kmersearch_filter_datum_for_indexing(Datum *keys, int *nkeys, size_t key_size, int k_size)
+{
+    Datum *filtered_keys = NULL;
+    int filtered_count = 0;
+    int i;
+    bool has_highfreq = false;
+
+    if (!kmersearch_preclude_highfreq_kmer || keys == NULL || *nkeys == 0)
+        return keys;
+
+    for (i = 0; i < *nkeys; i++)
+    {
+        uint64 uintkey_val;
+
+        if (key_size == sizeof(uint16))
+            uintkey_val = (uint64)DatumGetInt16(keys[i]);
+        else if (key_size == sizeof(uint32))
+            uintkey_val = (uint64)DatumGetInt32(keys[i]);
+        else
+            uintkey_val = (uint64)DatumGetInt64(keys[i]);
+
+        if (kmersearch_is_uintkey_highfreq(uintkey_val, k_size))
+        {
+            has_highfreq = true;
+            break;
+        }
+    }
+
+    if (!has_highfreq)
+        return keys;
+
+    filtered_keys = (Datum *)palloc(*nkeys * sizeof(Datum));
+
+    for (i = 0; i < *nkeys; i++)
+    {
+        uint64 uintkey_val;
+
+        if (key_size == sizeof(uint16))
+            uintkey_val = (uint64)DatumGetInt16(keys[i]);
+        else if (key_size == sizeof(uint32))
+            uintkey_val = (uint64)DatumGetInt32(keys[i]);
+        else
+            uintkey_val = (uint64)DatumGetInt64(keys[i]);
+
+        if (!kmersearch_is_uintkey_highfreq(uintkey_val, k_size))
+            filtered_keys[filtered_count++] = keys[i];
+    }
+
+    pfree(keys);
+
+    if (filtered_count == 0)
+    {
+        pfree(filtered_keys);
+        *nkeys = 0;
+        return NULL;
+    }
+
+    *nkeys = filtered_count;
+    return filtered_keys;
+}
+
+/*
  * New uintkey-based GIN extract_value functions for DNA2
  */
 Datum
@@ -142,17 +207,21 @@ kmersearch_extract_value_dna2_int2(PG_FUNCTION_ARGS)
     VarBit *dna = PG_GETARG_VARBIT_P(0);
     int32 *nkeys = (int32 *) PG_GETARG_POINTER(1);
     Datum *keys = NULL;
-    
+
     /* Check operator class compatibility */
     check_operator_class_compatibility("int2");
-    
+
     /* Extract and convert to Datum array in one step */
     keys = kmersearch_extract_datum_from_dna2(dna, nkeys, sizeof(uint16));
-    
+
     if (keys == NULL || *nkeys == 0)
-    {
         PG_RETURN_POINTER(NULL);
-    }
+
+    keys = kmersearch_filter_datum_for_indexing(keys, nkeys, sizeof(uint16), kmersearch_kmer_size);
+
+    if (keys == NULL || *nkeys == 0)
+        PG_RETURN_POINTER(NULL);
+
     PG_RETURN_POINTER(keys);
 }
 
@@ -162,17 +231,21 @@ kmersearch_extract_value_dna2_int4(PG_FUNCTION_ARGS)
     VarBit *dna = PG_GETARG_VARBIT_P(0);
     int32 *nkeys = (int32 *) PG_GETARG_POINTER(1);
     Datum *keys = NULL;
-    
+
     /* Check operator class compatibility */
     check_operator_class_compatibility("int4");
-    
+
     /* Extract and convert to Datum array in one step */
     keys = kmersearch_extract_datum_from_dna2(dna, nkeys, sizeof(uint32));
-    
+
     if (keys == NULL || *nkeys == 0)
-    {
         PG_RETURN_POINTER(NULL);
-    }
+
+    keys = kmersearch_filter_datum_for_indexing(keys, nkeys, sizeof(uint32), kmersearch_kmer_size);
+
+    if (keys == NULL || *nkeys == 0)
+        PG_RETURN_POINTER(NULL);
+
     PG_RETURN_POINTER(keys);
 }
 
@@ -182,17 +255,21 @@ kmersearch_extract_value_dna2_int8(PG_FUNCTION_ARGS)
     VarBit *dna = PG_GETARG_VARBIT_P(0);
     int32 *nkeys = (int32 *) PG_GETARG_POINTER(1);
     Datum *keys = NULL;
-    
+
     /* Check operator class compatibility */
     check_operator_class_compatibility("int8");
-    
+
     /* Extract and convert to Datum array in one step */
     keys = kmersearch_extract_datum_from_dna2(dna, nkeys, sizeof(uint64));
-    
+
     if (keys == NULL || *nkeys == 0)
-    {
         PG_RETURN_POINTER(NULL);
-    }
+
+    keys = kmersearch_filter_datum_for_indexing(keys, nkeys, sizeof(uint64), kmersearch_kmer_size);
+
+    if (keys == NULL || *nkeys == 0)
+        PG_RETURN_POINTER(NULL);
+
     PG_RETURN_POINTER(keys);
 }
 
@@ -205,17 +282,21 @@ kmersearch_extract_value_dna4_int2(PG_FUNCTION_ARGS)
     VarBit *dna = PG_GETARG_VARBIT_P(0);
     int32 *nkeys = (int32 *) PG_GETARG_POINTER(1);
     Datum *keys = NULL;
-    
+
     /* Check operator class compatibility */
     check_operator_class_compatibility("int2");
-    
+
     /* Extract and convert to Datum array in one step */
     keys = kmersearch_extract_datum_from_dna4(dna, nkeys, sizeof(uint16));
-    
+
     if (keys == NULL || *nkeys == 0)
-    {
         PG_RETURN_POINTER(NULL);
-    }
+
+    keys = kmersearch_filter_datum_for_indexing(keys, nkeys, sizeof(uint16), kmersearch_kmer_size);
+
+    if (keys == NULL || *nkeys == 0)
+        PG_RETURN_POINTER(NULL);
+
     PG_RETURN_POINTER(keys);
 }
 
@@ -225,17 +306,21 @@ kmersearch_extract_value_dna4_int4(PG_FUNCTION_ARGS)
     VarBit *dna = PG_GETARG_VARBIT_P(0);
     int32 *nkeys = (int32 *) PG_GETARG_POINTER(1);
     Datum *keys = NULL;
-    
+
     /* Check operator class compatibility */
     check_operator_class_compatibility("int4");
-    
+
     /* Extract and convert to Datum array in one step */
     keys = kmersearch_extract_datum_from_dna4(dna, nkeys, sizeof(uint32));
-    
+
     if (keys == NULL || *nkeys == 0)
-    {
         PG_RETURN_POINTER(NULL);
-    }
+
+    keys = kmersearch_filter_datum_for_indexing(keys, nkeys, sizeof(uint32), kmersearch_kmer_size);
+
+    if (keys == NULL || *nkeys == 0)
+        PG_RETURN_POINTER(NULL);
+
     PG_RETURN_POINTER(keys);
 }
 
@@ -245,17 +330,21 @@ kmersearch_extract_value_dna4_int8(PG_FUNCTION_ARGS)
     VarBit *dna = PG_GETARG_VARBIT_P(0);
     int32 *nkeys = (int32 *) PG_GETARG_POINTER(1);
     Datum *keys = NULL;
-    
+
     /* Check operator class compatibility */
     check_operator_class_compatibility("int8");
-    
+
     /* Extract and convert to Datum array in one step */
     keys = kmersearch_extract_datum_from_dna4(dna, nkeys, sizeof(uint64));
-    
+
     if (keys == NULL || *nkeys == 0)
-    {
         PG_RETURN_POINTER(NULL);
-    }
+
+    keys = kmersearch_filter_datum_for_indexing(keys, nkeys, sizeof(uint64), kmersearch_kmer_size);
+
+    if (keys == NULL || *nkeys == 0)
+        PG_RETURN_POINTER(NULL);
+
     PG_RETURN_POINTER(keys);
 }
 
