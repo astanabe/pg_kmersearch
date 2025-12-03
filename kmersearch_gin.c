@@ -497,18 +497,28 @@ kmersearch_is_uintkey_highfreq(uint64 uintkey, int k_size)
     int total_bits;
     
     total_bits = k_size * 2 + kmersearch_occur_bitlen;
-    
+
     /* For uintkey format, k-mer is in higher bits, occurrence in lower bits */
     kmer_only = uintkey >> kmersearch_occur_bitlen;
-    
-    /* Priority 1: Check in global cache (highest priority) */
-    if (global_highfreq_cache.is_valid && global_highfreq_cache.highfreq_hash) {
-        return kmersearch_lookup_uintkey_in_global_cache(kmer_only, NULL, NULL);
+
+    if (kmersearch_force_use_parallel_highfreq_kmer_cache)
+    {
+        /* When force_use_parallel_highfreq_kmer_cache is true, skip global cache */
+        if (kmersearch_is_parallel_highfreq_cache_loaded()) {
+            return kmersearch_lookup_uintkey_in_parallel_cache(kmer_only, NULL, NULL);
+        }
     }
-    
-    /* Priority 2: Check in parallel cache */
-    if (kmersearch_is_parallel_highfreq_cache_loaded()) {
-        return kmersearch_lookup_uintkey_in_parallel_cache(kmer_only, NULL, NULL);
+    else
+    {
+        /* Priority 1: Check in global cache (highest priority) */
+        if (global_highfreq_cache.is_valid && global_highfreq_cache.highfreq_hash) {
+            return kmersearch_lookup_uintkey_in_global_cache(kmer_only, NULL, NULL);
+        }
+
+        /* Priority 2: Check in parallel cache */
+        if (kmersearch_is_parallel_highfreq_cache_loaded()) {
+            return kmersearch_lookup_uintkey_in_parallel_cache(kmer_only, NULL, NULL);
+        }
     }
     
     /* Priority 3: Check kmersearch_highfreq_kmer table directly */

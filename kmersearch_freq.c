@@ -964,14 +964,14 @@ kmersearch_perform_highfreq_analysis_parallel(Oid table_oid, const char *column_
             /* Insert high-frequency k-mers into PostgreSQL */
             {
                 int kmers_written = 0;
-                
+
                 while (sqlite3_step(select_stmt) == SQLITE_ROW)
                 {
                     uint64 uintkey;
                     StringInfoData insert_query;
                     int insert_ret;
                     int total_bits;
-                    
+
                     /* Get uintkey based on total_bits */
                     total_bits = k_size * 2 + kmersearch_occur_bitlen;
                     if (total_bits <= 32)
@@ -982,7 +982,7 @@ kmersearch_perform_highfreq_analysis_parallel(Oid table_oid, const char *column_
                     {
                         uintkey = (uint64)sqlite3_column_int64(select_stmt, 0);
                     }
-                    
+
                     /* Insert into PostgreSQL table - cast uint64 to int64 for bigint column */
                     initStringInfo(&insert_query);
                     appendStringInfo(&insert_query,
@@ -991,7 +991,7 @@ kmersearch_perform_highfreq_analysis_parallel(Oid table_oid, const char *column_
                         "VALUES (%u, %s, %ld, 'threshold') "
                         "ON CONFLICT (table_oid, column_name, uintkey) DO NOTHING",
                         table_oid, quote_literal_cstr(column_name), (int64)uintkey);
-                    
+
                     insert_ret = SPI_exec(insert_query.data, 0);
                     if (insert_ret != SPI_OK_INSERT && insert_ret != SPI_OK_UPDATE)
                     {
