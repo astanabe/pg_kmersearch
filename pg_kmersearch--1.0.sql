@@ -455,6 +455,7 @@ CREATE TABLE kmersearch_index_info (
     highfreq_kmer_count integer NOT NULL,
     max_appearance_rate real NOT NULL,
     max_appearance_nrow integer NOT NULL,
+    preclude_highfreq_kmer boolean NOT NULL DEFAULT false,
     created_at timestamp with time zone DEFAULT now()
 );
 
@@ -715,3 +716,90 @@ RETURNS TABLE(
 )
 AS 'MODULE_PATHNAME', 'kmersearch_delete_tempfiles'
 LANGUAGE C STRICT;
+
+-- Event trigger for capturing GIN index creation and saving settings
+CREATE FUNCTION kmersearch_on_index_create()
+RETURNS event_trigger
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    obj record;
+    idx_oid oid;
+    tbl_oid oid;
+    col_name name;
+    opclass_name name;
+BEGIN
+    FOR obj IN SELECT * FROM pg_event_trigger_ddl_commands()
+        WHERE object_type = 'index' AND command_tag = 'CREATE INDEX'
+    LOOP
+        idx_oid := obj.objid;
+
+        SELECT
+            i.indrelid,
+            a.attname,
+            oc.opcname
+        INTO tbl_oid, col_name, opclass_name
+        FROM pg_index i
+        JOIN pg_class ic ON ic.oid = i.indexrelid
+        JOIN pg_am am ON am.oid = ic.relam
+        JOIN pg_attribute a ON a.attrelid = i.indrelid
+            AND a.attnum = ANY(i.indkey)
+        JOIN pg_opclass oc ON oc.oid = i.indclass[0]
+        WHERE i.indexrelid = idx_oid
+          AND am.amname = 'gin'
+          AND oc.opcname LIKE 'kmersearch_%';
+
+        IF FOUND THEN
+            INSERT INTO kmersearch_index_info (
+                index_oid, table_oid, column_name,
+                kmer_size, occur_bitlen,
+                max_appearance_rate, max_appearance_nrow,
+                preclude_highfreq_kmer,
+                total_nrow, highfreq_kmer_count
+            ) VALUES (
+                idx_oid, tbl_oid, col_name,
+                current_setting('kmersearch.kmer_size')::integer,
+                current_setting('kmersearch.occur_bitlen')::integer,
+                current_setting('kmersearch.max_appearance_rate')::real,
+                current_setting('kmersearch.max_appearance_nrow')::integer,
+                current_setting('kmersearch.preclude_highfreq_kmer')::boolean,
+                0, 0
+            )
+            ON CONFLICT (index_oid) DO UPDATE SET
+                kmer_size = EXCLUDED.kmer_size,
+                occur_bitlen = EXCLUDED.occur_bitlen,
+                max_appearance_rate = EXCLUDED.max_appearance_rate,
+                max_appearance_nrow = EXCLUDED.max_appearance_nrow,
+                preclude_highfreq_kmer = EXCLUDED.preclude_highfreq_kmer,
+                created_at = now();
+        END IF;
+    END LOOP;
+END;
+$$;
+
+CREATE EVENT TRIGGER kmersearch_index_create_trigger
+ON ddl_command_end
+WHEN TAG IN ('CREATE INDEX')
+EXECUTE FUNCTION kmersearch_on_index_create();
+
+-- Event trigger for cleaning up metadata when index is dropped
+CREATE FUNCTION kmersearch_on_index_drop()
+RETURNS event_trigger
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    obj record;
+BEGIN
+    FOR obj IN SELECT * FROM pg_event_trigger_dropped_objects()
+        WHERE object_type = 'index'
+    LOOP
+        DELETE FROM kmersearch_index_info WHERE index_oid = obj.objid;
+        DELETE FROM kmersearch_gin_index_meta WHERE index_oid = obj.objid;
+    END LOOP;
+END;
+$$;
+
+CREATE EVENT TRIGGER kmersearch_index_drop_trigger
+ON sql_drop
+WHEN TAG IN ('DROP INDEX', 'DROP TABLE', 'DROP SCHEMA', 'DROP EXTENSION')
+EXECUTE FUNCTION kmersearch_on_index_drop();

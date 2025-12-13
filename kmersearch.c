@@ -567,7 +567,10 @@ _PG_init(void)
     
     /* Initialize high-frequency k-mer cache */
     kmersearch_highfreq_kmer_cache_init();
-    
+
+    /* Initialize planner hook for index settings validation */
+    kmersearch_planner_init();
+
     /* Mark GUC variables as initialized */
     guc_variables_initialized = true;
 }
@@ -1209,13 +1212,16 @@ kmersearch_simd_capability(PG_FUNCTION_ARGS)
 void
 _PG_fini(void)
 {
+    /* Cleanup planner hook */
+    kmersearch_planner_fini();
+
     /* Free query-kmer cache manager on module unload (uses TopMemoryContext - needs manual cleanup) */
     /* DNA2/DNA4 cache managers are now local and automatically freed with QueryContext */
     kmersearch_free_query_kmer_cache_manager(&query_kmer_cache_manager);
-    
+
     /* Free actual min score cache manager on module unload */
     kmersearch_free_actual_min_score_cache_manager(&actual_min_score_cache_manager);
-    
+
     /* Free high-frequency k-mer cache on module unload */
     kmersearch_highfreq_kmer_cache_free_internal();
 }

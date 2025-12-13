@@ -48,13 +48,82 @@ CREATE INDEX idx_dna2_gin ON test_dna2_sequences USING gin (sequence kmersearch_
 CREATE INDEX idx_dna4_gin ON test_dna4_sequences USING gin (sequence kmersearch_dna4_gin_ops_int8);
 
 -- Verify indexes exist
-SELECT indexname, tablename FROM pg_indexes 
+SELECT indexname, tablename FROM pg_indexes
 WHERE indexname IN ('idx_dna2_gin', 'idx_dna4_gin')
 ORDER BY indexname;
+
+-- Verify index settings are saved in kmersearch_index_info by event trigger
+SELECT
+    i.index_oid IS NOT NULL as has_index_oid,
+    i.kmer_size,
+    i.occur_bitlen,
+    i.max_appearance_rate,
+    i.max_appearance_nrow,
+    i.preclude_highfreq_kmer
+FROM kmersearch_index_info i
+JOIN pg_class c ON c.oid = i.index_oid
+WHERE c.relname = 'idx_dna2_gin';
 
 -- Clean up test tables
 DROP TABLE IF EXISTS test_dna2_sequences CASCADE;
 DROP TABLE IF EXISTS test_dna4_sequences CASCADE;
+
+-- Verify DROP INDEX event trigger cleans up metadata
+SELECT COUNT(*) as remaining_entries FROM kmersearch_index_info
+WHERE index_oid NOT IN (SELECT oid FROM pg_class WHERE relkind = 'i');
+
+-- Test multiple indexes with different settings and automatic index selection
+CREATE TABLE test_index_select (
+    id SERIAL PRIMARY KEY,
+    sequence DNA2
+);
+
+-- Insert sufficient test data for index usage
+INSERT INTO test_index_select (sequence)
+SELECT 'ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCG'::DNA2
+FROM generate_series(1, 100);
+
+-- Create first index with kmer_size=7, occur_bitlen=2 (7*2+2=16 bits -> int2)
+SET kmersearch.kmer_size = 7;
+SET kmersearch.occur_bitlen = 2;
+SET kmersearch.max_appearance_rate = 0.5;
+SET kmersearch.max_appearance_nrow = 0;
+SET kmersearch.preclude_highfreq_kmer = false;
+CREATE INDEX idx_k7 ON test_index_select USING gin (sequence kmersearch_dna2_gin_ops_int2);
+
+-- Verify settings saved for idx_k7
+SELECT kmer_size, occur_bitlen, preclude_highfreq_kmer
+FROM kmersearch_index_info i
+JOIN pg_class c ON c.oid = i.index_oid
+WHERE c.relname = 'idx_k7';
+
+-- Create second index with kmer_size=12, occur_bitlen=4 (12*2+4=28 bits -> int4)
+SET kmersearch.kmer_size = 12;
+SET kmersearch.occur_bitlen = 4;
+CREATE INDEX idx_k12 ON test_index_select USING gin (sequence kmersearch_dna2_gin_ops_int4);
+
+-- Verify settings saved for idx_k12
+SELECT kmer_size, occur_bitlen, preclude_highfreq_kmer
+FROM kmersearch_index_info i
+JOIN pg_class c ON c.oid = i.index_oid
+WHERE c.relname = 'idx_k12';
+
+-- Test index selection: with kmer_size=7 settings, idx_k7 should be selected
+SET kmersearch.kmer_size = 7;
+SET kmersearch.occur_bitlen = 2;
+EXPLAIN (COSTS OFF) SELECT * FROM test_index_select WHERE sequence =% 'ATCGATCGATCGATCGATCGATCGATCG';
+
+-- Test index selection: with kmer_size=12 settings, idx_k12 should be selected
+SET kmersearch.kmer_size = 12;
+SET kmersearch.occur_bitlen = 4;
+EXPLAIN (COSTS OFF) SELECT * FROM test_index_select WHERE sequence =% 'ATCGATCGATCGATCGATCGATCGATCG';
+
+-- Clean up
+DROP TABLE IF EXISTS test_index_select CASCADE;
+
+-- Verify metadata cleanup after DROP TABLE CASCADE
+SELECT COUNT(*) as remaining_after_drop FROM kmersearch_index_info
+WHERE index_oid NOT IN (SELECT oid FROM pg_class WHERE relkind = 'i');
 
 DROP EXTENSION pg_kmersearch CASCADE;
 SET client_min_messages = NOTICE;

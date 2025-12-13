@@ -559,7 +559,7 @@ void kmersearch_free_query_kmer_cache_manager(QueryKmerCacheManager **manager);
 void kmersearch_free_actual_min_score_cache_manager(ActualMinScoreCacheManager **manager);
 
 /* Build version information */
-#define KMERSEARCH_BUILD_VERSION "1.0.2025.12.03"
+#define KMERSEARCH_BUILD_VERSION "1.0.2025.12.13"
 
 /* High-frequency k-mer cache global variables (defined in kmersearch_cache.c) */
 
@@ -689,5 +689,9 @@ Datum *kmersearch_extract_datum_from_dna4(VarBit *dna_seq, int *nkeys, size_t ke
 
 /* Utility functions */
 void kmersearch_spi_connect_or_error(void);
+
+/* Planner hook functions */
+extern void kmersearch_planner_init(void);
+extern void kmersearch_planner_fini(void);
 
 #endif   /* KMERSEARCH_H */
