@@ -10,7 +10,6 @@
 
 #include "kmersearch.h"
 #include "partitioning/partdesc.h"
-#include <sqlite3.h>
 #include <unistd.h>
 #include <sys/stat.h>
 #include <dirent.h>
@@ -31,50 +30,36 @@ PG_FUNCTION_INFO_V1(kmersearch_delete_tempfiles);
 typedef struct TempKmerFreqEntry16
 {
     uint16      uintkey;
-    uint64      nrow;      /* Number of rows containing this k-mer */
+    uint64      appearance_nrow;      /* Number of rows containing this k-mer */
 } TempKmerFreqEntry16;
 
 typedef struct TempKmerFreqEntry32
 {
     uint32      uintkey;
-    uint64      nrow;      /* Number of rows containing this k-mer */
+    uint64      appearance_nrow;      /* Number of rows containing this k-mer */
 } TempKmerFreqEntry32;
 
 typedef struct TempKmerFreqEntry64
 {
     uint64      uintkey;
-    uint64      nrow;      /* Number of rows containing this k-mer */
+    uint64      appearance_nrow;      /* Number of rows containing this k-mer */
 } TempKmerFreqEntry64;
 
-/* SQLite3-based worker context */
-typedef struct SQLiteWorkerContext
-{
-    char        db_path[MAXPGPATH];     /* Database file path */
-    HTAB        *batch_hash;            /* Batch hash table for aggregation */
-    int         batch_count;            /* Current batch count */
-    int         total_bits;             /* Total bits for k-mer + occurrence */
-    Oid         dna2_oid;               /* Cached OID for dna2 type */
-    Oid         dna4_oid;               /* Cached OID for dna4 type */
-    Oid         column_type_oid;        /* Column data type OID */
-    MemoryContext batch_memory_context; /* Memory context for batch processing */
-    BufferAccessStrategy strategy;      /* Buffer access strategy for ring buffer */
-    sqlite3     *db;                    /* SQLite3 database connection */
-} SQLiteWorkerContext;
-
-/* SQLite3 helper functions */
-static void kmersearch_register_worker_temp_file(KmerAnalysisSharedState *shared_state, 
+/* File hash table helper functions */
+static void kmersearch_register_worker_temp_file(KmerAnalysisSharedState *shared_state,
                                                 const char *file_path, int worker_id);
-static void kmersearch_flush_batch_to_sqlite(SQLiteWorkerContext *ctx);
+static void kmersearch_flush_batch_to_fht(FileHashWorkerContext *ctx);
 static void kmersearch_process_block_with_batch(BlockNumber block,
                                                Oid table_oid,
                                                KmerAnalysisSharedState *shared_state,
-                                               SQLiteWorkerContext *ctx);
+                                               FileHashWorkerContext *ctx);
 
 /* Parallel merge functions */
 PGDLLEXPORT void kmersearch_parallel_merge_worker(dsm_segment *seg, shm_toc *toc);
-static void kmersearch_aggregate_temp_files_parallel(char file_paths[][MAXPGPATH], 
+static void kmersearch_aggregate_temp_files_parallel(char file_paths[][MAXPGPATH],
                                                     int num_files,
-                                                    const char *temp_dir_path);
+                                                    const char *temp_dir_path,
+                                                    int total_bits);
 
 /*
  * Create worker temporary table for k-mer uintkeys
@@ -836,20 +821,17 @@ kmersearch_perform_highfreq_analysis_parallel(Oid table_oid, const char *column_
         /* Announce start of parent aggregation */
         ereport(INFO,
                 (errmsg("Parallel scan completed. Starting aggregation of results.")));
-        
-        /* Aggregate results from worker SQLite3 files */
+
+        /* Aggregate results from worker file hash tables */
         {
-            sqlite3 *parent_db = NULL;
-            sqlite3_stmt *select_stmt = NULL;
             char worker_files[MAX_PARALLEL_WORKERS][MAXPGPATH];
-            char *aggregated_db_path;
-            int rc;
-            int fd;
-            int total_worker_files = 0;
+            char *aggregated_file_path;
             int num_worker_files = 0;
-            
+            int total_bits;
+
+            total_bits = k_size * 2 + kmersearch_occur_bitlen;
+
             /* Collect worker temp files for parallel aggregation */
-            
             for (int i = 0; i < MAX_PARALLEL_WORKERS; i++)
             {
                 if (strlen(shared_state->worker_temp_files[i]) > 0)
@@ -858,162 +840,229 @@ kmersearch_perform_highfreq_analysis_parallel(Oid table_oid, const char *column_
                     num_worker_files++;
                 }
             }
-            
+
             if (num_worker_files == 0)
             {
-                /* No worker files, this shouldn't happen but handle gracefully */
                 ereport(ERROR,
                         (errmsg("No worker temporary files found")));
             }
-            
+
             /* If we have multiple worker files, use parallel aggregation */
             if (num_worker_files > 1)
             {
                 ereport(INFO,
                         (errmsg("Starting parallel aggregation of %d temporary files", num_worker_files)));
-                
-                /* Perform parallel aggregation - results go into worker_files[0] */
-                kmersearch_aggregate_temp_files_parallel(worker_files, num_worker_files, shared_state->temp_dir_path);
+
+                kmersearch_aggregate_temp_files_parallel(worker_files, num_worker_files,
+                                                        shared_state->temp_dir_path, total_bits);
             }
-            
+
             /* Use the first worker file (aggregated if multiple, original if single) */
-            aggregated_db_path = worker_files[0];
-            
-            /* Initialize and configure SQLite3 before opening */
-            sqlite3_initialize();
-            sqlite3_config(SQLITE_CONFIG_MMAP_SIZE, (sqlite3_int64)0, (sqlite3_int64)0);
-            sqlite3_soft_heap_limit64(128 * 1024 * 1024);
-            
-            /* Open the database */
-            rc = sqlite3_open(aggregated_db_path, &parent_db);
-            if (rc != SQLITE_OK)
-            {
-                ereport(ERROR,
-                        (errmsg("could not open SQLite3 database: %s", sqlite3_errmsg(parent_db))));
-            }
-            
-            /* PRAGMA settings already configured by workers */
-            
+            aggregated_file_path = worker_files[0];
+
             /* Calculate threshold based on GUC variables */
             rate_based_threshold = (uint64)(result.total_rows * kmersearch_max_appearance_rate);
-            
+
             /* Determine final threshold: min of rate-based and nrow-based (excluding 0) */
             if (kmersearch_max_appearance_nrow > 0) {
-                /* Both are set, use the smaller one */
-                threshold_rows = (rate_based_threshold < kmersearch_max_appearance_nrow) ? 
-                                rate_based_threshold : kmersearch_max_appearance_nrow;
+                threshold_rows = (rate_based_threshold < (uint64)kmersearch_max_appearance_nrow) ?
+                                rate_based_threshold : (uint64)kmersearch_max_appearance_nrow;
             } else {
-                /* Only rate-based threshold */
                 threshold_rows = rate_based_threshold;
             }
             elog(DEBUG1, "Threshold calculation: total_rows=%ld, rate=%.2f, rate_based=%lu, nrow=%d, final=%lu",
-                 result.total_rows, kmersearch_max_appearance_rate, (unsigned long)rate_based_threshold, 
+                 result.total_rows, kmersearch_max_appearance_rate, (unsigned long)rate_based_threshold,
                  kmersearch_max_appearance_nrow, (unsigned long)threshold_rows);
-            
-            /* Update max_appearance_nrow_used to the actual threshold used */
+
             result.max_appearance_nrow_used = threshold_rows;
-            
-            /* Count high-frequency k-mers from SQLite3 */
+
+            /* Count and extract high-frequency k-mers from file hash table */
             {
-                sqlite3_stmt *count_stmt;
-                
-                rc = sqlite3_prepare_v2(parent_db,
-                                       "SELECT COUNT(*) FROM kmersearch_highfreq_kmer WHERE nrow > ?",
-                                       -1, &count_stmt, NULL);
-                if (rc == SQLITE_OK)
+                int highfreq_count = 0;
+
+                if (total_bits <= 16)
                 {
-                    sqlite3_bind_int64(count_stmt, 1, (int64)threshold_rows);
-                    if (sqlite3_step(count_stmt) == SQLITE_ROW)
+                    FileHashTable16Context *fht_ctx = kmersearch_fht16_open(aggregated_file_path);
+                    FileHashTableIterator16 iter;
+                    uint16 uintkey;
+                    uint64 appearance_nrow;
+
+                    kmersearch_fht16_iterator_init(&iter, fht_ctx);
+                    while (kmersearch_fht16_iterate(&iter, &uintkey, &appearance_nrow))
                     {
-                        result.highfreq_kmers_count = sqlite3_column_int(count_stmt, 0);
+                        if (appearance_nrow > threshold_rows)
+                            highfreq_count++;
                     }
-                    sqlite3_finalize(count_stmt);
+                    kmersearch_fht16_close(fht_ctx);
                 }
+                else if (total_bits <= 32)
+                {
+                    FileHashTable32Context *fht_ctx = kmersearch_fht32_open(aggregated_file_path);
+                    FileHashTableIterator32 iter;
+                    uint32 uintkey;
+                    uint64 appearance_nrow;
+
+                    kmersearch_fht32_iterator_init(&iter, fht_ctx);
+                    while (kmersearch_fht32_iterate(&iter, &uintkey, &appearance_nrow))
+                    {
+                        if (appearance_nrow > threshold_rows)
+                            highfreq_count++;
+                    }
+                    kmersearch_fht32_close(fht_ctx);
+                }
+                else
+                {
+                    FileHashTable64Context *fht_ctx = kmersearch_fht64_open(aggregated_file_path);
+                    FileHashTableIterator64 iter;
+                    uint64 uintkey;
+                    uint64 appearance_nrow;
+
+                    kmersearch_fht64_iterator_init(&iter, fht_ctx);
+                    while (kmersearch_fht64_iterate(&iter, &uintkey, &appearance_nrow))
+                    {
+                        if (appearance_nrow > threshold_rows)
+                            highfreq_count++;
+                    }
+                    kmersearch_fht64_close(fht_ctx);
+                }
+
+                result.highfreq_kmers_count = highfreq_count;
             }
-            
-            /* temp_dir_to_delete already contains the path from initialization */
-            
+
             /* Clean up parallel context and exit parallel mode BEFORE any SQL operations */
             DestroyParallelContext(pcxt);
-            pcxt = NULL; /* Mark as destroyed to prevent double-free */
+            pcxt = NULL;
             ExitParallelMode();
-            
-            /* Now we can safely execute SQL operations */
+
             /* Save results to PostgreSQL */
             kmersearch_spi_connect_or_error();
-            
-            /* Prepare to extract high-frequency k-mers from SQLite3 */
-            rc = sqlite3_prepare_v2(parent_db,
-                                   "SELECT uintkey FROM kmersearch_highfreq_kmer WHERE nrow > ?",
-                                   -1, &select_stmt, NULL);
-            if (rc != SQLITE_OK)
-            {
-                sqlite3_close_v2(parent_db);
-                unlink(aggregated_db_path);
-                ereport(ERROR,
-                        (errmsg("could not prepare SQLite3 select statement: %s", sqlite3_errmsg(parent_db))));
-            }
-            
-            sqlite3_bind_int64(select_stmt, 1, (int64)threshold_rows);
-            
-            /* Announce start of writing to PostgreSQL table */
+
             ereport(INFO,
                     (errmsg("Writing %d high-frequency k-mers to kmersearch_highfreq_kmer table...",
                             result.highfreq_kmers_count)));
-            
+
             /* Insert high-frequency k-mers into PostgreSQL */
             {
                 int kmers_written = 0;
 
-                while (sqlite3_step(select_stmt) == SQLITE_ROW)
+                if (total_bits <= 16)
                 {
-                    uint64 uintkey;
-                    StringInfoData insert_query;
-                    int insert_ret;
-                    int total_bits;
+                    FileHashTable16Context *fht_ctx = kmersearch_fht16_open(aggregated_file_path);
+                    FileHashTableIterator16 iter;
+                    uint16 uintkey;
+                    uint64 appearance_nrow;
 
-                    /* Get uintkey based on total_bits */
-                    total_bits = k_size * 2 + kmersearch_occur_bitlen;
-                    if (total_bits <= 32)
+                    kmersearch_fht16_iterator_init(&iter, fht_ctx);
+                    while (kmersearch_fht16_iterate(&iter, &uintkey, &appearance_nrow))
                     {
-                        uintkey = (uint64)sqlite3_column_int(select_stmt, 0);
-                    }
-                    else
-                    {
-                        uintkey = (uint64)sqlite3_column_int64(select_stmt, 0);
-                    }
+                        if (appearance_nrow > threshold_rows)
+                        {
+                            StringInfoData insert_query;
+                            int insert_ret;
 
-                    /* Insert into PostgreSQL table - cast uint64 to int64 for bigint column */
-                    initStringInfo(&insert_query);
-                    appendStringInfo(&insert_query,
-                        "INSERT INTO kmersearch_highfreq_kmer "
-                        "(table_oid, column_name, uintkey, detection_reason) "
-                        "VALUES (%u, %s, %ld, 'threshold') "
-                        "ON CONFLICT (table_oid, column_name, uintkey) DO NOTHING",
-                        table_oid, quote_literal_cstr(column_name), (int64)uintkey);
+                            initStringInfo(&insert_query);
+                            appendStringInfo(&insert_query,
+                                "INSERT INTO kmersearch_highfreq_kmer "
+                                "(table_oid, column_name, uintkey, appearance_nrow, detection_reason) "
+                                "VALUES (%u, %s, %ld, %lu, 'threshold') "
+                                "ON CONFLICT (table_oid, column_name, uintkey) DO UPDATE SET "
+                                "appearance_nrow = EXCLUDED.appearance_nrow",
+                                table_oid, quote_literal_cstr(column_name),
+                                (int64)uintkey, (unsigned long)appearance_nrow);
 
-                    insert_ret = SPI_exec(insert_query.data, 0);
-                    if (insert_ret != SPI_OK_INSERT && insert_ret != SPI_OK_UPDATE)
-                    {
-                        elog(WARNING, "Failed to insert high-frequency k-mer");
+                            insert_ret = SPI_exec(insert_query.data, 0);
+                            if (insert_ret != SPI_OK_INSERT && insert_ret != SPI_OK_UPDATE)
+                                elog(WARNING, "Failed to insert high-frequency k-mer");
+                            pfree(insert_query.data);
+
+                            kmers_written++;
+                            if (kmers_written % 1000 == 0)
+                                elog(INFO, "Written %d/%d high-frequency k-mers...",
+                                     kmers_written, result.highfreq_kmers_count);
+                        }
                     }
-                    pfree(insert_query.data);
-                    
-                    kmers_written++;
-                    /* Report progress every 1000 k-mers */
-                    if (kmers_written % 1000 == 0)
-                    {
-                        elog(INFO, "Written %d/%d high-frequency k-mers...",
-                             kmers_written, result.highfreq_kmers_count);
-                    }
+                    kmersearch_fht16_close(fht_ctx);
                 }
-                
-                /* Clean up SQLite3 resources */
-                sqlite3_finalize(select_stmt);
-                sqlite3_close_v2(parent_db);
-                unlink(aggregated_db_path);
-                
-                /* Report completion of writing */
+                else if (total_bits <= 32)
+                {
+                    FileHashTable32Context *fht_ctx = kmersearch_fht32_open(aggregated_file_path);
+                    FileHashTableIterator32 iter;
+                    uint32 uintkey;
+                    uint64 appearance_nrow;
+
+                    kmersearch_fht32_iterator_init(&iter, fht_ctx);
+                    while (kmersearch_fht32_iterate(&iter, &uintkey, &appearance_nrow))
+                    {
+                        if (appearance_nrow > threshold_rows)
+                        {
+                            StringInfoData insert_query;
+                            int insert_ret;
+
+                            initStringInfo(&insert_query);
+                            appendStringInfo(&insert_query,
+                                "INSERT INTO kmersearch_highfreq_kmer "
+                                "(table_oid, column_name, uintkey, appearance_nrow, detection_reason) "
+                                "VALUES (%u, %s, %ld, %lu, 'threshold') "
+                                "ON CONFLICT (table_oid, column_name, uintkey) DO UPDATE SET "
+                                "appearance_nrow = EXCLUDED.appearance_nrow",
+                                table_oid, quote_literal_cstr(column_name),
+                                (int64)uintkey, (unsigned long)appearance_nrow);
+
+                            insert_ret = SPI_exec(insert_query.data, 0);
+                            if (insert_ret != SPI_OK_INSERT && insert_ret != SPI_OK_UPDATE)
+                                elog(WARNING, "Failed to insert high-frequency k-mer");
+                            pfree(insert_query.data);
+
+                            kmers_written++;
+                            if (kmers_written % 1000 == 0)
+                                elog(INFO, "Written %d/%d high-frequency k-mers...",
+                                     kmers_written, result.highfreq_kmers_count);
+                        }
+                    }
+                    kmersearch_fht32_close(fht_ctx);
+                }
+                else
+                {
+                    FileHashTable64Context *fht_ctx = kmersearch_fht64_open(aggregated_file_path);
+                    FileHashTableIterator64 iter;
+                    uint64 uintkey;
+                    uint64 appearance_nrow;
+
+                    kmersearch_fht64_iterator_init(&iter, fht_ctx);
+                    while (kmersearch_fht64_iterate(&iter, &uintkey, &appearance_nrow))
+                    {
+                        if (appearance_nrow > threshold_rows)
+                        {
+                            StringInfoData insert_query;
+                            int insert_ret;
+
+                            initStringInfo(&insert_query);
+                            appendStringInfo(&insert_query,
+                                "INSERT INTO kmersearch_highfreq_kmer "
+                                "(table_oid, column_name, uintkey, appearance_nrow, detection_reason) "
+                                "VALUES (%u, %s, %ld, %lu, 'threshold') "
+                                "ON CONFLICT (table_oid, column_name, uintkey) DO UPDATE SET "
+                                "appearance_nrow = EXCLUDED.appearance_nrow",
+                                table_oid, quote_literal_cstr(column_name),
+                                (int64)uintkey, (unsigned long)appearance_nrow);
+
+                            insert_ret = SPI_exec(insert_query.data, 0);
+                            if (insert_ret != SPI_OK_INSERT && insert_ret != SPI_OK_UPDATE)
+                                elog(WARNING, "Failed to insert high-frequency k-mer");
+                            pfree(insert_query.data);
+
+                            kmers_written++;
+                            if (kmers_written % 1000 == 0)
+                                elog(INFO, "Written %d/%d high-frequency k-mers...",
+                                     kmers_written, result.highfreq_kmers_count);
+                        }
+                    }
+                    kmersearch_fht64_close(fht_ctx);
+                }
+
+                /* Delete aggregated file */
+                unlink(aggregated_file_path);
+
                 ereport(INFO,
                         (errmsg("Successfully wrote %d high-frequency k-mers to database.",
                                 kmers_written)));
@@ -1195,152 +1244,110 @@ kmersearch_spi_connect_or_error(void)
     }
 }
 /*
- * Analysis dshash functions implementation
- */
-/*
- * Parallel worker function for k-mer analysis (SQLite3-based)
+ * Parallel worker function for k-mer analysis (file hash table based)
  */
 PGDLLEXPORT void
 kmersearch_analysis_worker(dsm_segment *seg, shm_toc *toc)
 {
     KmerAnalysisSharedState *shared_state = NULL;
-    SQLiteWorkerContext ctx;
+    FileHashWorkerContext ctx;
     bool has_work = true;
     int worker_id;
-    int rc;
     int fd;
-    
-    /* Initialize context */
-    memset(&ctx, 0, sizeof(SQLiteWorkerContext));
-    
-    /* Double-check we're in a parallel worker */
+
+    memset(&ctx, 0, sizeof(FileHashWorkerContext));
+
     if (!IsParallelWorker())
     {
         elog(ERROR, "kmersearch_analysis_worker called from non-parallel context");
     }
-    
-    /* Get shared state from shm_toc */
+
     shared_state = (KmerAnalysisSharedState *)shm_toc_lookup(toc, KMERSEARCH_KEY_SHARED_STATE, false);
     if (!shared_state) {
         elog(ERROR, "kmersearch_analysis_worker: Failed to get shared state");
     }
-    
-    /* Get worker ID (simplified - use PID modulo MAX_PARALLEL_WORKERS) */
+
     worker_id = MyProcPid % MAX_PARALLEL_WORKERS;
-    
-    /* If partitioned table, get partition block info from shared memory */
+
     if (shared_state->is_partitioned)
     {
-        shared_state->partition_blocks = (PartitionBlockInfo *)shm_toc_lookup(toc, 
+        shared_state->partition_blocks = (PartitionBlockInfo *)shm_toc_lookup(toc,
             KMERSEARCH_KEY_PARTITION_BLOCKS, false);
         if (!shared_state->partition_blocks)
         {
             elog(ERROR, "kmersearch_analysis_worker: Failed to get partition blocks");
         }
     }
-    
-    /* Calculate total bits for data type selection */
+
     ctx.total_bits = kmersearch_kmer_size * 2 + kmersearch_occur_bitlen;
-    
-    /* Cache type OIDs at worker start (avoid repeated lookups) */
+
     ctx.dna2_oid = TypenameGetTypid("dna2");
     ctx.dna4_oid = TypenameGetTypid("dna4");
-    
-    /* Get column type from table metadata */
+
     {
         Relation rel;
         TupleDesc tupdesc;
         Form_pg_attribute attr;
         Oid column_type_oid;
-        
+
         rel = table_open(shared_state->table_oid, AccessShareLock);
         tupdesc = RelationGetDescr(rel);
         attr = TupleDescAttr(tupdesc, shared_state->column_attnum - 1);
         column_type_oid = attr->atttypid;
         table_close(rel, AccessShareLock);
-        
-        /* Validate column type */
+
         if (column_type_oid != ctx.dna2_oid && column_type_oid != ctx.dna4_oid)
         {
             elog(ERROR, "Column must be DNA2 or DNA4 type");
         }
-        
-        /* Store column type for later use */
+
         ctx.column_type_oid = column_type_oid;
     }
-    
-    /* Create temporary SQLite3 database */
-    snprintf(ctx.db_path, MAXPGPATH, "%s/pg_kmersearch_XXXXXX",
+
+    /* Create temporary file for file hash table */
+    snprintf(ctx.file_path, MAXPGPATH, "%s/pg_kmersearch_XXXXXX",
              shared_state->temp_dir_path);
-    
-    fd = mkstemp(ctx.db_path);
+
+    fd = mkstemp(ctx.file_path);
     if (fd < 0)
     {
         ereport(ERROR,
                 (errcode_for_file_access(),
-                 errmsg("could not create temporary file \"%s\": %m", ctx.db_path)));
+                 errmsg("could not create temporary file \"%s\": %m", ctx.file_path)));
     }
-    close(fd);  /* SQLite3 will open it later when needed */
-    
-    /* Initialize SQLite3 once for the entire worker lifetime */
-    ctx.db = NULL;
-    
-    /* Initialize and configure SQLite3 before opening */
-    sqlite3_initialize();
-    sqlite3_config(SQLITE_CONFIG_MMAP_SIZE, (sqlite3_int64)0, (sqlite3_int64)0);
-    sqlite3_soft_heap_limit64(128 * 1024 * 1024);
-    
-    /* Open database connection for entire worker lifetime */
-    rc = sqlite3_open(ctx.db_path, &ctx.db);
-    if (rc != SQLITE_OK)
+    close(fd);
+    unlink(ctx.file_path);
+
+    /* Create file hash table based on total_bits */
+    if (ctx.total_bits <= 16)
     {
-        ereport(ERROR,
-                (errmsg("could not open SQLite3 database: %s", 
-                        ctx.db ? sqlite3_errmsg(ctx.db) : "unknown error")));
+        ctx.fht_ctx = kmersearch_fht16_create(ctx.file_path);
     }
-    
-    /* Configure SQLite3 for better performance */
-    sqlite3_exec(ctx.db, "PRAGMA page_size = 8192", NULL, NULL, NULL);
-    sqlite3_exec(ctx.db, "PRAGMA cache_size = 10000", NULL, NULL, NULL);
-    sqlite3_exec(ctx.db, "PRAGMA temp_store = MEMORY", NULL, NULL, NULL);
-    sqlite3_exec(ctx.db, "PRAGMA synchronous = OFF", NULL, NULL, NULL);
-    sqlite3_exec(ctx.db, "PRAGMA journal_mode = OFF", NULL, NULL, NULL);
-    sqlite3_exec(ctx.db, "PRAGMA locking_mode = EXCLUSIVE", NULL, NULL, NULL);
-    
-    /* Create table */
-    rc = sqlite3_exec(ctx.db,
-                     "CREATE TABLE IF NOT EXISTS kmersearch_highfreq_kmer ("
-                     "uintkey INTEGER PRIMARY KEY, "
-                     "nrow INTEGER)",
-                     NULL, NULL, NULL);
-    if (rc != SQLITE_OK)
+    else if (ctx.total_bits <= 32)
     {
-        ereport(ERROR,
-                (errmsg("could not create SQLite3 table: %s", sqlite3_errmsg(ctx.db))));
+        ctx.fht_ctx = kmersearch_fht32_create(ctx.file_path, 0);
     }
-    
-    /* SQLite3 is now initialized and table created */
-    
-    /* Create batch memory context once for the entire worker lifetime */
+    else
+    {
+        ctx.fht_ctx = kmersearch_fht64_create(ctx.file_path, 0);
+    }
+
     ctx.batch_memory_context = AllocSetContextCreate(CurrentMemoryContext,
                                                      "KmerBatchMemoryContext",
                                                      ALLOCSET_DEFAULT_SIZES);
-    
-    /* Initialize buffer access strategy once for the entire worker lifetime */
+
     {
-        int tuples_per_page = 10;  /* Conservative estimate for sequence data */
+        int tuples_per_page = 10;
         int pages_needed = (kmersearch_highfreq_analysis_batch_size / tuples_per_page) * 1.5;
-        int ring_size_kb = Max(pages_needed * 8, 10 * 1024);  /* 8KB per page, minimum 10MB */
+        int ring_size_kb = Max(pages_needed * 8, 10 * 1024);
         int total_ring_size_kb = ring_size_kb * max_parallel_maintenance_workers;
-        int shared_buffers_kb = NBuffers * 8;  /* NBuffers is in pages, 8KB per page */
-        
-        /* If shared_buffers is small relative to total ring buffer needs,
-         * use normal buffer access to avoid ring buffer constraints */
+        int shared_buffers_kb = NBuffers * 8;
+
         if (shared_buffers_kb < total_ring_size_kb * 2)
         {
             elog(DEBUG2, "Worker using normal buffer access: shared_buffers=%d KB < ring_requirement=%d KB",
                  shared_buffers_kb, total_ring_size_kb * 2);
-            ctx.strategy = NULL;  /* No strategy needed for normal buffer access */
+            ctx.strategy = NULL;
         }
         else
         {
@@ -1349,184 +1356,118 @@ kmersearch_analysis_worker(dsm_segment *seg, shm_toc *toc)
             ctx.strategy = GetAccessStrategyWithSize(BAS_BULKREAD, ring_size_kb);
         }
     }
-    
+
     /* Dynamic work acquisition loop */
     {
         int blocks_processed = 0;
-        
+
         while (has_work)
-    {
-        BlockNumber current_block;
-        bool got_block = false;
-        
-        if (shared_state->is_partitioned)
         {
-            /* Partitioned table: use global block counter */
-            BlockNumber global_block;
-            
-            /* Atomic increment to get next global block */
-            global_block = pg_atomic_fetch_add_u32(&shared_state->next_global_block, 1);
-            
-            if (global_block < shared_state->total_blocks_all_partitions)
+            BlockNumber current_block;
+            bool got_block = false;
+
+            if (shared_state->is_partitioned)
             {
-                /* Map global block to partition and local block */
-                PartitionBlockMapping mapping = kmersearch_map_global_to_partition_block(
-                    global_block, shared_state);
-                
-                
-                /* Process block with batch - pass partition OID for partitioned tables */
-                kmersearch_process_block_with_batch(mapping.local_block_number,
-                                                   mapping.partition_oid,
-                                                   shared_state, &ctx);
-                blocks_processed++;
-                
-                got_block = true;
-            }
-        }
-        else
-        {
-            /* Regular table: use existing logic */
-            LWLockAcquire(&shared_state->mutex.lock, LW_EXCLUSIVE);
-            
-            if (shared_state->next_block < shared_state->total_blocks)
-            {
-                current_block = shared_state->next_block;
-                shared_state->next_block++;
-                LWLockRelease(&shared_state->mutex.lock);
-                
-                /* Process block with batch - use table_oid for regular tables */
-                kmersearch_process_block_with_batch(current_block, 
-                                                   shared_state->table_oid,
-                                                   shared_state, &ctx);
-                blocks_processed++;
-                
-                got_block = true;
+                BlockNumber global_block;
+
+                global_block = pg_atomic_fetch_add_u32(&shared_state->next_global_block, 1);
+
+                if (global_block < shared_state->total_blocks_all_partitions)
+                {
+                    PartitionBlockMapping mapping = kmersearch_map_global_to_partition_block(
+                        global_block, shared_state);
+
+                    kmersearch_process_block_with_batch(mapping.local_block_number,
+                                                       mapping.partition_oid,
+                                                       shared_state, &ctx);
+                    blocks_processed++;
+                    got_block = true;
+                }
             }
             else
             {
-                shared_state->all_processed = true;
-                LWLockRelease(&shared_state->mutex.lock);
+                LWLockAcquire(&shared_state->mutex.lock, LW_EXCLUSIVE);
+
+                if (shared_state->next_block < shared_state->total_blocks)
+                {
+                    current_block = shared_state->next_block;
+                    shared_state->next_block++;
+                    LWLockRelease(&shared_state->mutex.lock);
+
+                    kmersearch_process_block_with_batch(current_block,
+                                                       shared_state->table_oid,
+                                                       shared_state, &ctx);
+                    blocks_processed++;
+                    got_block = true;
+                }
+                else
+                {
+                    shared_state->all_processed = true;
+                    LWLockRelease(&shared_state->mutex.lock);
+                }
             }
-        }
-        
+
             if (!got_block)
                 has_work = false;
         }
     }
-    
+
     /* Flush any remaining batch data */
     if (ctx.batch_hash && ctx.batch_count > 0)
     {
         uint64 total_rows;
         uint64 batch_num;
-        
-        kmersearch_flush_batch_to_sqlite(&ctx);
-        
-        /* Update shared progress counters for final batch */
+
+        kmersearch_flush_batch_to_fht(&ctx);
+
         total_rows = pg_atomic_add_fetch_u64(&shared_state->total_rows_processed, ctx.batch_count);
         batch_num = pg_atomic_add_fetch_u64(&shared_state->total_batches_committed, 1);
-        
-        /* Report final cumulative progress (deterministic) */
+
         ereport(INFO,
                 (errmsg("Batch %lu completed: %lu / %lu rows processed of column %s in table %s (final)",
                         (unsigned long)batch_num, (unsigned long)total_rows,
                         (unsigned long)shared_state->total_rows,
                         shared_state->column_name, shared_state->table_name)));
     }
-    
-    /* Destroy hash table only once at the end */
+
     if (ctx.batch_hash)
     {
         hash_destroy(ctx.batch_hash);
         ctx.batch_hash = NULL;
     }
-    
-    /* Get final statistics from SQLite3 file */
-    if (ctx.db)
+
+    /* Close file hash table */
+    if (ctx.fht_ctx)
     {
-        sqlite3 *db = NULL;
-        sqlite3_stmt *final_stats = NULL;
-        
-        /* Initialize and configure SQLite3 before opening */
-        sqlite3_initialize();
-        sqlite3_config(SQLITE_CONFIG_MMAP_SIZE, (sqlite3_int64)0, (sqlite3_int64)0);
-        sqlite3_soft_heap_limit64(128 * 1024 * 1024);
-        
-        /* Open connection just to get statistics */
-        rc = sqlite3_open(ctx.db_path, &db);
-        if (rc == SQLITE_OK)
+        if (ctx.total_bits <= 16)
         {
-            rc = sqlite3_prepare_v2(db,
-                                   "SELECT COUNT(*), SUM(nrow) FROM kmersearch_highfreq_kmer",
-                                   -1, &final_stats, NULL);
-            if (rc == SQLITE_OK && sqlite3_step(final_stats) == SQLITE_ROW)
-            {
-                int final_count = sqlite3_column_int(final_stats, 0);
-                int64 final_nrow = sqlite3_column_int64(final_stats, 1);
-            }
-            if (final_stats)
-                sqlite3_finalize(final_stats);
-            sqlite3_close_v2(db);
+            kmersearch_fht16_close((FileHashTable16Context *)ctx.fht_ctx);
         }
-    }
-    
-    /* Destroy hash table if it still exists */
-    if (ctx.batch_hash)
-    {
-        hash_destroy(ctx.batch_hash);
-        ctx.batch_hash = NULL;
-    }
-    
-    /* Delete the batch memory context if it still exists */
-    if (ctx.batch_memory_context)
-        MemoryContextDelete(ctx.batch_memory_context);
-    
-    /* Free the buffer access strategy if it was allocated */
-    if (ctx.strategy)
-        FreeAccessStrategy(ctx.strategy);
-    
-    /* Clean up SQLite3 resources */
-    if (ctx.db)
-    {
-        /* Close database connection */
-        if (ctx.db)
+        else if (ctx.total_bits <= 32)
         {
-            /* Log final memory usage */
-            elog(DEBUG1, "Worker %d: SQLite3 final memory before close: current=%ld bytes, highwater=%ld bytes",
-                 worker_id, (long)sqlite3_memory_used(), (long)sqlite3_memory_highwater(0));
-            
-            /* Release any remaining memory */
-            sqlite3_db_release_memory(ctx.db);
-            
-            /* Close the database */
-            sqlite3_close_v2(ctx.db);
-            ctx.db = NULL;
-            
-            /* Shutdown SQLite3 to release all global memory */
-            sqlite3_shutdown();
-            
-            /* Log final memory usage */
-            elog(DEBUG1, "Worker %d: SQLite3 memory after shutdown: current=%ld bytes",
-                 worker_id, (long)sqlite3_memory_used());
+            kmersearch_fht32_close((FileHashTable32Context *)ctx.fht_ctx);
         }
+        else
+        {
+            kmersearch_fht64_close((FileHashTable64Context *)ctx.fht_ctx);
+        }
+        ctx.fht_ctx = NULL;
     }
-    
-    /* Delete batch memory context at worker termination */
+
     if (ctx.batch_memory_context)
     {
         MemoryContextDelete(ctx.batch_memory_context);
         ctx.batch_memory_context = NULL;
     }
-    
-    /* Free buffer access strategy at worker termination */
+
     if (ctx.strategy)
     {
         FreeAccessStrategy(ctx.strategy);
         ctx.strategy = NULL;
     }
-    
+
     /* Register temporary file path for parent process */
-    kmersearch_register_worker_temp_file(shared_state, ctx.db_path, worker_id);
+    kmersearch_register_worker_temp_file(shared_state, ctx.file_path, worker_id);
 }/*
  * Map global block number to partition and local block
  */
@@ -1625,245 +1566,60 @@ kmersearch_get_partition_oids(Oid parent_oid)
 }
 
 /*
- * Parallel merge worker entry point
+ * Parallel merge worker entry point (file hash table based)
  */
 PGDLLEXPORT void
 kmersearch_parallel_merge_worker(dsm_segment *seg, shm_toc *toc)
 {
     char *source_file;
     char *target_file;
-    sqlite3 *source_db = NULL;
-    sqlite3 *target_db = NULL;
-    int rc;
-    MemoryContext merge_context;
-    MemoryContext old_context;
-    
-    /* Get worker ID from parallel context */
     int worker_id;
     char *file_paths_base;
-    
-    /* ParallelWorkerNumber is zero-based index of this worker */
+    int total_bits;
+
     worker_id = ParallelWorkerNumber;
-    
-    /* Get base pointer to all file paths */
+
     file_paths_base = (char *) shm_toc_lookup(toc, 0, false);
     if (!file_paths_base)
     {
         elog(ERROR, "Failed to get file paths from shared memory");
         return;
     }
-    
-    /* Calculate this worker's file paths */
+
+    /* Get total_bits from shared memory (stored at end of file paths) */
+    total_bits = *((int *)(file_paths_base + (max_parallel_maintenance_workers * 2 * MAXPGPATH)));
+
     source_file = file_paths_base + (worker_id * 2 * MAXPGPATH);
     target_file = file_paths_base + (worker_id * 2 * MAXPGPATH + MAXPGPATH);
-    
-    /* Create memory context for merge operation */
-    merge_context = AllocSetContextCreate(CurrentMemoryContext,
-                                         "KmerMergeWorkerContext",
-                                         ALLOCSET_DEFAULT_SIZES);
-    old_context = MemoryContextSwitchTo(merge_context);
-    
-    /* Initialize and configure SQLite3 before opening */
-    sqlite3_initialize();
-    sqlite3_config(SQLITE_CONFIG_MMAP_SIZE, (sqlite3_int64)0, (sqlite3_int64)0);
-    sqlite3_soft_heap_limit64(128 * 1024 * 1024);
-    
-    /* Open source database */
-    rc = sqlite3_open(source_file, &source_db);
-    if (rc != SQLITE_OK)
+
+    /* Merge based on key size */
+    if (total_bits <= 16)
     {
-        elog(ERROR, "Failed to open source database %s: %s", source_file, sqlite3_errmsg(source_db));
-        return;
+        kmersearch_fht16_merge(target_file, source_file);
     }
-    
-    /* Re-initialize SQLite3 settings before opening target database
-     * sqlite3_config and soft_heap_limit are global settings */
-    sqlite3_config(SQLITE_CONFIG_MMAP_SIZE, (sqlite3_int64)0, (sqlite3_int64)0);
-    sqlite3_soft_heap_limit64(128 * 1024 * 1024);
-    
-    /* Open target database */
-    rc = sqlite3_open(target_file, &target_db);
-    if (rc != SQLITE_OK)
+    else if (total_bits <= 32)
     {
-        sqlite3_close_v2(source_db);
-        elog(ERROR, "Failed to open target database %s: %s", target_file, sqlite3_errmsg(target_db));
-        return;
+        kmersearch_fht32_merge(target_file, source_file);
     }
-    
-    /* Configure databases for better performance */
-    /* Ensure database settings consistency */
-    sqlite3_exec(source_db, "PRAGMA page_size = 8192", NULL, NULL, NULL);
-    sqlite3_exec(source_db, "PRAGMA cache_size = 10000", NULL, NULL, NULL);
-    sqlite3_exec(source_db, "PRAGMA temp_store = MEMORY", NULL, NULL, NULL);
-    sqlite3_exec(source_db, "PRAGMA synchronous = OFF", NULL, NULL, NULL);
-    sqlite3_exec(source_db, "PRAGMA journal_mode = OFF", NULL, NULL, NULL);
-    sqlite3_exec(source_db, "PRAGMA locking_mode = EXCLUSIVE", NULL, NULL, NULL);
-    
-    sqlite3_exec(target_db, "PRAGMA page_size = 8192", NULL, NULL, NULL);
-    sqlite3_exec(target_db, "PRAGMA cache_size = 10000", NULL, NULL, NULL);
-    sqlite3_exec(target_db, "PRAGMA temp_store = MEMORY", NULL, NULL, NULL);
-    sqlite3_exec(target_db, "PRAGMA synchronous = OFF", NULL, NULL, NULL);
-    sqlite3_exec(target_db, "PRAGMA journal_mode = OFF", NULL, NULL, NULL);
-    sqlite3_exec(target_db, "PRAGMA locking_mode = EXCLUSIVE", NULL, NULL, NULL);
-    
-    /* Attach target database to source */
+    else
     {
-        char attach_sql[512];
-    snprintf(attach_sql, sizeof(attach_sql),
-             "ATTACH DATABASE '%s' AS target_db", target_file);
-        rc = sqlite3_exec(source_db, attach_sql, NULL, NULL, NULL);
-        if (rc != SQLITE_OK)
-        {
-            elog(ERROR, "Failed to attach target database: %s", sqlite3_errmsg(source_db));
-            goto cleanup;
-        }
+        kmersearch_fht64_merge(target_file, source_file);
     }
-    
-    /* Merge data from target into source using prepared statements */
-    {
-        sqlite3_stmt *merge_stmt = NULL;
-        sqlite3_stmt *select_stmt = NULL;
-        
-        /* Begin transaction for better performance */
-        rc = sqlite3_exec(source_db, "BEGIN TRANSACTION", NULL, NULL, NULL);
-        if (rc != SQLITE_OK)
-        {
-            elog(ERROR, "Failed to begin transaction: %s", sqlite3_errmsg(source_db));
-            sqlite3_exec(source_db, "DETACH DATABASE target_db", NULL, NULL, NULL);
-            goto cleanup;
-        }
-        
-        /* Prepare INSERT/UPDATE statement */
-        rc = sqlite3_prepare_v2(source_db,
-                              "INSERT INTO main.kmersearch_highfreq_kmer (uintkey, nrow) "
-                              "VALUES (?, ?) "
-                              "ON CONFLICT(uintkey) DO UPDATE SET nrow = nrow + excluded.nrow",
-                              -1, &merge_stmt, NULL);
-        if (rc != SQLITE_OK)
-        {
-            elog(WARNING, "Failed to prepare merge statement: %s", sqlite3_errmsg(source_db));
-            sqlite3_exec(source_db, "ROLLBACK", NULL, NULL, NULL);
-            sqlite3_exec(source_db, "DETACH DATABASE target_db", NULL, NULL, NULL);
-            goto cleanup;
-        }
-        
-        /* Prepare SELECT statement for target database */
-        rc = sqlite3_prepare_v2(source_db,
-                              "SELECT uintkey, nrow FROM target_db.kmersearch_highfreq_kmer",
-                              -1, &select_stmt, NULL);
-        if (rc != SQLITE_OK)
-        {
-            elog(WARNING, "Failed to prepare select statement: %s", sqlite3_errmsg(source_db));
-            sqlite3_finalize(merge_stmt);
-            sqlite3_exec(source_db, "ROLLBACK", NULL, NULL, NULL);
-            sqlite3_exec(source_db, "DETACH DATABASE target_db", NULL, NULL, NULL);
-            goto cleanup;
-        }
-        
-        /* Process each row from target database */
-        while (sqlite3_step(select_stmt) == SQLITE_ROW)
-        {
-            int64 uintkey = sqlite3_column_int64(select_stmt, 0);
-            int64 nrow = sqlite3_column_int64(select_stmt, 1);
-            
-            sqlite3_bind_int64(merge_stmt, 1, uintkey);
-            sqlite3_bind_int64(merge_stmt, 2, nrow);
-            
-            rc = sqlite3_step(merge_stmt);
-            if (rc != SQLITE_DONE)
-            {
-                elog(WARNING, "Failed to merge row: %s", sqlite3_errmsg(source_db));
-            }
-            
-            sqlite3_reset(merge_stmt);
-            sqlite3_clear_bindings(merge_stmt);
-        }
-        
-        /* Clean up statements */
-        sqlite3_finalize(select_stmt);
-        sqlite3_finalize(merge_stmt);
-        
-        /* Commit transaction */
-        rc = sqlite3_exec(source_db, "COMMIT", NULL, NULL, NULL);
-        if (rc != SQLITE_OK)
-        {
-            elog(WARNING, "Failed to commit transaction: %s", sqlite3_errmsg(source_db));
-            sqlite3_exec(source_db, "DETACH DATABASE target_db", NULL, NULL, NULL);
-            goto cleanup;
-        }
-    }
-    
-    /* Detach target database */
-    sqlite3_exec(source_db, "DETACH DATABASE target_db", NULL, NULL, NULL);
-    
-    /* Delete target file after successful merge */
-    unlink(target_file);
-    
-cleanup:
-    /* Log SQLite3 memory usage before cleanup */
-    elog(DEBUG1, "Merge worker %d: SQLite3 memory before cleanup: current=%ld bytes, highwater=%ld bytes",
-         worker_id, (long)sqlite3_memory_used(), (long)sqlite3_memory_highwater(0));
-    
-    /* Close databases and release memory */
-    if (source_db)
-    {
-        sqlite3_db_release_memory(source_db);
-        sqlite3_close_v2(source_db);
-    }
-    if (target_db)
-    {
-        sqlite3_db_release_memory(target_db);
-        sqlite3_close_v2(target_db);
-    }
-    
-    /* Log SQLite3 memory after close */
-    elog(DEBUG1, "Merge worker %d: SQLite3 memory after close: current=%ld bytes",
-         worker_id, (long)sqlite3_memory_used());
-    
-    /* Shutdown SQLite3 to release all global memory */
-    sqlite3_shutdown();
-    
-    /* Log SQLite3 memory after shutdown */
-    elog(DEBUG1, "Merge worker %d: SQLite3 memory after shutdown: current=%ld bytes",
-         worker_id, (long)sqlite3_memory_used());
-    
-    /* Switch back to original context and delete merge context */
-    MemoryContextSwitchTo(old_context);
-    MemoryContextDelete(merge_context);
-    
-    /* Show memory usage after context deletion */
-    MemoryContextStats(TopMemoryContext);
-    
-    /* Log memory statistics and trim unused memory if using GLIBC */
-#ifdef __GLIBC__
-    {
-        struct mallinfo2 mi = mallinfo2();
-        elog(DEBUG1, "Merge worker %d: glibc memory before trim: arena=%zu, ordblks=%zu, hblkhd=%zu, uordblks=%zu, fordblks=%zu",
-             worker_id, (size_t)mi.arena, (size_t)mi.ordblks, (size_t)mi.hblkhd, 
-             (size_t)mi.uordblks, (size_t)mi.fordblks);
-        
-        /* Trim unused memory back to OS */
-        malloc_trim(0);
-        
-        mi = mallinfo2();
-        elog(DEBUG1, "Merge worker %d: glibc memory after trim: arena=%zu, ordblks=%zu, hblkhd=%zu, uordblks=%zu, fordblks=%zu",
-             worker_id, (size_t)mi.arena, (size_t)mi.ordblks, (size_t)mi.hblkhd,
-             (size_t)mi.uordblks, (size_t)mi.fordblks);
-    }
-#endif
+
+    elog(DEBUG1, "Merge worker %d: completed merge of %s into %s", worker_id, target_file, source_file);
 }
 
 /*
- * Parallel aggregation of temporary SQLite3 files
+ * Parallel aggregation of temporary file hash tables
  */
 static void
 kmersearch_aggregate_temp_files_parallel(char file_paths[][MAXPGPATH], int num_files,
-                                        const char *temp_dir_path)
+                                        const char *temp_dir_path, int total_bits)
 {
     int current_files = num_files;
     int stage = 0;
-    #define KMERSEARCH_MAGIC 0x1234567890ABCDEF  /* Magic number for TOC */
-    
+    Size shm_size;
+
     PG_TRY();
     {
         while (current_files > 1)
@@ -1872,79 +1628,69 @@ kmersearch_aggregate_temp_files_parallel(char file_paths[][MAXPGPATH], int num_f
             ParallelContext *pcxt;
             shm_toc *toc;
             char *shm_pointer;
-            
+
             stage++;
             ereport(INFO,
                     (errmsg("Merge stage %d: %d files, %d parallel workers",
                             stage, current_files, num_parallel)));
-            
-            /* Create parallel context */
+
             EnterParallelMode();
             pcxt = CreateParallelContext("pg_kmersearch", "kmersearch_parallel_merge_worker", num_parallel);
-            pcxt->nworkers = num_parallel;  /* Ensure correct number of workers */
-            
-            /* Estimate shared memory size using parallel context's estimator */
-            shm_toc_estimate_chunk(&pcxt->estimator, MAXPGPATH * 2 * num_parallel);
-            shm_toc_estimate_keys(&pcxt->estimator, 1);  /* Single key for file paths array */
-            
-            /* Initialize shared memory segment */
+            pcxt->nworkers = num_parallel;
+
+            /* Include space for total_bits integer at the end */
+            shm_size = MAXPGPATH * 2 * max_parallel_maintenance_workers + sizeof(int);
+            shm_toc_estimate_chunk(&pcxt->estimator, shm_size);
+            shm_toc_estimate_keys(&pcxt->estimator, 1);
+
             InitializeParallelDSM(pcxt);
-            
-            /* Attach table of contents */
+
             toc = pcxt->toc;
-            
-            /* Allocate and set up shared memory for file paths */
-            shm_pointer = shm_toc_allocate(toc, MAXPGPATH * 2 * num_parallel);
-            
-            /* Set up shared memory for each worker */
+
+            shm_pointer = shm_toc_allocate(toc, shm_size);
+
             for (int i = 0; i < num_parallel; i++)
             {
                 char *source_path = shm_pointer + (i * 2 * MAXPGPATH);
                 char *target_path = shm_pointer + (i * 2 * MAXPGPATH + MAXPGPATH);
-                
-                /* Copy file paths to shared memory */
+
                 strlcpy(source_path, file_paths[i * 2], MAXPGPATH);
                 strlcpy(target_path, file_paths[i * 2 + 1], MAXPGPATH);
             }
-            
-            /* Register base pointer in TOC */
+
+            /* Store total_bits at end of shared memory */
+            *((int *)(shm_pointer + (max_parallel_maintenance_workers * 2 * MAXPGPATH))) = total_bits;
+
             shm_toc_insert(toc, 0, shm_pointer);
-            
-            /* Launch parallel workers */
+
             LaunchParallelWorkers(pcxt);
-            
-            /* Wait for workers to complete */
+
             WaitForParallelWorkersToFinish(pcxt);
-            
-            /* Update file list */
+
             {
                 int new_idx = 0;
-            for (int i = 0; i < current_files; i += 2)
-            {
-                if (i + 1 < current_files)
+                for (int i = 0; i < current_files; i += 2)
                 {
-                    /* Files were merged, keep the source file */
-                    strlcpy(file_paths[new_idx], file_paths[i], MAXPGPATH);
-                    new_idx++;
-                }
-                else
-                {
-                    /* Odd file, keep it for next round */
-                    strlcpy(file_paths[new_idx], file_paths[i], MAXPGPATH);
-                    new_idx++;
-                }
+                    if (i + 1 < current_files)
+                    {
+                        strlcpy(file_paths[new_idx], file_paths[i], MAXPGPATH);
+                        new_idx++;
+                    }
+                    else
+                    {
+                        strlcpy(file_paths[new_idx], file_paths[i], MAXPGPATH);
+                        new_idx++;
+                    }
                 }
                 current_files = new_idx;
             }
-            
-            /* Cleanup */
+
             DestroyParallelContext(pcxt);
             ExitParallelMode();
         }
     }
     PG_CATCH();
     {
-        /* Error cleanup - delete temporary directory if needed */
         if (temp_dir_path && temp_dir_path[0] != '\0')
         {
             PathNameDeleteTemporaryDir(temp_dir_path);
@@ -1953,7 +1699,7 @@ kmersearch_aggregate_temp_files_parallel(char file_paths[][MAXPGPATH], int num_f
         PG_RE_THROW();
     }
     PG_END_TRY();
-    
+
     ereport(INFO,
             (errmsg("Merge completed after %d stages", stage)));
 }
@@ -2156,107 +1902,61 @@ kmersearch_register_worker_temp_file(KmerAnalysisSharedState *shared_state,
 }
 
 /*
- * Flush batch hash table to SQLite3
- * Reuses existing connection and prepared statement for efficiency
+ * Flush batch hash table to file hash table
  */
 static void
-kmersearch_flush_batch_to_sqlite(SQLiteWorkerContext *ctx)
+kmersearch_flush_batch_to_fht(FileHashWorkerContext *ctx)
 {
     HASH_SEQ_STATUS status;
     void *entry;
-    int rc;
     MemoryContext old_context;
-    sqlite3_stmt *insert_stmt = NULL;
-    
-    /* Ensure SQLite3 is initialized */
-    if (!ctx->db)
+
+    if (!ctx->fht_ctx)
     {
         ereport(ERROR,
-                (errmsg("SQLite3 not properly initialized for worker")));
+                (errmsg("File hash table not properly initialized for worker")));
     }
-    
-    /* Switch to batch memory context for hash table operations */
+
     old_context = MemoryContextSwitchTo(ctx->batch_memory_context);
-    
-    /* Prepare INSERT statement for this batch */
-    rc = sqlite3_prepare_v2(ctx->db,
-                           "INSERT INTO kmersearch_highfreq_kmer (uintkey, nrow) "
-                           "VALUES (?, ?) "
-                           "ON CONFLICT(uintkey) DO UPDATE SET nrow = nrow + excluded.nrow",
-                           -1, &insert_stmt, NULL);
-    if (rc != SQLITE_OK)
-    {
-        ereport(ERROR,
-                (errmsg("could not prepare SQLite3 statement: %s", sqlite3_errmsg(ctx->db))));
-    }
-    
-    /* Begin transaction */
-    rc = sqlite3_exec(ctx->db, "BEGIN TRANSACTION", NULL, NULL, NULL);
-    if (rc != SQLITE_OK)
-    {
-        sqlite3_finalize(insert_stmt);
-        ereport(ERROR,
-                (errmsg("SQLite3 BEGIN TRANSACTION failed: %s", sqlite3_errmsg(ctx->db))));
-    }
-    
-    /* Scan hash table and write to SQLite3 */
+
     hash_seq_init(&status, ctx->batch_hash);
-    
+
     while ((entry = hash_seq_search(&status)) != NULL)
     {
         if (ctx->total_bits <= 16)
         {
             TempKmerFreqEntry16 *e = (TempKmerFreqEntry16 *)entry;
-            sqlite3_bind_int(insert_stmt, 1, (int16)e->uintkey);
-            sqlite3_bind_int64(insert_stmt, 2, (int64)e->nrow);
+            kmersearch_fht16_add((FileHashTable16Context *)ctx->fht_ctx,
+                                e->uintkey, e->appearance_nrow);
         }
         else if (ctx->total_bits <= 32)
         {
             TempKmerFreqEntry32 *e = (TempKmerFreqEntry32 *)entry;
-            sqlite3_bind_int(insert_stmt, 1, (int32)e->uintkey);
-            sqlite3_bind_int64(insert_stmt, 2, (int64)e->nrow);
+            kmersearch_fht32_add((FileHashTable32Context *)ctx->fht_ctx,
+                                e->uintkey, e->appearance_nrow);
         }
         else
         {
             TempKmerFreqEntry64 *e = (TempKmerFreqEntry64 *)entry;
-            sqlite3_bind_int64(insert_stmt, 1, (int64)e->uintkey);
-            sqlite3_bind_int64(insert_stmt, 2, (int64)e->nrow);
+            kmersearch_fht64_add((FileHashTable64Context *)ctx->fht_ctx,
+                                e->uintkey, e->appearance_nrow);
         }
-        
-        rc = sqlite3_step(insert_stmt);
-        if (rc != SQLITE_DONE)
-        {
-            sqlite3_finalize(insert_stmt);
-            ereport(ERROR,
-                    (errmsg("SQLite3 INSERT failed: %s", sqlite3_errmsg(ctx->db))));
-        }
-        sqlite3_reset(insert_stmt);
-        sqlite3_clear_bindings(insert_stmt);
     }
-    
-    /* Commit transaction */
-    rc = sqlite3_exec(ctx->db, "COMMIT", NULL, NULL, NULL);
-    if (rc != SQLITE_OK)
+
+    /* Flush to disk */
+    if (ctx->total_bits <= 16)
     {
-        sqlite3_finalize(insert_stmt);
-        ereport(ERROR,
-                (errmsg("SQLite3 COMMIT failed: %s", sqlite3_errmsg(ctx->db))));
+        kmersearch_fht16_flush((FileHashTable16Context *)ctx->fht_ctx);
     }
-    
-    /* Finalize prepared statement after batch processing */
-    sqlite3_finalize(insert_stmt);
-    
-    /* Log SQLite3 memory usage */
-    elog(DEBUG1, "SQLite3 memory: current=%ld bytes, highwater=%ld bytes",
-         (long)sqlite3_memory_used(), (long)sqlite3_memory_highwater(0));
-    
-    /* Release excess database memory */
-    sqlite3_db_release_memory(ctx->db);
-    
-    /* Log SQLite3 memory usage after releasing memory */
-    elog(DEBUG1, "SQLite3 memory after release: current=%ld bytes",
-         (long)sqlite3_memory_used());
-    
+    else if (ctx->total_bits <= 32)
+    {
+        kmersearch_fht32_flush((FileHashTable32Context *)ctx->fht_ctx);
+    }
+    else
+    {
+        kmersearch_fht64_flush((FileHashTable64Context *)ctx->fht_ctx);
+    }
+
     MemoryContextSwitchTo(old_context);
 }
 
@@ -2267,7 +1967,7 @@ static void
 kmersearch_process_block_with_batch(BlockNumber block,
                                    Oid table_oid,
                                    KmerAnalysisSharedState *shared_state,
-                                   SQLiteWorkerContext *ctx)
+                                   FileHashWorkerContext *ctx)
 {
     Relation rel;
     TupleDesc tupdesc;
@@ -2405,43 +2105,43 @@ kmersearch_process_block_with_batch(BlockNumber block,
             {
                 uint16 uintkey = ((uint16 *)kmer_array)[i];
                 TempKmerFreqEntry16 *freq_entry;
-                
+
                 entry = hash_search(ctx->batch_hash, &uintkey, HASH_ENTER, &found);
                 freq_entry = (TempKmerFreqEntry16 *)entry;
                 if (!found)
                 {
                     freq_entry->uintkey = uintkey;
-                    freq_entry->nrow = 0;
+                    freq_entry->appearance_nrow = 0;
                 }
-                freq_entry->nrow++;
+                freq_entry->appearance_nrow++;
             }
             else if (ctx->total_bits <= 32)
             {
                 uint32 uintkey = ((uint32 *)kmer_array)[i];
                 TempKmerFreqEntry32 *freq_entry;
-                
+
                 entry = hash_search(ctx->batch_hash, &uintkey, HASH_ENTER, &found);
                 freq_entry = (TempKmerFreqEntry32 *)entry;
                 if (!found)
                 {
                     freq_entry->uintkey = uintkey;
-                    freq_entry->nrow = 0;
+                    freq_entry->appearance_nrow = 0;
                 }
-                freq_entry->nrow++;
+                freq_entry->appearance_nrow++;
             }
             else
             {
                 uint64 uintkey = ((uint64 *)kmer_array)[i];
                 TempKmerFreqEntry64 *freq_entry;
-                
+
                 entry = hash_search(ctx->batch_hash, &uintkey, HASH_ENTER, &found);
                 freq_entry = (TempKmerFreqEntry64 *)entry;
                 if (!found)
                 {
                     freq_entry->uintkey = uintkey;
-                    freq_entry->nrow = 0;
+                    freq_entry->appearance_nrow = 0;
                 }
-                freq_entry->nrow++;
+                freq_entry->appearance_nrow++;
             }
         }
         
@@ -2466,7 +2166,7 @@ kmersearch_process_block_with_batch(BlockNumber block,
                 buffer = InvalidBuffer;
             }
             
-            kmersearch_flush_batch_to_sqlite(ctx);
+            kmersearch_flush_batch_to_fht(ctx);
             
             /* Update shared progress counters */
             total_rows = pg_atomic_add_fetch_u64(&shared_state->total_rows_processed, ctx->batch_count);

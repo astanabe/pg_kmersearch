@@ -413,6 +413,7 @@ CREATE TABLE kmersearch_highfreq_kmer (
     table_oid oid NOT NULL,
     column_name name NOT NULL,
     uintkey bigint NOT NULL,
+    appearance_nrow bigint NOT NULL DEFAULT 0,
     detection_reason text,
     created_at timestamp with time zone DEFAULT now(),
     PRIMARY KEY (table_oid, column_name, uintkey)

@@ -269,6 +269,76 @@ typedef struct KmerAnalysisSharedState
 #define KMERSEARCH_KEY_PARTITION_BLOCKS 3  /* Partition block info array */
 
 /*
+ * File-based hash table context structures for temporary k-mer storage
+ */
+
+/* uint16 file hash table context (direct array implementation) */
+typedef struct FileHashTable16Context
+{
+    int         fd;                     /* File descriptor */
+    char        path[MAXPGPATH];        /* File path */
+    uint64      entry_count;            /* Number of non-zero entries */
+} FileHashTable16Context;
+
+/* uint32 file hash table context (chain-based hash table) */
+typedef struct FileHashTable32Context
+{
+    int         fd;                     /* File descriptor */
+    char        path[MAXPGPATH];        /* File path */
+    uint32      bucket_count;           /* Number of buckets (power of 2) */
+    uint64      entry_count;            /* Number of entries */
+    uint64      next_entry_offset;      /* Next entry write position */
+} FileHashTable32Context;
+
+/* uint64 file hash table context (chain-based hash table) */
+typedef struct FileHashTable64Context
+{
+    int         fd;                     /* File descriptor */
+    char        path[MAXPGPATH];        /* File path */
+    uint32      bucket_count;           /* Number of buckets (power of 2) */
+    uint64      entry_count;            /* Number of entries */
+    uint64      next_entry_offset;      /* Next entry write position */
+} FileHashTable64Context;
+
+/* Iterator for uint16 file hash table */
+typedef struct FileHashTableIterator16
+{
+    FileHashTable16Context *ctx;        /* Hash table context */
+    uint32      current_index;          /* Current array index */
+} FileHashTableIterator16;
+
+/* Iterator for uint32 file hash table */
+typedef struct FileHashTableIterator32
+{
+    FileHashTable32Context *ctx;        /* Hash table context */
+    uint32      current_bucket;         /* Current bucket index */
+    uint64      current_offset;         /* Current entry offset in chain */
+} FileHashTableIterator32;
+
+/* Iterator for uint64 file hash table */
+typedef struct FileHashTableIterator64
+{
+    FileHashTable64Context *ctx;        /* Hash table context */
+    uint32      current_bucket;         /* Current bucket index */
+    uint64      current_offset;         /* Current entry offset in chain */
+} FileHashTableIterator64;
+
+/* File-based hash table worker context */
+typedef struct FileHashWorkerContext
+{
+    char        file_path[MAXPGPATH];   /* Temporary file path */
+    HTAB        *batch_hash;            /* Batch hash table for aggregation */
+    int         batch_count;            /* Current batch count */
+    int         total_bits;             /* Total bits for k-mer + occurrence */
+    Oid         dna2_oid;               /* Cached OID for dna2 type */
+    Oid         dna4_oid;               /* Cached OID for dna4 type */
+    Oid         column_type_oid;        /* Column data type OID */
+    MemoryContext batch_memory_context; /* Memory context for batch processing */
+    BufferAccessStrategy strategy;      /* Buffer access strategy for ring buffer */
+    void        *fht_ctx;               /* FileHashTable16/32/64Context pointer */
+} FileHashWorkerContext;
+
+/*
  * Query-kmer cache entry
  */
 typedef struct QueryKmerCacheEntry
@@ -693,5 +763,40 @@ void kmersearch_spi_connect_or_error(void);
 /* Planner hook functions */
 extern void kmersearch_planner_init(void);
 extern void kmersearch_planner_fini(void);
+
+/* File-based hash table functions (implemented in kmersearch_tmpfile.c) */
+
+/* uint16 array API */
+FileHashTable16Context *kmersearch_fht16_create(const char *path);
+FileHashTable16Context *kmersearch_fht16_open(const char *path);
+void kmersearch_fht16_close(FileHashTable16Context *ctx);
+void kmersearch_fht16_add(FileHashTable16Context *ctx, uint16 uintkey, uint64 appearance_nrow);
+uint64 kmersearch_fht16_get(FileHashTable16Context *ctx, uint16 uintkey);
+void kmersearch_fht16_flush(FileHashTable16Context *ctx);
+void kmersearch_fht16_merge(const char *source_path, const char *target_path);
+void kmersearch_fht16_iterator_init(FileHashTableIterator16 *iter, FileHashTable16Context *ctx);
+bool kmersearch_fht16_iterate(FileHashTableIterator16 *iter, uint16 *uintkey, uint64 *appearance_nrow);
+
+/* uint32 hash table API */
+FileHashTable32Context *kmersearch_fht32_create(const char *path, uint32 bucket_count);
+FileHashTable32Context *kmersearch_fht32_open(const char *path);
+void kmersearch_fht32_close(FileHashTable32Context *ctx);
+void kmersearch_fht32_add(FileHashTable32Context *ctx, uint32 uintkey, uint64 appearance_nrow);
+uint64 kmersearch_fht32_get(FileHashTable32Context *ctx, uint32 uintkey);
+void kmersearch_fht32_flush(FileHashTable32Context *ctx);
+void kmersearch_fht32_merge(const char *source_path, const char *target_path);
+void kmersearch_fht32_iterator_init(FileHashTableIterator32 *iter, FileHashTable32Context *ctx);
+bool kmersearch_fht32_iterate(FileHashTableIterator32 *iter, uint32 *uintkey, uint64 *appearance_nrow);
+
+/* uint64 hash table API */
+FileHashTable64Context *kmersearch_fht64_create(const char *path, uint32 bucket_count);
+FileHashTable64Context *kmersearch_fht64_open(const char *path);
+void kmersearch_fht64_close(FileHashTable64Context *ctx);
+void kmersearch_fht64_add(FileHashTable64Context *ctx, uint64 uintkey, uint64 appearance_nrow);
+uint64 kmersearch_fht64_get(FileHashTable64Context *ctx, uint64 uintkey);
+void kmersearch_fht64_flush(FileHashTable64Context *ctx);
+void kmersearch_fht64_merge(const char *source_path, const char *target_path);
+void kmersearch_fht64_iterator_init(FileHashTableIterator64 *iter, FileHashTable64Context *ctx);
+bool kmersearch_fht64_iterate(FileHashTableIterator64 *iter, uint64 *uintkey, uint64 *appearance_nrow);
 
 #endif   /* KMERSEARCH_H */
