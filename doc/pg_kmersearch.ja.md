@@ -327,61 +327,142 @@ ORDER BY length(dna_seq) DESC;
 
 ## システムテーブルとビュー
 
-pg_kmersearchは、メタデータ管理と監視のための複数のシステムテーブルとビューを作成します。
+pg_kmersearchは、メタデータ管理と監視のための複数のシステムテーブルとビューを作成します。これらのテーブルは、同一テーブル/カラムに対する異なるパラメータでの複数GINインデックスをサポートします。
 
 ### システムテーブル
 
 #### kmersearch_highfreq_kmer
-GINインデックスから除外される高頻出k-merを格納：
+解析で特定された高頻出k-merを格納します。各k-merは出現回数とともに保存されます。
+
+| カラム | 型 | 説明 |
+|--------|------|------|
+| table_oid | oid | 対象テーブルのOID |
+| column_name | name | 対象カラム名 |
+| uintkey | bigint | 整数としてエンコードされたk-mer |
+| appearance_nrow | bigint | このk-merを含む行数 |
+| detection_reason | text | 検出理由（rate/nrow閾値） |
+| created_at | timestamptz | 作成タイムスタンプ |
+
+主キー: (table_oid, column_name, uintkey)
 
 ```sql
--- 特定テーブル/カラムの除外k-merを表示
-SELECT table_oid, column_name, uintkey, detection_reason, created_at
-FROM kmersearch_highfreq_kmer 
+-- 出現回数を含む除外k-merを表示
+SELECT table_oid, column_name, uintkey, appearance_nrow, detection_reason, created_at
+FROM kmersearch_highfreq_kmer
 WHERE table_oid = 'sequences'::regclass AND column_name = 'dna_seq';
 
--- テーブル/カラムごとの除外k-mer数をカウント
-SELECT table_oid, column_name, COUNT(*) as excluded_count
+-- 1000行以上に出現するk-merを検索
+SELECT uintkey, appearance_nrow
 FROM kmersearch_highfreq_kmer
-GROUP BY table_oid, column_name;
+WHERE table_oid = 'sequences'::regclass
+  AND column_name = 'dna_seq'
+  AND appearance_nrow > 1000;
 ```
 
 #### kmersearch_highfreq_kmer_meta
-k-mer頻度解析のメタデータを格納：
+k-mer頻度解析のメタデータを格納します。同一テーブル/カラムに対する異なるk-merサイズでの複数解析をサポートします。
+
+| カラム | 型 | 説明 |
+|--------|------|------|
+| table_oid | oid | 対象テーブルのOID |
+| column_name | name | 対象カラム名 |
+| kmer_size | integer | 解析に使用したk-merサイズ |
+| occur_bitlen | integer | 出現回数ビット長設定 |
+| max_appearance_rate | real | 最大出現率閾値 |
+| max_appearance_nrow | integer | 最大出現行数閾値 |
+| analysis_timestamp | timestamptz | 解析実行日時 |
+
+主キー: (table_oid, column_name, kmer_size)
 
 ```sql
 -- 全テーブルの解析メタデータを表示
-SELECT table_oid, column_name, kmer_size, occur_bitlen, 
+SELECT table_oid, column_name, kmer_size, occur_bitlen,
        max_appearance_rate, max_appearance_nrow, analysis_timestamp
 FROM kmersearch_highfreq_kmer_meta;
 
 -- 特定テーブルの解析パラメータを確認
-SELECT * FROM kmersearch_highfreq_kmer_meta 
+SELECT * FROM kmersearch_highfreq_kmer_meta
 WHERE table_oid = 'sequences'::regclass AND column_name = 'dna_seq';
 ```
 
 #### kmersearch_gin_index_meta
-高頻出フィルタリング情報を含むGINインデックスメタデータを格納：
+高頻出フィルタリング設定を含むGINインデックスメタデータを格納します。各GINインデックスを個別に追跡します。
+
+| カラム | 型 | 説明 |
+|--------|------|------|
+| index_oid | oid | GINインデックスOID（主キー） |
+| table_oid | oid | 対象テーブルのOID |
+| column_name | name | 対象カラム名 |
+| highfreq_filtered | boolean | 高頻出フィルタリングが有効かどうか |
+| highfreq_source_table | name | 高頻出k-merのソーステーブル |
+| kmer_size | integer | このインデックスのk-merサイズ |
+| occur_bitlen | integer | 出現回数ビット長 |
+| max_appearance_rate | real | 最大出現率設定 |
+| max_appearance_nrow | integer | 最大出現行数設定 |
+| created_at | timestamptz | インデックス作成タイムスタンプ |
 
 ```sql
--- GINインデックスメタデータを表示
-SELECT index_oid, table_oid, column_name, highfreq_filtered, 
-       kmer_size, occur_bitlen, created_at
+-- 全GINインデックスメタデータを表示
+SELECT index_oid, table_oid, column_name, highfreq_filtered,
+       highfreq_source_table, kmer_size, occur_bitlen, created_at
 FROM kmersearch_gin_index_meta;
 
 -- インデックスが高頻出フィルタリングを使用しているか確認
-SELECT highfreq_filtered FROM kmersearch_gin_index_meta 
+SELECT highfreq_filtered, highfreq_source_table
+FROM kmersearch_gin_index_meta
 WHERE index_oid = 'sequences_kmer_idx'::regclass;
 ```
 
 #### kmersearch_index_info
-包括的なインデックス統計と設定を格納：
+包括的なインデックス統計とインデックス作成時のGUC設定を格納します。GINインデックス作成時にイベントトリガーにより自動的に記録されます。
+
+| カラム | 型 | 説明 |
+|--------|------|------|
+| index_oid | oid | GINインデックスOID（主キー） |
+| table_oid | oid | 対象テーブルのOID |
+| column_name | name | 対象カラム名 |
+| kmer_size | integer | k-merサイズ設定 |
+| occur_bitlen | integer | 出現回数ビット長設定 |
+| total_nrow | bigint | 作成時のテーブル総行数 |
+| highfreq_kmer_count | integer | 高頻出k-merの数 |
+| max_appearance_rate | real | 最大出現率設定 |
+| max_appearance_nrow | integer | 最大出現行数設定 |
+| preclude_highfreq_kmer | boolean | 高頻出k-merを除外するかどうか |
+| created_at | timestamptz | インデックス作成タイムスタンプ |
 
 ```sql
--- インデックス統計を表示
-SELECT index_oid, table_oid, column_name, kmer_size, total_nrow,
-       highfreq_kmer_count, max_appearance_rate, created_at
+-- 全設定を含むインデックス統計を表示
+SELECT index_oid, table_oid, column_name, kmer_size, occur_bitlen,
+       total_nrow, highfreq_kmer_count, max_appearance_rate,
+       max_appearance_nrow, preclude_highfreq_kmer, created_at
 FROM kmersearch_index_info;
+
+-- 高頻出k-mer除外を使用しているインデックスを検索
+SELECT index_oid, table_oid, column_name, kmer_size
+FROM kmersearch_index_info
+WHERE preclude_highfreq_kmer = true;
+```
+
+### 複数GINインデックスのサポート
+
+pg_kmersearchは、同一テーブル/カラムに対して異なる設定で複数のGINインデックスを作成することをサポートします。これは以下の用途に有用です：
+
+- 最適なパフォーマンスのための異なるk-merサイズのテスト
+- 異なる高頻出フィルタリング閾値の使用
+- 異なる設定でのインデックスパフォーマンスの比較
+
+```sql
+-- 異なるk-merサイズで複数のインデックスを作成
+SET kmersearch.kmer_size = 8;
+CREATE INDEX seq_kmer8_idx ON sequences USING gin(dna_seq kmersearch_dna4_gin_ops_int2);
+
+SET kmersearch.kmer_size = 16;
+CREATE INDEX seq_kmer16_idx ON sequences USING gin(dna_seq kmersearch_dna4_gin_ops_int4);
+
+-- 各インデックスはkmersearch_index_infoで個別に追跡される
+SELECT index_oid, kmer_size, preclude_highfreq_kmer
+FROM kmersearch_index_info
+WHERE table_oid = 'sequences'::regclass;
 ```
 
 ### 管理ビュー

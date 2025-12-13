@@ -327,61 +327,142 @@ ORDER BY length(dna_seq) DESC;
 
 ## System Tables and Views
 
-pg_kmersearch creates several system tables and views for metadata management and monitoring.
+pg_kmersearch creates several system tables and views for metadata management and monitoring. These tables support multiple GIN indexes on the same table/column with different parameters.
 
 ### System Tables
 
 #### kmersearch_highfreq_kmer
-Stores high-frequency k-mers that are excluded from GIN indexes:
+Stores high-frequency k-mers identified during analysis. Each k-mer is stored with its appearance count.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| table_oid | oid | Target table OID |
+| column_name | name | Target column name |
+| uintkey | bigint | K-mer encoded as integer |
+| appearance_nrow | bigint | Number of rows containing this k-mer |
+| detection_reason | text | Reason for detection (rate/nrow threshold) |
+| created_at | timestamptz | Creation timestamp |
+
+Primary Key: (table_oid, column_name, uintkey)
 
 ```sql
--- View excluded k-mers for a specific table/column
-SELECT table_oid, column_name, uintkey, detection_reason, created_at
-FROM kmersearch_highfreq_kmer 
+-- View excluded k-mers with appearance count
+SELECT table_oid, column_name, uintkey, appearance_nrow, detection_reason, created_at
+FROM kmersearch_highfreq_kmer
 WHERE table_oid = 'sequences'::regclass AND column_name = 'dna_seq';
 
--- Count excluded k-mers per table/column
-SELECT table_oid, column_name, COUNT(*) as excluded_count
+-- Find k-mers appearing in more than 1000 rows
+SELECT uintkey, appearance_nrow
 FROM kmersearch_highfreq_kmer
-GROUP BY table_oid, column_name;
+WHERE table_oid = 'sequences'::regclass
+  AND column_name = 'dna_seq'
+  AND appearance_nrow > 1000;
 ```
 
 #### kmersearch_highfreq_kmer_meta
-Stores metadata about k-mer frequency analysis:
+Stores metadata about k-mer frequency analysis. Supports multiple analyses with different k-mer sizes on the same table/column.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| table_oid | oid | Target table OID |
+| column_name | name | Target column name |
+| kmer_size | integer | K-mer size used for analysis |
+| occur_bitlen | integer | Occurrence bit length setting |
+| max_appearance_rate | real | Max appearance rate threshold |
+| max_appearance_nrow | integer | Max appearance row count threshold |
+| analysis_timestamp | timestamptz | When analysis was performed |
+
+Primary Key: (table_oid, column_name, kmer_size)
 
 ```sql
 -- View analysis metadata for all tables
-SELECT table_oid, column_name, kmer_size, occur_bitlen, 
+SELECT table_oid, column_name, kmer_size, occur_bitlen,
        max_appearance_rate, max_appearance_nrow, analysis_timestamp
 FROM kmersearch_highfreq_kmer_meta;
 
 -- Check analysis parameters for specific table
-SELECT * FROM kmersearch_highfreq_kmer_meta 
+SELECT * FROM kmersearch_highfreq_kmer_meta
 WHERE table_oid = 'sequences'::regclass AND column_name = 'dna_seq';
 ```
 
 #### kmersearch_gin_index_meta
-Stores GIN index metadata including high-frequency filtering information:
+Stores GIN index metadata including high-frequency filtering configuration. Tracks each GIN index separately.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| index_oid | oid | GIN index OID (Primary Key) |
+| table_oid | oid | Target table OID |
+| column_name | name | Target column name |
+| highfreq_filtered | boolean | Whether high-frequency filtering is enabled |
+| highfreq_source_table | name | Source table for high-frequency k-mers |
+| kmer_size | integer | K-mer size for this index |
+| occur_bitlen | integer | Occurrence bit length |
+| max_appearance_rate | real | Max appearance rate setting |
+| max_appearance_nrow | integer | Max appearance row count setting |
+| created_at | timestamptz | Index creation timestamp |
 
 ```sql
--- View GIN index metadata
-SELECT index_oid, table_oid, column_name, highfreq_filtered, 
-       kmer_size, occur_bitlen, created_at
+-- View all GIN index metadata
+SELECT index_oid, table_oid, column_name, highfreq_filtered,
+       highfreq_source_table, kmer_size, occur_bitlen, created_at
 FROM kmersearch_gin_index_meta;
 
 -- Check if an index uses high-frequency filtering
-SELECT highfreq_filtered FROM kmersearch_gin_index_meta 
+SELECT highfreq_filtered, highfreq_source_table
+FROM kmersearch_gin_index_meta
 WHERE index_oid = 'sequences_kmer_idx'::regclass;
 ```
 
 #### kmersearch_index_info
-Stores comprehensive index statistics and configuration:
+Stores comprehensive index statistics and GUC settings at index creation time. Automatically populated via event trigger when creating GIN indexes.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| index_oid | oid | GIN index OID (Primary Key) |
+| table_oid | oid | Target table OID |
+| column_name | name | Target column name |
+| kmer_size | integer | K-mer size setting |
+| occur_bitlen | integer | Occurrence bit length setting |
+| total_nrow | bigint | Total rows in table at creation |
+| highfreq_kmer_count | integer | Number of high-frequency k-mers |
+| max_appearance_rate | real | Max appearance rate setting |
+| max_appearance_nrow | integer | Max appearance row count setting |
+| preclude_highfreq_kmer | boolean | Whether to exclude high-frequency k-mers |
+| created_at | timestamptz | Index creation timestamp |
 
 ```sql
--- View index statistics
-SELECT index_oid, table_oid, column_name, kmer_size, total_nrow,
-       highfreq_kmer_count, max_appearance_rate, created_at
+-- View index statistics with all settings
+SELECT index_oid, table_oid, column_name, kmer_size, occur_bitlen,
+       total_nrow, highfreq_kmer_count, max_appearance_rate,
+       max_appearance_nrow, preclude_highfreq_kmer, created_at
 FROM kmersearch_index_info;
+
+-- Find indexes using high-frequency k-mer exclusion
+SELECT index_oid, table_oid, column_name, kmer_size
+FROM kmersearch_index_info
+WHERE preclude_highfreq_kmer = true;
+```
+
+### Multiple GIN Index Support
+
+pg_kmersearch supports creating multiple GIN indexes on the same table/column with different configurations. This is useful for:
+
+- Testing different k-mer sizes for optimal performance
+- Using different high-frequency filtering thresholds
+- Comparing index performance with different settings
+
+```sql
+-- Create multiple indexes with different k-mer sizes
+SET kmersearch.kmer_size = 8;
+CREATE INDEX seq_kmer8_idx ON sequences USING gin(dna_seq kmersearch_dna4_gin_ops_int2);
+
+SET kmersearch.kmer_size = 16;
+CREATE INDEX seq_kmer16_idx ON sequences USING gin(dna_seq kmersearch_dna4_gin_ops_int4);
+
+-- Each index is tracked separately in kmersearch_index_info
+SELECT index_oid, kmer_size, preclude_highfreq_kmer
+FROM kmersearch_index_info
+WHERE table_oid = 'sequences'::regclass;
 ```
 
 ### Management Views
