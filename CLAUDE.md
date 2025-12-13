@@ -194,12 +194,17 @@ This is particularly important when testing analysis functions and cache operati
 
 ### Core Functions
 - **Search Operators**: `=%` operator for k-mer based sequence search
-- **Scoring Functions**: 
+- **Scoring Functions**:
   - `kmersearch_matchscore()`: Calculate similarity score by counting shared k-mers
 - **Length Functions**: `bit_length()`, `nuc_length()`, `char_length()`, `length()`
 - **High-frequency Analysis**:
   - `kmersearch_perform_highfreq_analysis()`: Analyze and identify high-frequency k-mers
   - `kmersearch_undo_highfreq_analysis()`: Remove high-frequency k-mer analysis
+- **Utility Functions**:
+  - `kmersearch_simd_capability()`: Check SIMD support level
+  - `kmersearch_show_buildno()`: Display build version information
+  - `kmersearch_partition_table()`: Convert table to hash partitions
+  - `kmersearch_delete_tempfiles()`: Clean up temporary files from analysis operations
 - **Cache Management**:
   - `kmersearch_query_kmer_cache_stats()`: Query-kmer cache statistics
   - `kmersearch_query_kmer_cache_free()`: Clear query-kmer cache
@@ -237,7 +242,9 @@ Multiple operator classes with different key storage strategies:
 - Platform-specific optimizations for encoding/decoding operations
 - Runtime SIMD capability detection via `kmersearch_simd_capability()`
 - Function dispatch tables for selecting optimal implementation
-- Supports various instruction sets: SSE, AVX, AVX2, AVX-512, BMI2
+- Supports various instruction sets:
+  - x86_64: AVX2, BMI2, AVX512F, AVX512BW, AVX512VBMI, AVX512VBMI2
+  - ARM64: NEON, SVE, SVE2
 - Automatic fallback to standard implementation if SIMD not available
 - Optimizes critical path operations like:
   - DNA sequence encoding/decoding

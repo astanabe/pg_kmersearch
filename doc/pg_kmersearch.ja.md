@@ -504,6 +504,44 @@ SELECT kmersearch_partition_table('large_sequences', 16, NULL);
 
 注意：PostgreSQLはパーティションテーブルに対して'pg_default'テーブルスペースを明示的に指定することを許可しません。デフォルトテーブルスペースを使用する場合は、NULLを指定するかパラメータを省略してください。
 
+### ユーティリティ関数
+
+#### kmersearch_simd_capability()
+現在のシステムで検出されたSIMDキャパビリティを返します：
+
+```sql
+-- SIMDサポートレベルを確認
+SELECT kmersearch_simd_capability();
+-- 戻り値:
+--   x86_64: 'None', 'AVX2', 'AVX2+BMI2', 'AVX512F', 'AVX512F+AVX512BW',
+--           'AVX512F+AVX512BW+AVX512VBMI', 'AVX512F+AVX512BW+AVX512VBMI+AVX512VBMI2'
+--   ARM64:  'None', 'NEON', 'NEON+SVE', 'NEON+SVE+SVE2'
+```
+
+#### kmersearch_show_buildno()
+ビルドバージョン情報を返します：
+
+```sql
+-- ビルドバージョンを表示
+SELECT kmersearch_show_buildno();
+-- 戻り値: '1.0.2025.12.13' (例)
+```
+
+#### kmersearch_delete_tempfiles()
+高頻出k-mer解析操作で作成された一時ファイルをクリーンアップします：
+
+```sql
+-- 一時ファイルをクリーンアップ
+SELECT * FROM kmersearch_delete_tempfiles();
+
+-- 戻り値:
+-- deleted_count: 削除されたファイル数
+-- deleted_size: 解放された総バイト数
+-- error_count: 削除できなかったファイル数
+```
+
+この関数は、`kmersearch_perform_highfreq_analysis()`操作中に`pgsql_tmp`ディレクトリに作成された一時ファイルを削除します。これらのファイルは、並列解析中の効率的なk-merカウントのためにファイルベースハッシュテーブル実装を使用しています。
+
 ### 高頻出k-merキャッシュ管理
 
 #### グローバルキャッシュ関数
@@ -686,8 +724,12 @@ FROM (
 - **並列インデックス作成**: max_parallel_maintenance_workersに対応
 - **高頻出除外**: 複数ワーカーによる並列テーブルスキャン
 - **並列k-mer解析**: PostgreSQLのParallelContextによる真の並列処理
+- **ファイルベースハッシュテーブル**: 解析中のk-merカウント用の効率的な一時ストレージ（uint16/uint32/uint64キー対応）
 - **システムテーブル**: 除外k-merとインデックス統計のメタデータ格納（`kmersearch_highfreq_kmer`, `kmersearch_highfreq_kmer_meta`）
 - **キャッシュシステム**: TopMemoryContext-based高速キャッシュ
+- **SIMD最適化**: プラットフォーム固有のエンコード/デコード高速化
+  - x86_64: AVX2, BMI2, AVX512F, AVX512BW, AVX512VBMI, AVX512VBMI2
+  - ARM64: NEON, SVE, SVE2
 - バイナリ入出力サポート
 
 ### k-mer検索の仕組み

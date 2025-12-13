@@ -504,6 +504,43 @@ Requirements:
 
 Note: PostgreSQL does not allow explicitly specifying 'pg_default' tablespace for partitioned tables. Use NULL or omit the parameter to use the default tablespace.
 
+### Utility Functions
+
+#### kmersearch_simd_capability()
+Returns the detected SIMD capability of the current system:
+
+```sql
+-- Check SIMD support level
+SELECT kmersearch_simd_capability();
+-- Returns one of:
+--   x86_64: 'None', 'AVX2', 'AVX2+BMI2', 'AVX512F', 'AVX512F+AVX512BW',
+--           'AVX512F+AVX512BW+AVX512VBMI', 'AVX512F+AVX512BW+AVX512VBMI+AVX512VBMI2'
+--   ARM64:  'None', 'NEON', 'NEON+SVE', 'NEON+SVE+SVE2'
+```
+
+#### kmersearch_show_buildno()
+Returns the build version information:
+
+```sql
+-- Display build version
+SELECT kmersearch_show_buildno();
+-- Returns: '1.0.2025.12.13' (example)
+```
+
+#### kmersearch_delete_tempfiles()
+Cleans up temporary files created during high-frequency k-mer analysis operations:
+
+```sql
+-- Clean up temporary files
+SELECT * FROM kmersearch_delete_tempfiles();
+
+-- Returns:
+-- deleted_count: number of files deleted
+-- deleted_size: total bytes freed
+-- error_count: number of files that could not be deleted
+```
+
+This function removes temporary files from the `pgsql_tmp` directory that were created during `kmersearch_perform_highfreq_analysis()` operations. These files use a file-based hash table implementation for efficient k-mer counting during parallel analysis.
 
 ### High-Frequency K-mer Cache Management
 
@@ -687,8 +724,12 @@ FROM (
 - **Parallel index creation**: Supports max_parallel_maintenance_workers
 - **High-frequency exclusion**: Parallel table scan using multiple workers
 - **Parallel k-mer analysis**: True parallel processing with PostgreSQL's ParallelContext
+- **File-based hash table**: Efficient temporary storage for k-mer counting during analysis (supports uint16/uint32/uint64 keys)
 - **System tables**: Metadata storage for excluded k-mers and index statistics (`kmersearch_highfreq_kmer`, `kmersearch_highfreq_kmer_meta`)
 - **Cache system**: TopMemoryContext-based high-performance caching
+- **SIMD optimization**: Platform-specific acceleration for encoding/decoding
+  - x86_64: AVX2, BMI2, AVX512F, AVX512BW, AVX512VBMI, AVX512VBMI2
+  - ARM64: NEON, SVE, SVE2
 - Binary input/output support
 
 ### K-mer Search Mechanism
