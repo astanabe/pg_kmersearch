@@ -134,6 +134,52 @@ kmersearch_get_index_info(Oid index_oid, Oid *table_oid, char **column_name, int
 
 
 /*
+ * Check if high-frequency k-mer analysis exists for current GUC settings
+ */
+static bool
+kmersearch_check_highfreq_analysis_exists(void)
+{
+    static bool checked = false;
+    static bool exists = false;
+    int ret;
+    StringInfoData query;
+
+    if (checked)
+        return exists;
+
+    ret = SPI_connect();
+    if (ret != SPI_OK_CONNECT)
+        return false;
+
+    initStringInfo(&query);
+    appendStringInfo(&query,
+        "SELECT 1 FROM kmersearch_highfreq_kmer_meta "
+        "WHERE kmer_size = %d AND occur_bitlen = %d "
+        "LIMIT 1",
+        kmersearch_kmer_size, kmersearch_occur_bitlen);
+
+    ret = SPI_execute(query.data, true, 1);
+    exists = (ret == SPI_OK_SELECT && SPI_processed > 0);
+
+    pfree(query.data);
+    SPI_finish();
+
+    checked = true;
+
+    if (!exists)
+    {
+        ereport(WARNING,
+                (errcode(ERRCODE_WARNING),
+                 errmsg("No high-frequency k-mer analysis found for kmer_size=%d, occur_bitlen=%d",
+                        kmersearch_kmer_size, kmersearch_occur_bitlen),
+                 errhint("Run kmersearch_perform_highfreq_analysis() before creating index with preclude_highfreq_kmer=true, "
+                         "or load existing analysis with kmersearch_highfreq_kmer_cache_load().")));
+    }
+
+    return exists;
+}
+
+/*
  * Filter Datum array for indexing by removing high-frequency k-mers
  */
 static Datum *
@@ -146,6 +192,13 @@ kmersearch_filter_datum_for_indexing(Datum *keys, int *nkeys, size_t key_size, i
 
     if (!kmersearch_preclude_highfreq_kmer || keys == NULL || *nkeys == 0)
         return keys;
+
+    /* Check if high-frequency k-mer analysis exists when not using cache */
+    if (!global_highfreq_cache.is_valid && !kmersearch_is_parallel_highfreq_cache_loaded())
+    {
+        if (!kmersearch_check_highfreq_analysis_exists())
+            return keys;
+    }
 
     for (i = 0; i < *nkeys; i++)
     {
@@ -485,6 +538,29 @@ kmersearch_filter_uintkey_and_set_actual_min_score(void *uintkey, int *nkeys,
 }
 
 /*
+ * Check if cache settings match current GUC settings
+ */
+static bool
+kmersearch_is_global_cache_settings_valid(int k_size)
+{
+    if (!global_highfreq_cache.is_valid)
+        return false;
+
+    return (global_highfreq_cache.current_cache_key.kmer_size == k_size &&
+            global_highfreq_cache.current_cache_key.occur_bitlen == kmersearch_occur_bitlen);
+}
+
+static bool
+kmersearch_is_parallel_cache_settings_valid(int k_size)
+{
+    if (!parallel_highfreq_cache || !parallel_highfreq_cache->is_initialized)
+        return false;
+
+    return (parallel_highfreq_cache->cache_key.kmer_size == k_size &&
+            parallel_highfreq_cache->cache_key.occur_bitlen == kmersearch_occur_bitlen);
+}
+
+/*
  * Check if a uintkey is high-frequency
  */
 bool
@@ -495,7 +571,7 @@ kmersearch_is_uintkey_highfreq(uint64 uintkey, int k_size)
     bool is_highfreq = false;
     int ret;
     int total_bits;
-    
+
     total_bits = k_size * 2 + kmersearch_occur_bitlen;
 
     /* For uintkey format, k-mer is in higher bits, occurrence in lower bits */
@@ -504,19 +580,22 @@ kmersearch_is_uintkey_highfreq(uint64 uintkey, int k_size)
     if (kmersearch_force_use_parallel_highfreq_kmer_cache)
     {
         /* When force_use_parallel_highfreq_kmer_cache is true, skip global cache */
-        if (kmersearch_is_parallel_highfreq_cache_loaded()) {
+        if (kmersearch_is_parallel_highfreq_cache_loaded() &&
+            kmersearch_is_parallel_cache_settings_valid(k_size)) {
             return kmersearch_lookup_uintkey_in_parallel_cache(kmer_only, NULL, NULL);
         }
     }
     else
     {
         /* Priority 1: Check in global cache (highest priority) */
-        if (global_highfreq_cache.is_valid && global_highfreq_cache.highfreq_hash) {
+        if (global_highfreq_cache.is_valid && global_highfreq_cache.highfreq_hash &&
+            kmersearch_is_global_cache_settings_valid(k_size)) {
             return kmersearch_lookup_uintkey_in_global_cache(kmer_only, NULL, NULL);
         }
 
         /* Priority 2: Check in parallel cache */
-        if (kmersearch_is_parallel_highfreq_cache_loaded()) {
+        if (kmersearch_is_parallel_highfreq_cache_loaded() &&
+            kmersearch_is_parallel_cache_settings_valid(k_size)) {
             return kmersearch_lookup_uintkey_in_parallel_cache(kmer_only, NULL, NULL);
         }
     }
@@ -525,35 +604,35 @@ kmersearch_is_uintkey_highfreq(uint64 uintkey, int k_size)
     ret = SPI_connect();
     if (ret == SPI_OK_CONNECT) {
         StringInfoData query;
-        
+
         initStringInfo(&query);
-        
-        /* Build query based on total_bits */
+
+        /* Build query based on total_bits, filter by kmer_size and occur_bitlen */
         if (total_bits <= 16) {
             appendStringInfo(&query,
                 "SELECT 1 FROM kmersearch_highfreq_kmer "
-                "WHERE uintkey = %u "
+                "WHERE uintkey = %u AND kmer_size = %d AND occur_bitlen = %d "
                 "LIMIT 1",
-                (unsigned int)kmer_only);
+                (unsigned int)kmer_only, k_size, kmersearch_occur_bitlen);
         } else if (total_bits <= 32) {
             appendStringInfo(&query,
                 "SELECT 1 FROM kmersearch_highfreq_kmer "
-                "WHERE uintkey = %u "
-                "LIMIT 1", 
-                (unsigned int)kmer_only);
+                "WHERE uintkey = %u AND kmer_size = %d AND occur_bitlen = %d "
+                "LIMIT 1",
+                (unsigned int)kmer_only, k_size, kmersearch_occur_bitlen);
         } else {
             appendStringInfo(&query,
                 "SELECT 1 FROM kmersearch_highfreq_kmer "
-                "WHERE uintkey = %lu "
+                "WHERE uintkey = %lu AND kmer_size = %d AND occur_bitlen = %d "
                 "LIMIT 1",
-                kmer_only);
+                kmer_only, k_size, kmersearch_occur_bitlen);
         }
-        
+
         ret = SPI_execute(query.data, true, 1);
         if (ret == SPI_OK_SELECT && SPI_processed > 0) {
             is_highfreq = true;
         }
-        
+
         pfree(query.data);
         SPI_finish();
     }

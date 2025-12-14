@@ -863,16 +863,12 @@ kmersearch_highfreq_kmer_cache_load_internal(Oid table_oid, const char *column_n
         /* Build count query */
         initStringInfo(&count_query);
         appendStringInfo(&count_query,
-            "SELECT COUNT(DISTINCT hkm.uintkey) FROM kmersearch_highfreq_kmer hkm "
-            "WHERE hkm.table_oid = %u "
-            "AND hkm.column_name = '%s' "
-            "AND EXISTS ("
-            "    SELECT 1 FROM kmersearch_highfreq_kmer_meta hkm_meta "
-            "    WHERE hkm_meta.table_oid = %u "
-            "    AND hkm_meta.column_name = '%s' "
-            "    AND hkm_meta.kmer_size = %d"
-            ")",
-            table_oid, escaped_column_name, table_oid, escaped_column_name, k_value);
+            "SELECT COUNT(*) FROM kmersearch_highfreq_kmer "
+            "WHERE table_oid = %u "
+            "AND column_name = '%s' "
+            "AND kmer_size = %d "
+            "AND occur_bitlen = %d",
+            table_oid, escaped_column_name, k_value, kmersearch_occur_bitlen);
         
         /* Execute count query */
         ret = SPI_execute(count_query.data, true, 0);
@@ -983,18 +979,14 @@ kmersearch_highfreq_kmer_cache_load_internal(Oid table_oid, const char *column_n
             /* Build query with LIMIT/OFFSET for batch processing */
             initStringInfo(&query);
             appendStringInfo(&query,
-                "SELECT DISTINCT hkm.uintkey FROM kmersearch_highfreq_kmer hkm "
-                "WHERE hkm.table_oid = %u "
-                "AND hkm.column_name = '%s' "
-                "AND EXISTS ("
-                "    SELECT 1 FROM kmersearch_highfreq_kmer_meta hkm_meta "
-                "    WHERE hkm_meta.table_oid = %u "
-                "    AND hkm_meta.column_name = '%s' "
-                "    AND hkm_meta.kmer_size = %d"
-                ") "
-                "ORDER BY hkm.uintkey "
+                "SELECT uintkey FROM kmersearch_highfreq_kmer "
+                "WHERE table_oid = %u "
+                "AND column_name = '%s' "
+                "AND kmer_size = %d "
+                "AND occur_bitlen = %d "
+                "ORDER BY uintkey "
                 "LIMIT %d OFFSET %d",
-                table_oid, escaped_column_name, table_oid, escaped_column_name, k_value, current_batch_limit, offset);
+                table_oid, escaped_column_name, k_value, kmersearch_occur_bitlen, current_batch_limit, offset);
             
             /* Execute batch query */
             ret = SPI_execute(query.data, true, 0);
@@ -1748,16 +1740,12 @@ kmersearch_parallel_highfreq_kmer_cache_load_internal(Oid table_oid, const char 
         /* Build count query */
         initStringInfo(&count_query);
         appendStringInfo(&count_query,
-            "SELECT COUNT(DISTINCT hkm.uintkey) FROM kmersearch_highfreq_kmer hkm "
-            "WHERE hkm.table_oid = %u "
-            "AND hkm.column_name = '%s' "
-            "AND EXISTS ("
-            "    SELECT 1 FROM kmersearch_highfreq_kmer_meta hkm_meta "
-            "    WHERE hkm_meta.table_oid = %u "
-            "    AND hkm_meta.column_name = '%s' "
-            "    AND hkm_meta.kmer_size = %d"
-            ")",
-            table_oid, escaped_column_name, table_oid, escaped_column_name, k_value);
+            "SELECT COUNT(*) FROM kmersearch_highfreq_kmer "
+            "WHERE table_oid = %u "
+            "AND column_name = '%s' "
+            "AND kmer_size = %d "
+            "AND occur_bitlen = %d",
+            table_oid, escaped_column_name, k_value, kmersearch_occur_bitlen);
         
         /* Execute count query */
         ret = SPI_execute(count_query.data, true, 0);
@@ -1960,18 +1948,14 @@ kmersearch_parallel_highfreq_kmer_cache_load_internal(Oid table_oid, const char 
             /* Build query with LIMIT/OFFSET for batch processing */
             initStringInfo(&query);
             appendStringInfo(&query,
-                "SELECT DISTINCT hkm.uintkey FROM kmersearch_highfreq_kmer hkm "
-                "WHERE hkm.table_oid = %u "
-                "AND hkm.column_name = '%s' "
-                "AND EXISTS ("
-                "    SELECT 1 FROM kmersearch_highfreq_kmer_meta hkm_meta "
-                "    WHERE hkm_meta.table_oid = %u "
-                "    AND hkm_meta.column_name = '%s' "
-                "    AND hkm_meta.kmer_size = %d"
-                ") "
-                "ORDER BY hkm.uintkey "
+                "SELECT uintkey FROM kmersearch_highfreq_kmer "
+                "WHERE table_oid = %u "
+                "AND column_name = '%s' "
+                "AND kmer_size = %d "
+                "AND occur_bitlen = %d "
+                "ORDER BY uintkey "
                 "LIMIT %d OFFSET %d",
-                table_oid, escaped_column_name, table_oid, escaped_column_name, k_value, current_batch_limit, offset);
+                table_oid, escaped_column_name, k_value, kmersearch_occur_bitlen, current_batch_limit, offset);
             
             /* Execute batch query */
             ret = SPI_execute(query.data, true, 0);

@@ -138,13 +138,13 @@ kmersearch_persist_highfreq_kmers_from_temp(Oid table_oid, const char *column_na
     /* Combine kmer_data and frequency_count into single bigint uintkey */
     /* Cast to bigint to ensure compatibility with target table */
     appendStringInfo(&query,
-        "INSERT INTO kmersearch_highfreq_kmer (table_oid, column_name, uintkey, detection_reason) "
-        "SELECT %u, '%s', "
+        "INSERT INTO kmersearch_highfreq_kmer (table_oid, column_name, kmer_size, occur_bitlen, uintkey, detection_reason) "
+        "SELECT %u, '%s', %d, %d, "
         "  (kmer_data::bigint << %d) | frequency_count::bigint AS uintkey, "
         "  'high_frequency' "
         "FROM %s "
         "WHERE kmer_data IS NOT NULL AND frequency_count > 0",
-        table_oid, column_name, 
+        table_oid, column_name, k_size, kmersearch_occur_bitlen,
         kmersearch_occur_bitlen,
         temp_table_name);
     
@@ -194,12 +194,11 @@ kmersearch_persist_highfreq_kmers_from_temp(Oid table_oid, const char *column_na
         "INSERT INTO kmersearch_highfreq_kmer_meta "
         "(table_oid, column_name, kmer_size, occur_bitlen, max_appearance_rate, max_appearance_nrow) "
         "VALUES (%u, '%s', %d, %d, %f, %d) "
-        "ON CONFLICT (table_oid, column_name, kmer_size) DO UPDATE SET "
-        "occur_bitlen = EXCLUDED.occur_bitlen, "
+        "ON CONFLICT (table_oid, column_name, kmer_size, occur_bitlen) DO UPDATE SET "
         "max_appearance_rate = EXCLUDED.max_appearance_rate, "
         "max_appearance_nrow = EXCLUDED.max_appearance_nrow, "
         "analysis_timestamp = now()",
-        table_oid, column_name, k_size, kmersearch_occur_bitlen, 
+        table_oid, column_name, k_size, kmersearch_occur_bitlen,
         kmersearch_max_appearance_rate, kmersearch_max_appearance_nrow);
     
     /* Execute metadata insertion with error checking */
@@ -450,41 +449,36 @@ kmersearch_undo_highfreq_analysis_internal(Oid table_oid, const char *column_nam
     /* Build query to delete high-frequency k-mer data */
     initStringInfo(&query);
     if (k_size > 0) {
-        /* Delete specific k-mer size from highfreq_kmer table */
+        /* Delete specific kmer_size/occur_bitlen from highfreq_kmer table */
         appendStringInfo(&query,
             "DELETE FROM kmersearch_highfreq_kmer "
-            "WHERE table_oid = %u AND column_name = %s "
-            "AND EXISTS ("
-            "  SELECT 1 FROM kmersearch_highfreq_kmer_meta "
-            "  WHERE table_oid = %u AND column_name = %s AND kmer_size = %d"
-            ")",
-            table_oid, quote_literal_cstr(column_name), 
-            table_oid, quote_literal_cstr(column_name), k_size);
+            "WHERE table_oid = %u AND column_name = %s AND kmer_size = %d AND occur_bitlen = %d",
+            table_oid, quote_literal_cstr(column_name), k_size, kmersearch_occur_bitlen);
     } else {
-        /* Delete all k-mer sizes for this table/column */
+        /* Delete all analyses for this table/column */
         appendStringInfo(&query,
             "DELETE FROM kmersearch_highfreq_kmer "
             "WHERE table_oid = %u AND column_name = %s",
             table_oid, quote_literal_cstr(column_name));
     }
-    
+
     /* Execute deletion from highfreq_kmer table */
     ret = SPI_execute(query.data, false, 0);
     if (ret == SPI_OK_DELETE) {
         result.dropped_highfreq_kmers = SPI_processed;
     }
     pfree(query.data);
-    
+
     /* Delete from metadata table */
     initStringInfo(&query);
     if (k_size > 0) {
-        /* Delete specific k-mer size from metadata table */
+        /* Delete specific kmer_size/occur_bitlen from metadata table */
         appendStringInfo(&query,
             "DELETE FROM kmersearch_highfreq_kmer_meta "
-            "WHERE table_oid = %u AND column_name = %s AND kmer_size = %d",
-            table_oid, quote_literal_cstr(column_name), k_size);
+            "WHERE table_oid = %u AND column_name = %s AND kmer_size = %d AND occur_bitlen = %d",
+            table_oid, quote_literal_cstr(column_name), k_size, kmersearch_occur_bitlen);
     } else {
-        /* Delete all k-mer sizes for this table/column from metadata table */
+        /* Delete all analyses for this table/column from metadata table */
         appendStringInfo(&query,
             "DELETE FROM kmersearch_highfreq_kmer_meta "
             "WHERE table_oid = %u AND column_name = %s",
@@ -963,11 +957,11 @@ kmersearch_perform_highfreq_analysis_parallel(Oid table_oid, const char *column_
                             initStringInfo(&insert_query);
                             appendStringInfo(&insert_query,
                                 "INSERT INTO kmersearch_highfreq_kmer "
-                                "(table_oid, column_name, uintkey, appearance_nrow, detection_reason) "
-                                "VALUES (%u, %s, %ld, %lu, 'threshold') "
-                                "ON CONFLICT (table_oid, column_name, uintkey) DO UPDATE SET "
+                                "(table_oid, column_name, kmer_size, occur_bitlen, uintkey, appearance_nrow, detection_reason) "
+                                "VALUES (%u, %s, %d, %d, %ld, %lu, 'threshold') "
+                                "ON CONFLICT (table_oid, column_name, kmer_size, occur_bitlen, uintkey) DO UPDATE SET "
                                 "appearance_nrow = EXCLUDED.appearance_nrow",
-                                table_oid, quote_literal_cstr(column_name),
+                                table_oid, quote_literal_cstr(column_name), k_size, kmersearch_occur_bitlen,
                                 (int64)uintkey, (unsigned long)appearance_nrow);
 
                             insert_ret = SPI_exec(insert_query.data, 0);
@@ -1001,11 +995,11 @@ kmersearch_perform_highfreq_analysis_parallel(Oid table_oid, const char *column_
                             initStringInfo(&insert_query);
                             appendStringInfo(&insert_query,
                                 "INSERT INTO kmersearch_highfreq_kmer "
-                                "(table_oid, column_name, uintkey, appearance_nrow, detection_reason) "
-                                "VALUES (%u, %s, %ld, %lu, 'threshold') "
-                                "ON CONFLICT (table_oid, column_name, uintkey) DO UPDATE SET "
+                                "(table_oid, column_name, kmer_size, occur_bitlen, uintkey, appearance_nrow, detection_reason) "
+                                "VALUES (%u, %s, %d, %d, %ld, %lu, 'threshold') "
+                                "ON CONFLICT (table_oid, column_name, kmer_size, occur_bitlen, uintkey) DO UPDATE SET "
                                 "appearance_nrow = EXCLUDED.appearance_nrow",
-                                table_oid, quote_literal_cstr(column_name),
+                                table_oid, quote_literal_cstr(column_name), k_size, kmersearch_occur_bitlen,
                                 (int64)uintkey, (unsigned long)appearance_nrow);
 
                             insert_ret = SPI_exec(insert_query.data, 0);
@@ -1039,11 +1033,11 @@ kmersearch_perform_highfreq_analysis_parallel(Oid table_oid, const char *column_
                             initStringInfo(&insert_query);
                             appendStringInfo(&insert_query,
                                 "INSERT INTO kmersearch_highfreq_kmer "
-                                "(table_oid, column_name, uintkey, appearance_nrow, detection_reason) "
-                                "VALUES (%u, %s, %ld, %lu, 'threshold') "
-                                "ON CONFLICT (table_oid, column_name, uintkey) DO UPDATE SET "
+                                "(table_oid, column_name, kmer_size, occur_bitlen, uintkey, appearance_nrow, detection_reason) "
+                                "VALUES (%u, %s, %d, %d, %ld, %lu, 'threshold') "
+                                "ON CONFLICT (table_oid, column_name, kmer_size, occur_bitlen, uintkey) DO UPDATE SET "
                                 "appearance_nrow = EXCLUDED.appearance_nrow",
-                                table_oid, quote_literal_cstr(column_name),
+                                table_oid, quote_literal_cstr(column_name), k_size, kmersearch_occur_bitlen,
                                 (int64)uintkey, (unsigned long)appearance_nrow);
 
                             insert_ret = SPI_exec(insert_query.data, 0);
@@ -1077,24 +1071,23 @@ kmersearch_perform_highfreq_analysis_parallel(Oid table_oid, const char *column_
         {
             StringInfoData query;
             int meta_ret;
-            
+
             initStringInfo(&query);
             appendStringInfo(&query,
                 "INSERT INTO kmersearch_highfreq_kmer_meta "
                 "(table_oid, column_name, kmer_size, occur_bitlen, max_appearance_rate, max_appearance_nrow) "
                 "VALUES (%u, %s, %d, %d, %f, %d) "
-                "ON CONFLICT (table_oid, column_name, kmer_size) DO UPDATE SET "
-                "occur_bitlen = EXCLUDED.occur_bitlen, "
+                "ON CONFLICT (table_oid, column_name, kmer_size, occur_bitlen) DO UPDATE SET "
                 "max_appearance_rate = EXCLUDED.max_appearance_rate, "
                 "max_appearance_nrow = EXCLUDED.max_appearance_nrow, "
                 "analysis_timestamp = now()",
                 table_oid, quote_literal_cstr(column_name), k_size,
                 kmersearch_occur_bitlen, kmersearch_max_appearance_rate, kmersearch_max_appearance_nrow);
-            
+
             meta_ret = SPI_exec(query.data, 0);
             if (meta_ret != SPI_OK_INSERT && meta_ret != SPI_OK_UPDATE)
                 elog(ERROR, "Failed to insert/update metadata");
-            
+
             pfree(query.data);
         }
         

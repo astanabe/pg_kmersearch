@@ -412,11 +412,13 @@ CREATE OPERATOR CLASS kmersearch_dna4_hash_ops
 CREATE TABLE kmersearch_highfreq_kmer (
     table_oid oid NOT NULL,
     column_name name NOT NULL,
+    kmer_size integer NOT NULL,
+    occur_bitlen integer NOT NULL,
     uintkey bigint NOT NULL,
     appearance_nrow bigint NOT NULL DEFAULT 0,
     detection_reason text,
     created_at timestamp with time zone DEFAULT now(),
-    PRIMARY KEY (table_oid, column_name, uintkey)
+    PRIMARY KEY (table_oid, column_name, kmer_size, occur_bitlen, uintkey)
 );
 
 -- High-frequency k-mers metadata table
@@ -428,7 +430,7 @@ CREATE TABLE kmersearch_highfreq_kmer_meta (
     max_appearance_rate real NOT NULL,
     max_appearance_nrow integer NOT NULL,
     analysis_timestamp timestamp with time zone DEFAULT now(),
-    PRIMARY KEY (table_oid, column_name, kmer_size)
+    PRIMARY KEY (table_oid, column_name, kmer_size, occur_bitlen)
 );
 
 -- GIN index metadata table
@@ -646,8 +648,8 @@ CREATE FUNCTION kmersearch_parallel_highfreq_kmer_cache_free_all()
     LANGUAGE C VOLATILE;
 
 -- Performance optimization: Add indexes on system tables
-CREATE INDEX kmersearch_highfreq_kmer_idx 
-    ON kmersearch_highfreq_kmer(table_oid, column_name, uintkey);
+CREATE INDEX kmersearch_highfreq_kmer_idx
+    ON kmersearch_highfreq_kmer(table_oid, column_name, kmer_size, occur_bitlen, uintkey);
 
 CREATE INDEX kmersearch_highfreq_kmer_meta_idx 
     ON kmersearch_highfreq_kmer_meta(table_oid, column_name);
