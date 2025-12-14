@@ -990,15 +990,21 @@ kmersearch_highfreq_kmer_cache_load_internal(Oid table_oid, const char *column_n
             
             /* Execute batch query */
             ret = SPI_execute(query.data, true, 0);
-            
+
             if (ret == SPI_OK_SELECT && SPI_processed > 0) {
+                MemoryContext spi_context;
+
                 batch_count = SPI_processed;
+
+                /* Allocate in parent context to survive SPI_finish() */
+                spi_context = MemoryContextSwitchTo(old_context);
                 batch_kmers = (uint64 *) palloc(batch_count * sizeof(uint64));
-                
+                MemoryContextSwitchTo(spi_context);
+
                 for (i = 0; i < batch_count; i++) {
                     bool isnull;
                     Datum kmer_datum;
-                    
+
                     kmer_datum = SPI_getbinval(SPI_tuptable->vals[i], SPI_tuptable->tupdesc, 1, &isnull);
                     if (!isnull) {
                         /* Convert based on total bit length (k-mer2 bits + occurrence bits) */
@@ -1019,12 +1025,12 @@ kmersearch_highfreq_kmer_cache_load_internal(Oid table_oid, const char *column_n
                 batch_count = 0;
                 batch_kmers = NULL;
             }
-            
+
             /* Cleanup */
             pfree(query.data);
             pfree(escaped_column_name);
             SPI_finish();
-            
+
             /* Switch back to cache context */
             MemoryContextSwitchTo(global_highfreq_cache.cache_context);
         }
@@ -1959,15 +1965,21 @@ kmersearch_parallel_highfreq_kmer_cache_load_internal(Oid table_oid, const char 
             
             /* Execute batch query */
             ret = SPI_execute(query.data, true, 0);
-            
+
             if (ret == SPI_OK_SELECT && SPI_processed > 0) {
+                MemoryContext spi_context;
+
                 batch_count = SPI_processed;
+
+                /* Allocate in parent context to survive SPI_finish() */
+                spi_context = MemoryContextSwitchTo(oldcontext);
                 batch_kmers = (uint64 *) palloc(batch_count * sizeof(uint64));
-                
+                MemoryContextSwitchTo(spi_context);
+
                 for (i = 0; i < batch_count; i++) {
                     bool isnull;
                     Datum kmer_datum;
-                    
+
                     kmer_datum = SPI_getbinval(SPI_tuptable->vals[i], SPI_tuptable->tupdesc, 1, &isnull);
                     if (!isnull) {
                         /* Convert based on total bit length (k-mer2 bits + occurrence bits) */
@@ -1988,17 +2000,17 @@ kmersearch_parallel_highfreq_kmer_cache_load_internal(Oid table_oid, const char 
                 batch_count = 0;
                 batch_kmers = NULL;
             }
-            
+
             /* Cleanup */
             pfree(query.data);
             pfree(escaped_column_name);
             SPI_finish();
         }
-        
+
         if (!batch_kmers || batch_count <= 0) {
             break;
         }
-        
+
         /* Insert batch k-mers into dshash */
         for (i = 0; i < batch_count; i++) {
             uint64 kmer_value;
