@@ -303,7 +303,20 @@ kmersearch_add_matching_index_path(PlannerInfo *root, RelOptInfo *rel,
 
 	matching_index = kmersearch_find_matching_index(rel, existing_ipath);
 	if (matching_index == NULL)
-		return;
+	{
+		ereport(ERROR,
+				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+				 errmsg("no GIN index found matching current GUC settings"),
+				 errdetail("Current settings: kmersearch.kmer_size=%d, kmersearch.occur_bitlen=%d, "
+						   "kmersearch.max_appearance_rate=%.4f, kmersearch.max_appearance_nrow=%d, "
+						   "kmersearch.preclude_highfreq_kmer=%s",
+						   kmersearch_kmer_size, kmersearch_occur_bitlen,
+						   kmersearch_max_appearance_rate, kmersearch_max_appearance_nrow,
+						   kmersearch_preclude_highfreq_kmer ? "true" : "false"),
+				 errhint("Create a GIN index with matching settings, or adjust GUC variables to match an existing index. "
+						 "Check available indexes with: SELECT index_oid::regclass, kmer_size, occur_bitlen, "
+						 "max_appearance_rate, max_appearance_nrow, preclude_highfreq_kmer FROM kmersearch_index_info")));
+	}
 
 	new_indexclauses = NIL;
 	foreach(lc, existing_ipath->indexclauses)
@@ -422,7 +435,8 @@ kmersearch_set_rel_pathlist(PlannerInfo *root, RelOptInfo *rel,
 							Index rti, RangeTblEntry *rte)
 {
 	ListCell   *lc;
-	bool		found_mismatched_bitmap = false;
+	List	   *paths_to_remove = NIL;
+	bool		has_matching_index = false;
 	BitmapHeapPath *mismatched_bhpath = NULL;
 
 	if (prev_set_rel_pathlist_hook)
@@ -431,7 +445,7 @@ kmersearch_set_rel_pathlist(PlannerInfo *root, RelOptInfo *rel,
 	if (in_kmersearch_hook)
 		return;
 
-	if (rel->reloptkind != RELOPT_BASEREL)
+	if (rel->reloptkind != RELOPT_BASEREL && rel->reloptkind != RELOPT_OTHER_MEMBER_REL)
 		return;
 
 	in_kmersearch_hook = true;
@@ -456,21 +470,27 @@ kmersearch_set_rel_pathlist(PlannerInfo *root, RelOptInfo *rel,
 
 						if (kmersearch_get_index_settings_direct(ipath->indexinfo->indexoid, &settings))
 						{
-							if (!kmersearch_check_settings_match(&settings))
+							if (kmersearch_check_settings_match(&settings))
 							{
-								found_mismatched_bitmap = true;
-								mismatched_bhpath = bhpath;
+								has_matching_index = true;
+							}
+							else
+							{
+								paths_to_remove = lappend(paths_to_remove, path);
+								if (mismatched_bhpath == NULL)
+									mismatched_bhpath = bhpath;
 							}
 						}
 					}
 				}
-
-				kmersearch_adjust_bitmap_path_cost(bhpath->bitmapqual);
-
-				if (bhpath->bitmapqual->total_cost >= 1.0e10)
+				else
 				{
-					path->startup_cost = 1.0e10;
-					path->total_cost = 1.0e10;
+					kmersearch_adjust_bitmap_path_cost(bhpath->bitmapqual);
+
+					if (bhpath->bitmapqual->total_cost >= 1.0e10)
+					{
+						paths_to_remove = lappend(paths_to_remove, path);
+					}
 				}
 			}
 			else if (IsA(path, IndexPath))
@@ -483,20 +503,40 @@ kmersearch_set_rel_pathlist(PlannerInfo *root, RelOptInfo *rel,
 
 					if (kmersearch_get_index_settings_direct(ipath->indexinfo->indexoid, &settings))
 					{
-						if (!kmersearch_check_settings_match(&settings))
+						if (kmersearch_check_settings_match(&settings))
 						{
-							path->startup_cost = 1.0e10;
-							path->total_cost = 1.0e10;
+							has_matching_index = true;
+						}
+						else
+						{
+							paths_to_remove = lappend(paths_to_remove, path);
 						}
 					}
 				}
 			}
 		}
 
-		if (found_mismatched_bitmap && mismatched_bhpath != NULL)
+		if (has_matching_index)
 		{
+			foreach(lc, paths_to_remove)
+			{
+				Path *path = (Path *) lfirst(lc);
+				rel->pathlist = list_delete_ptr(rel->pathlist, path);
+			}
+		}
+		else if (mismatched_bhpath != NULL)
+		{
+			foreach(lc, paths_to_remove)
+			{
+				Path *path = (Path *) lfirst(lc);
+				path->startup_cost = 1.0e10;
+				path->total_cost = 1.0e10;
+			}
+
 			kmersearch_add_matching_index_path(root, rel, mismatched_bhpath);
 		}
+
+		list_free(paths_to_remove);
 	}
 	PG_FINALLY();
 	{

@@ -542,11 +542,14 @@ kmersearch_get_cached_actual_min_score_datum_int2(Datum *queryKeys, int nkeys)
     if (cache_entry == NULL)
     {
         ereport(ERROR,
-                (errcode(ERRCODE_INTERNAL_ERROR),
-                 errmsg("actual_min_score not found in cache for int2"),
-                 errdetail("Query hash: %lu, nkeys: %d", query_hash, nkeys)));
+                (errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+                 errmsg("GIN index settings mismatch: the index being used does not match current GUC settings"),
+                 errdetail("Current settings: kmersearch.kmer_size=%d, kmersearch.occur_bitlen=%d. "
+                           "Ensure a GIN index exists with these settings, or adjust the GUC variables to match an existing index.",
+                           kmersearch_kmer_size, kmersearch_occur_bitlen),
+                 errhint("Check available indexes with: SELECT index_oid::regclass, kmer_size, occur_bitlen FROM kmersearch_index_info")));
     }
-    
+
     actual_min_score_cache_manager->hits++;
     return cache_entry->actual_min_score;
 }
@@ -582,11 +585,14 @@ kmersearch_get_cached_actual_min_score_datum_int4(Datum *queryKeys, int nkeys)
     if (cache_entry == NULL)
     {
         ereport(ERROR,
-                (errcode(ERRCODE_INTERNAL_ERROR),
-                 errmsg("actual_min_score not found in cache for int4"),
-                 errdetail("Query hash: %lu, nkeys: %d", query_hash, nkeys)));
+                (errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+                 errmsg("GIN index settings mismatch: the index being used does not match current GUC settings"),
+                 errdetail("Current settings: kmersearch.kmer_size=%d, kmersearch.occur_bitlen=%d. "
+                           "Ensure a GIN index exists with these settings, or adjust the GUC variables to match an existing index.",
+                           kmersearch_kmer_size, kmersearch_occur_bitlen),
+                 errhint("Check available indexes with: SELECT index_oid::regclass, kmer_size, occur_bitlen FROM kmersearch_index_info")));
     }
-    
+
     actual_min_score_cache_manager->hits++;
     return cache_entry->actual_min_score;
 }
@@ -622,11 +628,14 @@ kmersearch_get_cached_actual_min_score_datum_int8(Datum *queryKeys, int nkeys)
     if (cache_entry == NULL)
     {
         ereport(ERROR,
-                (errcode(ERRCODE_INTERNAL_ERROR),
-                 errmsg("actual_min_score not found in cache for int8"),
-                 errdetail("Query hash: %lu, nkeys: %d", query_hash, nkeys)));
+                (errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+                 errmsg("GIN index settings mismatch: the index being used does not match current GUC settings"),
+                 errdetail("Current settings: kmersearch.kmer_size=%d, kmersearch.occur_bitlen=%d. "
+                           "Ensure a GIN index exists with these settings, or adjust the GUC variables to match an existing index.",
+                           kmersearch_kmer_size, kmersearch_occur_bitlen),
+                 errhint("Check available indexes with: SELECT index_oid::regclass, kmer_size, occur_bitlen FROM kmersearch_index_info")));
     }
-    
+
     actual_min_score_cache_manager->hits++;
     return cache_entry->actual_min_score;
 }
