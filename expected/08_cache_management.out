@@ -185,7 +185,7 @@ SELECT 'After query execution - actual min score cache:' as test_phase;
 SELECT * FROM kmersearch_actual_min_score_cache_stats();
  hits | misses | current_entries | max_entries 
 ------+--------+-----------------+-------------
-   32 |      3 |               3 |       50000
+   39 |      3 |               3 |       50000
 (1 row)
 
 -- Verify that current_entries > 0 (cache is storing entries)
@@ -231,7 +231,7 @@ SELECT 'After cache hit tests:' as test_phase;
 SELECT * FROM kmersearch_actual_min_score_cache_stats();
  hits | misses | current_entries | max_entries 
 ------+--------+-----------------+-------------
-   40 |      5 |               5 |       50000
+   49 |      5 |               5 |       50000
 (1 row)
 
 -- hits should be higher now
@@ -311,7 +311,7 @@ SELECT 'With changed settings - actual min score cache:' as test_phase;
 SELECT * FROM kmersearch_actual_min_score_cache_stats();
  hits | misses | current_entries | max_entries 
 ------+--------+-----------------+-------------
-    9 |      1 |               1 |       50000
+   11 |      1 |               1 |       50000
 (1 row)
 
 -- Reset to defaults
@@ -398,7 +398,7 @@ SELECT 'Final cache state:' as test_phase;
 SELECT * FROM kmersearch_actual_min_score_cache_stats();
  hits | misses | current_entries | max_entries 
 ------+--------+-----------------+-------------
-   32 |      8 |               8 |        1000
+   40 |      8 |               8 |        1000
 (1 row)
 
 -- current_entries should be <= max_entries
@@ -436,7 +436,7 @@ SELECT 'DNA4 cache statistics:' as test_phase;
 SELECT * FROM kmersearch_actual_min_score_cache_stats();
  hits | misses | current_entries | max_entries 
 ------+--------+-----------------+-------------
-   41 |      9 |               9 |        1000
+   51 |      9 |               9 |        1000
 (1 row)
 
 -- Clean up

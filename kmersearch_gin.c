@@ -419,7 +419,11 @@ kmersearch_filter_uintkey_and_set_actual_min_score(void *uintkey, int *nkeys,
     total_bits = k_size * 2 + kmersearch_occur_bitlen;
     
     if (!kmersearch_preclude_highfreq_kmer || uintkey == NULL || *nkeys == 0)
+    {
+        if (uintkey != NULL && *nkeys > 0)
+            kmersearch_get_cached_actual_min_score_uintkey(uintkey, *nkeys, k_size);
         return uintkey;
+    }
     
     /* First pass: check if there are any high-frequency k-mers */
     if (total_bits <= 16)

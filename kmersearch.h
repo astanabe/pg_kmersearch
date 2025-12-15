@@ -629,7 +629,7 @@ void kmersearch_free_query_kmer_cache_manager(QueryKmerCacheManager **manager);
 void kmersearch_free_actual_min_score_cache_manager(ActualMinScoreCacheManager **manager);
 
 /* Build version information */
-#define KMERSEARCH_BUILD_VERSION "1.0.2025.12.14"
+#define KMERSEARCH_BUILD_VERSION "1.0.2025.12.15"
 
 /* High-frequency k-mer cache global variables (defined in kmersearch_cache.c) */
 
