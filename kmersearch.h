@@ -323,6 +323,28 @@ typedef struct FileHashTableIterator64
     uint64      current_offset;         /* Current entry offset in chain */
 } FileHashTableIterator64;
 
+/*
+ * K-mer frequency entry structures for batch processing and merge operations.
+ * Used by both kmersearch_freq.c (batch hash) and kmersearch_fht.c (merge hash).
+ */
+typedef struct KmerFreqEntry16
+{
+    uint16      uintkey;
+    uint64      appearance_nrow;
+} KmerFreqEntry16;
+
+typedef struct KmerFreqEntry32
+{
+    uint32      uintkey;
+    uint64      appearance_nrow;
+} KmerFreqEntry32;
+
+typedef struct KmerFreqEntry64
+{
+    uint64      uintkey;
+    uint64      appearance_nrow;
+} KmerFreqEntry64;
+
 /* File-based hash table worker context */
 typedef struct FileHashWorkerContext
 {
@@ -336,6 +358,8 @@ typedef struct FileHashWorkerContext
     MemoryContext batch_memory_context; /* Memory context for batch processing */
     BufferAccessStrategy strategy;      /* Buffer access strategy for ring buffer */
     void        *fht_ctx;               /* FileHashTable16/32/64Context pointer */
+    uint64      *fht16_memory_array;    /* In-memory array for FHT16 bulk operations */
+    Size        memory_limit_per_worker; /* Memory limit for this worker */
 } FileHashWorkerContext;
 
 /*
@@ -478,7 +502,6 @@ extern bool kmersearch_preclude_highfreq_kmer;
 extern int kmersearch_query_kmer_cache_max_entries;
 extern int kmersearch_actual_min_score_cache_max_entries;
 extern int kmersearch_highfreq_kmer_cache_load_batch_size;
-extern int kmersearch_highfreq_analysis_batch_size;
 extern int kmersearch_highfreq_analysis_hashtable_size;
 
 /* Global cache managers */
@@ -629,7 +652,7 @@ void kmersearch_free_query_kmer_cache_manager(QueryKmerCacheManager **manager);
 void kmersearch_free_actual_min_score_cache_manager(ActualMinScoreCacheManager **manager);
 
 /* Build version information */
-#define KMERSEARCH_BUILD_VERSION "1.0.2025.12.15"
+#define KMERSEARCH_BUILD_VERSION "1.0.2025.12.31"
 
 /* High-frequency k-mer cache global variables (defined in kmersearch_cache.c) */
 
@@ -773,6 +796,7 @@ void kmersearch_fht16_close(FileHashTable16Context *ctx);
 void kmersearch_fht16_add(FileHashTable16Context *ctx, uint16 uintkey, uint64 appearance_nrow);
 uint64 kmersearch_fht16_get(FileHashTable16Context *ctx, uint16 uintkey);
 void kmersearch_fht16_flush(FileHashTable16Context *ctx);
+void kmersearch_fht16_bulk_add(FileHashTable16Context *ctx, uint64 *memory_array);
 void kmersearch_fht16_merge(const char *source_path, const char *target_path);
 void kmersearch_fht16_iterator_init(FileHashTableIterator16 *iter, FileHashTable16Context *ctx);
 bool kmersearch_fht16_iterate(FileHashTableIterator16 *iter, uint16 *uintkey, uint64 *appearance_nrow);
@@ -784,6 +808,7 @@ void kmersearch_fht32_close(FileHashTable32Context *ctx);
 void kmersearch_fht32_add(FileHashTable32Context *ctx, uint32 uintkey, uint64 appearance_nrow);
 uint64 kmersearch_fht32_get(FileHashTable32Context *ctx, uint32 uintkey);
 void kmersearch_fht32_flush(FileHashTable32Context *ctx);
+void kmersearch_fht32_bulk_add(FileHashTable32Context *ctx, HTAB *batch_hash);
 void kmersearch_fht32_merge(const char *source_path, const char *target_path);
 void kmersearch_fht32_iterator_init(FileHashTableIterator32 *iter, FileHashTable32Context *ctx);
 bool kmersearch_fht32_iterate(FileHashTableIterator32 *iter, uint32 *uintkey, uint64 *appearance_nrow);
@@ -795,6 +820,7 @@ void kmersearch_fht64_close(FileHashTable64Context *ctx);
 void kmersearch_fht64_add(FileHashTable64Context *ctx, uint64 uintkey, uint64 appearance_nrow);
 uint64 kmersearch_fht64_get(FileHashTable64Context *ctx, uint64 uintkey);
 void kmersearch_fht64_flush(FileHashTable64Context *ctx);
+void kmersearch_fht64_bulk_add(FileHashTable64Context *ctx, HTAB *batch_hash);
 void kmersearch_fht64_merge(const char *source_path, const char *target_path);
 void kmersearch_fht64_iterator_init(FileHashTableIterator64 *iter, FileHashTable64Context *ctx);
 bool kmersearch_fht64_iterate(FileHashTableIterator64 *iter, uint64 *uintkey, uint64 *appearance_nrow);

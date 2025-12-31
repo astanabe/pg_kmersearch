@@ -45,7 +45,6 @@ bool kmersearch_preclude_highfreq_kmer = false;  /* Default to not exclude high-
 int kmersearch_query_kmer_cache_max_entries = 50000;  /* Default max query-kmer cache entries */
 int kmersearch_actual_min_score_cache_max_entries = 50000;  /* Default max actual min score cache entries */
 int kmersearch_highfreq_kmer_cache_load_batch_size = 10000;  /* Default batch size for loading high-frequency k-mers */
-int kmersearch_highfreq_analysis_batch_size = 10000;  /* Default batch size for high-frequency k-mer analysis */
 int kmersearch_highfreq_analysis_hashtable_size = 1000000;  /* Default hash table size for high-frequency k-mer analysis */
 
 /* Global cache managers */
@@ -530,19 +529,6 @@ _PG_init(void)
                            "Batch size for loading high-frequency k-mers into cache",
                            "Controls the number of k-mers loaded in each batch to reduce memory usage",
                            &kmersearch_highfreq_kmer_cache_load_batch_size,
-                           10000,
-                           1000,
-                           1000000,
-                           PGC_USERSET,
-                           0,
-                           NULL,
-                           NULL,
-                           NULL);
-
-    DefineCustomIntVariable("kmersearch.highfreq_analysis_batch_size",
-                           "Batch size for high-frequency k-mer analysis",
-                           "Controls the number of rows processed in each batch during analysis",
-                           &kmersearch_highfreq_analysis_batch_size,
                            10000,
                            1000,
                            1000000,

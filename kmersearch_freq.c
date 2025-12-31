@@ -26,25 +26,6 @@ PG_FUNCTION_INFO_V1(kmersearch_perform_highfreq_analysis);
 PG_FUNCTION_INFO_V1(kmersearch_undo_highfreq_analysis);
 PG_FUNCTION_INFO_V1(kmersearch_delete_tempfiles);
 
-/* Temporary k-mer frequency entry structures for batch processing */
-typedef struct TempKmerFreqEntry16
-{
-    uint16      uintkey;
-    uint64      appearance_nrow;      /* Number of rows containing this k-mer */
-} TempKmerFreqEntry16;
-
-typedef struct TempKmerFreqEntry32
-{
-    uint32      uintkey;
-    uint64      appearance_nrow;      /* Number of rows containing this k-mer */
-} TempKmerFreqEntry32;
-
-typedef struct TempKmerFreqEntry64
-{
-    uint64      uintkey;
-    uint64      appearance_nrow;      /* Number of rows containing this k-mer */
-} TempKmerFreqEntry64;
-
 /* File hash table helper functions */
 static void kmersearch_register_worker_temp_file(KmerAnalysisSharedState *shared_state,
                                                 const char *file_path, int worker_id);
@@ -1329,23 +1310,41 @@ kmersearch_analysis_worker(dsm_segment *seg, shm_toc *toc)
                                                      "KmerBatchMemoryContext",
                                                      ALLOCSET_DEFAULT_SIZES);
 
-    {
-        int tuples_per_page = 10;
-        int pages_needed = (kmersearch_highfreq_analysis_batch_size / tuples_per_page) * 1.5;
-        int ring_size_kb = Max(pages_needed * 8, 10 * 1024);
-        int total_ring_size_kb = ring_size_kb * max_parallel_maintenance_workers;
-        int shared_buffers_kb = NBuffers * 8;
+    ctx.memory_limit_per_worker = (Size)maintenance_work_mem * 1024L / Max(max_parallel_maintenance_workers, 1);
+    if (ctx.memory_limit_per_worker < 64 * 1024)
+        ctx.memory_limit_per_worker = 64 * 1024;
 
-        if (shared_buffers_kb < total_ring_size_kb * 2)
+    if (ctx.total_bits <= 16)
+    {
+        ctx.fht16_memory_array = (uint64 *) palloc0(65536 * sizeof(uint64));
+    }
+    else
+    {
+        ctx.fht16_memory_array = NULL;
+    }
+
+    {
+        int shared_buffers_kb = NBuffers * (BLCKSZ / 1024);
+        int ring_size_kb;
+        int num_workers = Max(max_parallel_maintenance_workers, 1);
+
+        ring_size_kb = shared_buffers_kb / (num_workers * 4);
+
+        if (ring_size_kb < 256)
+            ring_size_kb = 256;
+        if (ring_size_kb > 256 * 1024)
+            ring_size_kb = 256 * 1024;
+
+        if (shared_buffers_kb < ring_size_kb * num_workers * 2)
         {
             elog(DEBUG2, "Worker using normal buffer access: shared_buffers=%d KB < ring_requirement=%d KB",
-                 shared_buffers_kb, total_ring_size_kb * 2);
+                 shared_buffers_kb, ring_size_kb * num_workers * 2);
             ctx.strategy = NULL;
         }
         else
         {
-            elog(DEBUG2, "Worker using ring buffer strategy: size=%d KB for batch_size=%d, shared_buffers=%d KB",
-                 ring_size_kb, kmersearch_highfreq_analysis_batch_size, shared_buffers_kb);
+            elog(DEBUG2, "Worker using ring buffer strategy: size=%d KB, shared_buffers=%d KB",
+                 ring_size_kb, shared_buffers_kb);
             ctx.strategy = GetAccessStrategyWithSize(BAS_BULKREAD, ring_size_kb);
         }
     }
@@ -1895,62 +1894,44 @@ kmersearch_register_worker_temp_file(KmerAnalysisSharedState *shared_state,
 }
 
 /*
- * Flush batch hash table to file hash table
+ * Flush batch hash table to file hash table using bulk operations
  */
 static void
 kmersearch_flush_batch_to_fht(FileHashWorkerContext *ctx)
 {
-    HASH_SEQ_STATUS status;
-    void *entry;
-    MemoryContext old_context;
-
     if (!ctx->fht_ctx)
     {
         ereport(ERROR,
                 (errmsg("File hash table not properly initialized for worker")));
     }
 
-    old_context = MemoryContextSwitchTo(ctx->batch_memory_context);
-
-    hash_seq_init(&status, ctx->batch_hash);
-
-    while ((entry = hash_seq_search(&status)) != NULL)
-    {
-        if (ctx->total_bits <= 16)
-        {
-            TempKmerFreqEntry16 *e = (TempKmerFreqEntry16 *)entry;
-            kmersearch_fht16_add((FileHashTable16Context *)ctx->fht_ctx,
-                                e->uintkey, e->appearance_nrow);
-        }
-        else if (ctx->total_bits <= 32)
-        {
-            TempKmerFreqEntry32 *e = (TempKmerFreqEntry32 *)entry;
-            kmersearch_fht32_add((FileHashTable32Context *)ctx->fht_ctx,
-                                e->uintkey, e->appearance_nrow);
-        }
-        else
-        {
-            TempKmerFreqEntry64 *e = (TempKmerFreqEntry64 *)entry;
-            kmersearch_fht64_add((FileHashTable64Context *)ctx->fht_ctx,
-                                e->uintkey, e->appearance_nrow);
-        }
-    }
-
-    /* Flush to disk */
     if (ctx->total_bits <= 16)
     {
-        kmersearch_fht16_flush((FileHashTable16Context *)ctx->fht_ctx);
+        HASH_SEQ_STATUS status;
+        void *entry;
+
+        hash_seq_init(&status, ctx->batch_hash);
+        while ((entry = hash_seq_search(&status)) != NULL)
+        {
+            KmerFreqEntry16 *e = (KmerFreqEntry16 *)entry;
+            ctx->fht16_memory_array[e->uintkey] += e->appearance_nrow;
+        }
+
+        kmersearch_fht16_bulk_add((FileHashTable16Context *)ctx->fht_ctx,
+                                  ctx->fht16_memory_array);
+
+        memset(ctx->fht16_memory_array, 0, 65536 * sizeof(uint64));
     }
     else if (ctx->total_bits <= 32)
     {
-        kmersearch_fht32_flush((FileHashTable32Context *)ctx->fht_ctx);
+        kmersearch_fht32_bulk_add((FileHashTable32Context *)ctx->fht_ctx,
+                                  ctx->batch_hash);
     }
     else
     {
-        kmersearch_fht64_flush((FileHashTable64Context *)ctx->fht_ctx);
+        kmersearch_fht64_bulk_add((FileHashTable64Context *)ctx->fht_ctx,
+                                  ctx->batch_hash);
     }
-
-    MemoryContextSwitchTo(old_context);
 }
 
 /*
@@ -1983,17 +1964,17 @@ kmersearch_process_block_with_batch(BlockNumber block,
         if (ctx->total_bits <= 16)
         {
             hashctl.keysize = sizeof(uint16);
-            hashctl.entrysize = sizeof(TempKmerFreqEntry16);
+            hashctl.entrysize = sizeof(KmerFreqEntry16);
         }
         else if (ctx->total_bits <= 32)
         {
             hashctl.keysize = sizeof(uint32);
-            hashctl.entrysize = sizeof(TempKmerFreqEntry32);
+            hashctl.entrysize = sizeof(KmerFreqEntry32);
         }
         else
         {
             hashctl.keysize = sizeof(uint64);
-            hashctl.entrysize = sizeof(TempKmerFreqEntry64);
+            hashctl.entrysize = sizeof(KmerFreqEntry64);
         }
         
         /* Use HASH_CONTEXT to ensure hash table is created in batch memory context */
@@ -2097,10 +2078,10 @@ kmersearch_process_block_with_batch(BlockNumber block,
             if (ctx->total_bits <= 16)
             {
                 uint16 uintkey = ((uint16 *)kmer_array)[i];
-                TempKmerFreqEntry16 *freq_entry;
+                KmerFreqEntry16 *freq_entry;
 
                 entry = hash_search(ctx->batch_hash, &uintkey, HASH_ENTER, &found);
-                freq_entry = (TempKmerFreqEntry16 *)entry;
+                freq_entry = (KmerFreqEntry16 *)entry;
                 if (!found)
                 {
                     freq_entry->uintkey = uintkey;
@@ -2111,10 +2092,10 @@ kmersearch_process_block_with_batch(BlockNumber block,
             else if (ctx->total_bits <= 32)
             {
                 uint32 uintkey = ((uint32 *)kmer_array)[i];
-                TempKmerFreqEntry32 *freq_entry;
+                KmerFreqEntry32 *freq_entry;
 
                 entry = hash_search(ctx->batch_hash, &uintkey, HASH_ENTER, &found);
-                freq_entry = (TempKmerFreqEntry32 *)entry;
+                freq_entry = (KmerFreqEntry32 *)entry;
                 if (!found)
                 {
                     freq_entry->uintkey = uintkey;
@@ -2125,10 +2106,10 @@ kmersearch_process_block_with_batch(BlockNumber block,
             else
             {
                 uint64 uintkey = ((uint64 *)kmer_array)[i];
-                TempKmerFreqEntry64 *freq_entry;
+                KmerFreqEntry64 *freq_entry;
 
                 entry = hash_search(ctx->batch_hash, &uintkey, HASH_ENTER, &found);
-                freq_entry = (TempKmerFreqEntry64 *)entry;
+                freq_entry = (KmerFreqEntry64 *)entry;
                 if (!found)
                 {
                     freq_entry->uintkey = uintkey;
@@ -2145,10 +2126,14 @@ kmersearch_process_block_with_batch(BlockNumber block,
         MemoryContextSwitchTo(old_context);
         
         ctx->batch_count++;
-        
-        /* Flush batch if size limit reached */
-        if (ctx->batch_count >= kmersearch_highfreq_analysis_batch_size)
+
+        /* Flush batch if memory limit reached */
         {
+            Size batch_memory_used = MemoryContextMemAllocated(ctx->batch_memory_context, true);
+            bool should_flush = (batch_memory_used >= ctx->memory_limit_per_worker * 0.8);
+
+            if (should_flush)
+            {
             uint64 total_rows;
             uint64 batch_num;
             
@@ -2227,17 +2212,17 @@ kmersearch_process_block_with_batch(BlockNumber block,
                 if (ctx->total_bits <= 16)
                 {
                     hashctl.keysize = sizeof(uint16);
-                    hashctl.entrysize = sizeof(TempKmerFreqEntry16);
+                    hashctl.entrysize = sizeof(KmerFreqEntry16);
                 }
                 else if (ctx->total_bits <= 32)
                 {
                     hashctl.keysize = sizeof(uint32);
-                    hashctl.entrysize = sizeof(TempKmerFreqEntry32);
+                    hashctl.entrysize = sizeof(KmerFreqEntry32);
                 }
                 else
                 {
                     hashctl.keysize = sizeof(uint64);
-                    hashctl.entrysize = sizeof(TempKmerFreqEntry64);
+                    hashctl.entrysize = sizeof(KmerFreqEntry64);
                 }
                 
                 /* Use HASH_CONTEXT to ensure hash table is created in batch memory context */
@@ -2253,6 +2238,7 @@ kmersearch_process_block_with_batch(BlockNumber block,
             
             ctx->batch_count = 0;
             batch_completed = true;
+            }
         }
     }
 

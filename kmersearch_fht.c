@@ -39,6 +39,9 @@
 #define FHT_MAX_BUCKET_COUNT       16777216
 #define FHT_DEFAULT_LOAD_FACTOR    4
 
+/* Memory overhead factor for HTAB (approximately 2x for safety) */
+#define FHT_HTAB_OVERHEAD_FACTOR   2
+
 /*
  * File header structures
  */
@@ -384,6 +387,55 @@ kmersearch_fht16_flush(FileHashTable16Context *ctx)
 
         fsync(ctx->fd);
     }
+}
+
+/*
+ * Bulk add from memory array to file hash table
+ * Reads current file values, adds memory array values, writes back in one operation
+ */
+void
+kmersearch_fht16_bulk_add(FileHashTable16Context *ctx, uint64 *memory_array)
+{
+    uint64 file_array[FHT16_ARRAY_SIZE];
+    ssize_t bytes;
+    uint64 entry_count = 0;
+    FileHashTable16Header header;
+
+    bytes = pread(ctx->fd, file_array, sizeof(file_array), FHT16_HEADER_SIZE);
+    if (bytes != sizeof(file_array))
+    {
+        ereport(ERROR,
+                (errcode_for_file_access(),
+                 errmsg("could not read file hash table array: %m")));
+    }
+
+    for (int i = 0; i < FHT16_ARRAY_SIZE; i++)
+    {
+        file_array[i] += memory_array[i];
+        if (file_array[i] > 0)
+            entry_count++;
+    }
+
+    bytes = pwrite(ctx->fd, file_array, sizeof(file_array), FHT16_HEADER_SIZE);
+    if (bytes != sizeof(file_array))
+    {
+        ereport(ERROR,
+                (errcode_for_file_access(),
+                 errmsg("could not write file hash table array: %m")));
+    }
+
+    bytes = pread(ctx->fd, &header, sizeof(header), 0);
+    if (bytes == sizeof(header))
+    {
+        header.entry_count = entry_count;
+        if (pwrite(ctx->fd, &header, sizeof(header), 0) != sizeof(header))
+            ereport(WARNING,
+                    (errcode_for_file_access(),
+                     errmsg("could not update file hash table header: %m")));
+    }
+
+    ctx->entry_count = entry_count;
+    fsync(ctx->fd);
 }
 
 /*
@@ -829,7 +881,108 @@ kmersearch_fht32_flush(FileHashTable32Context *ctx)
 }
 
 /*
+ * Bulk add from batch hash table to file hash table
+ * Reads FHT file into memory, merges with batch_hash, writes back
+ */
+void
+kmersearch_fht32_bulk_add(FileHashTable32Context *ctx, HTAB *batch_hash)
+{
+    HTAB *merge_htab;
+    HASHCTL hash_ctl;
+    MemoryContext merge_context;
+    MemoryContext old_context;
+    FileHashTableIterator32 iter;
+    uint32 uintkey;
+    uint64 appearance_nrow;
+    KmerFreqEntry32 *entry;
+    bool found;
+    HASH_SEQ_STATUS hash_seq;
+    HASH_SEQ_STATUS batch_seq;
+    void *batch_entry;
+    uint32 saved_bucket_count;
+    char saved_path[MAXPGPATH];
+    long max_entries;
+    FileHashTable32Context *new_ctx;
+
+    merge_context = AllocSetContextCreate(CurrentMemoryContext,
+                                          "FHT32 BulkAdd Context",
+                                          ALLOCSET_DEFAULT_SIZES);
+    old_context = MemoryContextSwitchTo(merge_context);
+
+    max_entries = ctx->entry_count + hash_get_num_entries(batch_hash);
+    if (max_entries < 1024)
+        max_entries = 1024;
+
+    memset(&hash_ctl, 0, sizeof(hash_ctl));
+    hash_ctl.keysize = sizeof(uint32);
+    hash_ctl.entrysize = sizeof(KmerFreqEntry32);
+    hash_ctl.hcxt = merge_context;
+
+    merge_htab = hash_create("FHT32 BulkAdd Hash",
+                             max_entries,
+                             &hash_ctl,
+                             HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
+
+    kmersearch_fht32_iterator_init(&iter, ctx);
+    while (kmersearch_fht32_iterate(&iter, &uintkey, &appearance_nrow))
+    {
+        entry = (KmerFreqEntry32 *) hash_search(merge_htab, &uintkey, HASH_ENTER, &found);
+        if (found)
+            entry->appearance_nrow += appearance_nrow;
+        else
+            entry->appearance_nrow = appearance_nrow;
+    }
+
+    hash_seq_init(&batch_seq, batch_hash);
+    while ((batch_entry = hash_seq_search(&batch_seq)) != NULL)
+    {
+        /*
+         * Cast to KmerFreqEntry32 which has the same memory layout as
+         * TempKmerFreqEntry32 for the first two fields (uint32 + uint64).
+         * Direct offset calculation with sizeof(uint32) is incorrect due to
+         * struct alignment (4-byte padding between uint32 and uint64).
+         */
+        KmerFreqEntry32 *freq_entry = (KmerFreqEntry32 *)batch_entry;
+
+        entry = (KmerFreqEntry32 *) hash_search(merge_htab, &freq_entry->uintkey, HASH_ENTER, &found);
+        if (found)
+            entry->appearance_nrow += freq_entry->appearance_nrow;
+        else
+            entry->appearance_nrow = freq_entry->appearance_nrow;
+    }
+
+    saved_bucket_count = ctx->bucket_count;
+    strlcpy(saved_path, ctx->path, MAXPGPATH);
+
+    if (ftruncate(ctx->fd, 0) < 0)
+    {
+        MemoryContextSwitchTo(old_context);
+        MemoryContextDelete(merge_context);
+        ereport(ERROR,
+                (errcode_for_file_access(),
+                 errmsg("could not truncate file hash table: %m")));
+    }
+    lseek(ctx->fd, 0, SEEK_SET);
+    kmersearch_fht32_close(ctx);
+
+    new_ctx = kmersearch_fht32_create(saved_path, saved_bucket_count);
+
+    hash_seq_init(&hash_seq, merge_htab);
+    while ((entry = (KmerFreqEntry32 *) hash_seq_search(&hash_seq)) != NULL)
+    {
+        kmersearch_fht32_add(new_ctx, entry->uintkey, entry->appearance_nrow);
+    }
+
+    kmersearch_fht32_close(new_ctx);
+
+    MemoryContextSwitchTo(old_context);
+    MemoryContextDelete(merge_context);
+}
+
+/*
  * Merge source file into target file (target += source)
+ * Uses in-memory merge when sufficient memory is available,
+ * falls back to entry-by-entry processing otherwise.
  */
 void
 kmersearch_fht32_merge(const char *source_path, const char *target_path)
@@ -839,21 +992,115 @@ kmersearch_fht32_merge(const char *source_path, const char *target_path)
     FileHashTableIterator32 iter;
     uint32 uintkey;
     uint64 appearance_nrow;
+    Size memory_required;
+    Size memory_available;
+    bool use_inmemory_merge;
+    HTAB *merge_htab = NULL;
+    HASHCTL hash_ctl;
+    MemoryContext merge_context = NULL;
+    MemoryContext old_context;
 
     source_ctx = kmersearch_fht32_open(source_path);
     target_ctx = kmersearch_fht32_open(target_path);
 
-    /* Iterate through source and add to target */
-    kmersearch_fht32_iterator_init(&iter, source_ctx);
-    while (kmersearch_fht32_iterate(&iter, &uintkey, &appearance_nrow))
+    memory_available = (Size)maintenance_work_mem * 1024L;
+    memory_required = (source_ctx->entry_count + target_ctx->entry_count) *
+                      sizeof(KmerFreqEntry32) * FHT_HTAB_OVERHEAD_FACTOR;
+
+    use_inmemory_merge = (memory_required < memory_available / 2);
+
+    if (use_inmemory_merge)
     {
-        kmersearch_fht32_add(target_ctx, uintkey, appearance_nrow);
+        long max_entries;
+        KmerFreqEntry32 *entry;
+        bool found;
+        HASH_SEQ_STATUS hash_seq;
+
+        merge_context = AllocSetContextCreate(CurrentMemoryContext,
+                                              "FHT32 Merge Context",
+                                              ALLOCSET_DEFAULT_SIZES);
+        old_context = MemoryContextSwitchTo(merge_context);
+
+        max_entries = source_ctx->entry_count + target_ctx->entry_count;
+        if (max_entries < 1024)
+            max_entries = 1024;
+
+        memset(&hash_ctl, 0, sizeof(hash_ctl));
+        hash_ctl.keysize = sizeof(uint32);
+        hash_ctl.entrysize = sizeof(KmerFreqEntry32);
+        hash_ctl.hcxt = merge_context;
+
+        merge_htab = hash_create("FHT32 Merge Hash",
+                                 max_entries,
+                                 &hash_ctl,
+                                 HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
+
+        kmersearch_fht32_iterator_init(&iter, target_ctx);
+        while (kmersearch_fht32_iterate(&iter, &uintkey, &appearance_nrow))
+        {
+            entry = (KmerFreqEntry32 *) hash_search(merge_htab, &uintkey,
+                                                    HASH_ENTER, &found);
+            if (found)
+                entry->appearance_nrow += appearance_nrow;
+            else
+                entry->appearance_nrow = appearance_nrow;
+        }
+
+        kmersearch_fht32_iterator_init(&iter, source_ctx);
+        while (kmersearch_fht32_iterate(&iter, &uintkey, &appearance_nrow))
+        {
+            entry = (KmerFreqEntry32 *) hash_search(merge_htab, &uintkey,
+                                                    HASH_ENTER, &found);
+            if (found)
+                entry->appearance_nrow += appearance_nrow;
+            else
+                entry->appearance_nrow = appearance_nrow;
+        }
+
+        {
+            uint32 saved_bucket_count = target_ctx->bucket_count;
+            int truncate_fd;
+
+            kmersearch_fht32_close(source_ctx);
+            kmersearch_fht32_close(target_ctx);
+
+            truncate_fd = open(target_path, O_RDWR | O_TRUNC);
+            if (truncate_fd < 0)
+            {
+                MemoryContextSwitchTo(old_context);
+                MemoryContextDelete(merge_context);
+                ereport(ERROR,
+                        (errcode_for_file_access(),
+                         errmsg("could not truncate target file: %m")));
+            }
+            close(truncate_fd);
+
+            target_ctx = kmersearch_fht32_create(target_path, saved_bucket_count);
+        }
+
+        hash_seq_init(&hash_seq, merge_htab);
+        while ((entry = (KmerFreqEntry32 *) hash_seq_search(&hash_seq)) != NULL)
+        {
+            kmersearch_fht32_add(target_ctx, entry->uintkey, entry->appearance_nrow);
+        }
+
+        kmersearch_fht32_close(target_ctx);
+
+        MemoryContextSwitchTo(old_context);
+        MemoryContextDelete(merge_context);
+    }
+    else
+    {
+        kmersearch_fht32_iterator_init(&iter, source_ctx);
+        while (kmersearch_fht32_iterate(&iter, &uintkey, &appearance_nrow))
+        {
+            kmersearch_fht32_add(target_ctx, uintkey, appearance_nrow);
+        }
+
+        kmersearch_fht32_close(source_ctx);
+        kmersearch_fht32_close(target_ctx);
     }
 
-    kmersearch_fht32_close(source_ctx);
-    kmersearch_fht32_close(target_ctx);
-
-    /* Delete source file after successful merge */
     unlink(source_path);
 }
 
@@ -1223,7 +1470,108 @@ kmersearch_fht64_flush(FileHashTable64Context *ctx)
 }
 
 /*
+ * Bulk add from batch hash table to file hash table
+ * Reads FHT file into memory, merges with batch_hash, writes back
+ */
+void
+kmersearch_fht64_bulk_add(FileHashTable64Context *ctx, HTAB *batch_hash)
+{
+    HTAB *merge_htab;
+    HASHCTL hash_ctl;
+    MemoryContext merge_context;
+    MemoryContext old_context;
+    FileHashTableIterator64 iter;
+    uint64 uintkey;
+    uint64 appearance_nrow;
+    KmerFreqEntry64 *entry;
+    bool found;
+    HASH_SEQ_STATUS hash_seq;
+    HASH_SEQ_STATUS batch_seq;
+    void *batch_entry;
+    uint32 saved_bucket_count;
+    char saved_path[MAXPGPATH];
+    long max_entries;
+    FileHashTable64Context *new_ctx;
+
+    merge_context = AllocSetContextCreate(CurrentMemoryContext,
+                                          "FHT64 BulkAdd Context",
+                                          ALLOCSET_DEFAULT_SIZES);
+    old_context = MemoryContextSwitchTo(merge_context);
+
+    max_entries = ctx->entry_count + hash_get_num_entries(batch_hash);
+    if (max_entries < 1024)
+        max_entries = 1024;
+
+    memset(&hash_ctl, 0, sizeof(hash_ctl));
+    hash_ctl.keysize = sizeof(uint64);
+    hash_ctl.entrysize = sizeof(KmerFreqEntry64);
+    hash_ctl.hcxt = merge_context;
+
+    merge_htab = hash_create("FHT64 BulkAdd Hash",
+                             max_entries,
+                             &hash_ctl,
+                             HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
+
+    kmersearch_fht64_iterator_init(&iter, ctx);
+    while (kmersearch_fht64_iterate(&iter, &uintkey, &appearance_nrow))
+    {
+        entry = (KmerFreqEntry64 *) hash_search(merge_htab, &uintkey, HASH_ENTER, &found);
+        if (found)
+            entry->appearance_nrow += appearance_nrow;
+        else
+            entry->appearance_nrow = appearance_nrow;
+    }
+
+    hash_seq_init(&batch_seq, batch_hash);
+    while ((batch_entry = hash_seq_search(&batch_seq)) != NULL)
+    {
+        /*
+         * Cast to KmerFreqEntry64 which has the same memory layout as
+         * TempKmerFreqEntry64 for the first two fields (uint64 + uint64).
+         * While TempKmerFreqEntry64 happens to have no padding, using struct
+         * member access is more consistent and maintainable.
+         */
+        KmerFreqEntry64 *freq_entry = (KmerFreqEntry64 *)batch_entry;
+
+        entry = (KmerFreqEntry64 *) hash_search(merge_htab, &freq_entry->uintkey, HASH_ENTER, &found);
+        if (found)
+            entry->appearance_nrow += freq_entry->appearance_nrow;
+        else
+            entry->appearance_nrow = freq_entry->appearance_nrow;
+    }
+
+    saved_bucket_count = ctx->bucket_count;
+    strlcpy(saved_path, ctx->path, MAXPGPATH);
+
+    if (ftruncate(ctx->fd, 0) < 0)
+    {
+        MemoryContextSwitchTo(old_context);
+        MemoryContextDelete(merge_context);
+        ereport(ERROR,
+                (errcode_for_file_access(),
+                 errmsg("could not truncate file hash table: %m")));
+    }
+    lseek(ctx->fd, 0, SEEK_SET);
+    kmersearch_fht64_close(ctx);
+
+    new_ctx = kmersearch_fht64_create(saved_path, saved_bucket_count);
+
+    hash_seq_init(&hash_seq, merge_htab);
+    while ((entry = (KmerFreqEntry64 *) hash_seq_search(&hash_seq)) != NULL)
+    {
+        kmersearch_fht64_add(new_ctx, entry->uintkey, entry->appearance_nrow);
+    }
+
+    kmersearch_fht64_close(new_ctx);
+
+    MemoryContextSwitchTo(old_context);
+    MemoryContextDelete(merge_context);
+}
+
+/*
  * Merge source file into target file (target += source)
+ * Uses in-memory merge when sufficient memory is available,
+ * falls back to entry-by-entry processing otherwise.
  */
 void
 kmersearch_fht64_merge(const char *source_path, const char *target_path)
@@ -1233,21 +1581,115 @@ kmersearch_fht64_merge(const char *source_path, const char *target_path)
     FileHashTableIterator64 iter;
     uint64 uintkey;
     uint64 appearance_nrow;
+    Size memory_required;
+    Size memory_available;
+    bool use_inmemory_merge;
+    HTAB *merge_htab = NULL;
+    HASHCTL hash_ctl;
+    MemoryContext merge_context = NULL;
+    MemoryContext old_context;
 
     source_ctx = kmersearch_fht64_open(source_path);
     target_ctx = kmersearch_fht64_open(target_path);
 
-    /* Iterate through source and add to target */
-    kmersearch_fht64_iterator_init(&iter, source_ctx);
-    while (kmersearch_fht64_iterate(&iter, &uintkey, &appearance_nrow))
+    memory_available = (Size)maintenance_work_mem * 1024L;
+    memory_required = (source_ctx->entry_count + target_ctx->entry_count) *
+                      sizeof(KmerFreqEntry64) * FHT_HTAB_OVERHEAD_FACTOR;
+
+    use_inmemory_merge = (memory_required < memory_available / 2);
+
+    if (use_inmemory_merge)
     {
-        kmersearch_fht64_add(target_ctx, uintkey, appearance_nrow);
+        long max_entries;
+        KmerFreqEntry64 *entry;
+        bool found;
+        HASH_SEQ_STATUS hash_seq;
+
+        merge_context = AllocSetContextCreate(CurrentMemoryContext,
+                                              "FHT64 Merge Context",
+                                              ALLOCSET_DEFAULT_SIZES);
+        old_context = MemoryContextSwitchTo(merge_context);
+
+        max_entries = source_ctx->entry_count + target_ctx->entry_count;
+        if (max_entries < 1024)
+            max_entries = 1024;
+
+        memset(&hash_ctl, 0, sizeof(hash_ctl));
+        hash_ctl.keysize = sizeof(uint64);
+        hash_ctl.entrysize = sizeof(KmerFreqEntry64);
+        hash_ctl.hcxt = merge_context;
+
+        merge_htab = hash_create("FHT64 Merge Hash",
+                                 max_entries,
+                                 &hash_ctl,
+                                 HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
+
+        kmersearch_fht64_iterator_init(&iter, target_ctx);
+        while (kmersearch_fht64_iterate(&iter, &uintkey, &appearance_nrow))
+        {
+            entry = (KmerFreqEntry64 *) hash_search(merge_htab, &uintkey,
+                                                    HASH_ENTER, &found);
+            if (found)
+                entry->appearance_nrow += appearance_nrow;
+            else
+                entry->appearance_nrow = appearance_nrow;
+        }
+
+        kmersearch_fht64_iterator_init(&iter, source_ctx);
+        while (kmersearch_fht64_iterate(&iter, &uintkey, &appearance_nrow))
+        {
+            entry = (KmerFreqEntry64 *) hash_search(merge_htab, &uintkey,
+                                                    HASH_ENTER, &found);
+            if (found)
+                entry->appearance_nrow += appearance_nrow;
+            else
+                entry->appearance_nrow = appearance_nrow;
+        }
+
+        {
+            uint32 saved_bucket_count = target_ctx->bucket_count;
+            int truncate_fd;
+
+            kmersearch_fht64_close(source_ctx);
+            kmersearch_fht64_close(target_ctx);
+
+            truncate_fd = open(target_path, O_RDWR | O_TRUNC);
+            if (truncate_fd < 0)
+            {
+                MemoryContextSwitchTo(old_context);
+                MemoryContextDelete(merge_context);
+                ereport(ERROR,
+                        (errcode_for_file_access(),
+                         errmsg("could not truncate target file: %m")));
+            }
+            close(truncate_fd);
+
+            target_ctx = kmersearch_fht64_create(target_path, saved_bucket_count);
+        }
+
+        hash_seq_init(&hash_seq, merge_htab);
+        while ((entry = (KmerFreqEntry64 *) hash_seq_search(&hash_seq)) != NULL)
+        {
+            kmersearch_fht64_add(target_ctx, entry->uintkey, entry->appearance_nrow);
+        }
+
+        kmersearch_fht64_close(target_ctx);
+
+        MemoryContextSwitchTo(old_context);
+        MemoryContextDelete(merge_context);
+    }
+    else
+    {
+        kmersearch_fht64_iterator_init(&iter, source_ctx);
+        while (kmersearch_fht64_iterate(&iter, &uintkey, &appearance_nrow))
+        {
+            kmersearch_fht64_add(target_ctx, uintkey, appearance_nrow);
+        }
+
+        kmersearch_fht64_close(source_ctx);
+        kmersearch_fht64_close(target_ctx);
     }
 
-    kmersearch_fht64_close(source_ctx);
-    kmersearch_fht64_close(target_ctx);
-
-    /* Delete source file after successful merge */
     unlink(source_path);
 }
 
