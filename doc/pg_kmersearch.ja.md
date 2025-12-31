@@ -160,8 +160,9 @@ pg_kmersearchは、PostgreSQLの`SET`コマンドで設定可能な複数の設�
 | `kmersearch.force_use_parallel_highfreq_kmer_cache` | false | true/false | 高頻出k-mer検索での並列dshashキャッシュの強制使用 |
 | `kmersearch.force_simd_capability` | -1 | -1-100 | SIMDキャパビリティレベルの強制設定（-1 = 自動検出） |
 | `kmersearch.highfreq_kmer_cache_load_batch_size` | 10000 | 1000-1000000 | 高頻出k-merをキャッシュに読み込む際のバッチサイズ |
-| `kmersearch.highfreq_analysis_batch_size` | 10000 | 1000-1000000 | 高頻出k-mer解析のバッチサイズ |
 | `kmersearch.highfreq_analysis_hashtable_size` | 1000000 | 10000-100000000 | 高頻出k-mer解析用ハッシュテーブルの初期サイズ |
+
+**注意:** 高頻出k-mer解析のバッチサイズは`maintenance_work_mem`から自動計算され、リングバッファサイズは`shared_buffers`から自動計算されます。最適なI/Oパフォーマンスのための手動設定は不要です。
 
 ### 高頻出k-mer除外機能
 

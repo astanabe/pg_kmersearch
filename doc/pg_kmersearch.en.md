@@ -160,8 +160,9 @@ pg_kmersearch provides several configuration variables that can be set using Pos
 | `kmersearch.force_use_parallel_highfreq_kmer_cache` | false | true/false | Force use of dshash parallel cache for high-frequency k-mer lookups |
 | `kmersearch.force_simd_capability` | -1 | -1-100 | Force SIMD capability level (-1 = auto-detect) |
 | `kmersearch.highfreq_kmer_cache_load_batch_size` | 10000 | 1000-1000000 | Batch size for loading high-frequency k-mers into cache |
-| `kmersearch.highfreq_analysis_batch_size` | 10000 | 1000-1000000 | Batch size for high-frequency k-mer analysis |
 | `kmersearch.highfreq_analysis_hashtable_size` | 1000000 | 10000-100000000 | Initial hash table size for high-frequency k-mer analysis |
+
+**Note:** High-frequency k-mer analysis batch size is automatically calculated from `maintenance_work_mem`, and ring buffer size is calculated from `shared_buffers`. No manual configuration is required for optimal I/O performance.
 
 ### High-Frequency K-mer Exclusion
 

@@ -94,8 +94,9 @@ FROM sequences ORDER BY score DESC;
 - `kmersearch.query_kmer_cache_max_entries` (default: 50000): Query cache size
 - `kmersearch.actual_min_score_cache_max_entries` (default: 50000): Score cache size
 - `kmersearch.highfreq_kmer_cache_load_batch_size` (default: 10000): Batch size for loading high-frequency k-mers
-- `kmersearch.highfreq_analysis_batch_size` (default: 10000): Batch size for high-frequency k-mer analysis
 - `kmersearch.highfreq_analysis_hashtable_size` (default: 1000000): Initial hash table size for high-frequency k-mer analysis
+
+Note: High-frequency k-mer analysis batch size is automatically calculated from `maintenance_work_mem`, and ring buffer size is calculated from `shared_buffers`.
 
 ### System Tables and Views
 
