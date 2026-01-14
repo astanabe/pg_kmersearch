@@ -652,7 +652,7 @@ void kmersearch_free_query_kmer_cache_manager(QueryKmerCacheManager **manager);
 void kmersearch_free_actual_min_score_cache_manager(ActualMinScoreCacheManager **manager);
 
 /* Build version information */
-#define KMERSEARCH_BUILD_VERSION "1.0.2025.12.31"
+#define KMERSEARCH_BUILD_VERSION "1.0.2026.01.14"
 
 /* High-frequency k-mer cache global variables (defined in kmersearch_cache.c) */
 
@@ -824,5 +824,9 @@ void kmersearch_fht64_bulk_add(FileHashTable64Context *ctx, HTAB *batch_hash);
 void kmersearch_fht64_merge(const char *source_path, const char *target_path);
 void kmersearch_fht64_iterator_init(FileHashTableIterator64 *iter, FileHashTable64Context *ctx);
 bool kmersearch_fht64_iterate(FileHashTableIterator64 *iter, uint64 *uintkey, uint64 *appearance_nrow);
+
+/* Partition table functions (implemented in kmersearch_partition.c) */
+extern Datum kmersearch_partition_table(PG_FUNCTION_ARGS);
+extern Datum kmersearch_unpartition_table(PG_FUNCTION_ARGS);
 
 #endif   /* KMERSEARCH_H */

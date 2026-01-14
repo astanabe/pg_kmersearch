@@ -710,6 +710,11 @@ RETURNS void
 AS 'MODULE_PATHNAME', 'kmersearch_partition_table'
 LANGUAGE C;
 
+CREATE FUNCTION kmersearch_unpartition_table(table_name text, tablespace_name text DEFAULT NULL)
+RETURNS void
+AS 'MODULE_PATHNAME', 'kmersearch_unpartition_table'
+LANGUAGE C;
+
 -- Temporary file cleanup function
 CREATE FUNCTION kmersearch_delete_tempfiles()
 RETURNS TABLE(

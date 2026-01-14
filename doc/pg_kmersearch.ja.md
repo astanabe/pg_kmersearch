@@ -586,6 +586,35 @@ SELECT kmersearch_partition_table('large_sequences', 16, NULL);
 
 注意：PostgreSQLはパーティションテーブルに対して'pg_default'テーブルスペースを明示的に指定することを許可しません。デフォルトテーブルスペースを使用する場合は、NULLを指定するかパラメータを省略してください。
 
+#### kmersearch_unpartition_table()
+ハッシュパーティションテーブルを通常の（非パーティション）テーブルに戻します：
+
+```sql
+-- パーティションテーブルを通常テーブルに変換
+SELECT kmersearch_unpartition_table('sequences');
+
+-- テーブルスペースを指定して通常テーブルを作成
+SELECT kmersearch_unpartition_table(
+    'sequences',        -- テーブル名
+    'fast_ssd'         -- テーブルスペース名（省略可能）
+);
+
+-- NULLを使用して元のテーブルのテーブルスペースを明示的に使用
+SELECT kmersearch_unpartition_table('sequences', NULL);
+```
+
+要件：
+- テーブルはパーティションテーブルである必要があります（relkind = 'p'）
+- テーブルは正確に1つのDNA2またはDNA4カラムを持つ必要があります
+- テーブルは少なくとも1つのパーティションを持つ必要があります
+- 移行中の一時データ用に十分なディスク容量が必要
+
+機能：
+- 変換中すべてのデータを保持
+- 高頻度k-mer分析メタデータを保持
+- 移行中の進捗レポート
+- エラー時の自動クリーンアップ
+
 ### ユーティリティ関数
 
 #### kmersearch_simd_capability()

@@ -264,6 +264,134 @@ RESET kmersearch.kmer_size;
 RESET kmersearch.max_appearance_rate;
 RESET kmersearch.max_appearance_nrow;
 
+-- Test 22: Test unpartition_table function
+-- Create and partition a table, then unpartition it
+CREATE TABLE test_unpart (
+    id serial PRIMARY KEY,
+    sequence dna2 NOT NULL
+);
+
+INSERT INTO test_unpart (sequence) VALUES
+    ('ATCGATCGATCGATCG'),
+    ('GCTAGCTAGCTAGCTA'),
+    ('TTTTTTTTTTTTTTTT'),
+    ('AAAAAAAAAAAAAAAA'),
+    ('CCCCCCCCCCCCCCCC'),
+    ('GGGGGGGGGGGGGGGG'),
+    ('ATGCATGCATGCATGC'),
+    ('CGCGCGCGCGCGCGCG');
+
+-- Count before partition
+SELECT COUNT(*) as rows_before FROM test_unpart;
+
+-- Partition the table
+SELECT kmersearch_partition_table('test_unpart', 4);
+
+-- Verify it's partitioned
+SELECT c.relkind as relkind_after_partition
+FROM pg_class c
+WHERE c.oid = 'test_unpart'::regclass;
+
+-- Count partitions
+SELECT COUNT(*) as partition_count
+FROM pg_inherits i
+WHERE i.inhparent = 'test_unpart'::regclass;
+
+-- Unpartition the table
+SET client_min_messages = NOTICE;
+\set VERBOSITY terse
+SELECT kmersearch_unpartition_table('test_unpart');
+\set VERBOSITY default
+SET client_min_messages = WARNING;
+
+-- Verify it's now a regular table
+SELECT c.relkind as relkind_after_unpartition
+FROM pg_class c
+WHERE c.oid = 'test_unpart'::regclass;
+
+-- Verify data was preserved
+SELECT COUNT(*) as rows_after FROM test_unpart;
+
+-- Verify no partitions exist
+SELECT COUNT(*) as remaining_partitions
+FROM pg_inherits i
+WHERE i.inhparent = 'test_unpart'::regclass;
+
+-- Test 23: Error case - try to unpartition a non-partitioned table
+SELECT kmersearch_unpartition_table('test_unpart');
+
+-- Test 24: Test unpartition with tablespace parameter
+CREATE TABLE test_unpart_tablespace (
+    id serial PRIMARY KEY,
+    sequence dna2 NOT NULL
+);
+
+INSERT INTO test_unpart_tablespace (sequence) VALUES
+    ('ATCGATCGATCGATCG'),
+    ('GCTAGCTAGCTAGCTA');
+
+-- Partition and then unpartition with tablespace
+SELECT kmersearch_partition_table('test_unpart_tablespace', 2);
+SELECT kmersearch_unpartition_table('test_unpart_tablespace', 'pg_default');
+
+-- Verify it's a regular table
+SELECT c.relkind as relkind_with_tablespace
+FROM pg_class c
+WHERE c.oid = 'test_unpart_tablespace'::regclass;
+
+-- Verify data preserved
+SELECT COUNT(*) as data_count FROM test_unpart_tablespace;
+
+-- Test 25: Unpartition table with high-frequency k-mer analysis
+CREATE TABLE test_unpart_highfreq (
+    id serial PRIMARY KEY,
+    sequence dna2 NOT NULL
+);
+
+INSERT INTO test_unpart_highfreq (sequence)
+SELECT
+    CASE (i % 5)
+        WHEN 0 THEN 'ATCGATCGATCGATCGATCGATCGATCGATCG'::dna2
+        WHEN 1 THEN 'ATCGATCGATCGATCGATCGATCGATCGATCG'::dna2
+        WHEN 2 THEN 'GCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTA'::dna2
+        WHEN 3 THEN 'TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT'::dna2
+        ELSE 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'::dna2
+    END
+FROM generate_series(1, 50) i;
+
+-- Partition the table
+SELECT kmersearch_partition_table('test_unpart_highfreq', 4);
+
+-- Perform high-frequency analysis on partitioned table
+SET kmersearch.kmer_size = 8;
+SET kmersearch.max_appearance_rate = 0.25;
+SET max_parallel_maintenance_workers = 1;
+SELECT
+    total_rows,
+    highfreq_kmers_count
+FROM kmersearch_perform_highfreq_analysis('test_unpart_highfreq', 'sequence');
+SET max_parallel_maintenance_workers = 2;
+
+-- Verify analysis exists
+SELECT COUNT(*) > 0 as has_analysis
+FROM kmersearch_highfreq_kmer_meta
+WHERE table_oid = 'test_unpart_highfreq'::regclass;
+
+-- Unpartition the table
+SELECT kmersearch_unpartition_table('test_unpart_highfreq');
+
+-- Verify analysis was preserved
+SELECT COUNT(*) > 0 as analysis_preserved
+FROM kmersearch_highfreq_kmer_meta
+WHERE table_oid = 'test_unpart_highfreq'::regclass;
+
+-- Clean up analysis
+SELECT * FROM kmersearch_undo_highfreq_analysis('test_unpart_highfreq', 'sequence');
+
+-- Reset parameters
+RESET kmersearch.kmer_size;
+RESET kmersearch.max_appearance_rate;
+
 -- Cleanup
 DROP TABLE IF EXISTS test_sequences CASCADE;
 DROP TABLE IF EXISTS test_sequences_dna4 CASCADE;
@@ -274,6 +402,9 @@ DROP TABLE IF EXISTS test_tablespace_table CASCADE;
 DROP TABLE IF EXISTS test_null_tablespace CASCADE;
 DROP TABLE IF EXISTS test_highfreq_regular CASCADE;
 DROP TABLE IF EXISTS test_highfreq_partitioned CASCADE;
+DROP TABLE IF EXISTS test_unpart CASCADE;
+DROP TABLE IF EXISTS test_unpart_tablespace CASCADE;
+DROP TABLE IF EXISTS test_unpart_highfreq CASCADE;
 
 DROP EXTENSION pg_kmersearch CASCADE;
 SET client_min_messages = NOTICE;

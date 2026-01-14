@@ -798,6 +798,288 @@ preserve_highfreq_analysis(Oid old_table_oid, const char *new_table_name)
     elog(NOTICE, "High-frequency k-mer analysis preserved for partitioned table");
 }
 
+PG_FUNCTION_INFO_V1(kmersearch_unpartition_table);
 
+static void validate_table_for_unpartitioning(Oid table_oid, char **dna_column_name, Oid *dna_column_type);
+static void create_regular_table_from_partitioned(const char *temp_table_name, const char *table_name, const char *tablespace_name);
+static void migrate_data_from_partitions(const char *temp_table_name, Oid table_oid);
+static void replace_partitioned_with_regular(const char *table_name, const char *temp_table_name);
 
+/*
+ * validate_table_for_unpartitioning
+ *
+ * Validate that the table is a partitioned table suitable for unpartitioning
+ */
+static void
+validate_table_for_unpartitioning(Oid table_oid, char **dna_column_name, Oid *dna_column_type)
+{
+    Relation rel;
+    TupleDesc tupdesc;
+    int natts;
+    int dna_column_count = 0;
+    int i;
+    Oid dna2_type_oid;
+    Oid dna4_type_oid;
+    List *partition_oids;
+
+    rel = table_open(table_oid, AccessShareLock);
+
+    if (rel->rd_rel->relkind != RELKIND_PARTITIONED_TABLE)
+    {
+        table_close(rel, AccessShareLock);
+        ereport(ERROR,
+                (errcode(ERRCODE_WRONG_OBJECT_TYPE),
+                 errmsg("table \"%s\" is not a partitioned table",
+                        RelationGetRelationName(rel))));
+    }
+
+    partition_oids = kmersearch_get_partition_oids(table_oid);
+    if (list_length(partition_oids) == 0)
+    {
+        table_close(rel, AccessShareLock);
+        list_free(partition_oids);
+        ereport(ERROR,
+                (errcode(ERRCODE_INVALID_TABLE_DEFINITION),
+                 errmsg("partitioned table has no partitions")));
+    }
+    list_free(partition_oids);
+
+    dna2_type_oid = TypenameGetTypid("dna2");
+    dna4_type_oid = TypenameGetTypid("dna4");
+
+    tupdesc = RelationGetDescr(rel);
+    natts = tupdesc->natts;
+
+    for (i = 0; i < natts; i++)
+    {
+        Form_pg_attribute attr = TupleDescAttr(tupdesc, i);
+
+        if (attr->attisdropped)
+            continue;
+
+        if (attr->atttypid == dna2_type_oid || attr->atttypid == dna4_type_oid)
+        {
+            dna_column_count++;
+            if (dna_column_count == 1)
+            {
+                *dna_column_name = pstrdup(NameStr(attr->attname));
+                *dna_column_type = attr->atttypid;
+            }
+        }
+    }
+
+    table_close(rel, AccessShareLock);
+
+    if (dna_column_count == 0)
+        ereport(ERROR,
+                (errcode(ERRCODE_WRONG_OBJECT_TYPE),
+                 errmsg("table must have at least one DNA2 or DNA4 column")));
+    else if (dna_column_count > 1)
+        ereport(ERROR,
+                (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+                 errmsg("table has %d DNA2/DNA4 columns, but exactly one is required",
+                        dna_column_count)));
+}
+
+/*
+ * create_regular_table_from_partitioned
+ *
+ * Create a non-partitioned table with same structure as the partitioned table
+ */
+static void
+create_regular_table_from_partitioned(const char *temp_table_name, const char *table_name, const char *tablespace_name)
+{
+    StringInfoData query;
+    int ret;
+    Oid table_oid;
+    Oid tablespace_oid;
+    char *target_tablespace = NULL;
+
+    initStringInfo(&query);
+
+    if (tablespace_name != NULL && strlen(tablespace_name) > 0)
+    {
+        target_tablespace = (char *)tablespace_name;
+    }
+    else
+    {
+        table_oid = RangeVarGetRelid(makeRangeVar(NULL, (char *)table_name, -1), NoLock, false);
+        tablespace_oid = get_rel_tablespace(table_oid);
+        if (OidIsValid(tablespace_oid))
+            target_tablespace = get_tablespace_name(tablespace_oid);
+    }
+
+    appendStringInfo(&query,
+        "CREATE TABLE %s (LIKE %s INCLUDING DEFAULTS INCLUDING GENERATED "
+        "INCLUDING IDENTITY INCLUDING STATISTICS)",
+        temp_table_name, table_name);
+
+    if (target_tablespace)
+        appendStringInfo(&query, " TABLESPACE %s", target_tablespace);
+
+    ret = SPI_execute(query.data, false, 0);
+    if (ret != SPI_OK_UTILITY)
+        elog(ERROR, "CREATE TABLE failed: %s", SPI_result_code_string(ret));
+
+    pfree(query.data);
+    if (tablespace_name == NULL && target_tablespace != NULL)
+        pfree(target_tablespace);
+}
+
+/*
+ * migrate_data_from_partitions
+ *
+ * Migrate data from all partitions to the new regular table
+ */
+static void
+migrate_data_from_partitions(const char *temp_table_name, Oid table_oid)
+{
+    StringInfoData query;
+    int ret;
+    List *partition_oids;
+    ListCell *lc;
+    int partition_count;
+    int current_partition = 0;
+    uint64 total_rows = 0;
+
+    initStringInfo(&query);
+
+    partition_oids = kmersearch_get_partition_oids(table_oid);
+    partition_count = list_length(partition_oids);
+
+    ereport(INFO,
+            (errmsg("Starting unpartition data migration from %d partitions",
+                    partition_count)));
+
+    foreach(lc, partition_oids)
+    {
+        Oid partition_oid = lfirst_oid(lc);
+        char *partition_name = get_rel_name(partition_oid);
+        uint64 rows_migrated;
+
+        current_partition++;
+
+        resetStringInfo(&query);
+        appendStringInfo(&query,
+            "INSERT INTO %s SELECT * FROM %s",
+            temp_table_name, partition_name);
+
+        ret = SPI_execute(query.data, false, 0);
+        if (ret != SPI_OK_INSERT)
+            elog(ERROR, "Data migration from partition %s failed: %s",
+                 partition_name, SPI_result_code_string(ret));
+
+        rows_migrated = SPI_processed;
+        total_rows += rows_migrated;
+
+        ereport(INFO,
+                (errmsg("Migrated %lu rows from partition %s (%d/%d)",
+                        rows_migrated, partition_name, current_partition, partition_count)));
+
+        pfree(partition_name);
+    }
+
+    list_free(partition_oids);
+    pfree(query.data);
+
+    ereport(INFO,
+            (errmsg("Migration completed: %lu total rows migrated", total_rows)));
+}
+
+/*
+ * replace_partitioned_with_regular
+ *
+ * Drop the partitioned table and rename the temporary regular table
+ */
+static void
+replace_partitioned_with_regular(const char *table_name, const char *temp_table_name)
+{
+    StringInfoData query;
+    int ret;
+
+    initStringInfo(&query);
+
+    appendStringInfo(&query, "DROP TABLE %s CASCADE", table_name);
+    ret = SPI_execute(query.data, false, 0);
+    if (ret != SPI_OK_UTILITY)
+        elog(ERROR, "DROP TABLE failed: %s", SPI_result_code_string(ret));
+
+    resetStringInfo(&query);
+    appendStringInfo(&query, "ALTER TABLE %s RENAME TO %s", temp_table_name, table_name);
+    ret = SPI_execute(query.data, false, 0);
+    if (ret != SPI_OK_UTILITY)
+        elog(ERROR, "ALTER TABLE RENAME failed: %s", SPI_result_code_string(ret));
+
+    pfree(query.data);
+}
+
+/*
+ * kmersearch_unpartition_table
+ *
+ * Convert a hash partitioned table back to a regular (non-partitioned) table
+ */
+Datum
+kmersearch_unpartition_table(PG_FUNCTION_ARGS)
+{
+    text *table_name_text = PG_GETARG_TEXT_PP(0);
+    text *tablespace_name_text = PG_ARGISNULL(1) ? NULL : PG_GETARG_TEXT_PP(1);
+    char *table_name;
+    char *tablespace_name = NULL;
+    Oid table_oid;
+    Oid dna_column_type;
+    char *dna_column_name = NULL;
+    char temp_table_name[NAMEDATALEN];
+    int ret;
+    LOCKMODE lockmode = AccessExclusiveLock;
+
+    table_name = text_to_cstring(table_name_text);
+    table_oid = RangeVarGetRelid(makeRangeVar(NULL, table_name, -1), lockmode, false);
+
+    if (tablespace_name_text != NULL)
+        tablespace_name = text_to_cstring(tablespace_name_text);
+
+    validate_table_for_unpartitioning(table_oid, &dna_column_name, &dna_column_type);
+
+    snprintf(temp_table_name, sizeof(temp_table_name),
+             "%s_unpart_%ld", table_name, (long)(GetCurrentTimestamp() / 1000));
+
+    if ((ret = SPI_connect()) != SPI_OK_CONNECT)
+        elog(ERROR, "SPI_connect failed: %s", SPI_result_code_string(ret));
+
+    PG_TRY();
+    {
+        create_regular_table_from_partitioned(temp_table_name, table_name, tablespace_name);
+
+        migrate_data_from_partitions(temp_table_name, table_oid);
+
+        replace_partitioned_with_regular(table_name, temp_table_name);
+
+        preserve_highfreq_analysis(table_oid, table_name);
+
+        ereport(INFO,
+                (errmsg("Unpartition completed successfully for table '%s'", table_name)));
+
+        SPI_finish();
+    }
+    PG_CATCH();
+    {
+        StringInfoData cleanup_query;
+
+        initStringInfo(&cleanup_query);
+        appendStringInfo(&cleanup_query, "DROP TABLE IF EXISTS %s", temp_table_name);
+        SPI_execute(cleanup_query.data, false, 0);
+        pfree(cleanup_query.data);
+
+        SPI_finish();
+        PG_RE_THROW();
+    }
+    PG_END_TRY();
+
+    if (dna_column_name)
+        pfree(dna_column_name);
+    if (tablespace_name)
+        pfree(tablespace_name);
+
+    PG_RETURN_VOID();
+}
 

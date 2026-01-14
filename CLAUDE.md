@@ -205,6 +205,7 @@ Note: High-frequency k-mer analysis batch size is automatically calculated from 
   - `kmersearch_simd_capability()`: Check SIMD support level
   - `kmersearch_show_buildno()`: Display build version information
   - `kmersearch_partition_table()`: Convert table to hash partitions
+  - `kmersearch_unpartition_table()`: Convert partitioned table back to regular table
   - `kmersearch_delete_tempfiles()`: Clean up temporary files from analysis operations
 - **Cache Management**:
   - `kmersearch_query_kmer_cache_stats()`: Query-kmer cache statistics

@@ -389,6 +389,233 @@ SELECT * FROM kmersearch_undo_highfreq_analysis('test_highfreq_partitioned', 'se
 RESET kmersearch.kmer_size;
 RESET kmersearch.max_appearance_rate;
 RESET kmersearch.max_appearance_nrow;
+-- Test 22: Test unpartition_table function
+-- Create and partition a table, then unpartition it
+CREATE TABLE test_unpart (
+    id serial PRIMARY KEY,
+    sequence dna2 NOT NULL
+);
+INSERT INTO test_unpart (sequence) VALUES
+    ('ATCGATCGATCGATCG'),
+    ('GCTAGCTAGCTAGCTA'),
+    ('TTTTTTTTTTTTTTTT'),
+    ('AAAAAAAAAAAAAAAA'),
+    ('CCCCCCCCCCCCCCCC'),
+    ('GGGGGGGGGGGGGGGG'),
+    ('ATGCATGCATGCATGC'),
+    ('CGCGCGCGCGCGCGCG');
+-- Count before partition
+SELECT COUNT(*) as rows_before FROM test_unpart;
+ rows_before 
+-------------
+           8
+(1 row)
+
+-- Partition the table
+SELECT kmersearch_partition_table('test_unpart', 4);
+INFO:  Starting partition table data migration: 8 rows to migrate in batches of 16384
+INFO:  Migration completed: 100% (8 / 8 rows migrated)
+INFO:  Partition table creation completed successfully for table 'test_unpart' with 4 partitions
+ kmersearch_partition_table 
+----------------------------
+ 
+(1 row)
+
+-- Verify it's partitioned
+SELECT c.relkind as relkind_after_partition
+FROM pg_class c
+WHERE c.oid = 'test_unpart'::regclass;
+ relkind_after_partition 
+-------------------------
+ p
+(1 row)
+
+-- Count partitions
+SELECT COUNT(*) as partition_count
+FROM pg_inherits i
+WHERE i.inhparent = 'test_unpart'::regclass;
+ partition_count 
+-----------------
+               4
+(1 row)
+
+-- Unpartition the table
+SET client_min_messages = NOTICE;
+\set VERBOSITY terse
+SELECT kmersearch_unpartition_table('test_unpart');
+INFO:  Starting unpartition data migration from 4 partitions
+INFO:  Migrated 4 rows from partition test_unpart_0 (1/4)
+INFO:  Migrated 3 rows from partition test_unpart_1 (2/4)
+INFO:  Migrated 1 rows from partition test_unpart_2 (3/4)
+INFO:  Migrated 0 rows from partition test_unpart_3 (4/4)
+INFO:  Migration completed: 8 total rows migrated
+INFO:  Unpartition completed successfully for table 'test_unpart'
+ kmersearch_unpartition_table 
+------------------------------
+ 
+(1 row)
+
+\set VERBOSITY default
+SET client_min_messages = WARNING;
+-- Verify it's now a regular table
+SELECT c.relkind as relkind_after_unpartition
+FROM pg_class c
+WHERE c.oid = 'test_unpart'::regclass;
+ relkind_after_unpartition 
+---------------------------
+ r
+(1 row)
+
+-- Verify data was preserved
+SELECT COUNT(*) as rows_after FROM test_unpart;
+ rows_after 
+------------
+          8
+(1 row)
+
+-- Verify no partitions exist
+SELECT COUNT(*) as remaining_partitions
+FROM pg_inherits i
+WHERE i.inhparent = 'test_unpart'::regclass;
+ remaining_partitions 
+----------------------
+                    0
+(1 row)
+
+-- Test 23: Error case - try to unpartition a non-partitioned table
+SELECT kmersearch_unpartition_table('test_unpart');
+ERROR:  table "test_unpart" is not a partitioned table
+-- Test 24: Test unpartition with tablespace parameter
+CREATE TABLE test_unpart_tablespace (
+    id serial PRIMARY KEY,
+    sequence dna2 NOT NULL
+);
+INSERT INTO test_unpart_tablespace (sequence) VALUES
+    ('ATCGATCGATCGATCG'),
+    ('GCTAGCTAGCTAGCTA');
+-- Partition and then unpartition with tablespace
+SELECT kmersearch_partition_table('test_unpart_tablespace', 2);
+INFO:  Starting partition table data migration: 2 rows to migrate in batches of 16384
+INFO:  Migration completed: 100% (2 / 2 rows migrated)
+INFO:  Partition table creation completed successfully for table 'test_unpart_tablespace' with 2 partitions
+ kmersearch_partition_table 
+----------------------------
+ 
+(1 row)
+
+SELECT kmersearch_unpartition_table('test_unpart_tablespace', 'pg_default');
+INFO:  Starting unpartition data migration from 2 partitions
+INFO:  Migrated 2 rows from partition test_unpart_tablespace_0 (1/2)
+INFO:  Migrated 0 rows from partition test_unpart_tablespace_1 (2/2)
+INFO:  Migration completed: 2 total rows migrated
+INFO:  Unpartition completed successfully for table 'test_unpart_tablespace'
+ kmersearch_unpartition_table 
+------------------------------
+ 
+(1 row)
+
+-- Verify it's a regular table
+SELECT c.relkind as relkind_with_tablespace
+FROM pg_class c
+WHERE c.oid = 'test_unpart_tablespace'::regclass;
+ relkind_with_tablespace 
+-------------------------
+ r
+(1 row)
+
+-- Verify data preserved
+SELECT COUNT(*) as data_count FROM test_unpart_tablespace;
+ data_count 
+------------
+          2
+(1 row)
+
+-- Test 25: Unpartition table with high-frequency k-mer analysis
+CREATE TABLE test_unpart_highfreq (
+    id serial PRIMARY KEY,
+    sequence dna2 NOT NULL
+);
+INSERT INTO test_unpart_highfreq (sequence)
+SELECT
+    CASE (i % 5)
+        WHEN 0 THEN 'ATCGATCGATCGATCGATCGATCGATCGATCG'::dna2
+        WHEN 1 THEN 'ATCGATCGATCGATCGATCGATCGATCGATCG'::dna2
+        WHEN 2 THEN 'GCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTA'::dna2
+        WHEN 3 THEN 'TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT'::dna2
+        ELSE 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'::dna2
+    END
+FROM generate_series(1, 50) i;
+-- Partition the table
+SELECT kmersearch_partition_table('test_unpart_highfreq', 4);
+INFO:  Starting partition table data migration: 50 rows to migrate in batches of 16384
+INFO:  Migration completed: 100% (50 / 50 rows migrated)
+INFO:  Partition table creation completed successfully for table 'test_unpart_highfreq' with 4 partitions
+ kmersearch_partition_table 
+----------------------------
+ 
+(1 row)
+
+-- Perform high-frequency analysis on partitioned table
+SET kmersearch.kmer_size = 8;
+SET kmersearch.max_appearance_rate = 0.25;
+SET max_parallel_maintenance_workers = 1;
+SELECT
+    total_rows,
+    highfreq_kmers_count
+FROM kmersearch_perform_highfreq_analysis('test_unpart_highfreq', 'sequence');
+INFO:  Starting high-frequency k-mer analysis: 50 rows in 3 blocks with 1 parallel workers
+INFO:  Batch 1 completed: 50 / 50 rows processed of column sequence in table test_unpart_highfreq (final)
+INFO:  Parallel scan completed. Starting aggregation of results.
+INFO:  Writing 25 high-frequency k-mers to kmersearch_highfreq_kmer table...
+INFO:  Successfully wrote 25 high-frequency k-mers to database.
+ total_rows | highfreq_kmers_count 
+------------+----------------------
+         50 |                   25
+(1 row)
+
+SET max_parallel_maintenance_workers = 2;
+-- Verify analysis exists
+SELECT COUNT(*) > 0 as has_analysis
+FROM kmersearch_highfreq_kmer_meta
+WHERE table_oid = 'test_unpart_highfreq'::regclass;
+ has_analysis 
+--------------
+ t
+(1 row)
+
+-- Unpartition the table
+SELECT kmersearch_unpartition_table('test_unpart_highfreq');
+INFO:  Starting unpartition data migration from 4 partitions
+INFO:  Migrated 20 rows from partition test_unpart_highfreq_0 (1/4)
+INFO:  Migrated 0 rows from partition test_unpart_highfreq_1 (2/4)
+INFO:  Migrated 20 rows from partition test_unpart_highfreq_2 (3/4)
+INFO:  Migrated 10 rows from partition test_unpart_highfreq_3 (4/4)
+INFO:  Migration completed: 50 total rows migrated
+INFO:  Unpartition completed successfully for table 'test_unpart_highfreq'
+ kmersearch_unpartition_table 
+------------------------------
+ 
+(1 row)
+
+-- Verify analysis was preserved
+SELECT COUNT(*) > 0 as analysis_preserved
+FROM kmersearch_highfreq_kmer_meta
+WHERE table_oid = 'test_unpart_highfreq'::regclass;
+ analysis_preserved 
+--------------------
+ t
+(1 row)
+
+-- Clean up analysis
+SELECT * FROM kmersearch_undo_highfreq_analysis('test_unpart_highfreq', 'sequence');
+ dropped_analyses | dropped_highfreq_kmers | freed_storage_bytes 
+------------------+------------------------+---------------------
+                1 |                     25 |                1600
+(1 row)
+
+-- Reset parameters
+RESET kmersearch.kmer_size;
+RESET kmersearch.max_appearance_rate;
 -- Cleanup
 DROP TABLE IF EXISTS test_sequences CASCADE;
 DROP TABLE IF EXISTS test_sequences_dna4 CASCADE;
@@ -399,5 +626,8 @@ DROP TABLE IF EXISTS test_tablespace_table CASCADE;
 DROP TABLE IF EXISTS test_null_tablespace CASCADE;
 DROP TABLE IF EXISTS test_highfreq_regular CASCADE;
 DROP TABLE IF EXISTS test_highfreq_partitioned CASCADE;
+DROP TABLE IF EXISTS test_unpart CASCADE;
+DROP TABLE IF EXISTS test_unpart_tablespace CASCADE;
+DROP TABLE IF EXISTS test_unpart_highfreq CASCADE;
 DROP EXTENSION pg_kmersearch CASCADE;
 SET client_min_messages = NOTICE;

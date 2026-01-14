@@ -586,6 +586,35 @@ Requirements:
 
 Note: PostgreSQL does not allow explicitly specifying 'pg_default' tablespace for partitioned tables. Use NULL or omit the parameter to use the default tablespace.
 
+#### kmersearch_unpartition_table()
+Converts a hash-partitioned table back to a regular (non-partitioned) table:
+
+```sql
+-- Convert a partitioned table back to regular table
+SELECT kmersearch_unpartition_table('sequences');
+
+-- Specify a tablespace for the regular table
+SELECT kmersearch_unpartition_table(
+    'sequences',        -- table name
+    'fast_ssd'         -- tablespace name (optional)
+);
+
+-- Use NULL to explicitly use the source table's tablespace
+SELECT kmersearch_unpartition_table('sequences', NULL);
+```
+
+Requirements:
+- Table must be a partitioned table (relkind = 'p')
+- Table must have exactly one DNA2 or DNA4 column
+- Table must have at least one partition
+- Sufficient disk space for temporary data during migration
+
+Features:
+- Preserves all data during conversion
+- Preserves high-frequency k-mer analysis metadata
+- Progress reporting during migration
+- Automatic cleanup on error
+
 ### Utility Functions
 
 #### kmersearch_simd_capability()
