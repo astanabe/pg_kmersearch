@@ -277,12 +277,16 @@ create_partition_table(const char *temp_table_name, const char *table_name,
     }
     
     /* Create parent partitioned table */
-    /* Note: We use INCLUDING DEFAULTS INCLUDING GENERATED INCLUDING IDENTITY INCLUDING STATISTICS
-     * instead of INCLUDING ALL to avoid constraint issues with partitioning.
+    /* Note: We use specific INCLUDING clauses instead of INCLUDING ALL
+     * to avoid constraint issues with partitioning.
      * Constraints will be handled separately if needed. */
     appendStringInfo(&query,
         "CREATE TABLE %s (LIKE %s INCLUDING DEFAULTS INCLUDING GENERATED "
-        "INCLUDING IDENTITY INCLUDING STATISTICS) PARTITION BY HASH (%s)",
+        "INCLUDING IDENTITY INCLUDING STATISTICS INCLUDING STORAGE"
+#if PG_VERSION_NUM >= 140000
+        " INCLUDING COMPRESSION"
+#endif
+        ") PARTITION BY HASH (%s)",
         temp_table_name, table_name, dna_column_name);
         
     if (target_tablespace)
@@ -911,7 +915,11 @@ create_regular_table_from_partitioned(const char *temp_table_name, const char *t
 
     appendStringInfo(&query,
         "CREATE TABLE %s (LIKE %s INCLUDING DEFAULTS INCLUDING GENERATED "
-        "INCLUDING IDENTITY INCLUDING STATISTICS)",
+        "INCLUDING IDENTITY INCLUDING STATISTICS INCLUDING STORAGE"
+#if PG_VERSION_NUM >= 140000
+        " INCLUDING COMPRESSION"
+#endif
+        ")",
         temp_table_name, table_name);
 
     if (target_tablespace)
