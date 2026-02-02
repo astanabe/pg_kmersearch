@@ -984,6 +984,252 @@ SELECT kmersearch_parallel_highfreq_kmer_cache_free('sequences', 'dna_seq');
 - **ロック管理**: すべての操作での適切なdshash_release_lock()呼び出し
 - **プロセス検出**: 適切なワーカー識別のためのIsParallelWorker()
 
+## パフォーマンスチューニング
+
+このセクションでは、pg_kmersearchのパフォーマンスを最適化するために推奨されるOSおよびPostgreSQLのパラメータ設定について説明します。
+
+### OSパラメータ設定
+
+#### 共有メモリ
+
+```bash
+# /etc/sysctl.conf または /etc/sysctl.d/99-postgresql.conf
+
+# 共有メモリの最大サイズ（PostgreSQLのshared_buffersより大きく設定）
+kernel.shmmax = 17179869184  # 16GB（実際のRAMに応じて調整）
+kernel.shmall = 4194304      # shmmax / PAGE_SIZE
+
+# セマフォ設定
+kernel.sem = 250 32000 100 128
+```
+
+#### Huge Pages（推奨）
+
+大量のメモリを使用する場合に効果的です。GINインデックスは大きくなることがあるため、Huge Pagesの効果が高いです。
+
+```bash
+# Huge Pagesの有効化
+vm.nr_hugepages = 5120  # shared_buffers / 2MB（Huge Pageサイズ）
+
+# 確認コマンド
+grep Huge /proc/meminfo
+```
+
+#### メモリ管理
+
+```bash
+# スワップの使用を抑制（メモリに余裕がある場合）
+vm.swappiness = 10
+
+# dirty pageのフラッシュ設定
+vm.dirty_background_ratio = 5
+vm.dirty_ratio = 10
+
+# または絶対値で指定（大容量RAMの場合に推奨）
+vm.dirty_background_bytes = 268435456  # 256MB
+vm.dirty_bytes = 1073741824            # 1GB
+
+# メモリオーバーコミットの設定
+vm.overcommit_memory = 2
+vm.overcommit_ratio = 90
+```
+
+#### I/O関連
+
+```bash
+# ファイルディスクリプタの上限
+fs.file-max = 2097152
+
+# AIO（非同期I/O）の最大リクエスト数
+fs.aio-max-nr = 1048576
+```
+
+#### ディスクスケジューラ（SSD使用時）
+
+```bash
+# NVMe/SSD用にnoopまたはmqスケジューラを設定
+echo none > /sys/block/nvme0n1/queue/scheduler
+# または
+echo mq-deadline > /sys/block/sda/queue/scheduler
+
+# read-aheadの調整（シーケンシャル読み込みが多い場合）
+blockdev --setra 4096 /dev/nvme0n1
+```
+
+#### ulimit設定（PostgreSQLユーザー用）
+
+```bash
+# /etc/security/limits.d/postgresql.conf
+postgres soft nofile 65536
+postgres hard nofile 65536
+postgres soft nproc 65536
+postgres hard nproc 65536
+postgres soft memlock unlimited
+postgres hard memlock unlimited  # Huge Pages使用時に必要
+```
+
+#### NUMA設定（マルチソケットCPUの場合）
+
+```bash
+# NUMAインターリーブを無効化してローカルメモリを優先
+# PostgreSQL起動時に指定
+numactl --interleave=all postgres -D /var/lib/pgsql/data
+```
+
+#### 設定の適用
+
+```bash
+# 設定を即時適用
+sudo sysctl -p /etc/sysctl.d/99-postgresql.conf
+
+# 永続化のため再起動後も有効
+sudo systemctl restart postgresql
+```
+
+### PostgreSQLパラメータ設定
+
+以下は188GB RAMを搭載したシステム向けの推奨設定例です。環境に応じて値を調整してください。
+
+#### メモリ設定
+
+```conf
+# メモリ設定（188GB RAMシステムの例）
+shared_buffers = 32GB                   # RAMの17〜25%（GINインデックスキャッシュに重要）
+temp_buffers = 1GB
+effective_cache_size = 140GB            # おおよそ RAM - shared_buffers
+work_mem = 2GB                          # 並列ワーカー数を考慮
+maintenance_work_mem = 8GB              # GINインデックス作成用
+min_dynamic_shared_memory = 1GB
+hash_mem_multiplier = 2.0               # ハッシュ結合用メモリ倍率
+wal_buffers = 256MB                     # shared_buffersの約1/32
+```
+
+**重要：work_memの考慮事項**
+
+最大メモリ使用量は以下の式で計算できます：
+```
+最大使用メモリ ≒ work_mem × max_connections × max_parallel_workers_per_gather
+```
+
+例えば、8GB × 100接続 × 8並列 = 6.4TBの使用可能性があります。work_memは2GB程度に抑え、特定のクエリでは個別に設定してください：
+
+```sql
+SET work_mem = '8GB';
+-- 重いクエリを実行
+RESET work_mem;
+```
+
+#### WAL設定
+
+```conf
+max_wal_size = 16GB
+min_wal_size = 4GB
+checkpoint_timeout = 30min
+checkpoint_completion_target = 0.9
+```
+
+#### I/Oコスト設定（SSD使用時）
+
+```conf
+random_page_cost = 1.1                  # デフォルト4.0（HDDは4.0のまま）
+seq_page_cost = 1.0
+effective_io_concurrency = 200
+maintenance_io_concurrency = 200
+```
+
+#### 並列処理
+
+```conf
+max_worker_processes = 64
+max_parallel_workers = 32
+max_parallel_workers_per_gather = 8     # デフォルト2
+max_parallel_maintenance_workers = 8    # インデックス作成時の並列度
+parallel_setup_cost = 100               # デフォルト1000
+parallel_tuple_cost = 0.001             # デフォルト0.01
+```
+
+#### GINインデックス設定
+
+```conf
+gin_pending_list_limit = 64MB           # デフォルト4MB（バッチ挿入時に効果）
+gin_fuzzy_search_limit = 0              # 制限なし
+```
+
+#### プランナー設定
+
+```conf
+enable_partitionwise_join = on          # パーティションテーブル使用時
+enable_partitionwise_aggregate = on
+default_statistics_target = 500         # 100→500（大規模テーブル向け）
+```
+
+#### JIT設定
+
+```conf
+# k-mer検索では無効化を推奨（オーバーヘッドの方が大きい）
+jit = off
+```
+
+#### Huge Pages（PostgreSQL側）
+
+```conf
+huge_pages = try    # または 'on'
+```
+
+必要なHuge Pages数の計算：
+```bash
+# PostgreSQL起動後に確認
+grep ^VmPeak /proc/$(head -1 /var/lib/pgsql/data/postmaster.pid)/status
+# その値 / 2MB = 必要なnr_hugepages
+```
+
+#### バックグラウンドライター
+
+```conf
+bgwriter_delay = 200ms
+bgwriter_lru_maxpages = 100
+bgwriter_lru_multiplier = 2.0
+```
+
+#### ロックと制限
+
+```conf
+max_locks_per_transaction = 10000
+max_files_per_process = 10000
+```
+
+### pg_kmersearch GUC設定
+
+ワークロードに応じてpg_kmersearch固有の設定を最適化します：
+
+```sql
+-- キャッシュサイズ設定（クエリパターンに応じて調整）
+ALTER SYSTEM SET kmersearch.query_kmer_cache_max_entries = 100000;
+ALTER SYSTEM SET kmersearch.actual_min_score_cache_max_entries = 100000;
+
+-- 高頻出k-merキャッシュ読み込みバッチサイズ
+ALTER SYSTEM SET kmersearch.highfreq_kmer_cache_load_batch_size = 50000;
+
+-- 高頻出k-mer解析ハッシュテーブルサイズ（大規模テーブル向け）
+ALTER SYSTEM SET kmersearch.highfreq_analysis_hashtable_size = 10000000;
+
+-- 設定を適用
+SELECT pg_reload_conf();
+```
+
+### 推奨設定サマリー
+
+| パラメータ | 推奨値 | 備考 |
+|-----------|--------|------|
+| `shared_buffers` | RAMの17〜25% | GINインデックスパフォーマンスに重要 |
+| `effective_cache_size` | RAMの70〜80% | プランナーのコスト見積もりに使用 |
+| `work_mem` | 1〜4GB | 並列クエリに注意 |
+| `maintenance_work_mem` | 4〜8GB | インデックス作成用 |
+| `random_page_cost` | 1.1 (SSD) / 4.0 (HDD) | プランナー用I/Oコスト |
+| `jit` | off | k-mer検索では無効化 |
+| `huge_pages` | try または on | TLBミスを削減 |
+| `vm.swappiness` | 10 | スワップを最小化 |
+
 ## 制限事項
 
 - クエリ配列は最小8塩基が必要

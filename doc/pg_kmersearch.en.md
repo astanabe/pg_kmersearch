@@ -984,6 +984,252 @@ The parallel cache system is particularly useful for:
 - **Lock Management**: Proper dshash_release_lock() calls for all operations
 - **Process Detection**: IsParallelWorker() for proper worker identification
 
+## Performance Tuning
+
+This section describes OS and PostgreSQL parameter settings recommended for optimizing pg_kmersearch performance.
+
+### OS Parameter Settings
+
+#### Shared Memory
+
+```bash
+# /etc/sysctl.conf or /etc/sysctl.d/99-postgresql.conf
+
+# Maximum shared memory size (set larger than PostgreSQL's shared_buffers)
+kernel.shmmax = 17179869184  # 16GB (adjust according to actual RAM)
+kernel.shmall = 4194304      # shmmax / PAGE_SIZE
+
+# Semaphore settings
+kernel.sem = 250 32000 100 128
+```
+
+#### Huge Pages (Recommended)
+
+Effective when using large amounts of memory. GIN indexes can grow large, making Huge Pages highly beneficial.
+
+```bash
+# Enable Huge Pages
+vm.nr_hugepages = 5120  # shared_buffers / 2MB (Huge Page size)
+
+# Verification command
+grep Huge /proc/meminfo
+```
+
+#### Memory Management
+
+```bash
+# Suppress swap usage (when memory is sufficient)
+vm.swappiness = 10
+
+# Dirty page flush settings
+vm.dirty_background_ratio = 5
+vm.dirty_ratio = 10
+
+# Or specify absolute values (recommended for large RAM systems)
+vm.dirty_background_bytes = 268435456  # 256MB
+vm.dirty_bytes = 1073741824            # 1GB
+
+# Memory overcommit settings
+vm.overcommit_memory = 2
+vm.overcommit_ratio = 90
+```
+
+#### I/O Related
+
+```bash
+# File descriptor limit
+fs.file-max = 2097152
+
+# Maximum AIO (asynchronous I/O) requests
+fs.aio-max-nr = 1048576
+```
+
+#### Disk Scheduler (for SSD)
+
+```bash
+# Set noop or mq scheduler for NVMe/SSD
+echo none > /sys/block/nvme0n1/queue/scheduler
+# or
+echo mq-deadline > /sys/block/sda/queue/scheduler
+
+# Adjust read-ahead (for sequential read-heavy workloads)
+blockdev --setra 4096 /dev/nvme0n1
+```
+
+#### ulimit Settings (for PostgreSQL user)
+
+```bash
+# /etc/security/limits.d/postgresql.conf
+postgres soft nofile 65536
+postgres hard nofile 65536
+postgres soft nproc 65536
+postgres hard nproc 65536
+postgres soft memlock unlimited
+postgres hard memlock unlimited  # Required for Huge Pages
+```
+
+#### NUMA Settings (for multi-socket CPU)
+
+```bash
+# Disable NUMA interleave to prioritize local memory
+# Specify when starting PostgreSQL
+numactl --interleave=all postgres -D /var/lib/pgsql/data
+```
+
+#### Applying Settings
+
+```bash
+# Apply settings immediately
+sudo sysctl -p /etc/sysctl.d/99-postgresql.conf
+
+# Restart for persistence after reboot
+sudo systemctl restart postgresql
+```
+
+### PostgreSQL Parameter Settings
+
+The following shows recommended settings for a system with 188GB RAM. Adjust values according to your environment.
+
+#### Memory Configuration
+
+```conf
+# Memory settings (example for 188GB RAM system)
+shared_buffers = 32GB                   # 17-25% of RAM (critical for GIN index caching)
+temp_buffers = 1GB
+effective_cache_size = 140GB            # Approximately RAM - shared_buffers
+work_mem = 2GB                          # Consider parallel worker count
+maintenance_work_mem = 8GB              # For GIN index creation
+min_dynamic_shared_memory = 1GB
+hash_mem_multiplier = 2.0               # Memory multiplier for hash joins
+wal_buffers = 256MB                     # About 1/32 of shared_buffers
+```
+
+**Important: work_mem Considerations**
+
+Maximum memory usage can be calculated as:
+```
+Maximum memory ≈ work_mem × max_connections × max_parallel_workers_per_gather
+```
+
+For example, with 8GB × 100 connections × 8 parallel = 6.4TB potential usage. Keep work_mem around 2GB and set per-session for specific queries:
+
+```sql
+SET work_mem = '8GB';
+-- Execute heavy query
+RESET work_mem;
+```
+
+#### WAL Configuration
+
+```conf
+max_wal_size = 16GB
+min_wal_size = 4GB
+checkpoint_timeout = 30min
+checkpoint_completion_target = 0.9
+```
+
+#### I/O Cost Settings (for SSD)
+
+```conf
+random_page_cost = 1.1                  # Default 4.0 (keep 4.0 for HDD)
+seq_page_cost = 1.0
+effective_io_concurrency = 200
+maintenance_io_concurrency = 200
+```
+
+#### Parallel Processing
+
+```conf
+max_worker_processes = 64
+max_parallel_workers = 32
+max_parallel_workers_per_gather = 8     # Default 2
+max_parallel_maintenance_workers = 8    # Parallelism for index creation
+parallel_setup_cost = 100               # Default 1000
+parallel_tuple_cost = 0.001             # Default 0.01
+```
+
+#### GIN Index Settings
+
+```conf
+gin_pending_list_limit = 64MB           # Default 4MB (effective for batch inserts)
+gin_fuzzy_search_limit = 0              # No limit
+```
+
+#### Planner Settings
+
+```conf
+enable_partitionwise_join = on          # For partitioned tables
+enable_partitionwise_aggregate = on
+default_statistics_target = 500         # 100→500 (for large tables)
+```
+
+#### JIT Settings
+
+```conf
+# Recommended to disable for k-mer search (overhead outweighs benefits)
+jit = off
+```
+
+#### Huge Pages (PostgreSQL side)
+
+```conf
+huge_pages = try    # or 'on'
+```
+
+Calculate required Huge Pages:
+```bash
+# Check after starting PostgreSQL
+grep ^VmPeak /proc/$(head -1 /var/lib/pgsql/data/postmaster.pid)/status
+# Result / 2MB = required nr_hugepages
+```
+
+#### Background Writer
+
+```conf
+bgwriter_delay = 200ms
+bgwriter_lru_maxpages = 100
+bgwriter_lru_multiplier = 2.0
+```
+
+#### Locks and Limits
+
+```conf
+max_locks_per_transaction = 10000
+max_files_per_process = 10000
+```
+
+### pg_kmersearch GUC Settings
+
+Optimize pg_kmersearch-specific settings according to your workload:
+
+```sql
+-- Cache size settings (adjust based on query patterns)
+ALTER SYSTEM SET kmersearch.query_kmer_cache_max_entries = 100000;
+ALTER SYSTEM SET kmersearch.actual_min_score_cache_max_entries = 100000;
+
+-- High-frequency k-mer cache loading batch size
+ALTER SYSTEM SET kmersearch.highfreq_kmer_cache_load_batch_size = 50000;
+
+-- High-frequency k-mer analysis hash table size (for large tables)
+ALTER SYSTEM SET kmersearch.highfreq_analysis_hashtable_size = 10000000;
+
+-- Apply settings
+SELECT pg_reload_conf();
+```
+
+### Recommended Configuration Summary
+
+| Parameter | Recommended Value | Notes |
+|-----------|-------------------|-------|
+| `shared_buffers` | 17-25% of RAM | Critical for GIN index performance |
+| `effective_cache_size` | 70-80% of RAM | Used by planner for cost estimation |
+| `work_mem` | 1-4GB | Careful with parallel queries |
+| `maintenance_work_mem` | 4-8GB | For index creation |
+| `random_page_cost` | 1.1 (SSD) / 4.0 (HDD) | I/O cost for planner |
+| `jit` | off | Disable for k-mer search |
+| `huge_pages` | try or on | Reduces TLB misses |
+| `vm.swappiness` | 10 | Minimize swapping |
+
 ## Limitations
 
 - Query sequences must be at least 8 bases long
