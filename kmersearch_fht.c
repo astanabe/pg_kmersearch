@@ -899,10 +899,7 @@ kmersearch_fht32_bulk_add(FileHashTable32Context *ctx, HTAB *batch_hash)
     HASH_SEQ_STATUS hash_seq;
     HASH_SEQ_STATUS batch_seq;
     void *batch_entry;
-    uint32 saved_bucket_count;
-    char saved_path[MAXPGPATH];
     long max_entries;
-    FileHashTable32Context *new_ctx;
 
     merge_context = AllocSetContextCreate(CurrentMemoryContext,
                                           "FHT32 BulkAdd Context",
@@ -951,29 +948,70 @@ kmersearch_fht32_bulk_add(FileHashTable32Context *ctx, HTAB *batch_hash)
             entry->appearance_nrow = freq_entry->appearance_nrow;
     }
 
-    saved_bucket_count = ctx->bucket_count;
-    strlcpy(saved_path, ctx->path, MAXPGPATH);
-
-    if (ftruncate(ctx->fd, 0) < 0)
+    /* Close and reopen file with truncate to reset it (preserves ctx pointer) */
+    close(ctx->fd);
+    ctx->fd = open(ctx->path, O_RDWR | O_TRUNC | O_CREAT, 0600);
+    if (ctx->fd < 0)
     {
         MemoryContextSwitchTo(old_context);
         MemoryContextDelete(merge_context);
         ereport(ERROR,
                 (errcode_for_file_access(),
-                 errmsg("could not truncate file hash table: %m")));
+                 errmsg("could not reopen file hash table: %m")));
     }
-    lseek(ctx->fd, 0, SEEK_SET);
-    kmersearch_fht32_close(ctx);
 
-    new_ctx = kmersearch_fht32_create(saved_path, saved_bucket_count);
+    /* Reinitialize file structure */
+    {
+        FileHashTable32Header header;
+        uint64 *bucket_array;
+        off_t data_start;
+        ssize_t written;
 
+        memset(&header, 0, sizeof(header));
+        header.magic = FHT32_MAGIC;
+        header.version = FHT_VERSION;
+        header.key_type = 32;
+        header.bucket_count = ctx->bucket_count;
+        header.entry_count = 0;
+
+        data_start = FHT32_HEADER_SIZE + (off_t)ctx->bucket_count * sizeof(uint64);
+        header.next_entry_offset = data_start;
+        ctx->entry_count = 0;
+        ctx->next_entry_offset = data_start;
+
+        written = write(ctx->fd, &header, sizeof(header));
+        if (written != sizeof(header))
+        {
+            close(ctx->fd);
+            ctx->fd = -1;
+            MemoryContextSwitchTo(old_context);
+            MemoryContextDelete(merge_context);
+            ereport(ERROR,
+                    (errcode_for_file_access(),
+                     errmsg("could not write file hash table header: %m")));
+        }
+
+        bucket_array = palloc0((Size)ctx->bucket_count * sizeof(uint64));
+        written = write(ctx->fd, bucket_array, (Size)ctx->bucket_count * sizeof(uint64));
+        pfree(bucket_array);
+        if (written != (ssize_t)((Size)ctx->bucket_count * sizeof(uint64)))
+        {
+            close(ctx->fd);
+            ctx->fd = -1;
+            MemoryContextSwitchTo(old_context);
+            MemoryContextDelete(merge_context);
+            ereport(ERROR,
+                    (errcode_for_file_access(),
+                     errmsg("could not write bucket directory: %m")));
+        }
+    }
+
+    /* Write merged entries back to ctx */
     hash_seq_init(&hash_seq, merge_htab);
     while ((entry = (KmerFreqEntry32 *) hash_seq_search(&hash_seq)) != NULL)
     {
-        kmersearch_fht32_add(new_ctx, entry->uintkey, entry->appearance_nrow);
+        kmersearch_fht32_add(ctx, entry->uintkey, entry->appearance_nrow);
     }
-
-    kmersearch_fht32_close(new_ctx);
 
     MemoryContextSwitchTo(old_context);
     MemoryContextDelete(merge_context);
@@ -1488,10 +1526,7 @@ kmersearch_fht64_bulk_add(FileHashTable64Context *ctx, HTAB *batch_hash)
     HASH_SEQ_STATUS hash_seq;
     HASH_SEQ_STATUS batch_seq;
     void *batch_entry;
-    uint32 saved_bucket_count;
-    char saved_path[MAXPGPATH];
     long max_entries;
-    FileHashTable64Context *new_ctx;
 
     merge_context = AllocSetContextCreate(CurrentMemoryContext,
                                           "FHT64 BulkAdd Context",
@@ -1540,29 +1575,70 @@ kmersearch_fht64_bulk_add(FileHashTable64Context *ctx, HTAB *batch_hash)
             entry->appearance_nrow = freq_entry->appearance_nrow;
     }
 
-    saved_bucket_count = ctx->bucket_count;
-    strlcpy(saved_path, ctx->path, MAXPGPATH);
-
-    if (ftruncate(ctx->fd, 0) < 0)
+    /* Close and reopen file with truncate to reset it (preserves ctx pointer) */
+    close(ctx->fd);
+    ctx->fd = open(ctx->path, O_RDWR | O_TRUNC | O_CREAT, 0600);
+    if (ctx->fd < 0)
     {
         MemoryContextSwitchTo(old_context);
         MemoryContextDelete(merge_context);
         ereport(ERROR,
                 (errcode_for_file_access(),
-                 errmsg("could not truncate file hash table: %m")));
+                 errmsg("could not reopen file hash table: %m")));
     }
-    lseek(ctx->fd, 0, SEEK_SET);
-    kmersearch_fht64_close(ctx);
 
-    new_ctx = kmersearch_fht64_create(saved_path, saved_bucket_count);
+    /* Reinitialize file structure */
+    {
+        FileHashTable64Header header;
+        uint64 *bucket_array;
+        off_t data_start;
+        ssize_t written;
 
+        memset(&header, 0, sizeof(header));
+        header.magic = FHT64_MAGIC;
+        header.version = FHT_VERSION;
+        header.key_type = 64;
+        header.bucket_count = ctx->bucket_count;
+        header.entry_count = 0;
+
+        data_start = FHT64_HEADER_SIZE + (off_t)ctx->bucket_count * sizeof(uint64);
+        header.next_entry_offset = data_start;
+        ctx->entry_count = 0;
+        ctx->next_entry_offset = data_start;
+
+        written = write(ctx->fd, &header, sizeof(header));
+        if (written != sizeof(header))
+        {
+            close(ctx->fd);
+            ctx->fd = -1;
+            MemoryContextSwitchTo(old_context);
+            MemoryContextDelete(merge_context);
+            ereport(ERROR,
+                    (errcode_for_file_access(),
+                     errmsg("could not write file hash table header: %m")));
+        }
+
+        bucket_array = palloc0((Size)ctx->bucket_count * sizeof(uint64));
+        written = write(ctx->fd, bucket_array, (Size)ctx->bucket_count * sizeof(uint64));
+        pfree(bucket_array);
+        if (written != (ssize_t)((Size)ctx->bucket_count * sizeof(uint64)))
+        {
+            close(ctx->fd);
+            ctx->fd = -1;
+            MemoryContextSwitchTo(old_context);
+            MemoryContextDelete(merge_context);
+            ereport(ERROR,
+                    (errcode_for_file_access(),
+                     errmsg("could not write bucket directory: %m")));
+        }
+    }
+
+    /* Write merged entries back to ctx */
     hash_seq_init(&hash_seq, merge_htab);
     while ((entry = (KmerFreqEntry64 *) hash_seq_search(&hash_seq)) != NULL)
     {
-        kmersearch_fht64_add(new_ctx, entry->uintkey, entry->appearance_nrow);
+        kmersearch_fht64_add(ctx, entry->uintkey, entry->appearance_nrow);
     }
-
-    kmersearch_fht64_close(new_ctx);
 
     MemoryContextSwitchTo(old_context);
     MemoryContextDelete(merge_context);
