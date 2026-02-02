@@ -1068,6 +1068,24 @@ postgres soft memlock unlimited
 postgres hard memlock unlimited  # Huge Pages使用時に必要
 ```
 
+**重要:** PostgreSQLがsystemd経由で起動される場合、`/etc/security/limits.d/`の設定は適用されません。代わりにsystemdで設定する必要があります：
+
+```bash
+# systemdサービスのオーバーライドを編集
+sudo systemctl edit postgresql@16-main
+
+# 以下の内容を追加：
+[Service]
+LimitNOFILE=65536
+
+# リロードと再起動で変更を適用
+sudo systemctl daemon-reload
+sudo systemctl restart postgresql@16-main
+
+# 設定が適用されたことを確認
+cat /proc/$(sudo head -1 /var/lib/postgresql/16/main/postmaster.pid)/limits | grep "open files"
+```
+
 #### NUMA設定（マルチソケットCPUの場合）
 
 ```bash
